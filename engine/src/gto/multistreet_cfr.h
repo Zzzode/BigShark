@@ -14,8 +14,8 @@
 #include <array>
 #include <bs/equity.hpp>
 #include <bs/range.hpp>
+#include <cstddef>
 #include <cstdint>
-#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -45,24 +45,26 @@ class MultiStreetSolver {
                     const Range& oop_range, const MultiStreetOptions& opt);
   MultiStreetResult Solve();
 
-  // distribution-aggregated values for external validation (chance-sampled)
-  double BrValue(int resp, int own, int runs, uint64_t seed) const;
-  double EqValue(int resp, int own, int runs, uint64_t seed) const;
+  // Exact distribution-aggregated values for external validation.
+  double BrValue(int resp, int own) const;
+  double EqValue(int resp, int own) const;
   // external verification hooks
   int NumCombos(int player) const { return player == 0 ? (int)ipC_.size() : (int)oopC_.size(); }
   double ComboWeight(int player, int k) const { return player == 0 ? ipW_[k] : oopW_[k]; }
   int ComboId(int player, int k) const { return player == 0 ? ipC_[k] : oopC_[k]; }
+  std::size_t InformationSetCount() const { return N_[0].size() + N_[1].size(); }
   bool Share(int ipIdx, int opIdx) const;
   float Bet() const { return bfrac_ * pot_; }
   int Pot() const { return pot_; }
   const std::vector<int>& Flop() const { return flop_; }
   // trained behavior prob for player/combo at a decision node on a dealt board
-  double PolicyAt(int player, int combo, int street, int turn, int river, int hcode, int act) const;
+  double PolicyAt(int player, int combo, int street, int turn, int river, int hcode, int act,
+                  int history = 0) const;
 
  private:
   struct ISet {
     int na = 2;
-    std::array<double, 3> r{}, s{}, cur{};
+    std::array<double, 3> r{}, s{}, cur{0.5, 0.5, 0.0};
     void policy(double* o) const;
     void freeze();
     double avg(int a) const;
@@ -70,35 +72,27 @@ class MultiStreetSolver {
   // info-sets are keyed by a hand-STRENGTH BUCKET (OCHS) instead of exact
   // turn/river, so learning is shared across all runouts where the combo lands
   // in the same strength class.
-  uint64_t key(int combo, int street, int hcode, int bucket) const;
-  ISet& iset(int player, int combo, int street, int hcode, int bucket);
+  uint64_t key(int combo, int street, int hcode, int bucket, int history) const;
+  ISet& iset(int player, int combo, int street, int hcode, int bucket, int history);
   int bucketOf(int combo, int player, int turn, int river) const;
   int bucketCompute(int combo, int player, int turn, int river) const;
   int owner(int street, int hcode) const;
   double cfr(int i, int j, int turn, int river, int street, int hcode, int commits, double p0,
-             double p1, int tr);
+             double p1, int tr, int history);
   int drawCard(const bool used[52], bs::XorShift64& rng) const;
   bool share(int i, int j) const;
   void iterate();
   void discount(long long t);
   double exploitability();
 
-  // best response (own combo fixed, opponent hidden; chance averaged)
-  // distribution-aggregated value: own combo fixed, opponent combos summed
-  // before the responder max; when aggSampleMode_, chance follows the pre-drawn
-  // evalTurn_/evalRiver_ run (unbiased estimator matching CFR's sampling),
-  // otherwise chance is enumerated (used once all run-nodes are well trained).
-  double aggCore(int resp, int own, int turn, int river, int street, int hcode, int commits,
-                 bool best) const;
-  // same, but with a specific opponent combo bound (fq>=0); used so an opponent
-  // action's continuation is evaluated for THAT combo (no double weighting).
-  double aggFixed(int resp, int own, int fq, int turn, int river, int street, int hcode,
-                  int commits, bool best) const;
-  double brAgg(int resp, int own, int turn, int river, int street, int hcode, int cc) const;
-  double eqAgg(int resp, int own, int turn, int river, int street, int hcode, int cc) const;
-  mutable int evalTurn_ = -1, evalRiver_ = -1;
-  mutable bool aggSampleMode_ = false;
-  double polAvg(int player, int combo, int street, int hcode, int bucket, int act) const;
+  // Best-response and equilibrium values keep the opponent's hidden range as
+  // a reach vector. A responder action is selected only after all compatible
+  // opponent histories in the information set have been aggregated.
+  double responseValue(int resp, int own, const std::vector<double>& opponent_reach, int turn,
+                       int river, int street, int hcode, int commits, int history, bool best) const;
+  std::vector<double> initialOpponentReach(int resp, int own) const;
+  double polAvg(int player, int combo, int street, int hcode, int bucket, int act,
+                int history) const;
 
   std::vector<int> flop_;
   int pot_;
@@ -107,7 +101,6 @@ class MultiStreetSolver {
   std::vector<int> ipC_, oopC_;
   std::vector<double> ipW_, oopW_;
   int Ni_ = 0, No_ = 0;
-  double Wi_ = 0, Wo_ = 0;
   double valueToIp_ = 0, gapI_ = 0, gapO_ = 0;
   std::unordered_map<uint64_t, ISet> N_[2];
   bs::XorShift64 rng_{1};

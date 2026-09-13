@@ -56,6 +56,7 @@ protocol, integration, development, and RFC material.
 - Versioned Protobuf v1 schema with Buf linting and breaking-change checks.
 - Cross-language binary and ProtoJSON vectors, including 64-bit integer and
   unknown-field behavior.
+- Reproducible multi-street exploitability and convergence benchmarks.
 - Debug, release, sanitizer, replay, and Linux GCC verification lanes.
 
 ## Requirements
@@ -161,6 +162,15 @@ Only `release` publishes `bin/bigshark-engine`. See
 [Build and Test](docs/development/build-and-test.md) for formatting,
 sanitizers, compilation database behavior, and the full release gate.
 
+Run the deterministic multi-street solver benchmark with:
+
+```bash
+cmake --build --preset release --target benchmark-multistreet
+```
+
+See [Benchmarking](docs/development/benchmarking.md) for fixture definitions,
+quality thresholds, and the CSV output contract.
+
 Run the reproducible Linux GCC lane with:
 
 ```bash
@@ -234,11 +244,11 @@ BigShark is licensed under the
 | `docs/rfcs/0003-typescript-application-layer.md` | Implemented strict TypeScript application policy |
 | `CMakePresets.json` | Fixed debug, release, and sanitizer workflows |
 | `proto/` | Protobuf v1 source, Buf configuration, compatibility baseline, and vectors |
-| `engine/` | C++23 poker, solver, policy, service, and v0 protocol libraries |
+| `engine/` | C++ poker, solver, policy, service, tests, and solver benchmarks |
 | `apps/` | C++ engine host and TypeScript application composition |
 | `clients/node/` | Platform-neutral TypeScript engine process client |
 | `platforms/river-club/` | Strict TypeScript River Club integration |
-| `tools/` | Strict TypeScript replay and project checks |
+| `tools/` | Replay and project checks |
 | `bin/` | Thin compatibility launchers and published engine executable |
 | `strategy/PLAYBOOK.md` | Baseline poker decision framework |
 | `strategy/table-notes.md` | Reviewed opponent and table observations |

@@ -1,8 +1,13 @@
 #include "multistreet_cfr.h"
 
 #include <algorithm>
+#include <array>
+#include <bs/equity.hpp>
 #include <bs/eval.hpp>
-#include <cmath>
+#include <bs/range.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace bs::gto {
@@ -58,10 +63,6 @@ MultiStreetSolver::MultiStreetSolver(std::vector<int> flop, int pot, const Range
   }
   Ni_ = (int)ipC_.size();
   No_ = (int)oopC_.size();
-  for (double w : ipW_)
-    Wi_ += w;
-  for (double w : oopW_)
-    Wo_ += w;
 }
 
 bool MultiStreetSolver::share(int i, int j) const {
@@ -69,16 +70,17 @@ bool MultiStreetSolver::share(int i, int j) const {
   auto [d, e] = comboTable()[oopC_[j]];
   return a == d || a == e || b == d || b == e;
 }
-uint64_t MultiStreetSolver::key(int combo, int street, int hcode, int bucket) const {
+uint64_t MultiStreetSolver::key(int combo, int street, int hcode, int bucket, int history) const {
   uint64_t k = (uint64_t)combo;
   k = (k << 2) | (uint64_t)street;
   k = (k << 3) | (uint64_t)(hcode & 7);
   k = (k << 8) | (uint64_t)(bucket & 0xff);
+  k = (k << 4) | (uint64_t)(history & 0xf);
   return k;
 }
 MultiStreetSolver::ISet& MultiStreetSolver::iset(int player, int combo, int street, int hcode,
-                                                 int bucket) {
-  ISet& s = N_[player][key(combo, street, hcode, bucket)];
+                                                 int bucket, int history) {
+  ISet& s = N_[player][key(combo, street, hcode, bucket, history)];
   if (s.na == 0)
     s.na = 2;
   return s;
@@ -248,7 +250,7 @@ int MultiStreetSolver::drawCard(const bool used[52], bs::XorShift64& rng) const 
 }
 
 double MultiStreetSolver::cfr(int i, int j, int turn, int river, int street, int hcode, int commits,
-                              double p0, double p1, int tr) {
+                              double p0, double p1, int tr, int history) {
   const double a = pot_ / 2.0, B = bfrac_ * pot_;
   auto sd = [&](int cc) { return msShowdown(i, j, flop_, turn, river, a, B, cc, ipC_, oopC_); };
 
@@ -258,19 +260,20 @@ double MultiStreetSolver::cfr(int i, int j, int turn, int river, int street, int
       double u = sd(commits);
       return tr == 0 ? u : -u;
     }
+    const int nextHistory = history * 3 + (-hcode - 1);
     int cd = street == 0 ? sampledTurn_ : sampledRiver_;
     int nt = turn, nr = river;
     if (street == 0)
       nt = cd;
     else
       nr = cd;
-    return cfr(i, j, nt, nr, street + 1, 0, commits, p0, p1, tr);
+    return cfr(i, j, nt, nr, street + 1, 0, commits, p0, p1, tr, nextHistory);
   }
 
   const int pl = owner(street, hcode);
   const int combo = pl == 0 ? ipC_[i] : oopC_[j];
   const int buck = bucketOf(combo, pl, turn, river);
-  ISet& s = iset(pl, combo, street, hcode, buck);
+  ISet& s = iset(pl, combo, street, hcode, buck, history);
   const double* stp = s.cur.data();
 
   double cu[2], node = 0;
@@ -312,7 +315,7 @@ double MultiStreetSolver::cfr(int i, int j, int turn, int river, int street, int
       double uip = ipFolds ? -pay : pay;
       v = tr == 0 ? uip : -uip;
     } else {
-      v = cfr(i, j, turn, river, street, nh, nc, np0, np1, tr);
+      v = cfr(i, j, turn, river, street, nh, nc, np0, np1, tr, history);
     }
     cu[act] = v;
     node += stp[act] * v;
@@ -335,6 +338,8 @@ void MultiStreetSolver::iterate() {
   bool used[52] = {};
   for (int c : flop_)
     used[c] = true;
+  if (opt_.fixed_turn < 0 && opt_.fixed_river >= 0)
+    used[opt_.fixed_river] = true;
   sampledTurn_ = opt_.fixed_turn >= 0 ? opt_.fixed_turn : drawCard(used, rng_);
   if (sampledTurn_ >= 0)
     used[sampledTurn_] = true;
@@ -344,32 +349,32 @@ void MultiStreetSolver::iterate() {
     blocked[sampledTurn_] = true;
   if (sampledRiver_ >= 0)
     blocked[sampledRiver_] = true;
+  bool fixedBlocked[52] = {};
+  if (opt_.fixed_turn >= 0)
+    fixedBlocked[opt_.fixed_turn] = true;
+  if (opt_.fixed_river >= 0)
+    fixedBlocked[opt_.fixed_river] = true;
+  double rangeMass = 0;
   for (int i = 0; i < Ni_; ++i)
     for (int j = 0; j < No_; ++j) {
       auto pp = comboTable()[ipC_[i]];
       auto qq = comboTable()[oopC_[j]];
-      if (blocked[pp[0]] || blocked[pp[1]] || blocked[qq[0]] || blocked[qq[1]])
+      if (share(i, j) || fixedBlocked[pp[0]] || fixedBlocked[pp[1]] || fixedBlocked[qq[0]] ||
+          fixedBlocked[qq[1]])
         continue;
-      // conditional private reach: normalize the opponent over combos live
-      // given THIS deal, and the traverser's own type by its marginal.
-      double effO = 0, effI = 0;
-      for (int q = 0; q < No_; ++q) {
-        auto o = comboTable()[oopC_[q]];
-        if (!(blocked[o[0]] || blocked[o[1]]) &&
-            !(pp[0] == o[0] || pp[0] == o[1] || pp[1] == o[0] || pp[1] == o[1]))
-          effO += oopW_[q];
-      }
-      for (int p = 0; p < Ni_; ++p) {
-        auto h = comboTable()[ipC_[p]];
-        if (!(blocked[h[0]] || blocked[h[1]]) &&
-            !(qq[0] == h[0] || qq[0] == h[1] || qq[1] == h[0] || qq[1] == h[1]))
-          effI += ipW_[p];
-      }
-      for (int tr = 0; tr < 2; ++tr) {
-        double q = tr == 0 ? (ipW_[i] / Wi_) * (oopW_[j] / (effO > 0 ? effO : 1.0))
-                           : (oopW_[j] / Wo_) * (ipW_[i] / (effI > 0 ? effI : 1.0));
-        cfr(i, j, -1, -1, 0, 0, 0, q, q, tr);
-      }
+      rangeMass += ipW_[i] * oopW_[j];
+    }
+  if (rangeMass <= 0)
+    return;
+  for (int i = 0; i < Ni_; ++i)
+    for (int j = 0; j < No_; ++j) {
+      auto pp = comboTable()[ipC_[i]];
+      auto qq = comboTable()[oopC_[j]];
+      if (share(i, j) || blocked[pp[0]] || blocked[pp[1]] || blocked[qq[0]] || blocked[qq[1]])
+        continue;
+      const double q = ipW_[i] * oopW_[j] / rangeMass;
+      for (int tr = 0; tr < 2; ++tr)
+        cfr(i, j, -1, -1, 0, 0, 0, q, q, tr, 0);
     }
 }
 void MultiStreetSolver::discount(long long t) {
@@ -382,370 +387,225 @@ void MultiStreetSolver::discount(long long t) {
       }
 }
 
-// ---------------- best response (chance averaged before max) ----------------
+// ---------------- information-set-correct best response ----------------
 double MultiStreetSolver::PolicyAt(int player, int combo, int street, int turn, int river,
-                                   int hcode, int act) const {
-  return polAvg(player, combo, street, hcode, bucketOf(combo, player, turn, river), act);
+                                   int hcode, int act, int history) const {
+  return polAvg(player, combo, street, hcode, bucketOf(combo, player, turn, river), act, history);
 }
-double MultiStreetSolver::polAvg(int player, int combo, int street, int hcode, int bucket,
-                                 int act) const {
-  auto it = N_[player].find(key(combo, street, hcode, bucket));
+double MultiStreetSolver::polAvg(int player, int combo, int street, int hcode, int bucket, int act,
+                                 int history) const {
+  auto it = N_[player].find(key(combo, street, hcode, bucket, history));
   if (it == N_[player].end())
     return 0.5;
   return it->second.avg(act);
 }
 
-double MultiStreetSolver::aggFixed(int resp, int own, int fq, int turn, int river, int street,
-                                   int hcode, int commits, bool best) const {
-  const double a = pot_ / 2.0, B = bfrac_ * pot_;
-  auto ownCombo = [&] { return resp == 0 ? comboTable()[ipC_[own]] : comboTable()[oopC_[own]]; };
-  auto oc = [&](int q) { return resp == 0 ? comboTable()[oopC_[q]] : comboTable()[ipC_[q]]; };
-  auto ownPol = [&](int act) {
-    int g = resp == 0 ? ipC_[own] : oopC_[own];
-    return polAvg(resp, g, street, hcode, bucketOf(g, resp, turn, river), act);
-  };
-  // showdown vs the bound opponent combo fq
-  auto sdBound = [&](int cc) {
-    int ipIdx = resp == 0 ? own : fq, opIdx = resp == 0 ? fq : own;
-    auto p = comboTable()[ipC_[ipIdx]];
-    auto o = comboTable()[oopC_[opIdx]];
-    int hi[7] = {p[0], p[1]}, ho[7] = {o[0], o[1]};
-    int n = 2, m = 2;
-    for (int c : flop_)
-      hi[n++] = c, ho[m++] = c;
-    if (turn >= 0)
-      hi[n++] = turn, ho[m++] = turn;
-    if (river >= 0)
-      hi[n++] = river, ho[m++] = river;
-    unsigned s1 = evaluate(hi, n).score, s2 = evaluate(ho, m).score;
-    double c = a + cc * B;
-    return s1 > s2 ? c : s1 < s2 ? -c : 0.0;
-  };
+std::vector<double> MultiStreetSolver::initialOpponentReach(int resp, int own) const {
+  const int nOpp = resp == 0 ? No_ : Ni_;
+  const auto ownCombo = resp == 0 ? comboTable()[ipC_[own]] : comboTable()[oopC_[own]];
+  std::vector<double> reach(nOpp, 0.0);
+  if ((opt_.fixed_turn >= 0 &&
+       (ownCombo[0] == opt_.fixed_turn || ownCombo[1] == opt_.fixed_turn)) ||
+      (opt_.fixed_river >= 0 &&
+       (ownCombo[0] == opt_.fixed_river || ownCombo[1] == opt_.fixed_river)))
+    return reach;
 
-  // closed sentinel
-  if (hcode < 0) {
-    if (street == 2) {
-      double u = sdBound(commits);
-      return resp == 0 ? u : -u;
-    }
-    if (aggSampleMode_) {
-      int cd = street == 0 ? evalTurn_ : evalRiver_;
-      if (cd < 0)
-        return 0;
-      auto pp = ownCombo();
-      auto oo = oc(fq);
-      if (pp[0] == cd || pp[1] == cd || oo[0] == cd || oo[1] == cd)
-        return 0;
-      int nt = turn, nr = river;
-      if (street == 0)
-        nt = cd;
-      else
-        nr = cd;
-      return aggFixed(resp, own, fq, nt, nr, street + 1, 0, commits, best);
-    }
-    bool used[52] = {};
-    auto pp = ownCombo();
-    auto oo = oc(fq);
-    used[pp[0]] = used[pp[1]] = used[oo[0]] = used[oo[1]] = true;
-    for (int c : flop_)
-      used[c] = true;
-    if (turn >= 0)
-      used[turn] = true;
-    int cards = 0;
-    for (int cd = 0; cd < 52; ++cd)
-      if (!used[cd])
-        ++cards;
-    double acc = 0;
-    for (int cd = 0; cd < 52; ++cd) {
-      if (used[cd])
-        continue;
-      int nt = turn, nr = river;
-      if (street == 0)
-        nt = cd;
-      else
-        nr = cd;
-      acc += (1.0 / cards) * aggFixed(resp, own, fq, nt, nr, street + 1, 0, commits, best);
-    }
-    return acc;
+  double total = 0;
+  for (int q = 0; q < nOpp; ++q) {
+    const int ipIndex = resp == 0 ? own : q;
+    const int oopIndex = resp == 0 ? q : own;
+    const auto opponentCombo = resp == 0 ? comboTable()[oopC_[q]] : comboTable()[ipC_[q]];
+    if (share(ipIndex, oopIndex) ||
+        (opt_.fixed_turn >= 0 &&
+         (opponentCombo[0] == opt_.fixed_turn || opponentCombo[1] == opt_.fixed_turn)) ||
+        (opt_.fixed_river >= 0 &&
+         (opponentCombo[0] == opt_.fixed_river || opponentCombo[1] == opt_.fixed_river)))
+      continue;
+    reach[q] = resp == 0 ? oopW_[q] : ipW_[q];
+    total += reach[q];
   }
-
-  int pl = owner(street, hcode);
-  auto foldPay = [&](int cc) {
-    double pay = a + cc * B;
-    bool ipFolds = (hcode == 3);
-    return resp == 0 ? (ipFolds ? -pay : pay) : (ipFolds ? pay : -pay);
-  };
-  if (pl == resp) {
-    auto child = [&](int nh, int nc) {
-      // the opponent's private combo is FIXED for the whole hand; only folds
-      // terminate. Continued play (including across a street close nh<0) keeps
-      // the bound combo — no re-averaging mid-hand.
-      if (nh == 99)
-        return foldPay(nc);
-      return aggFixed(resp, own, fq, turn, river, street, nh, nc, best);
-    };
-    if (best) {
-      double out = -1e30;
-      for (int act = 0; act < 2; ++act) {
-        int nh, nc = commits;
-        if (hcode == 0)
-          nh = act ? 2 : 1;
-        else if (hcode == 1)
-          nh = act ? 3 : -1;
-        else if (act == 0)
-          nh = 99;
-        else {
-          nh = (hcode == 2 ? -2 : -3);
-          nc = commits + 1;
-        }
-        out = std::max(out, child(nh, nc));
-      }
-      return out;
-    }
-    double ev = 0;
-    for (int act = 0; act < 2; ++act) {
-      int nh, nc = commits;
-      if (hcode == 0)
-        nh = act ? 2 : 1;
-      else if (hcode == 1)
-        nh = act ? 3 : -1;
-      else if (act == 0)
-        nh = 99;
-      else {
-        nh = (hcode == 2 ? -2 : -3);
-        nc = commits + 1;
-      }
-      ev += ownPol(act) * child(nh, nc);
-    }
-    return ev;
-  }
-  // opponent node with a BOUND combo: use its policy, no weighting/averaging
-  int og = resp == 0 ? oopC_[fq] : ipC_[fq];
-  double v = 0;
-  for (int act = 0; act < 2; ++act) {
-    double pr = polAvg(1 - resp, og, street, hcode, bucketOf(og, 1 - resp, turn, river), act);
-    int nh, nc = commits;
-    if (hcode == 0)
-      nh = act ? 2 : 1;
-    else if (hcode == 1)
-      nh = act ? 3 : -1;
-    else if (act == 0)
-      nh = 99;
-    else {
-      nh = (hcode == 2 ? -2 : -3);
-      nc = commits + 1;
-    }
-    double cv =
-        (nh == 99) ? foldPay(commits) : aggFixed(resp, own, fq, turn, river, street, nh, nc, best);
-    v += pr * cv;
-  }
-  return v;
+  if (total > 0)
+    for (double& probability : reach)
+      probability /= total;
+  return reach;
 }
 
-double MultiStreetSolver::aggCore(int resp, int own, int turn, int river, int street, int hcode,
-                                  int commits, bool best) const {
-  const double a = pot_ / 2.0, B = bfrac_ * pot_;
-  auto ownCombo = [&] { return resp == 0 ? comboTable()[ipC_[own]] : comboTable()[oopC_[own]]; };
-  auto oc = [&](int q) { return resp == 0 ? comboTable()[oopC_[q]] : comboTable()[ipC_[q]]; };
-  auto ow = [&](int q) -> double { return resp == 0 ? oopW_[q] : ipW_[q]; };
-  int nOpp = resp == 0 ? No_ : Ni_;
-  auto blocked = [&](int q, int turn, int river) {
-    auto p = ownCombo();
-    auto o = oc(q);
-    if (p[0] == o[0] || p[0] == o[1] || p[1] == o[0] || p[1] == o[1])
-      return true;
-    for (int c : flop_)
-      if (p[0] == c || p[1] == c || o[0] == c || o[1] == c)
-        return true;
-    if (turn >= 0 && (p[0] == turn || p[1] == turn || o[0] == turn || o[1] == turn))
-      return true;
-    if (river >= 0 && (p[0] == river || p[1] == river || o[0] == river || o[1] == river))
-      return true;
-    return false;
+double MultiStreetSolver::responseValue(int resp, int own, const std::vector<double>& opponentReach,
+                                        int turn, int river, int street, int hcode, int commits,
+                                        int history, bool best) const {
+  const double ante = pot_ / 2.0;
+  const double bet = bfrac_ * pot_;
+  const int nOpp = resp == 0 ? No_ : Ni_;
+  const int ownGlobal = resp == 0 ? ipC_[own] : oopC_[own];
+  const auto ownCombo = comboTable()[ownGlobal];
+  auto opponentGlobal = [&](int q) { return resp == 0 ? oopC_[q] : ipC_[q]; };
+  auto opponentCombo = [&](int q) { return comboTable()[opponentGlobal(q)]; };
+  auto showdown = [&](int q, int calledStreets) {
+    const int ipIndex = resp == 0 ? own : q;
+    const int oopIndex = resp == 0 ? q : own;
+    const double utility =
+        msShowdown(ipIndex, oopIndex, flop_, turn, river, ante, bet, calledStreets, ipC_, oopC_);
+    return resp == 0 ? utility : -utility;
   };
-
-  // closed sentinel where opponent is hidden: river showdown averaged, chance
-  if (hcode < 0) {
-    if (street == 2) {
-      double num = 0, den = 0;
-      for (int q = 0; q < nOpp; ++q) {
-        if (blocked(q, turn, river))
-          continue;
-        double w = ow(q);
-        num += w * aggFixed(resp, own, q, turn, river, street, hcode, commits, best);
-        den += w;
-      }
-      return den ? num / den : 0;
-    }
-    if (aggSampleMode_) {
-      int cd = street == 0 ? evalTurn_ : evalRiver_;
-      if (cd < 0)
-        return 0;
-      auto pp = ownCombo();
-      if (pp[0] == cd || pp[1] == cd)
-        return 0;
-      int nt = turn, nr = river;
-      if (street == 0)
-        nt = cd;
-      else
-        nr = cd;
-      return aggCore(resp, own, nt, nr, street + 1, 0, commits, best);
-    }
-    bool used[52] = {};
-    auto pp = ownCombo();
-    used[pp[0]] = used[pp[1]] = true;
-    for (int c : flop_)
-      used[c] = true;
-    if (turn >= 0)
-      used[turn] = true;
-    int cards = 0;
-    for (int cd = 0; cd < 52; ++cd)
-      if (!used[cd])
-        ++cards;
-    double acc = 0;
-    for (int cd = 0; cd < 52; ++cd) {
-      if (used[cd])
-        continue;
-      int nt = turn, nr = river;
-      if (street == 0)
-        nt = cd;
-      else
-        nr = cd;
-      acc += (1.0 / cards) * aggCore(resp, own, nt, nr, street + 1, 0, commits, best);
-    }
-    return acc;
-  }
-
-  int pl = owner(street, hcode);
-  if (pl != resp) {
-    // opponent is hidden here: average over opponent combos, then dispatch each
-    // bound combo for the action continuation (correct E[max] aggregation).
+  auto foldValue = [&](const std::vector<double>& reach, int currentCommits) {
+    const double payoff = ante + currentCommits * bet;
+    const bool ipFolds = hcode == 3;
+    const double utility = resp == 0 ? (ipFolds ? -payoff : payoff) : (ipFolds ? payoff : -payoff);
     double total = 0;
-    for (int q = 0; q < nOpp; ++q)
-      if (!blocked(q, turn, river))
-        total += ow(q);
-    double v = 0;
-    for (int q = 0; q < nOpp; ++q) {
-      if (blocked(q, turn, river))
-        continue;
-      v += ow(q) * aggFixed(resp, own, q, turn, river, street, hcode, commits, best);
+    for (double probability : reach)
+      total += probability;
+    return total * utility;
+  };
+
+  if (hcode < 0) {
+    if (street == 2) {
+      double value = 0;
+      for (int q = 0; q < nOpp; ++q)
+        value += opponentReach[q] * showdown(q, commits);
+      return value;
     }
-    return total > 0 ? v / total : 0;
-  }
-  // responder's own node: continuation re-enters hidden averaging (aggCore),
-  // a fold terminates locally.
-  auto ownPol = [&](int act) {
-    int g = resp == 0 ? ipC_[own] : oopC_[own];
-    return polAvg(resp, g, street, hcode, bucketOf(g, resp, turn, river), act);
-  };
-  auto foldPay = [&](int cc) {
-    double pay = a + cc * B;
-    bool ipFolds = (hcode == 3);
-    return resp == 0 ? (ipFolds ? -pay : pay) : (ipFolds ? pay : -pay);
-  };
-  auto child = [&](int nh, int nc) {
-    if (nh == 99)
-      return foldPay(nc);
-    return aggCore(resp, own, turn, river, street, nh, nc, best);
-  };
-  if (best) {
-    double out = -1e30;
-    for (int act = 0; act < 2; ++act) {
-      int nh, nc = commits;
-      if (hcode == 0)
-        nh = act ? 2 : 1;
-      else if (hcode == 1)
-        nh = act ? 3 : -1;
-      else if (act == 0)
-        nh = 99;
-      else {
-        nh = (hcode == 2 ? -2 : -3);
-        nc = commits + 1;
+
+    const int nextHistory = history * 3 + (-hcode - 1);
+    const int fixedCard = street == 0 ? opt_.fixed_turn : opt_.fixed_river;
+    if (fixedCard >= 0) {
+      std::vector<double> childReach = opponentReach;
+      for (int q = 0; q < nOpp; ++q) {
+        const auto cards = opponentCombo(q);
+        if (cards[0] == fixedCard || cards[1] == fixedCard)
+          childReach[q] = 0;
       }
-      out = std::max(out, child(nh, nc));
+      const int nextTurn = street == 0 ? fixedCard : turn;
+      const int nextRiver = street == 1 ? fixedCard : river;
+      return responseValue(resp, own, childReach, nextTurn, nextRiver, street + 1, 0, commits,
+                           nextHistory, best);
     }
-    return out;
+
+    bool publicUsed[52] = {};
+    publicUsed[ownCombo[0]] = publicUsed[ownCombo[1]] = true;
+    for (int card : flop_)
+      publicUsed[card] = true;
+    if (turn >= 0)
+      publicUsed[turn] = true;
+    if (street == 0 && opt_.fixed_river >= 0)
+      publicUsed[opt_.fixed_river] = true;
+
+    double value = 0;
+    for (int card = 0; card < 52; ++card) {
+      if (publicUsed[card])
+        continue;
+      std::vector<double> childReach(nOpp, 0.0);
+      for (int q = 0; q < nOpp; ++q) {
+        if (opponentReach[q] <= 0)
+          continue;
+        const auto cards = opponentCombo(q);
+        if (cards[0] == card || cards[1] == card)
+          continue;
+        int availableCards = 0;
+        for (int candidate = 0; candidate < 52; ++candidate) {
+          if (!publicUsed[candidate] && cards[0] != candidate && cards[1] != candidate)
+            ++availableCards;
+        }
+        if (availableCards > 0)
+          childReach[q] = opponentReach[q] / availableCards;
+      }
+      const int nextTurn = street == 0 ? card : turn;
+      const int nextRiver = street == 1 ? card : river;
+      value += responseValue(resp, own, childReach, nextTurn, nextRiver, street + 1, 0, commits,
+                             nextHistory, best);
+    }
+    return value;
   }
-  double ev = 0;
-  for (int act = 0; act < 2; ++act) {
-    int nh, nc = commits;
+
+  auto transition = [&](int act) {
+    int nextNode;
+    int nextCommits = commits;
     if (hcode == 0)
-      nh = act ? 2 : 1;
+      nextNode = act == 0 ? 1 : 2;
     else if (hcode == 1)
-      nh = act ? 3 : -1;
+      nextNode = act == 0 ? -1 : 3;
     else if (act == 0)
-      nh = 99;
+      nextNode = 99;
     else {
-      nh = (hcode == 2 ? -2 : -3);
-      nc = commits + 1;
+      nextNode = hcode == 2 ? -2 : -3;
+      nextCommits = commits + 1;
     }
-    ev += ownPol(act) * child(nh, nc);
+    return std::pair{nextNode, nextCommits};
+  };
+  auto childValue = [&](int act, const std::vector<double>& reach) {
+    auto [nextNode, nextCommits] = transition(act);
+    if (nextNode == 99)
+      return foldValue(reach, commits);
+    return responseValue(resp, own, reach, turn, river, street, nextNode, nextCommits, history,
+                         best);
+  };
+
+  const int player = owner(street, hcode);
+  if (player == resp) {
+    std::array<double, 2> actionValues = {
+        childValue(0, opponentReach),
+        childValue(1, opponentReach),
+    };
+    if (best)
+      return std::max(actionValues[0], actionValues[1]);
+    const int bucket = bucketOf(ownGlobal, resp, turn, river);
+    const double actionZero = polAvg(resp, ownGlobal, street, hcode, bucket, 0, history);
+    return actionZero * actionValues[0] + (1.0 - actionZero) * actionValues[1];
   }
-  return ev;
+
+  double value = 0;
+  for (int act = 0; act < 2; ++act) {
+    std::vector<double> childReach(nOpp, 0.0);
+    for (int q = 0; q < nOpp; ++q) {
+      if (opponentReach[q] <= 0)
+        continue;
+      const int combo = opponentGlobal(q);
+      const int bucket = bucketOf(combo, player, turn, river);
+      childReach[q] = opponentReach[q] * polAvg(player, combo, street, hcode, bucket, act, history);
+    }
+    value += childValue(act, childReach);
+  }
+  return value;
 }
 
-double MultiStreetSolver::brAgg(int r, int o, int t, int rv, int st, int h, int cc) const {
-  return aggCore(r, o, t, rv, st, h, cc, true);
+double MultiStreetSolver::BrValue(int resp, int own) const {
+  return responseValue(resp, own, initialOpponentReach(resp, own), -1, -1, 0, 0, 0, 0, true);
 }
-double MultiStreetSolver::eqAgg(int r, int o, int t, int rv, int st, int h, int cc) const {
-  return aggCore(r, o, t, rv, st, h, cc, false);
-}
-
-double MultiStreetSolver::BrValue(int resp, int own, int runs, uint64_t seed) const {
-  bs::XorShift64 rng(seed ? seed : 1);
-  aggSampleMode_ = true;
-  double sum = 0;
-  int got = 0;
-  for (int k = 0; k < runs; ++k) {
-    bool used[52] = {};
-    for (int c : flop_)
-      used[c] = true;
-    evalTurn_ = opt_.fixed_turn >= 0 ? opt_.fixed_turn : drawCard(used, rng);
-    if (evalTurn_ >= 0)
-      used[evalTurn_] = true;
-    evalRiver_ = opt_.fixed_river >= 0 ? opt_.fixed_river : drawCard(used, rng);
-    auto pp = resp == 0 ? comboTable()[ipC_[own]] : comboTable()[oopC_[own]];
-    if (pp[0] == evalTurn_ || pp[1] == evalTurn_ || pp[0] == evalRiver_ || pp[1] == evalRiver_)
-      continue;
-    sum += aggCore(resp, own, -1, -1, 0, 0, 0, true);
-    ++got;
-  }
-  aggSampleMode_ = false;
-  return got ? sum / got : 0;
-}
-double MultiStreetSolver::EqValue(int resp, int own, int runs, uint64_t seed) const {
-  bs::XorShift64 rng(seed ? seed : 1 + 777);
-  aggSampleMode_ = true;
-  double sum = 0;
-  int got = 0;
-  for (int k = 0; k < runs; ++k) {
-    bool used[52] = {};
-    for (int c : flop_)
-      used[c] = true;
-    evalTurn_ = opt_.fixed_turn >= 0 ? opt_.fixed_turn : drawCard(used, rng);
-    if (evalTurn_ >= 0)
-      used[evalTurn_] = true;
-    evalRiver_ = opt_.fixed_river >= 0 ? opt_.fixed_river : drawCard(used, rng);
-    auto pp = resp == 0 ? comboTable()[ipC_[own]] : comboTable()[oopC_[own]];
-    if (pp[0] == evalTurn_ || pp[1] == evalTurn_ || pp[0] == evalRiver_ || pp[1] == evalRiver_)
-      continue;
-    sum += aggCore(resp, own, -1, -1, 0, 0, 0, false);
-    ++got;
-  }
-  aggSampleMode_ = false;
-  return got ? sum / got : 0;
+double MultiStreetSolver::EqValue(int resp, int own) const {
+  return responseValue(resp, own, initialOpponentReach(resp, own), -1, -1, 0, 0, 0, 0, false);
 }
 
 double MultiStreetSolver::exploitability() {
-  constexpr int kRuns = 400;
   double brI = 0, eqI = 0, brO = 0, eqO = 0;
+  double dealMass = 0;
+  std::vector<double> ipMass(Ni_, 0.0);
+  std::vector<double> oopMass(No_, 0.0);
+  for (int i = 0; i < Ni_; ++i)
+    for (int j = 0; j < No_; ++j) {
+      const auto ipCombo = comboTable()[ipC_[i]];
+      const auto oopCombo = comboTable()[oopC_[j]];
+      if (share(i, j) ||
+          (opt_.fixed_turn >= 0 &&
+           (ipCombo[0] == opt_.fixed_turn || ipCombo[1] == opt_.fixed_turn ||
+            oopCombo[0] == opt_.fixed_turn || oopCombo[1] == opt_.fixed_turn)) ||
+          (opt_.fixed_river >= 0 &&
+           (ipCombo[0] == opt_.fixed_river || ipCombo[1] == opt_.fixed_river ||
+            oopCombo[0] == opt_.fixed_river || oopCombo[1] == opt_.fixed_river)))
+        continue;
+      const double mass = ipW_[i] * oopW_[j];
+      dealMass += mass;
+      ipMass[i] += mass;
+      oopMass[j] += mass;
+    }
+  if (dealMass <= 0)
+    return 1.0;
+
   for (int i = 0; i < Ni_; ++i) {
-    brI += ipW_[i] / Wi_ * BrValue(0, i, kRuns, opt_.seed + i);
-    eqI += ipW_[i] / Wi_ * EqValue(0, i, kRuns, opt_.seed + i);
+    brI += ipMass[i] / dealMass * BrValue(0, i);
+    eqI += ipMass[i] / dealMass * EqValue(0, i);
   }
   for (int j = 0; j < No_; ++j) {
-    brO += oopW_[j] / Wo_ * BrValue(1, j, kRuns, opt_.seed + j);
-    eqO += oopW_[j] / Wo_ * EqValue(1, j, kRuns, opt_.seed + j);
+    brO += oopMass[j] / dealMass * BrValue(1, j);
+    eqO += oopMass[j] / dealMass * EqValue(1, j);
   }
   double gi = std::max(0.0, brI - eqI) / pot_, go = std::max(0.0, brO - eqO) / pot_;
   valueToIp_ = eqI;

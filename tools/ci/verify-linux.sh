@@ -16,7 +16,8 @@ cmake --build --preset linux-release --target format-check
 cmake --build --preset linux-release
 BIGSHARK_ENGINE_BINARY="$PWD/build/linux-release/apps/engine-host/bigshark-engine" \
   npm run check
-ctest --preset linux-release --parallel "$(nproc)"
+ctest --preset linux-release --parallel "$(nproc)" -LE benchmark
+ctest --preset linux-release --verbose -L benchmark
 
 if [[ -d sessions ]]; then
   BIGSHARK_ENGINE_BINARY="$PWD/build/linux-release/apps/engine-host/bigshark-engine" \

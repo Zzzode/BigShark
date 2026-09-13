@@ -170,8 +170,8 @@ checking, and cross-language golden-vector tests. Generated files live under
 
 ## Native Tests
 
-CTest registers seven C++ executables, strict TypeScript checking, Node tests,
-one RFC check, and one documentation check when npm is available:
+CTest registers native C++ tests and benchmarks, strict TypeScript checking,
+Node tests, one RFC check, and one documentation check when npm is available:
 
 | Test | Coverage |
 | --- | --- |
@@ -180,6 +180,7 @@ one RFC check, and one documentation check when npm is available:
 | `v0_protocol` | Legacy JSON mapping and repeated response serialization |
 | `gto` | River LP/DCFR policy contracts, exploitability, and range tracking |
 | `multistreet_ref` | Independent fixed-run best-response reference |
+| `benchmark_multistreet` | Deterministic multi-street convergence, exploitability thresholds, and timing measurements |
 | `protobuf_generated` | C++ binary, ProtoJSON, bigint, unknown-field, and enum compatibility |
 | `protobuf_cpp_vector` | C++ generation for the TypeScript cross-language consumer |
 | `protobuf_lint` | Buf STANDARD lint rules |
@@ -196,6 +197,15 @@ Run one test with:
 ```bash
 ctest --preset debug -R '^gto$'
 ```
+
+Run the solver-quality benchmark with:
+
+```bash
+cmake --build --preset release --target benchmark-multistreet
+```
+
+The benchmark contract and CSV fields are documented in
+[Benchmarking](benchmarking.md).
 
 Run the RFC check directly with:
 
@@ -235,11 +245,11 @@ runtime state, session logs, and vendored source are excluded.
 
 ## Adding C++ Files
 
-Engine library sources and tests are listed in `engine/CMakeLists.txt`.
-`apps/engine-host/CMakeLists.txt` owns the C++ host. Add implementation files
-to their owning target. Header-only files do not need target registration.
-Owner-local format targets feed the root `format` and `format-check`
-aggregates; the root does not maintain source lists.
+Engine library sources, tests, and solver benchmarks are listed in
+`engine/CMakeLists.txt`. `apps/engine-host/CMakeLists.txt` owns the C++ host.
+Add implementation files to their owning target. Header-only files do not need
+target registration. Owner-local format targets feed the root `format` and
+`format-check` aggregates; the root does not maintain source lists.
 
 ## Linux Verification
 
@@ -255,6 +265,7 @@ docker run --rm bigshark-linux-verify:stage4
 ```
 
 `tools/ci/verify-linux.sh` runs all protocol and project gates, verifies the
-no-HiGHS DCFR fallback, checks dynamic library resolution with `ldd`, and
-rejects any CoreFoundation entry in the ELF dynamic section. Private session
-logs and host build outputs are excluded from the image.
+no-HiGHS DCFR fallback, emits the benchmark CSV through a verbose labeled
+CTest run, checks dynamic library resolution with `ldd`, and rejects any
+CoreFoundation entry in the ELF dynamic section. Private session logs and host
+build outputs are excluded from the image.

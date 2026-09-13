@@ -45,6 +45,10 @@ file(GLOB_RECURSE BIGSHARK_FORMAT_FILES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/*.cc"
+  "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/*.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/*.h"
+  "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks/*.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cc"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/tests/*.h"
@@ -118,6 +122,22 @@ else()
   message(STATUS "HiGHS not found: river solver uses bounded DCFR (brew install highs for exact LP).")
 endif()
 
+add_executable(bigshark-multistreet-benchmark
+  benchmarks/multistreet_cfr_benchmark.cpp
+)
+target_include_directories(bigshark-multistreet-benchmark PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(bigshark-multistreet-benchmark PRIVATE
+  bigshark_solver
+)
+add_custom_target(benchmark-multistreet
+  COMMAND $<TARGET_FILE:bigshark-multistreet-benchmark>
+  DEPENDS bigshark-multistreet-benchmark
+  COMMENT "Running the multi-street CFR exploitability benchmark"
+  USES_TERMINAL
+)
+
 add_library(bigshark_policy STATIC
   src/policy/decision.cpp
 )
@@ -171,4 +191,15 @@ if(BUILD_TESTING)
     target_include_directories(test_${test_name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     add_test(NAME ${test_name} COMMAND test_${test_name})
   endforeach()
+
+  if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    add_test(
+      NAME benchmark_multistreet
+      COMMAND bigshark-multistreet-benchmark
+    )
+    set_tests_properties(benchmark_multistreet PROPERTIES
+      LABELS benchmark
+      TIMEOUT 180
+    )
+  endif()
 endif()

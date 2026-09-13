@@ -250,6 +250,27 @@ int main() {
     CHECK(mr.exploitability_pot < 0.01);
   }
 
+  // 8) Public chance remains part of the information-set-correct value. The
+  // same dominant made hand must converge when turn and river are sampled
+  // during training and enumerated by the independent exploitability pass.
+  {
+    std::vector<int> flop3 = {cardId("2h"), cardId("3h"), cardId("4h")};
+    Range a = zeroRange(), b2 = zeroRange();
+    a[comboIndex(cardId("Ah"), cardId("Kh"))] = 1.0f;
+    b2[comboIndex(cardId("9c"), cardId("8c"))] = 1.0f;
+    gto::MultiStreetOptions mo;
+    mo.iterations = 20000;
+    mo.bet_frac = 0.75f;
+    mo.seed = 17;
+    gto::MultiStreetSolver ms(flop3, 100, a, b2, mo);
+    auto mr = ms.Solve();
+    CHECK(mr.ok);
+    printf("multi-street sampled chance: value(IP)=%.2f expl=%.5f%% pot\n", mr.value_to_ip,
+           100 * mr.exploitability_pot);
+    CHECK(std::isfinite(mr.value_to_ip));
+    CHECK(mr.exploitability_pot < 0.02);
+  }
+
   printf("test_gto ALL PASS\n");
   return 0;
 }

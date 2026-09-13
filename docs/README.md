@@ -15,6 +15,7 @@ integration, and development documentation.
 | Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | Implemented v1 IDL, pinned generation, compatibility baseline, and conformance vectors |
 | Integration | [River Club](integrations/river-club.md) | Current | River Club adapter, state machine, and operational mapping |
 | Development | [Build and test](development/build-and-test.md) | Current | CMake presets, formatting, tests, sanitizers, and release publishing |
+| Development | [Benchmarking](development/benchmarking.md) | Current | Reproducible solver-quality fixtures, metrics, and thresholds |
 | RFC | [RFC process](rfcs/README.md) | Current | How architecture proposals are written and accepted |
 | RFC | [RFC template](rfcs/0000-template.md) | Draft | Required structure for new proposals |
 | RFC | [RFC 0001: Engineering architecture](rfcs/0001-engineering-architecture.md) | Implementing | Repository, module ownership, dependency rules, and staged migration |

@@ -62,6 +62,7 @@ cmake --preset release
 cmake --build --preset release --target format
 cmake --build --preset release
 ctest --preset release
+cmake --build --preset release --target benchmark-multistreet
 npm run check
 npm run proto:check
 node bin/replay.mjs
@@ -208,7 +209,7 @@ local `sessions/` logs.
 - `strategy/PLAYBOOK.md`: baseline poker decision framework
 - `strategy/table-notes.md`: durable opponent and table observations
 - `.codex/skills/`: exploitative style selector and style modules
-- `engine/`: C++23 poker, solver, policy, service, and v0 protocol libraries
+- `engine/`: C++23 poker, solver, policy, service, tests, and solver benchmarks
 - `apps/engine-host/`: C++ process composition root
 - `apps/river-club-agent/`: TypeScript River session composition root
 - `clients/node/`: generic TypeScript engine process client

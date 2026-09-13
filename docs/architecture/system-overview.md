@@ -46,7 +46,7 @@ flowchart LR
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `engine/` | Poker, solver, policy, service, and v0 protocol libraries | Authentication, HTTP, room discovery, platform tokens |
+| `engine/` | Poker, solver, policy, service, v0 protocol libraries, and solver-owned benchmarks | Authentication, HTTP, room discovery, platform tokens |
 | `apps/engine-host` | C++ process composition and v0 NDJSON host lifecycle | Platform mapping or strategy rules |
 | `clients/node` | Generic engine process lifecycle, NDJSON framing, timeouts, and FIFO correlation | River fields or poker strategy |
 | `platforms/river-club` | River API, state parsing, normalization, legality checks, action submission, and journaling | Independent poker strategy |

@@ -250,25 +250,34 @@ It is self-contained and does not depend on OpenSpiel.
 
 Implemented capabilities:
 
-- chance-sampled CFR across shared private ranges;
+- chance-sampled CFR across card-compatible, weighted private ranges;
 - optional fixed turn and river cards for exact reference fixtures;
+- perfect-recall public betting-history keys across streets;
 - OCHS-style equity buckets shared across runouts;
-- independent brute-force best-response validation;
+- information-set-correct exact best-response evaluation;
 - deterministic bucket and policy queries.
 
 Verified behavior:
 
 - fixed-run single-combination games converge to the expected value;
-- the independent best-response oracle agrees with equilibrium values;
+- fixed-run multi-combination games converge below `0.2%` pot exploitability;
+- nonuniform ranges with overlapping-card combinations preserve normalized
+  legal reach and converge against the independent oracle;
+- sampled public chance converges below `2%` pot exploitability in the
+  deterministic regression fixture;
+- the independent best-response oracle agrees with per-hand BR and equilibrium
+  values without conditioning actions on hidden opponent cards;
 - chance handling preserves one opponent combination for the entire hand.
 
-Known blocking issue:
+Current boundary:
 
-- multi-combination fixed-board policies currently stall at high
-  exploitability even though the best-response oracle and game value are
-  stable;
-- this solver is offline and test-only until regret accumulation across
-  private types is corrected.
+- the solver remains offline and test-only;
+- the validation tree has one bet per street and no raises;
+- exact exploitability enumeration and the current bucket model are intended
+  for small validation ranges, not production-scale blueprints.
+
+The reproducible fixture matrix, metric definitions, and quality thresholds
+are documented in [Benchmarking](../development/benchmarking.md).
 
 ## Failure Behavior
 
@@ -296,7 +305,9 @@ The native suite covers:
 - DCFR exploitability and policy normalization;
 - exact LP and DCFR value agreement when HiGHS is available;
 - weighted range construction and action-line tracking;
-- multi-street fixed-run values and independent best responses.
+- multi-street fixed-run and sampled-chance values;
+- multi-combination convergence, card-conflict reach, and independent best
+  responses.
 
 Use the commands in [Build and Test](../development/build-and-test.md).
 
