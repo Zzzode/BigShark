@@ -1,0 +1,52 @@
+{
+  "name": "bigshark",
+  "description": "A platform-neutral C++23 Texas Hold'em decision and GTO engine with typed adapters.",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/Zzzode/BigShark#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Zzzode/BigShark.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Zzzode/BigShark/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:ts": "npm run clean:ts && tsc -p tsconfig.json",
+    "check": "npm run typecheck && npm run build:ts && npm run check:source-policy:compiled && npm run proto:check && npm run check:docs:compiled && npm run check:rfc:compiled && npm run test:node:compiled",
+    "check:docs": "npm run build:ts --silent && npm run check:docs:compiled",
+    "check:docs:compiled": "node bin/check-docs.mjs",
+    "check:rfc": "npm run build:ts --silent && npm run check:rfc:compiled",
+    "check:rfc:compiled": "node bin/check-rfcs.mjs",
+    "check:source-policy": "npm run build:ts --silent && npm run check:source-policy:compiled",
+    "check:source-policy:compiled": "node dist/tools/typescript/check-source-policy.js",
+    "clean:ts": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "proto:breaking": "buf breaking proto --against proto/baseline/v1.binpb --exclude-imports",
+    "proto:check": "npm run proto:lint && npm run proto:format:check && npm run proto:breaking && npm run proto:generate && npm run proto:typecheck && npm run proto:test",
+    "proto:format": "buf format -w proto",
+    "proto:format:check": "buf format --diff --exit-code proto",
+    "proto:generate": "npm run proto:toolchain --silent && buf generate --template proto/buf.gen.yaml",
+    "proto:lint": "buf lint proto",
+    "proto:test": "tsc -p proto/tsconfig.json && node --test build/generated/test-js/proto/tests/*.test.js",
+    "proto:test:generated": "npm run proto:generate --silent && npm run proto:test",
+    "proto:toolchain": "cmake -DBIGSHARK_PROJECT_ROOT=. -DBIGSHARK_PROTO_TOOLCHAIN_DIR=build/generated/proto-toolchain -P tools/cmake/ensure-protobuf-toolchain.cmake",
+    "proto:typecheck": "tsc -p proto/tsconfig.json --noEmit",
+    "proto:update-golden": "npm run proto:generate && tsc -p proto/tsconfig.json && node build/generated/test-js/proto/tests/generate-golden.js",
+    "test:node": "npm run build:ts && npm run check:source-policy:compiled && npm run test:node:compiled",
+    "test:node:compiled": "node --test dist/apps/river-club-agent/*.test.js dist/clients/node/tests/*.test.js dist/platforms/river-club/tests/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "1.73.0",
+    "@bufbuild/protoc-gen-es": "2.13.0",
+    "@types/node": "22.15.3",
+    "typescript": "5.8.3"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "2.13.0"
+  }
+}

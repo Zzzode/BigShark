@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "../build/generated/test-js",
+    "noEmit": false
+  },
+  "include": [
+    "tests/**/*.ts",
+    "../build/generated/ts/**/*.ts"
+  ],
+  "exclude": []
+}

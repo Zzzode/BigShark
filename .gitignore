@@ -1,0 +1,53 @@
+# Secrets & local state — never commit
+sessions/
+*.log
+.env
+.env.*
+config.json
+.river-club/
+.runtime/
+/dist/
+/node_modules/
+/.tools/
+
+# C++ engine build outputs
+/.cache/
+/compile_commands.json
+/build/
+/build-*/
+/bin/bigshark-engine
+engine/build/
+engine/build-asan/
+engine/compile_commands.json
+engine/.cache/
+
+# CMake files from accidental in-source builds
+CMakeCache.txt
+CMakeFiles/
+CTestTestfile.cmake
+Testing/
+build.ninja
+cmake_install.cmake
+install_manifest.txt
+.ninja_deps
+.ninja_log
+
+# Coverage, profiling, and crash artifacts
+coverage/
+.nyc_output/
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+*.dSYM/
+core
+core.*
+
+# Local editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+CMakeUserPresets.json

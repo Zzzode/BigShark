@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "outDir": "../../build/generated/proto-toolchain",
+    "noEmit": false
+  },
+  "include": [
+    "ensure-toolchain.ts"
+  ],
+  "exclude": []
+}

@@ -1,0 +1,17 @@
+{
+  "protocolMinor": 1,
+  "requestId": "error-response-vector",
+  "decisionResponse": {
+    "error": {
+      "code": "ERROR_CODE_UNSUPPORTED_FEATURE",
+      "message": "side-pot utility is unavailable",
+      "retryable": true,
+      "violations": [
+        {
+          "fieldPath": "state.pot.side_pots",
+          "description": "side-pot-aware utility is not supported"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+.cache
+.DS_Store
+.git
+.idea
+.runtime
+.tools
+.vscode
+build
+build-*
+bin/bigshark-engine
+compile_commands.json
+CMakeUserPresets.json
+dist
+node_modules
+sessions

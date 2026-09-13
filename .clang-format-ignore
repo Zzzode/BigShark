@@ -1,0 +1,5 @@
+build/**
+build-*/**
+engine/build/**
+engine/build-*/**
+engine/third_party/**

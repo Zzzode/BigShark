@@ -1,0 +1,1525 @@
+[
+  {
+    "name": "preflop-facing-reraise",
+    "state": {
+      "protocol": 2,
+      "changed": true,
+      "serverTime": 1789118482759,
+      "me": {
+        "id": "hero",
+        "name": "Hero"
+      },
+      "room": {
+        "id": "room-preflop-facing-reraise",
+        "name": "Fixture preflop-facing-reraise",
+        "mode": "playing",
+        "next": "act",
+        "revision": 34,
+        "handId": "hand-preflop-facing-reraise",
+        "street": "preflop",
+        "blinds": [
+          10,
+          20
+        ],
+        "timeLeftMs": 15000,
+        "hero": {
+          "seat": 4,
+          "stack": 1940,
+          "bet": 60,
+          "cards": [
+            {
+              "rank": "A",
+              "suit": "spades"
+            },
+            {
+              "rank": "A",
+              "suit": "hearts"
+            }
+          ],
+          "status": "active",
+          "effectiveStack": 1920,
+          "effectiveStackBb": 96,
+          "position": "HJ"
+        },
+        "dealer": 0,
+        "actor": 4,
+        "board": [],
+        "pot": 340,
+        "pots": [
+          {
+            "size": 340,
+            "eligible": [
+              0,
+              3,
+              4
+            ]
+          }
+        ],
+        "seats": [
+          {
+            "seat": 0,
+            "name": "Player0",
+            "stack": 1920,
+            "bet": 60,
+            "status": "active",
+            "button": true,
+            "position": "BTN"
+          },
+          {
+            "seat": 1,
+            "name": "Player1",
+            "stack": 2030,
+            "bet": 10,
+            "status": "folded",
+            "blind": "SB",
+            "position": "SB"
+          },
+          {
+            "seat": 2,
+            "name": "Player2",
+            "stack": 2000,
+            "status": "waiting"
+          },
+          {
+            "seat": 3,
+            "name": "Player3",
+            "stack": 1790,
+            "bet": 210,
+            "status": "active",
+            "blind": "BB",
+            "position": "BB"
+          },
+          {
+            "seat": 4,
+            "name": "Hero",
+            "stack": 1940,
+            "bet": 60,
+            "status": "active",
+            "cards": [
+              {
+                "rank": "A",
+                "suit": "spades"
+              },
+              {
+                "rank": "A",
+                "suit": "hearts"
+              }
+            ],
+            "agent": true,
+            "position": "HJ"
+          },
+          {
+            "seat": 5,
+            "name": "Player5",
+            "stack": 1120,
+            "status": "leaving",
+            "position": "CO"
+          }
+        ],
+        "legal": {
+          "actions": [
+            "fold",
+            "call",
+            "raise"
+          ],
+          "call": 150,
+          "min": 360,
+          "max": 2000,
+          "raiseTo": {
+            "min": 360,
+            "max": 2000
+          },
+          "currentBet": 210,
+          "amountMeaning": "target-total",
+          "potOdds": 0.3061
+        },
+        "solver": {
+          "format": "river-gto-v1",
+          "game": "NLHE",
+          "street": "preflop",
+          "heroPosition": "HJ",
+          "playersInHand": 5,
+          "potBb": 17,
+          "effectiveStackBb": 96,
+          "spr": 5.65,
+          "toCallBb": 7.5,
+          "potOdds": 0.3061,
+          "raiseToBb": [
+            18,
+            100
+          ]
+        },
+        "events": [
+          {
+            "kind": "deal",
+            "text": "Event deal"
+          },
+          {
+            "kind": "join",
+            "text": "Player2 join"
+          },
+          {
+            "kind": "leave",
+            "text": "Player5 leave"
+          },
+          {
+            "kind": "raise",
+            "text": "Hero raise"
+          },
+          {
+            "kind": "fold",
+            "text": "Player5 fold"
+          },
+          {
+            "kind": "call",
+            "text": "Player0 call"
+          },
+          {
+            "kind": "fold",
+            "text": "Player1 fold"
+          },
+          {
+            "kind": "leave",
+            "text": "Player5 leave"
+          },
+          {
+            "kind": "raise",
+            "text": "Player3 raise"
+          }
+        ]
+      },
+      "control": {
+        "mustContinue": true,
+        "nextCommand": "river-club act <one legal action>",
+        "reason": "act"
+      }
+    },
+    "context": {
+      "handId": "hand-preflop-facing-reraise",
+      "revision": 34,
+      "style": "tag",
+      "street": "preflop",
+      "blinds": [
+        10,
+        20
+      ],
+      "position": "HJ",
+      "playersInHand": 5,
+      "effectiveStackBb": 96,
+      "hole": [
+        "As",
+        "Ah"
+      ],
+      "board": [],
+      "pot": 340,
+      "riverGtoOn": false,
+      "raises": 2,
+      "openerPosition": "HJ",
+      "heroWasRaiser": false,
+      "heroPreflopAggressor": false,
+      "limpers": 1,
+      "legal": {
+        "actions": [
+          "fold",
+          "call",
+          "raise"
+        ],
+        "call": 150,
+        "potOdds": 0.3061,
+        "raiseTo": {
+          "min": 360,
+          "max": 2000
+        }
+      }
+    },
+    "decision": {
+      "action": "raise",
+      "amount": 2000,
+      "reason": "cpp:jam premium AA"
+    }
+  },
+  {
+    "name": "multiway-flop-check-option",
+    "state": {
+      "protocol": 2,
+      "changed": true,
+      "serverTime": 1789114886919,
+      "me": {
+        "id": "hero",
+        "name": "Hero"
+      },
+      "room": {
+        "id": "room-multiway-flop-check-option",
+        "name": "Fixture multiway-flop-check-option",
+        "mode": "playing",
+        "next": "act",
+        "revision": 854,
+        "handId": "hand-multiway-flop-check-option",
+        "street": "flop",
+        "blinds": [
+          10,
+          20
+        ],
+        "timeLeftMs": 15000,
+        "hero": {
+          "seat": 4,
+          "stack": 1980,
+          "bet": 0,
+          "cards": [
+            {
+              "rank": "4",
+              "suit": "clubs"
+            },
+            {
+              "rank": "2",
+              "suit": "hearts"
+            }
+          ],
+          "status": "active",
+          "effectiveStack": 1980,
+          "effectiveStackBb": 99,
+          "position": "BB"
+        },
+        "dealer": 2,
+        "actor": 4,
+        "board": [
+          {
+            "rank": "3",
+            "suit": "spades"
+          },
+          {
+            "rank": "7",
+            "suit": "clubs"
+          },
+          {
+            "rank": "5",
+            "suit": "clubs"
+          }
+        ],
+        "pot": 120,
+        "pots": [
+          {
+            "size": 120,
+            "eligible": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "seats": [
+          {
+            "seat": 0,
+            "name": "Player0",
+            "stack": 3870,
+            "status": "active",
+            "position": "HJ"
+          },
+          {
+            "seat": 1,
+            "name": "Player1",
+            "stack": 830,
+            "status": "active",
+            "position": "CO"
+          },
+          {
+            "seat": 2,
+            "name": "Player2",
+            "stack": 3620,
+            "status": "active",
+            "button": true,
+            "position": "BTN"
+          },
+          {
+            "seat": 3,
+            "name": "Player3",
+            "stack": 1370,
+            "status": "active",
+            "blind": "SB",
+            "position": "SB"
+          },
+          {
+            "seat": 4,
+            "name": "Hero",
+            "stack": 1980,
+            "status": "active",
+            "cards": [
+              {
+                "rank": "4",
+                "suit": "clubs"
+              },
+              {
+                "rank": "2",
+                "suit": "hearts"
+              }
+            ],
+            "agent": true,
+            "blind": "BB",
+            "position": "BB"
+          },
+          {
+            "seat": 5,
+            "name": "Player5",
+            "stack": 3360,
+            "status": "active",
+            "position": "UTG"
+          }
+        ],
+        "legal": {
+          "actions": [
+            "fold",
+            "check",
+            "bet"
+          ],
+          "call": 0,
+          "min": 20,
+          "max": 1980,
+          "raiseTo": {
+            "min": 20,
+            "max": 1980
+          },
+          "currentBet": 0,
+          "amountMeaning": "target-total",
+          "potOdds": 0
+        },
+        "solver": {
+          "format": "river-gto-v1",
+          "game": "NLHE",
+          "street": "flop",
+          "heroPosition": "BB",
+          "playersInHand": 6,
+          "potBb": 6,
+          "effectiveStackBb": 99,
+          "spr": 16.5,
+          "toCallBb": 0,
+          "potOdds": 0,
+          "raiseToBb": [
+            1,
+            99
+          ]
+        },
+        "events": [
+          {
+            "kind": "deal",
+            "text": "Event deal"
+          },
+          {
+            "kind": "call",
+            "text": "Player5 call"
+          },
+          {
+            "kind": "call",
+            "text": "Player0 call"
+          },
+          {
+            "kind": "call",
+            "text": "Player1 call"
+          },
+          {
+            "kind": "call",
+            "text": "Player2 call"
+          },
+          {
+            "kind": "call",
+            "text": "Player3 call"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "check",
+            "text": "Player3 check"
+          }
+        ]
+      },
+      "control": {
+        "mustContinue": true,
+        "nextCommand": "river-club act <one legal action>",
+        "reason": "act"
+      }
+    },
+    "context": {
+      "handId": "hand-multiway-flop-check-option",
+      "revision": 854,
+      "style": "tag",
+      "street": "flop",
+      "blinds": [
+        10,
+        20
+      ],
+      "position": "BB",
+      "playersInHand": 6,
+      "effectiveStackBb": 99,
+      "hole": [
+        "4c",
+        "2h"
+      ],
+      "board": [
+        "3s",
+        "7c",
+        "5c"
+      ],
+      "pot": 120,
+      "riverGtoOn": false,
+      "raises": 0,
+      "openerPosition": "",
+      "heroWasRaiser": false,
+      "heroPreflopAggressor": false,
+      "limpers": 0,
+      "legal": {
+        "actions": [
+          "fold",
+          "check",
+          "bet"
+        ],
+        "call": 0,
+        "potOdds": 0,
+        "raiseTo": {
+          "min": 20,
+          "max": 1980
+        }
+      }
+    },
+    "decision": {
+      "action": "check",
+      "reason": "cpp:check SDV/giveup"
+    }
+  },
+  {
+    "name": "multiway-turn-facing-raise",
+    "state": {
+      "protocol": 2,
+      "changed": true,
+      "serverTime": 1789115418992,
+      "me": {
+        "id": "hero",
+        "name": "Hero"
+      },
+      "room": {
+        "id": "room-multiway-turn-facing-raise",
+        "name": "Fixture multiway-turn-facing-raise",
+        "mode": "playing",
+        "next": "act",
+        "revision": 984,
+        "handId": "hand-multiway-turn-facing-raise",
+        "street": "turn",
+        "blinds": [
+          10,
+          20
+        ],
+        "timeLeftMs": 15000,
+        "hero": {
+          "seat": 4,
+          "stack": 1780,
+          "bet": 40,
+          "cards": [
+            {
+              "rank": "5",
+              "suit": "hearts"
+            },
+            {
+              "rank": "T",
+              "suit": "hearts"
+            }
+          ],
+          "status": "active",
+          "effectiveStack": 1780,
+          "effectiveStackBb": 89,
+          "position": "BB"
+        },
+        "dealer": 2,
+        "actor": 4,
+        "board": [
+          {
+            "rank": "9",
+            "suit": "spades"
+          },
+          {
+            "rank": "8",
+            "suit": "hearts"
+          },
+          {
+            "rank": "3",
+            "suit": "hearts"
+          },
+          {
+            "rank": "2",
+            "suit": "spades"
+          }
+        ],
+        "pot": 460,
+        "pots": [
+          {
+            "size": 460,
+            "eligible": [
+              1,
+              2,
+              4
+            ]
+          }
+        ],
+        "seats": [
+          {
+            "seat": 0,
+            "name": "Player0",
+            "stack": 3370,
+            "status": "folded",
+            "position": "HJ"
+          },
+          {
+            "seat": 1,
+            "name": "Player1",
+            "stack": 785,
+            "bet": 60,
+            "status": "active",
+            "position": "CO"
+          },
+          {
+            "seat": 2,
+            "name": "Player2",
+            "stack": 3555,
+            "bet": 80,
+            "status": "active",
+            "button": true,
+            "position": "BTN"
+          },
+          {
+            "seat": 3,
+            "name": "Player3",
+            "stack": 1750,
+            "status": "folded",
+            "blind": "SB",
+            "position": "SB"
+          },
+          {
+            "seat": 4,
+            "name": "Hero",
+            "stack": 1780,
+            "bet": 40,
+            "status": "active",
+            "cards": [
+              {
+                "rank": "5",
+                "suit": "hearts"
+              },
+              {
+                "rank": "T",
+                "suit": "hearts"
+              }
+            ],
+            "agent": true,
+            "blind": "BB",
+            "position": "BB"
+          },
+          {
+            "seat": 5,
+            "name": "Player5",
+            "stack": 2000,
+            "status": "leaving",
+            "position": "UTG"
+          }
+        ],
+        "legal": {
+          "actions": [
+            "fold",
+            "call",
+            "raise"
+          ],
+          "call": 40,
+          "min": 100,
+          "max": 1820,
+          "raiseTo": {
+            "min": 100,
+            "max": 1820
+          },
+          "currentBet": 80,
+          "amountMeaning": "target-total",
+          "potOdds": 0.08
+        },
+        "solver": {
+          "format": "river-gto-v1",
+          "game": "NLHE",
+          "street": "turn",
+          "heroPosition": "BB",
+          "playersInHand": 6,
+          "potBb": 23,
+          "effectiveStackBb": 89,
+          "spr": 3.87,
+          "toCallBb": 2,
+          "potOdds": 0.08,
+          "raiseToBb": [
+            5,
+            91
+          ]
+        },
+        "events": [
+          {
+            "kind": "check",
+            "text": "Player3 check"
+          },
+          {
+            "kind": "bet",
+            "text": "Hero bet"
+          },
+          {
+            "kind": "fold",
+            "text": "Player0 fold"
+          },
+          {
+            "kind": "call",
+            "text": "Player1 call"
+          },
+          {
+            "kind": "call",
+            "text": "Player2 call"
+          },
+          {
+            "kind": "fold",
+            "text": "Player3 fold"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "bet",
+            "text": "Player1 bet"
+          },
+          {
+            "kind": "raise",
+            "text": "Player2 raise"
+          },
+          {
+            "kind": "call",
+            "text": "Hero call"
+          },
+          {
+            "kind": "raise",
+            "text": "Player1 raise"
+          },
+          {
+            "kind": "raise",
+            "text": "Player2 raise"
+          }
+        ]
+      },
+      "control": {
+        "mustContinue": true,
+        "nextCommand": "river-club act <one legal action>",
+        "reason": "act"
+      }
+    },
+    "context": {
+      "handId": "hand-multiway-turn-facing-raise",
+      "revision": 984,
+      "style": "tag",
+      "street": "turn",
+      "blinds": [
+        10,
+        20
+      ],
+      "position": "BB",
+      "playersInHand": 6,
+      "effectiveStackBb": 89,
+      "hole": [
+        "5h",
+        "Th"
+      ],
+      "board": [
+        "9s",
+        "8h",
+        "3h",
+        "2s"
+      ],
+      "pot": 460,
+      "riverGtoOn": false,
+      "raises": 0,
+      "openerPosition": "",
+      "heroWasRaiser": false,
+      "heroPreflopAggressor": false,
+      "limpers": 0,
+      "legal": {
+        "actions": [
+          "fold",
+          "call",
+          "raise"
+        ],
+        "call": 40,
+        "potOdds": 0.08,
+        "raiseTo": {
+          "min": 100,
+          "max": 1820
+        }
+      }
+    },
+    "decision": {
+      "action": "raise",
+      "amount": 340,
+      "reason": "cpp:semibluff nut draw"
+    }
+  },
+  {
+    "name": "heads-up-river-check-option",
+    "state": {
+      "protocol": 2,
+      "changed": true,
+      "serverTime": 1789116860806,
+      "me": {
+        "id": "hero",
+        "name": "Hero"
+      },
+      "room": {
+        "id": "room-heads-up-river-check-option",
+        "name": "Fixture heads-up-river-check-option",
+        "mode": "playing",
+        "next": "act",
+        "revision": 1316,
+        "handId": "hand-heads-up-river-check-option",
+        "street": "river",
+        "blinds": [
+          10,
+          20
+        ],
+        "timeLeftMs": 15000,
+        "hero": {
+          "seat": 4,
+          "stack": 1440,
+          "bet": 0,
+          "cards": [
+            {
+              "rank": "4",
+              "suit": "hearts"
+            },
+            {
+              "rank": "T",
+              "suit": "spades"
+            }
+          ],
+          "status": "active",
+          "effectiveStack": 1440,
+          "effectiveStackBb": 72,
+          "position": "BB"
+        },
+        "dealer": 5,
+        "actor": 4,
+        "board": [
+          {
+            "rank": "T",
+            "suit": "diamonds"
+          },
+          {
+            "rank": "2",
+            "suit": "diamonds"
+          },
+          {
+            "rank": "8",
+            "suit": "clubs"
+          },
+          {
+            "rank": "A",
+            "suit": "spades"
+          },
+          {
+            "rank": "9",
+            "suit": "clubs"
+          }
+        ],
+        "pot": 40,
+        "pots": [
+          {
+            "size": 40,
+            "eligible": [
+              4,
+              5
+            ]
+          }
+        ],
+        "seats": [
+          {
+            "seat": 0,
+            "name": "Player0",
+            "stack": 2000,
+            "status": "waiting"
+          },
+          {
+            "seat": 4,
+            "name": "Hero",
+            "stack": 1440,
+            "status": "active",
+            "cards": [
+              {
+                "rank": "4",
+                "suit": "hearts"
+              },
+              {
+                "rank": "T",
+                "suit": "spades"
+              }
+            ],
+            "agent": true,
+            "blind": "BB",
+            "position": "BB"
+          },
+          {
+            "seat": 5,
+            "name": "Player5",
+            "stack": 1440,
+            "status": "active",
+            "button": true,
+            "blind": "SB",
+            "position": "BTN/SB"
+          }
+        ],
+        "legal": {
+          "actions": [
+            "fold",
+            "check",
+            "bet"
+          ],
+          "call": 0,
+          "min": 20,
+          "max": 1440,
+          "raiseTo": {
+            "min": 20,
+            "max": 1440
+          },
+          "currentBet": 0,
+          "amountMeaning": "target-total",
+          "potOdds": 0
+        },
+        "solver": {
+          "format": "river-gto-v1",
+          "game": "NLHE",
+          "street": "river",
+          "heroPosition": "BB",
+          "playersInHand": 2,
+          "potBb": 2,
+          "effectiveStackBb": 72,
+          "spr": 36,
+          "toCallBb": 0,
+          "potOdds": 0,
+          "raiseToBb": [
+            1,
+            72
+          ]
+        },
+        "events": [
+          {
+            "kind": "deal",
+            "text": "Event deal"
+          },
+          {
+            "kind": "call",
+            "text": "Player5 call"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "check",
+            "text": "Player5 check"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "join",
+            "text": "Player0 join"
+          },
+          {
+            "kind": "check",
+            "text": "Player5 check"
+          }
+        ]
+      },
+      "control": {
+        "mustContinue": true,
+        "nextCommand": "river-club act <one legal action>",
+        "reason": "act"
+      }
+    },
+    "context": {
+      "handId": "hand-heads-up-river-check-option",
+      "revision": 1316,
+      "style": "tag",
+      "street": "river",
+      "blinds": [
+        10,
+        20
+      ],
+      "position": "BB",
+      "playersInHand": 2,
+      "effectiveStackBb": 72,
+      "hole": [
+        "4h",
+        "Ts"
+      ],
+      "board": [
+        "Td",
+        "2d",
+        "8c",
+        "As",
+        "9c"
+      ],
+      "pot": 40,
+      "riverGtoOn": true,
+      "riverLine": "",
+      "flopLine": "Hx,Ox",
+      "turnLine": "Hx,Ox",
+      "riverBetFrac": 0.75,
+      "raises": 0,
+      "openerPosition": "",
+      "heroWasRaiser": false,
+      "heroPreflopAggressor": false,
+      "limpers": 0,
+      "legal": {
+        "actions": [
+          "fold",
+          "check",
+          "bet"
+        ],
+        "call": 0,
+        "potOdds": 0,
+        "raiseTo": {
+          "min": 20,
+          "max": 1440
+        }
+      }
+    },
+    "decision": {
+      "action": "check",
+      "reason": "cpp:gto "
+    }
+  },
+  {
+    "name": "multiway-river-facing-bet",
+    "state": {
+      "protocol": 2,
+      "changed": true,
+      "serverTime": 1789115470901,
+      "me": {
+        "id": "hero",
+        "name": "Hero"
+      },
+      "room": {
+        "id": "room-multiway-river-facing-bet",
+        "name": "Fixture multiway-river-facing-bet",
+        "mode": "playing",
+        "next": "act",
+        "revision": 991,
+        "handId": "hand-multiway-river-facing-bet",
+        "street": "river",
+        "blinds": [
+          10,
+          20
+        ],
+        "timeLeftMs": 15000,
+        "hero": {
+          "seat": 4,
+          "stack": 1720,
+          "bet": 0,
+          "cards": [
+            {
+              "rank": "5",
+              "suit": "hearts"
+            },
+            {
+              "rank": "T",
+              "suit": "hearts"
+            }
+          ],
+          "status": "active",
+          "effectiveStack": 1720,
+          "effectiveStackBb": 86,
+          "position": "BB"
+        },
+        "dealer": 2,
+        "actor": 4,
+        "board": [
+          {
+            "rank": "9",
+            "suit": "spades"
+          },
+          {
+            "rank": "8",
+            "suit": "hearts"
+          },
+          {
+            "rank": "3",
+            "suit": "hearts"
+          },
+          {
+            "rank": "2",
+            "suit": "spades"
+          },
+          {
+            "rank": "5",
+            "suit": "diamonds"
+          }
+        ],
+        "pot": 620,
+        "pots": [
+          {
+            "size": 620,
+            "eligible": [
+              1,
+              2,
+              4
+            ]
+          }
+        ],
+        "seats": [
+          {
+            "seat": 0,
+            "name": "Player0",
+            "stack": 3370,
+            "status": "folded",
+            "position": "HJ"
+          },
+          {
+            "seat": 1,
+            "name": "Player1",
+            "stack": 725,
+            "bet": 20,
+            "status": "active",
+            "position": "CO"
+          },
+          {
+            "seat": 2,
+            "name": "Player2",
+            "stack": 3515,
+            "bet": 20,
+            "status": "active",
+            "button": true,
+            "position": "BTN"
+          },
+          {
+            "seat": 3,
+            "name": "Player3",
+            "stack": 1750,
+            "status": "folded",
+            "blind": "SB",
+            "position": "SB"
+          },
+          {
+            "seat": 4,
+            "name": "Hero",
+            "stack": 1720,
+            "status": "active",
+            "cards": [
+              {
+                "rank": "5",
+                "suit": "hearts"
+              },
+              {
+                "rank": "T",
+                "suit": "hearts"
+              }
+            ],
+            "agent": true,
+            "blind": "BB",
+            "position": "BB"
+          },
+          {
+            "seat": 5,
+            "name": "Player5",
+            "stack": 2000,
+            "status": "leaving",
+            "position": "UTG"
+          }
+        ],
+        "legal": {
+          "actions": [
+            "fold",
+            "call",
+            "raise"
+          ],
+          "call": 20,
+          "min": 40,
+          "max": 1720,
+          "raiseTo": {
+            "min": 40,
+            "max": 1720
+          },
+          "currentBet": 20,
+          "amountMeaning": "target-total",
+          "potOdds": 0.0313
+        },
+        "solver": {
+          "format": "river-gto-v1",
+          "game": "NLHE",
+          "street": "river",
+          "heroPosition": "BB",
+          "playersInHand": 6,
+          "potBb": 31,
+          "effectiveStackBb": 86,
+          "spr": 2.77,
+          "toCallBb": 1,
+          "potOdds": 0.0313,
+          "raiseToBb": [
+            2,
+            86
+          ]
+        },
+        "events": [
+          {
+            "kind": "bet",
+            "text": "Player1 bet"
+          },
+          {
+            "kind": "raise",
+            "text": "Player2 raise"
+          },
+          {
+            "kind": "call",
+            "text": "Hero call"
+          },
+          {
+            "kind": "raise",
+            "text": "Player1 raise"
+          },
+          {
+            "kind": "raise",
+            "text": "Player2 raise"
+          },
+          {
+            "kind": "call",
+            "text": "Hero call"
+          },
+          {
+            "kind": "raise",
+            "text": "Player1 raise"
+          },
+          {
+            "kind": "call",
+            "text": "Player2 call"
+          },
+          {
+            "kind": "call",
+            "text": "Hero call"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "bet",
+            "text": "Player1 bet"
+          },
+          {
+            "kind": "call",
+            "text": "Player2 call"
+          }
+        ]
+      },
+      "control": {
+        "mustContinue": true,
+        "nextCommand": "river-club act <one legal action>",
+        "reason": "act"
+      }
+    },
+    "context": {
+      "handId": "hand-multiway-river-facing-bet",
+      "revision": 991,
+      "style": "tag",
+      "street": "river",
+      "blinds": [
+        10,
+        20
+      ],
+      "position": "BB",
+      "playersInHand": 6,
+      "effectiveStackBb": 86,
+      "hole": [
+        "5h",
+        "Th"
+      ],
+      "board": [
+        "9s",
+        "8h",
+        "3h",
+        "2s",
+        "5d"
+      ],
+      "pot": 620,
+      "riverGtoOn": false,
+      "raises": 0,
+      "openerPosition": "",
+      "heroWasRaiser": false,
+      "heroPreflopAggressor": false,
+      "limpers": 0,
+      "legal": {
+        "actions": [
+          "fold",
+          "call",
+          "raise"
+        ],
+        "call": 20,
+        "potOdds": 0.0313,
+        "raiseTo": {
+          "min": 40,
+          "max": 1720
+        }
+      }
+    },
+    "decision": {
+      "action": "fold",
+      "reason": "cpp:fold eq0<3"
+    }
+  },
+  {
+    "name": "short-stack-heads-up-river",
+    "state": {
+      "protocol": 2,
+      "changed": true,
+      "serverTime": 1789120991668,
+      "me": {
+        "id": "hero",
+        "name": "Hero"
+      },
+      "room": {
+        "id": "room-short-stack-heads-up-river",
+        "name": "Fixture short-stack-heads-up-river",
+        "mode": "playing",
+        "next": "act",
+        "revision": 410,
+        "handId": "hand-short-stack-heads-up-river",
+        "street": "river",
+        "blinds": [
+          25,
+          50
+        ],
+        "timeLeftMs": 15000,
+        "hero": {
+          "seat": 5,
+          "stack": 10125,
+          "bet": 0,
+          "cards": [
+            {
+              "rank": "A",
+              "suit": "clubs"
+            },
+            {
+              "rank": "Q",
+              "suit": "clubs"
+            }
+          ],
+          "status": "active",
+          "effectiveStack": 1900,
+          "effectiveStackBb": 38,
+          "position": "BTN/SB"
+        },
+        "dealer": 5,
+        "actor": 5,
+        "board": [
+          {
+            "rank": "7",
+            "suit": "hearts"
+          },
+          {
+            "rank": "K",
+            "suit": "spades"
+          },
+          {
+            "rank": "T",
+            "suit": "hearts"
+          },
+          {
+            "rank": "9",
+            "suit": "diamonds"
+          },
+          {
+            "rank": "A",
+            "suit": "spades"
+          }
+        ],
+        "pot": 300,
+        "pots": [
+          {
+            "size": 300,
+            "eligible": [
+              4,
+              5
+            ]
+          }
+        ],
+        "seats": [
+          {
+            "seat": 0,
+            "name": "Player0",
+            "stack": 5000,
+            "status": "waiting"
+          },
+          {
+            "seat": 4,
+            "name": "Player4",
+            "stack": 1900,
+            "status": "active",
+            "agent": true,
+            "blind": "BB",
+            "position": "BB"
+          },
+          {
+            "seat": 5,
+            "name": "Hero",
+            "stack": 10125,
+            "status": "active",
+            "cards": [
+              {
+                "rank": "A",
+                "suit": "clubs"
+              },
+              {
+                "rank": "Q",
+                "suit": "clubs"
+              }
+            ],
+            "agent": true,
+            "button": true,
+            "blind": "SB",
+            "position": "BTN/SB"
+          }
+        ],
+        "legal": {
+          "actions": [
+            "fold",
+            "check",
+            "bet"
+          ],
+          "call": 0,
+          "min": 50,
+          "max": 10125,
+          "raiseTo": {
+            "min": 50,
+            "max": 10125
+          },
+          "currentBet": 0,
+          "amountMeaning": "target-total",
+          "potOdds": 0
+        },
+        "solver": {
+          "format": "river-gto-v1",
+          "game": "NLHE",
+          "street": "river",
+          "heroPosition": "BTN/SB",
+          "playersInHand": 2,
+          "potBb": 6,
+          "effectiveStackBb": 38,
+          "spr": 6.33,
+          "toCallBb": 0,
+          "potOdds": 0,
+          "raiseToBb": [
+            1,
+            202.5
+          ]
+        },
+        "events": [
+          {
+            "kind": "deal",
+            "text": "Event deal"
+          },
+          {
+            "kind": "raise",
+            "text": "Hero raise"
+          },
+          {
+            "kind": "call",
+            "text": "Player4 call"
+          },
+          {
+            "kind": "check",
+            "text": "Player4 check"
+          },
+          {
+            "kind": "join",
+            "text": "Player0 join"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "check",
+            "text": "Player4 check"
+          },
+          {
+            "kind": "check",
+            "text": "Hero check"
+          },
+          {
+            "kind": "check",
+            "text": "Player4 check"
+          }
+        ]
+      },
+      "control": {
+        "mustContinue": true,
+        "nextCommand": "river-club act <one legal action>",
+        "reason": "act"
+      }
+    },
+    "context": {
+      "handId": "hand-short-stack-heads-up-river",
+      "revision": 410,
+      "style": "tag",
+      "street": "river",
+      "blinds": [
+        25,
+        50
+      ],
+      "position": "BTN",
+      "playersInHand": 2,
+      "effectiveStackBb": 38,
+      "hole": [
+        "Ac",
+        "Qc"
+      ],
+      "board": [
+        "7h",
+        "Ks",
+        "Th",
+        "9d",
+        "As"
+      ],
+      "pot": 300,
+      "riverGtoOn": true,
+      "riverLine": "c",
+      "flopLine": "Ox,Hx",
+      "turnLine": "Ox,Hx",
+      "riverBetFrac": 0.75,
+      "raises": 0,
+      "openerPosition": "",
+      "heroWasRaiser": true,
+      "heroPreflopAggressor": true,
+      "limpers": 0,
+      "legal": {
+        "actions": [
+          "fold",
+          "check",
+          "bet"
+        ],
+        "call": 0,
+        "potOdds": 0,
+        "raiseTo": {
+          "min": 50,
+          "max": 10125
+        }
+      }
+    },
+    "decision": {
+      "action": "bet",
+      "amount": 250,
+      "reason": "cpp:gto c"
+    }
+  }
+]

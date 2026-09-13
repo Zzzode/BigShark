@@ -1,0 +1,31 @@
+{
+  "requestId": "vector-1",
+  "decisionResponse": {
+    "strategy": {
+      "actions": [
+        {
+          "type": "ACTION_TYPE_RAISE",
+          "targetTotal": "9007199254740993",
+          "allIn": true,
+          "probability": 1,
+          "expectedValue": "-42"
+        }
+      ],
+      "selectedAction": {
+        "type": "ACTION_TYPE_RAISE",
+        "targetTotal": "9007199254740993",
+        "allIn": true
+      },
+      "solver": {
+        "source": "SOLVER_SOURCE_RIVER_DCFR",
+        "solveTimeUs": "123456",
+        "equity": 0.625,
+        "minimumDefenseFrequency": 0.7,
+        "exploitability": 0.01,
+        "cacheHit": true,
+        "reasonCode": "river_dcfr",
+        "diagnosticReason": "golden vector"
+      }
+    }
+  }
+}

@@ -1,0 +1,9 @@
+version: v2
+clean: true
+inputs:
+  - directory: "@CMAKE_SOURCE_DIR@/proto"
+plugins:
+  - protoc_builtin: cpp
+    protoc_path: "@CMAKE_SOURCE_DIR@/.tools/protobuf/36.1/bin/protoc"
+    out: "@CMAKE_BINARY_DIR@/generated/cpp"
+    include_imports: true
