@@ -238,6 +238,30 @@ written backward-induction oracle counter-checks the modeled best response on
 a game with a non-fixed chance card. These are bounded small-game fixtures,
 not release blueprint coverage.
 
+## Frozen Heads-Up Matrix
+
+The RFC 0004 Stage 4 runner `benchmark-heads-up-matrix` (schema version 3,
+manual target, not a CTest) freezes twelve flop-root fixtures: a genuinely
+rainbow disconnected dry board `Ks7h2c`, two-tone connected, paired, and
+monotone boards; equal and asymmetric postflop stacks; and effective SPR 1,
+4, and 10 over one shared pair of three-combo weighted ranges and the
+standard multi-size schedule. Eleven fixtures fix the turn `3s` and river
+`5h`; one SPR-1 monotone fixture fixes only the turn. External sampling was
+measured to miss rare information sets at feasible budgets on these trees
+(the runner's `--sampled-coverage` mode reproduces 251/252 fixed sets after
+3,000,000 iterations and 4,028/6,192 free-river sets after 100,000), so every
+fixture trains with full traversal and is certified by the exact modeled
+best response; schema 3 derives `metric_class = EXACT` only for finite full
+rows and makes no sampled-deviation estimate. Each row also carries the
+pinned `algorithm_revision`, a stable `range_digest`, and a
+`missing_information_sets` count (zero on every complete row). SPR-1 rows
+use the pinned `0.002`/`0.02` gates; SPR 4/10 rows report measured NashConv
+behind frozen, margin-rounded reference-machine fixture gates rather than
+claiming the small-game threshold, with a documented `--freeze` rebase
+procedure for other platforms. The catalog, CSV fields, and reference-
+machine numbers are in [Benchmarking](../development/benchmarking.md). This
+is a bounded frozen matrix, not full-game equilibrium coverage.
+
 ## Offline ICM Arithmetic
 
 `bs::poker::icm_equities()` requires an explicitly complete field of 2..10

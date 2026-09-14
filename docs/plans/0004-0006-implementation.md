@@ -2,9 +2,9 @@
 
 Status: Current
 
-Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 11, and
-the isolated Stage 12 ICM complete with recorded evidence. Stage 4 frozen
-matrix is next. RFC 0005 remains Accepted.
+Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 11, and
+the isolated Stage 12 ICM complete with recorded evidence. Stage 5 artifact
+storage is next. RFC 0005 remains Accepted.
 
 Active goal: finish all accepted RFC 0004-0006 scope. A checkpoint is not
 goal completion; continue remaining stages until their acceptance evidence
@@ -29,8 +29,8 @@ evidence specified for each stage.
 
 ## Stages and Evidence
 
-Stages 1, 2, 3, 11, and the isolated Stage 12 ICM are complete;
-Stage 4 and all other work remain Pending. Owners name existing
+Stages 1, 2, 3, 4, 11, and the isolated Stage 12 ICM are complete;
+Stage 5 and all other work remain Pending. Owners name existing
 modules or the explicitly approved artifact boundary, not separate services.
 
 | Stage | Roadmap IDs | Owner | Implementation | Required completion evidence |
@@ -156,14 +156,85 @@ Stage 3 evidence (2026-09-14):
   coverage (Stage 10) are still pending. Linux portable verification of
   the new targets has not yet been run.
 
+Stage 4 evidence (2026-09-15):
+
+- New versioned runner `engine/benchmarks/heads_up_matrix_benchmark.cpp`
+  (schema_version 3 CSV) and targets `bigshark-heads-up-matrix-benchmark` /
+  `benchmark-heads-up-matrix` in `engine/CMakeLists.txt`. It is deliberately
+  not a CTest and reuses the unchanged `heads_up_benchmark_support.hpp`.
+  The schema-1 and schema-2 benchmark files and the RFC were not modified.
+- Twelve frozen fixtures (fourteen published final rows): a genuinely
+  rainbow disconnected dry family Ks7h2c (the earlier Ks7s2c was two-tone,
+  not unpaired rainbow; card collisions against the ranges and fixed runout
+  are rejected by `HeadsUpTrainer` by construction), two-tone connected
+  9h8h4d, paired QdQc6s, and monotone JhTh9h families; equal and asymmetric
+  stacks; SPR 1, 4, and 10. One shared matched root (limped 10-chip pot,
+  5 big blind, button seat 1), three weighted combos per side with one
+  cross-blocked pair (eight joint deals), the standard multi-size schedule,
+  fixed 3s/5h runout, and one free-river SPR-1 monotone fixture. Full
+  catalog and CSV fields are in `docs/development/benchmarking.md`.
+- Schema-3 CSV columns include `algorithm_revision`
+  (`rfc0004-rev1-full-kSimple-prng1`), a stable FNV-1a `range_digest`
+  (`9e1b8b78a66f91db`) of the ordered per-side range card ids and weights,
+  and `missing_information_sets` (zero on every complete row). `metric_class`
+  is derived: EXACT only for a finite full-traversal evaluation, INCOMPLETE
+  on a failed evaluation (NaN exploitability), never EXACT on a FAIL.
+  `nodes` counts TRAINING traversal nodes only; `peak_rss_bytes` is bytes on
+  every platform (Linux KiB normalized x1024), -1 when `getrusage` is absent.
+- Every fixture trains with FULL traversal. The runner's
+  `--sampled-coverage` mode reproduces the reason at the pinned budgets:
+  external sampling visits 251 of 252 fixed SPR-1 information sets after
+  3,000,000 iterations (1 missing; 216,289.6 ms sampled time) and 4,028 of
+  6,192 free-river sets after 100,000 iterations (2,164 missing;
+  140,793.1 ms), so sampled policies are incomplete and the matrix instead
+  publishes full-traversal policies certified by the exact `evaluate()`
+  best response over the full betting/chance tree. Full rows are
+  seed-independent; the dry SPR-1 fixture is published under seeds 1, 17,
+  and 43 (identical), the larger matrix under seed 1; no held-out seeds.
+- Gates: SPR-1 fixed rows use the pinned 0.002 gate and the free-river row
+  the pinned 0.02 gate (final values 0.000606859664931 dry rainbow,
+  0.001158562503 connected, 0.00144516124979 paired, 0.0112887585953 free
+  river). SPR 4/10 rows do not claim 0.002; they require finite metrics,
+  complete coverage, and strict first-checkpoint improvement behind
+  fixture-specific gates frozen from the measured finals and rounded up
+  with margin (SPR 4: 0.16/0.40/0.36/0.15 vs measured
+  0.150113162264/0.365752065422/0.332260032957/0.137179422871; SPR 10:
+  4.6/5.7/5.8/5.5 vs measured 4.37322736827/5.39491778572/5.5223726767/
+  5.209779851; the rainbow dry-board change leaves these game values
+  unchanged because no five-card flush/straight is reachable with these
+  ranges and runout). Same-build repeat delta is zero on every row.
+- The SPR 4/10 gates are REFERENCE-MACHINE gates (Apple M5 Pro, 48 GB,
+  macOS 26.5.1, Apple clang 21), not portable equilibrium thresholds;
+  benchmarking.md documents the `--freeze` rebase procedure (FREEZE status
+  / `freeze-reference` basis, inspect deltas, round up 5-9%) so ordinary
+  floating-point/library drift is distinguishable from a real regression.
+  Linux verification remains an external gate.
+- Capacity (reference machine Apple M5 Pro / 48 GB / macOS 26.5.1, Apple
+  clang 21): complete-tree information sets 252 (SPR 1 fixed), 6,192
+  (SPR 1 free river), 19,176 (SPR 4), 493,500 (SPR 10). SPR-10 conservative
+  accounting peak 5,461,986,440 bytes (5.087 GiB / 5.462 GB) and largest
+  forked-child peak RSS about 2,999,000,000 bytes (about 2.79 GiB / 3.00 GB),
+  under an explicit 8 GiB accounting budget above the RFC 1 GiB default.
+  Printed elapsed_ms totals about 303,982 ms (5.07 min) over the fourteen
+  final rows and about 380,457 ms (6.34 min) over all printed rows; the whole
+  run, including every independent same-build repeat and per-fixture fork,
+  took 684.81 seconds wall. The per-row node/memory/time table is in
+  `docs/development/benchmarking.md`. These are bounded frozen-matrix games,
+  not full-game equilibrium coverage; the SPR 4/10 finals are explicitly
+  unconverged large-game measurements.
+- Documentation: new "Frozen Matrix Benchmark (schema 3)" section in
+  `docs/development/benchmarking.md` (catalog, sampled-coverage evidence,
+  rebase procedure, full field and measured tables), a short subsection in
+  `docs/design/gto-engine.md`, and the manual target in
+  `docs/development/build-and-test.md`. No new ctest was registered.
+
 ## Next Implementation Checkpoint
 
-Stage 4 adds the frozen release matrix from RFC 0004: at least dry,
-two-tone connected, paired, and monotone flops; equal and asymmetric stacks;
-and stack-to-pot ratios 1, 4, and 10. It reports exact versus estimated
-metrics and node, memory, elapsed-time, and coverage capacity per fixture,
-with new independently versioned fixtures and no full-game claim.
-Keep v0 contexts, production policy routing, and external commands unchanged.
+Stage 5 adds the RFC 0005 artifact boundary: the authoritative SQL schema,
+transactional checkpoints, immutable export, digest, and bounded reader, with
+crash/full-disk/corruption/version tests and macOS/Linux native dependency
+builds. Keep v0 contexts, production policy routing, and external commands
+unchanged.
 
 Before each later stage, define exact owned files and record which preceding
 gate passed. Use independent bounded reviewers for algorithm, persistence,

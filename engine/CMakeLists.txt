@@ -172,6 +172,25 @@ add_custom_target(benchmark-heads-up-capacity
   USES_TERMINAL
 )
 
+# RFC 0004 Stage 4 frozen release matrix (schema_version 3 CSV): frozen flop
+# families, stack profiles, SPR 1/4/10, weighted ranges, and runout policies
+# with exact/estimated labeling and node, memory, elapsed-time, and coverage
+# reporting. It spends several minutes on the larger SPR 4/10 fixtures, so it
+# is built as a target but intentionally NOT registered as a CTest. It
+# includes only public solver headers and reuses the schema-2 support harness.
+add_executable(bigshark-heads-up-matrix-benchmark
+  benchmarks/heads_up_matrix_benchmark.cpp
+)
+target_link_libraries(bigshark-heads-up-matrix-benchmark PRIVATE
+  bigshark_solver
+)
+add_custom_target(benchmark-heads-up-matrix
+  COMMAND $<TARGET_FILE:bigshark-heads-up-matrix-benchmark>
+  DEPENDS bigshark-heads-up-matrix-benchmark
+  COMMENT "Running the RFC 0004 Stage 4 frozen heads-up matrix benchmark"
+  USES_TERMINAL
+)
+
 add_library(bigshark_policy STATIC
   src/policy/decision.cpp
 )

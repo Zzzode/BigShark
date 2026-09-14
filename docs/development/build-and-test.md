@@ -227,6 +227,14 @@ expect several minutes:
 cmake --build --preset release --target benchmark-heads-up-capacity
 ```
 
+The RFC 0004 Stage 4 frozen matrix runner is also a manual target and is not
+a CTest; the SPR 4/10 fixtures take several minutes and use an explicit
+8 GiB solver-accounting budget. Run it explicitly:
+
+```bash
+cmake --build --preset release --target benchmark-heads-up-matrix
+```
+
 The benchmark contract and CSV fields are documented in
 [Benchmarking](benchmarking.md).
 
