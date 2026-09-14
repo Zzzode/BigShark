@@ -88,6 +88,9 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
 add_library(bigshark_poker STATIC
   src/poker/charts.cpp
+  src/poker/heads_up.cpp
+  src/poker/icm.cpp
+  src/poker/settlement.cpp
 )
 target_include_directories(bigshark_poker
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -100,6 +103,7 @@ add_library(bigshark_solver STATIC
   src/gto/range_equity.cpp
   src/gto/range_tracker.cpp
   src/gto/multistreet_cfr.cpp
+  src/gto/heads_up_solver.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
 )
@@ -176,6 +180,31 @@ if(BUILD_TESTING)
   add_executable(test_eval tests/test_eval.cpp)
   target_link_libraries(test_eval PRIVATE bigshark_poker)
   add_test(NAME eval COMMAND test_eval)
+
+  add_executable(test_heads_up tests/test_heads_up.cpp)
+  target_link_libraries(test_heads_up PRIVATE bigshark_poker)
+  add_test(NAME heads_up COMMAND test_heads_up)
+
+  add_executable(test_icm tests/test_icm.cpp)
+  target_link_libraries(test_icm PRIVATE bigshark_poker)
+  add_test(NAME icm COMMAND test_icm)
+
+  add_executable(test_settlement tests/test_settlement.cpp)
+  target_link_libraries(test_settlement PRIVATE bigshark_poker)
+  add_test(NAME settlement COMMAND test_settlement)
+
+  add_executable(test_heads_up_solver tests/test_heads_up_solver.cpp)
+  target_link_libraries(test_heads_up_solver PRIVATE bigshark_solver)
+  add_test(NAME heads_up_solver COMMAND test_heads_up_solver)
+
+  # Global allocation replacement must not interpose on HiGHS shared-library
+  # initializers. Compile the unchanged subject with only its actual dependency.
+  add_executable(test_heads_up_allocations
+    tests/test_heads_up_allocations.cpp
+    src/gto/heads_up_solver.cpp
+  )
+  target_link_libraries(test_heads_up_allocations PRIVATE bigshark_poker)
+  add_test(NAME heads_up_allocations COMMAND test_heads_up_allocations)
 
   add_executable(test_equity tests/test_equity.cpp)
   target_link_libraries(test_equity PRIVATE bigshark_poker)

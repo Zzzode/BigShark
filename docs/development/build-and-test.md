@@ -176,6 +176,11 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | Test | Coverage |
 | --- | --- |
 | `eval` | Hand categories, score ordering, wheel and straight boundaries |
+| `heads_up` | Offline heads-up legal transitions, all-ins, public runouts, refunds, and independent chip accounting |
+| `heads_up_solver` | Multi-size full CFR, exact pure-response oracle, coverage, convergence, and resource rollback |
+| `heads_up_allocations` | Every-allocation fault injection, transactional publication, and measured peak memory budgets |
+| `settlement` | Contribution layers, refunds, ties, capped rake, odd-chip order, exhaustive grids, and conservation |
+| `icm` | Bounded prize equity, independent permutation oracle, bust handling, and prize-unit conservation |
 | `equity` | Deterministic equity, multiway sanity, and draw classification |
 | `v0_protocol` | Legacy JSON mapping and repeated response serialization |
 | `gto` | River LP/DCFR policy contracts, exploitability, and range tracking |

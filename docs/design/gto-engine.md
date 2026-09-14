@@ -51,6 +51,10 @@ flowchart TD
 | Module | Responsibility |
 | --- | --- |
 | `include/bs/eval.hpp` | Five-to-seven-card hand evaluation and comparable scores |
+| `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
+| `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal heads-up CFR, immutable policies, and exact modeled best response |
+| `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
+| `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..6-player ledger |
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
 | `include/bs/equity.hpp` | Deterministic Monte Carlo equity against filtered opponent ranges |
 | `include/bs/range.hpp` | Concrete two-card combinations and range utilities |
@@ -97,6 +101,100 @@ card (`1`) through straight flush (`9`).
 Rank masks drive straight and straight-flush detection. Regular straight
 windows start at a six-high straight. The wheel (`A2345`) is handled by a
 separate mask so no negative bit shift can occur.
+
+## Offline Heads-Up Rules
+
+`bs::poker::HeadsUpState` is the first RFC 0004 implementation stage in
+`bigshark_poker`. It does not change production decision routing or the legacy
+validation game. The supported root is a closed-street flop with two players,
+no ante/rake, equal matched root contributions, and explicit stacks, pot,
+button, and big blind. Unequal root contributions require a broader pot model
+and are rejected. Total chips cannot exceed `2^53 - 1`; intermediate sums are
+checked unsigned 64-bit arithmetic.
+
+The state exposes `Action`, `Deal`, `Showdown`, and `Folded` phases. OOP
+(`1 - button` in the two-seat domain) acts first on each street. `legal()`
+returns check/fold/call availability, the actual capped call cost, and a
+bet/raise target-total interval. Below-minimum aggression is permitted only
+when it consumes the actor's entire stack. No raising is possible against an
+all-in opponent. The rules permit unmatched overbets up to the actor's stack;
+future solver size abstraction is responsible for selecting effective targets.
+
+`after_action()` and `after_card()` return a new state; invalid input leaves
+the original unchanged. Actions include the caller's seat for turn checking.
+Non-aggressive actions must carry zero target total. Invalid input throws
+`std::invalid_argument`; integer overflow throws `std::overflow_error`.
+
+Public cards retain their street order. The state never stores either
+player's hole cards, so chance enumeration must separately filter the sampled
+private deal. `after_card()` checks the deck range and public duplicates;
+`settle_showdown()` additionally validates both private hands before using
+the existing evaluator. Fold settlement requires no private cards.
+
+Gross contributions and refunds are retained separately. An unmatched wager
+is refunded at fold or street closure, including a short all-in call.
+Stacks already include refunds; final settlement credits awards only.
+`Settlement` reports awards, refunds, final stacks, and signed integer net
+utility relative to hand-start chips. Zero-sum chip conservation applies
+throughout this supported profile. After an all-in call the remaining public
+cards are dealt without further betting.
+
+Persistence, resolving, multiway rules, and preflop-root rules are separate
+implementation stages.
+
+## Full-Traversal Heads-Up Trainer
+
+`bs::solver::HeadsUpTrainer` accepts a flop-rooted game, weighted exact-card
+ranges, and reduced rational per-street sizing. It enumerates compatible
+joint private deals, reserves fixed future validation cards before any deal,
+and uses the native poker transitions. A fixed runout is a conditional test
+game, not production coverage of unseen cards.
+
+Each CFR iteration runs player 0 then player 1. Regrets are frozen during
+each full sweep; opponent/chance-weighted updates accumulate until that sweep
+finishes. Average weights use own reach once per exact information set,
+independent of how many hidden opponent histories reach it. Information keys
+retain ordered boards, own cards, actor, and full public target-total history.
+The immutable policy owns the full game identity and exposes explicit misses.
+
+The full-policy evaluator aggregates hidden opponent reach before choosing
+the responder's action. It reports chip-unit values and normalized NashConv
+(`sum of both best-response gains / root pot`), using the policy's own declared
+game. A separate native test enumerates every pure response strategy on small
+games, without using the evaluator's response recursion or information keys.
+
+Limits bound total visited nodes per call, information-set count, conservatively
+accounted allocation bytes, deadline, and recursion depth (at most 256).
+Exceeding them rejects an incomplete iteration; it never prunes actions or
+inserts heuristic leaf values. Policy publication is transactional and returns
+the last completely committed iteration on allocation failure. Exact
+evaluation reports resource failure explicitly. Extremely small probabilities
+that would underflow are unsupported rather than silently removed.
+
+The current implementation is the full-traversal baseline. Sampled traversal,
+serialized training resume, release-scale coverage, and preflop training remain
+pending. A small weighted fixed-run fixture reaches normalized NashConv
+`0.000821201` at 8,192 iterations; this is not a general-game equilibrium claim.
+
+## Offline ICM Arithmetic
+
+`bs::poker::icm_equities()` requires an explicitly complete field of 2..10
+players, unique stable IDs, positive stacks, one non-increasing payout per
+remaining place, and a prize-unit identifier. It aggregates finish-order
+probabilities by subset (at most 1,024 subsets), with chip/prize totals bounded
+by `2^53 - 1`. Expected payouts are finite doubles with no prize rounding.
+
+`icm_terminal_utility()` consumes fully settled, chip-conserving terminal
+stacks for the same field. Newly busted players rank by pre-hand stacks;
+ties require explicit stable-ID byte-order rules, splitting their occupied
+prizes with exact integer remainder allocation. Surviving prize equity and
+bust prizes minus pre-hand equity produce prize-unit utility. No chip-EV
+conversion, rake, inferred remote stacks, or implicit provider rules apply.
+
+The arithmetic is isolated from strategy routing. Production tournament
+support remains disabled pending settlement integration, v2 protocol and
+provider gates. Tests independently enumerate finish permutations, including
+1,089 grid fixtures and 120 seeded fixtures, plus analytic and bust cases.
 
 ## Preflop Policy
 
@@ -311,6 +409,10 @@ The native suite covers:
 
 Use the commands in [Build and Test](../development/build-and-test.md).
 
+Linux GCC 12 verification passes in the no-HiGHS CI lane, including the
+multi-street benchmark and bounded river DCFR tests. This verifies the
+portable fallback build; it does not validate the HiGHS backend on Linux.
+
 ## Known Limitations
 
 - Only the supported heads-up river tree has a production equilibrium solver.
@@ -319,4 +421,4 @@ Use the commands in [Build and Test](../development/build-and-test.md).
 - Ante, rake, side-pot utility, tournament ICM, and non-Hold'em variants are
   outside the current engine context.
 - HiGHS is discovered from the host rather than vendored.
-- Linux build verification remains pending.
+- Linux HiGHS-enabled build verification remains outside the current CI lane.
