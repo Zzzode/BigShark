@@ -142,6 +142,36 @@ add_custom_target(benchmark-multistreet
   USES_TERMINAL
 )
 
+add_executable(bigshark-heads-up-blueprint-benchmark
+  benchmarks/heads_up_blueprint_benchmark.cpp
+)
+target_link_libraries(bigshark-heads-up-blueprint-benchmark PRIVATE
+  bigshark_solver
+)
+add_custom_target(benchmark-heads-up-blueprint
+  COMMAND $<TARGET_FILE:bigshark-heads-up-blueprint-benchmark>
+  DEPENDS bigshark-heads-up-blueprint-benchmark
+  COMMENT "Running the RFC 0004 heads-up blueprint quality benchmark"
+  USES_TERMINAL
+)
+
+# Manual release-scale capacity runner. It spends both sampled cases at the
+# pinned 1,000,000-iteration checkpoint and takes several minutes, so it is
+# built as a target but intentionally NOT registered as a CTest (RFC 0004
+# lines 324-326). It includes only public solver headers.
+add_executable(bigshark-heads-up-capacity-benchmark
+  benchmarks/heads_up_capacity_benchmark.cpp
+)
+target_link_libraries(bigshark-heads-up-capacity-benchmark PRIVATE
+  bigshark_solver
+)
+add_custom_target(benchmark-heads-up-capacity
+  COMMAND $<TARGET_FILE:bigshark-heads-up-capacity-benchmark>
+  DEPENDS bigshark-heads-up-capacity-benchmark
+  COMMENT "Running the RFC 0004 heads-up one-million-iteration capacity benchmark"
+  USES_TERMINAL
+)
+
 add_library(bigshark_policy STATIC
   src/policy/decision.cpp
 )
@@ -197,11 +227,23 @@ if(BUILD_TESTING)
   target_link_libraries(test_heads_up_solver PRIVATE bigshark_solver)
   add_test(NAME heads_up_solver COMMAND test_heads_up_solver)
 
+  add_executable(test_heads_up_solver_sampled tests/test_heads_up_solver_sampled.cpp)
+  target_include_directories(test_heads_up_solver_sampled PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_heads_up_solver_sampled PRIVATE bigshark_solver)
+  add_test(NAME heads_up_solver_sampled COMMAND test_heads_up_solver_sampled)
+
   # Global allocation replacement must not interpose on HiGHS shared-library
   # initializers. Compile the unchanged subject with only its actual dependency.
   add_executable(test_heads_up_allocations
     tests/test_heads_up_allocations.cpp
     src/gto/heads_up_solver.cpp
+  )
+  # The debug raw-row export fault branch is exercised through the private
+  # passkey header; the compiled subject itself remains unchanged.
+  target_include_directories(test_heads_up_allocations PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
   )
   target_link_libraries(test_heads_up_allocations PRIVATE bigshark_poker)
   add_test(NAME heads_up_allocations COMMAND test_heads_up_allocations)
@@ -229,6 +271,14 @@ if(BUILD_TESTING)
     set_tests_properties(benchmark_multistreet PROPERTIES
       LABELS benchmark
       TIMEOUT 180
+    )
+    add_test(
+      NAME benchmark_heads_up_blueprint
+      COMMAND bigshark-heads-up-blueprint-benchmark
+    )
+    set_tests_properties(benchmark_heads_up_blueprint PROPERTIES
+      LABELS benchmark
+      TIMEOUT 900
     )
   endif()
 endif()

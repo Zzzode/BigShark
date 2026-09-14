@@ -52,7 +52,7 @@ flowchart TD
 | --- | --- |
 | `include/bs/eval.hpp` | Five-to-seven-card hand evaluation and comparable scores |
 | `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
-| `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal heads-up CFR, immutable policies, and exact modeled best response |
+| `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
 | `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..6-player ledger |
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
@@ -152,10 +152,15 @@ game, not production coverage of unseen cards.
 
 Each CFR iteration runs player 0 then player 1. Regrets are frozen during
 each full sweep; opponent/chance-weighted updates accumulate until that sweep
-finishes. Average weights use own reach once per exact information set,
-independent of how many hidden opponent histories reach it. Information keys
-retain ordered boards, own cards, actor, and full public target-total history.
-The immutable policy owns the full game identity and exposes explicit misses.
+finishes and are committed together with the frozen sweep policy. Average
+weights accumulate exactly once per exact information set per traverser sweep
+(a per-sweep dedup over the hidden opponent histories and chance branches that
+share the key), weighted by own reach and policy alone, with no joint-deal or
+public-chance factor. Own reach to a fixed perfect-recall key is identical
+across those hidden histories, so adding it more than once would double count.
+Information keys retain ordered boards, own cards, actor, and full public
+target-total history. The immutable policy owns the full game identity and
+exposes explicit misses.
 
 The full-policy evaluator aggregates hidden opponent reach before choosing
 the responder's action. It reports chip-unit values and normalized NashConv
@@ -171,10 +176,67 @@ the last completely committed iteration on allocation failure. Exact
 evaluation reports resource failure explicitly. Extremely small probabilities
 that would underflow are unsupported rather than silently removed.
 
-The current implementation is the full-traversal baseline. Sampled traversal,
-serialized training resume, release-scale coverage, and preflop training remain
-pending. A small weighted fixed-run fixture reaches normalized NashConv
-`0.000821201` at 8,192 iterations; this is not a general-game equilibrium claim.
+Sampled traversal is implemented and is the documented release-scale trainer
+(see the next section); serialized training resume, release-scale coverage,
+and preflop training remain pending. A small weighted fixed-run fixture reaches
+normalized NashConv `0.000821201` at 8,192 iterations; this is not a
+general-game equilibrium claim.
+
+## Sampled Heads-Up Trainer (External Sampling)
+
+`HeadsUpTrainer::train_sampled(iterations, seed, limits)` implements the pinned
+RFC 0004 revision-1 external-sampling MCCFR. One iteration runs traverser 0,
+then traverser 1; each traversal samples exactly one weighted joint private
+deal for the episode. At a traverser information set the local regret-matching
+policy is frozen before recursion and every action is enumerated; at chance and
+opponent nodes one outcome is sampled from the actual chance/current-policy
+distribution. Regrets update by raw sampled `v(a) - v` at traverser nodes, and
+the two-player `AverageType::kSimple` sum adds the frozen policy on each
+opponent-node visit. Sampled updates carry no extra private-deal or reach
+factor because the visit sampling already supplies them.
+
+The two average conventions are a pinned pair, not competing implementations.
+The full traversal accumulates its average exactly once per information set
+per traverser sweep (deduping the hidden deals and chance branches that share
+the perfect-recall key) as `own reach * policy`, with no deal or chance
+factor. The sampled kSimple sum is a raw per-visit `sigma(a)` add at opponent
+nodes; the episode sampling already supplies the private-deal and reach mass.
+Consequently the raw sampled row equals the full-traversal row at the
+corresponding opponent information set only up to a constant chance factor:
+the expected one-iteration sampled behavior matches the full behavior exactly
+after both rows are normalized to sum one (RFC 0004 lines 191-195). The regret
+identity is stricter: full regret deltas already carry the chance and opponent
+reach weight, so the enumerated expected raw sampled regret equals the full
+raw regret with no normalization. Both identities are verified by exact
+enumeration of one-sweep outcomes under non-uniform range weights, a non-fixed
+public card, and repeated hidden histories, not only by convergence.
+
+Entropy comes exclusively from a SplitMix64 stream initialized to the seed:
+each draw increments the state by `0x9e3779b97f4a7c15` and applies the pinned
+xor-shift/multiply mix. Unit doubles use the top 53 bits times `2^-53`;
+bounded card sampling rejects below `(2^64 - bound) mod bound` before modulo;
+weighted deals scan in fixed ascending order. Traversal order, deal order, and
+player/action order are fixed; no unordered map consumes randomness.
+
+Sampled publication uses the same transactional iteration boundary as the full
+trainer. An interrupted iteration discards the prospective table and restores
+the PRNG to its iteration-start mark, so the published policy, completed
+iteration count, and PRNG state always describe committed iterations. The
+per-iteration prospective table deep copy carries an explicit transient budget
+charge released after the committed swap, so accounted peak bytes bound the
+brief two-table coexistence.
+
+The pinned quality gates run in the version-2 heads-up blueprint benchmarks:
+normalized NashConv at most `0.002` for the fixed small game and `0.02` for a
+sampled free-river small game, for seeds 1, 17, and 43, with same-build
+repeats matching every published policy row within `1e-12`. The default CTest
+runner spends the free-river case at a bounded 100,000-iteration checkpoint
+that passes the gate inside the one-million compute budget; the manual
+capacity runner (`benchmark-heads-up-capacity`, not a CTest) spends both
+sampled cases at the pinned 1,000,000-iteration checkpoint. A separately
+written backward-induction oracle counter-checks the modeled best response on
+a game with a non-fixed chance card. These are bounded small-game fixtures,
+not release blueprint coverage.
 
 ## Offline ICM Arithmetic
 
@@ -406,6 +468,9 @@ The native suite covers:
 - multi-street fixed-run and sampled-chance values;
 - multi-combination convergence, card-conflict reach, and independent best
   responses.
+- Pinned SplitMix64 vectors, enumerated external-sampling update expectations
+  under non-uniform range weights and free public cards, sampled
+  repeatability/rollback, and fixed/sampled-chance blueprint quality gates.
 
 Use the commands in [Build and Test](../development/build-and-test.md).
 

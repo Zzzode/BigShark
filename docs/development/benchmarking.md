@@ -84,3 +84,56 @@ The runner writes CSV with `schema_version = 1` and these fields:
 Changes to fixture semantics, exploitability definitions, output fields, or
 thresholds must update this document and the benchmark schema version when
 compatibility is affected.
+
+## Heads-Up Blueprint Benchmarks
+
+The RFC 0004 heads-up trainer has its own versioned benchmark so the legacy
+multi-street CSV and its values are never reinterpreted. Two runners share one
+schema-version-2 harness:
+
+- `benchmark-heads-up-blueprint`, built from
+  `engine/benchmarks/heads_up_blueprint_benchmark.cpp`, is the registered
+  Release-only `benchmark_heads_up_blueprint` CTest gate with a 900-second
+  timeout (measured local run about 141 seconds; the timeout is CI headroom).
+- `benchmark-heads-up-capacity`, built from
+  `engine/benchmarks/heads_up_capacity_benchmark.cpp`, is the manual
+  release-scale runner. It is deliberately not registered as a CTest because
+  it spends several minutes at the pinned 1,000,000-iteration checkpoints; run
+  it explicitly with
+  `cmake --build --preset release --target benchmark-heads-up-capacity` when
+  recording capacity evidence.
+
+| Case | Traversal | Seeds | Default CTest checkpoint | Capacity checkpoint | Limit |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `heads-up-fixed-full` | Full | 1 | 8,192 | - | 0.002 pot |
+| `heads-up-fixed-sampled` | External sampling | 1; 17; 43 | 1,000,000 | 1,000,000 | 0.002 pot |
+| `heads-up-free-river-sampled` | External sampling, free river | 1; 17; 43 | 100,000 | 1,000,000 | 0.02 pot |
+
+The fixed cases reserve Js and 9c; the sampled-chance case reserves only the
+turn and samples the river. All cases use the same two-combo weighted ranges
+and one-chip stack profile. The free-river default checkpoint is bounded at
+100,000 iterations but passes the pinned `0.02` gate inside the one-million
+compute budget; only the manual capacity runner spends that case at the full
+1,000,000-iteration checkpoint. Each case requires finite metrics, the final
+exploitability no worse than the first checkpoint, and a same-build repeat
+matching every published policy row probability, exploitability,
+information-set count, and PRNG state within `1e-12`. The fixed full-traversal
+final value is `0.000821200905142`; sampled fixed final values are
+seed-dependent but all below `0.001`, and the 100,000-iteration free-river
+final values are below `0.012`. Run time is recorded per run in the
+`elapsed_ms` column only; it is never gated and is not quoted here as a
+portable number.
+
+These runners write CSV with `schema_version = 2`:
+
+| Field | Meaning |
+| --- | --- |
+| `case` | Stable heads-up fixture identifier |
+| `seed` | SplitMix64 seed |
+| `iterations` | Training iterations for the checkpoint |
+| `information_sets` | Trained information sets |
+| `exploitability_pot` | Normalized NashConv per root pot |
+| `max_final_exploitability` | Quality gate for the final checkpoint |
+| `elapsed_ms` | Wall-clock duration, recorded but not gated |
+| `repeat_delta` | Maximum final-repeat difference, including every published row |
+| `status` | `MEASURED`, `PASS`, or `FAIL` |

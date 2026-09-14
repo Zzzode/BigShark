@@ -15,6 +15,8 @@
 #include <stdexcept>
 #include <utility>
 
+#include "gto/heads_up_solver_debug.hpp"
+
 namespace allocation {
 
 constexpr auto no_failure = std::numeric_limits<std::size_t>::max();
@@ -339,6 +341,167 @@ int test_faults(std::uint64_t iterations) {
   return 0;
 }
 
+// Same exhaustive fault enumeration for the production sampled entry point.
+// It never builds the debug raw-row table, so every injected failure must
+// roll the iteration back; a post-commit ResourceLimit is impossible here.
+int test_sampled_faults(std::uint64_t iterations, std::uint64_t seed) {
+  const HeadsUpTrainer trainer(fixture());
+  const auto one = trainer.train_sampled(1, seed);
+  CHECK(one.status == TrainingStatus::Complete);
+  CHECK(one.completed_iterations == 1);
+  CHECK(!one.policy.rows().empty());
+  CHECK(one.prng_state != seed);
+
+  std::optional<TrainingResult> baseline;
+  allocation::Window baseline_window;
+  baseline.emplace(trainer.train_sampled(iterations, seed));
+  const auto baseline_counts = baseline_window.stop();
+  CHECK(baseline->status == TrainingStatus::Complete);
+  CHECK(baseline->completed_iterations == iterations);
+  CHECK(baseline_counts.attempts > 0);
+  CHECK(baseline_counts.attempts < 10000);
+
+  std::size_t escaped = 0;
+  std::array<std::size_t, 2> rolled_back{};
+  bool reached_complete = false;
+  for (std::size_t index = 0; index <= baseline_counts.attempts; ++index) {
+    std::optional<TrainingResult> result;
+    bool bad_alloc_escaped = false;
+    allocation::Window window(index);
+    try {
+      result.emplace(trainer.train_sampled(iterations, seed));
+    } catch (const std::bad_alloc&) {
+      bad_alloc_escaped = true;
+    }
+    const auto measured = window.stop();
+    if (bad_alloc_escaped) {
+      ++escaped;
+      CHECK(measured.failures == 1);
+      CHECK(measured.live == 0);
+      continue;
+    }
+    CHECK(result.has_value());
+    if (measured.failures == 0) {
+      CHECK(index == baseline_counts.attempts);
+      CHECK(measured.attempts == baseline_counts.attempts);
+      CHECK(result->status == TrainingStatus::Complete);
+      CHECK(result->completed_iterations == iterations);
+      CHECK(result->information_sets == baseline->information_sets);
+      CHECK(result->nodes == baseline->nodes);
+      CHECK(result->accounted_bytes == baseline->accounted_bytes);
+      CHECK(result->prng_state == baseline->prng_state);
+      CHECK(same_policy(result->policy, baseline->policy));
+      reached_complete = true;
+      break;
+    }
+    CHECK(measured.failures == 1);
+    CHECK(result->status == TrainingStatus::ResourceLimit);
+    // No debug export exists on this path: the work must have rolled back.
+    CHECK(result->completed_iterations < iterations);
+    CHECK(result->completed_iterations <= 1);
+    ++rolled_back[result->completed_iterations];
+    if (result->completed_iterations == 0) {
+      CHECK(result->information_sets == 0);
+      CHECK(result->policy.rows().empty());
+      CHECK(result->prng_state == seed);
+    } else {
+      CHECK(result->information_sets == one.information_sets);
+      CHECK(same_policy(result->policy, one.policy));
+      CHECK(result->prng_state == one.prng_state);
+    }
+    result.reset();
+    CHECK(allocation::counts.live == 0);
+  }
+  std::printf("train_sampled(%llu): allocations=%zu rollback0=%zu rollback1=%zu escaped=%zu\n",
+              static_cast<unsigned long long>(iterations), baseline_counts.attempts, rolled_back[0],
+              rolled_back[1], escaped);
+  CHECK(reached_complete);
+  CHECK(rolled_back[0] > 0);
+  CHECK(iterations == 1 || rolled_back[1] > 0);
+  CHECK(escaped == 0);
+  return 0;
+}
+
+// Exhaustive fault enumeration for the DEBUG sampled entry point, which
+// additionally copies the committed table into DebugRow storage after the
+// last iteration commits. A fault inside that export reports ResourceLimit
+// with every iteration, the published policy, and the PRNG all committed;
+// faults elsewhere roll back exactly as on the production path.
+int test_sampled_debug_export_faults(std::uint64_t iterations, std::uint64_t seed) {
+  const HeadsUpGame game = fixture();
+  const auto one = HeadsUpSolverDebug::train_sampled(game, 1, seed);
+  CHECK(one.result.status == TrainingStatus::Complete);
+  CHECK(!one.rows.empty());
+
+  std::optional<DebugTrainingOutput> baseline;
+  allocation::Window baseline_window;
+  baseline.emplace(HeadsUpSolverDebug::train_sampled(game, iterations, seed));
+  const auto baseline_counts = baseline_window.stop();
+  CHECK(baseline->result.status == TrainingStatus::Complete);
+  CHECK(baseline->rows.size() == baseline->result.information_sets);
+
+  std::size_t escaped = 0;
+  std::size_t rollback_faults = 0;
+  std::size_t export_faults = 0;
+  bool reached_complete = false;
+  for (std::size_t index = 0; index <= baseline_counts.attempts; ++index) {
+    std::optional<DebugTrainingOutput> result;
+    bool bad_alloc_escaped = false;
+    allocation::Window window(index);
+    try {
+      result.emplace(HeadsUpSolverDebug::train_sampled(game, iterations, seed));
+    } catch (const std::bad_alloc&) {
+      bad_alloc_escaped = true;
+    }
+    const auto measured = window.stop();
+    if (bad_alloc_escaped) {
+      ++escaped;
+      CHECK(measured.failures == 1);
+      CHECK(measured.live == 0);
+      continue;
+    }
+    CHECK(result.has_value());
+    if (measured.failures == 0) {
+      CHECK(result->result.status == TrainingStatus::Complete);
+      CHECK(result->result.completed_iterations == iterations);
+      CHECK(result->rows.size() == baseline->rows.size());
+      CHECK(same_policy(result->result.policy, baseline->result.policy));
+      reached_complete = true;
+      break;
+    }
+    CHECK(measured.failures == 1);
+    CHECK(result->result.status == TrainingStatus::ResourceLimit);
+    if (result->result.completed_iterations == iterations) {
+      // Debug-only export fault: all training work stays committed.
+      ++export_faults;
+      CHECK(result->result.information_sets == baseline->result.information_sets);
+      CHECK(result->result.prng_state == baseline->result.prng_state);
+      CHECK(same_policy(result->result.policy, baseline->result.policy));
+    } else {
+      ++rollback_faults;
+      CHECK(result->result.completed_iterations < iterations);
+      if (result->result.completed_iterations == 0) {
+        CHECK(result->result.information_sets == 0);
+        CHECK(result->result.policy.rows().empty());
+        CHECK(result->result.prng_state == seed);
+      } else {
+        CHECK(result->result.information_sets == one.result.information_sets);
+        CHECK(same_policy(result->result.policy, one.result.policy));
+        CHECK(result->result.prng_state == one.result.prng_state);
+      }
+    }
+    result.reset();
+    CHECK(allocation::counts.live == 0);
+  }
+  std::printf("train_sampled_debug(%llu): export_faults=%zu rollback_faults=%zu escaped=%zu\n",
+              static_cast<unsigned long long>(iterations), export_faults, rollback_faults, escaped);
+  CHECK(reached_complete);
+  CHECK(export_faults > 0);
+  CHECK(rollback_faults > 0);
+  CHECK(escaped == 0);
+  return 0;
+}
+
 HeadsUpGame many_deals(int cards_per_range, bool overlap) {
   HeadsUpGame game;
   game.root = {{0, 1, 2}, {0, 0}, {1, 1}, 2, 1, 1};
@@ -441,6 +604,10 @@ int main() {
     CHECK(test_allocator() == 0);
     failures += test_faults(1);
     failures += test_faults(2);
+    failures += test_sampled_faults(1, 17);
+    failures += test_sampled_faults(2, 17);
+    failures += test_sampled_debug_export_faults(1, 17);
+    failures += test_sampled_debug_export_faults(2, 17);
     failures += test_joint_peak(false);
     failures += test_joint_peak(true);
     failures += test_evaluation_chance_cap();

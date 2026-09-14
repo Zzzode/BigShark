@@ -383,6 +383,30 @@ The new full/sampled trainer, multi-size abstraction, blueprint, and preflop
 training remain pending. This evidence does not complete the RFC as a whole.
 This change was verified on macOS; its new Linux build has not yet been run.
 
+Stages 2 and 3 are complete on 2026-09-14 (working-tree checkpoint):
+
+- The full-traversal facade, exact information keys, joint chance model, and
+  independent modeled best response are in `heads_up_solver.{hpp,cpp}` with
+  independent pure-response and allocation-fault tests.
+- External sampling implements the pinned two-player kSimple rule and
+  SplitMix64 revision 1. The full average keeps the pinned
+  once-per-information-set own-reach convention; sampled and full averages
+  match only after normalization, and sampled regrets match as raw values.
+- Enumerated expected-update tests use hand-derived literals under
+  non-uniform weights, a non-fixed public card, repeated hidden histories,
+  and a real three-action multi-size fixture. Repeatability and iteration/
+  PRNG rollback are tested under every resource cap.
+- Version-2 default and manual capacity benchmarks pass the pinned
+  `0.002` fixed and `0.02` sampled gates at 1,000,000 iterations for seeds
+  1, 17, and 43, with per-policy-row repeat delta zero. Release CTest was
+  23/23 and ASan/UBSan 21/21; legacy benchmark values are unchanged.
+  Full numbers and the reference machine are recorded in the
+  RFC 0004-0006 implementation plan.
+
+The frozen Stage 4 matrix, durable artifacts, resident lookup, production
+wiring, and preflop training remain pending. This still does not complete
+the RFC as a whole; the new targets are verified on macOS only.
+
 ## Decision
 
 Author agent: /root

@@ -178,6 +178,7 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `eval` | Hand categories, score ordering, wheel and straight boundaries |
 | `heads_up` | Offline heads-up legal transitions, all-ins, public runouts, refunds, and independent chip accounting |
 | `heads_up_solver` | Multi-size full CFR, exact pure-response oracle, coverage, convergence, and resource rollback |
+| `heads_up_solver_sampled` | Pinned SplitMix64, enumerated external-sampling update expectations under weighted ranges and free chance, kSimple averages, repeatability, PRNG/iteration rollback, chance-conditioned best response, and sampled convergence smoke gates |
 | `heads_up_allocations` | Every-allocation fault injection, transactional publication, and measured peak memory budgets |
 | `settlement` | Contribution layers, refunds, ties, capped rake, odd-chip order, exhaustive grids, and conservation |
 | `icm` | Bounded prize equity, independent permutation oracle, bust handling, and prize-unit conservation |
@@ -186,6 +187,7 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `gto` | River LP/DCFR policy contracts, exploitability, and range tracking |
 | `multistreet_ref` | Independent fixed-run best-response reference |
 | `benchmark_multistreet` | Deterministic multi-street convergence, exploitability thresholds, and timing measurements |
+| `benchmark_heads_up_blueprint` | RFC 0004 version-2 heads-up full and external-sampling fixed/sampled-chance quality gates (Release only) |
 | `protobuf_generated` | C++ binary, ProtoJSON, bigint, unknown-field, and enum compatibility |
 | `protobuf_cpp_vector` | C++ generation for the TypeScript cross-language consumer |
 | `protobuf_lint` | Buf STANDARD lint rules |
@@ -207,6 +209,22 @@ Run the solver-quality benchmark with:
 
 ```bash
 cmake --build --preset release --target benchmark-multistreet
+```
+
+Run the RFC 0004 heads-up blueprint quality benchmark (full and external
+sampling, schema version 2; the pinned one-million-iteration fixed gate takes
+roughly two and a half minutes) with:
+
+```bash
+cmake --build --preset release --target benchmark-heads-up-blueprint
+```
+
+The manual one-million-iteration capacity runner spends both sampled cases at
+the pinned 1,000,000 checkpoint and is not a CTest; run it explicitly and
+expect several minutes:
+
+```bash
+cmake --build --preset release --target benchmark-heads-up-capacity
 ```
 
 The benchmark contract and CSV fields are documented in

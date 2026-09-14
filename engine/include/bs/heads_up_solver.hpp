@@ -11,6 +11,14 @@
 
 namespace bs::solver {
 
+// Solver-private test/debug internals are reached only through a passkey whose
+// complete definition lives in engine/src/gto/heads_up_solver_debug.hpp. A
+// translation unit that does not include that private header can neither
+// construct nor use the key.
+namespace detail {
+class HeadsUpDebugKey;
+}  // namespace detail
+
 struct Fraction {
   std::uint64_t numerator;
   std::uint64_t denominator;
@@ -57,6 +65,7 @@ class HeadsUpPolicy {
 
  private:
   friend class HeadsUpTrainer;
+  friend class detail::HeadsUpDebugKey;
   // Empty policies must be constructible while recovering from allocation
   // failure; avoid allocating the normal default size schedule here.
   HeadsUpGame game_{{}, {}, {StreetSizes{{}, {}}, StreetSizes{{}, {}}, StreetSizes{{}, {}}}, {}};
@@ -79,6 +88,12 @@ struct TrainingResult {
   std::size_t nodes = 0;
   std::size_t information_sets = 0;
   std::size_t accounted_bytes = 0;
+  // Sampled traversal bookkeeping (RFC 0004 algorithm/PRNG revision 1). The
+  // full traversal leaves both fields at zero. prng_state is the SplitMix64
+  // state after the last committed iteration; re-running train_sampled with
+  // the same seed reproduces it and every published policy.
+  std::uint64_t seed = 0;
+  std::uint64_t prng_state = 0;
   HeadsUpPolicy policy;
 };
 
@@ -94,11 +109,27 @@ class HeadsUpTrainer {
   // Full traversal baseline. Construction validates and canonicalizes the game.
   explicit HeadsUpTrainer(HeadsUpGame game);
   TrainingResult train(std::uint64_t iterations, TrainingLimits limits = {}) const;
+  // External-sampling MCCFR, two-player AverageType::kSimple, RFC 0004
+  // revision 1: each iteration samples one weighted joint private deal per
+  // traverser (traverser 0 then traverser 1), enumerates traverser actions,
+  // samples opponent actions and public cards, and freezes the local policy
+  // before recursion. Entropy comes exclusively from a SplitMix64 stream
+  // initialized to seed; an interrupted iteration restores that stream and
+  // discards the prospective table.
+  TrainingResult train_sampled(std::uint64_t iterations, std::uint64_t seed,
+                               TrainingLimits limits = {}) const;
   // Independent information-set response evaluation on the same legal game.
   // Incomplete policy or insufficient evaluation limits are explicit errors.
   ExactEvaluation evaluate(const HeadsUpPolicy& policy, TrainingLimits limits = {}) const;
 
  private:
+  friend class detail::HeadsUpDebugKey;
+  // Solver-private pinned sampled driver hook guarded by the debug passkey,
+  // which is constructible only in translation units including the private
+  // debug header. Runs the same driver as the public train_sampled entry.
+  static TrainingResult debug_run_sampled(const HeadsUpGame& game, std::uint64_t iterations,
+                                          std::uint64_t seed, TrainingLimits limits,
+                                          const detail::HeadsUpDebugKey& key);
   HeadsUpGame game_;
 };
 
