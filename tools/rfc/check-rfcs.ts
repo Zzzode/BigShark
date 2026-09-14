@@ -3,6 +3,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateDecisionRecord } from './decision-record.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const rfcDirectory = join(root, 'docs', 'rfcs');
@@ -169,17 +170,8 @@ for (const name of files) {
     }
 
     const decision = sectionBody(body, 'Decision');
-    if (['Draft', 'Proposed'].includes(status)
-      && !decision.includes('Pending explicit maintainer approval.')) {
-      errors.push(`${file}: ${status} RFC must state pending explicit maintainer approval`);
-    }
-    if (['Accepted', 'Implementing', 'Implemented'].includes(status)
-      && (!decision.includes('Approved by:') || !decision.includes('Decision date:'))) {
-      errors.push(`${file}: ${status} RFC must record approver and decision date`);
-    }
-    if (status === 'Rejected'
-      && (!decision.includes('Rejected by:') || !decision.includes('Decision date:'))) {
-      errors.push(`${file}: Rejected RFC must record rejector and decision date`);
+    for (const error of validateDecisionRecord(id, status, decision)) {
+      errors.push(`${file}: ${error}`);
     }
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));

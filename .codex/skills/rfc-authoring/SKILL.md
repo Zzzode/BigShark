@@ -47,8 +47,8 @@ Any terminal or active RFC -> Superseded
 ```
 
 - `Draft`: incomplete and not ready for a decision.
-- `Proposed`: complete and ready for explicit maintainer review.
-- `Accepted`: explicitly approved by a maintainer; implementation may start.
+- `Proposed`: complete and ready for independent approval-agent review.
+- `Accepted`: explicitly approved by an independent agent; implementation may start.
 - `Implementing`: at least one implementation change has landed or is in
   progress.
 - `Implemented`: every acceptance criterion is verified and documentation is
@@ -56,10 +56,11 @@ Any terminal or active RFC -> Superseded
 - `Rejected`: explicitly declined.
 - `Superseded`: replaced by another numbered RFC.
 
-The authoring agent may set `Draft` or `Proposed`. It must never infer
-`Accepted`, `Rejected`, or `Implemented`. Those transitions require explicit
-maintainer approval or objective implementation evidence as defined by the
-RFC.
+The authoring agent may set `Draft` or `Proposed`. It must launch a separate
+approval agent, never approve its own proposal, and record that agent's
+explicit decision before setting `Accepted` or `Rejected`. `Implemented`
+requires objective acceptance evidence. No user confirmation is required
+for RFC approval. Existing RFC 0001-0003 maintainer records remain valid.
 
 ## Authoring Workflow
 
@@ -75,9 +76,23 @@ RFC.
 10. Record unresolved decisions under Open Questions.
 11. Set the RFC to `Proposed`.
 12. Run `node bin/check-rfcs.mjs` and `node bin/check-docs.mjs`.
-13. Present the RFCs for review and stop before implementation.
-14. After explicit approval, update status to `Accepted`, record the decision,
-    and produce an implementation plan.
+13. Launch a separate approval agent that did not author or edit the RFC.
+    Provide the current RFC, source/tests, overlapping contracts, outstanding
+    findings, and the review standard in `docs/rfcs/README.md`. Require
+    `Approved`, `Changes Requested`, or `Rejected`, plus evidence, scope,
+    findings, dispositions, and remaining risks.
+14. Resolve requested changes and resubmit. Keep `Proposed` while blocking
+    findings remain. Do not bypass objections by switching reviewers.
+15. After explicit agent approval, record author and approval-agent identities,
+    decision date, review outcome, reviewed scope, and review summary using
+    the RFC process format. Update status and indexes, rerun both checks,
+    produce an implementation plan, and proceed without user confirmation.
+
+If no separate agent can run, retain `Proposed` and report the tooling blocker.
+Do not simulate an approval agent in the authoring thread. Approval delegates
+design decisions only; spending, credentials, live operation, out-of-scope
+destructive actions, and separate release/removal gates retain their own
+authorization requirements.
 
 ## Quality Standard
 
@@ -125,8 +140,10 @@ Record material findings in the RFC or resolve them before requesting approval.
 
 ## Prohibited Shortcuts
 
-- Do not mark an RFC accepted because the design looks reasonable.
-- Do not implement a proposed architecture before explicit approval.
+- Do not mark an RFC accepted because the design looks reasonable or a prior
+  advisory review was favorable.
+- Do not implement a proposed architecture before independent agent approval.
+- Do not fabricate approval identities or omit unresolved review findings.
 - Do not hide breaking changes behind adapters or compatibility shims without
   documenting their lifetime and removal plan.
 - Do not mix unrelated cleanup into an RFC implementation.

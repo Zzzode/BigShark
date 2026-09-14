@@ -21,7 +21,12 @@ integration, and development documentation.
 | RFC | [RFC 0001: Engineering architecture](rfcs/0001-engineering-architecture.md) | Implementing | Repository, module ownership, dependency rules, and staged migration |
 | RFC | [RFC 0002: Protobuf engine protocol](rfcs/0002-protobuf-engine-protocol.md) | Implementing | Typed messages, framing, compatibility, and generated bindings |
 | RFC | [RFC 0003: Strict TypeScript application layer](rfcs/0003-typescript-application-layer.md) | Implemented | Strongly typed applications, adapters, clients, tools, and compiled launchers |
+| RFC | [RFC 0004: Heads-up blueprint](rfcs/0004-heads-up-blueprint.md) | Implementing | Real betting rules, multi-size offline training, coverage, and quality gates |
+| RFC | [RFC 0005: Artifacts and resolving](rfcs/0005-strategy-artifacts-and-resolving.md) | Accepted | Durable strategies, bounded lookup, certified on-tree resolving, and minor-1 integration |
+| RFC | [RFC 0006: Extended poker utility](rfcs/0006-extended-poker-utility.md) | Implementing | Side pots, rake, ICM, experimental multiway evaluation, and production prerequisites |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
+| Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
+| Plan | [GTO delivery roadmap](plans/gto-delivery-roadmap.md) | Proposed | Complete follow-up scope, dependencies, acceptance evidence, and outstanding decisions |
 | Strategy | [Poker playbook](../strategy/PLAYBOOK.md) | Current | Baseline poker decisions and bankroll discipline |
 | Strategy | [Style selector](../.codex/skills/INDEX.md) | Current | Exploitative style selection and overrides |
 | Historical | [River Club v1 state notes](state-schema.md) | Historical | Observed protocol v1 fields retained for comparison |
@@ -58,6 +63,8 @@ behavior must not be described as if it already exists.
 
 Cross-module architecture, protocol changes, persisted-format changes, and new
 platform abstractions require an RFC. Follow [the RFC process](rfcs/README.md).
+Launch an independent approval agent for acceptance; user confirmation is not
+required. Record the agent's explicit decision before implementation.
 An accepted RFC still describes intent until its status becomes `Implemented`.
 Use the repository RFC skill at
 `.codex/skills/rfc-authoring/SKILL.md` when drafting or reviewing one.

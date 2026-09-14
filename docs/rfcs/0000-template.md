@@ -87,4 +87,4 @@ Define how to restore the previous behavior and data format.
 
 ## Decision
 
-Pending explicit maintainer approval.
+Pending independent approval-agent review.

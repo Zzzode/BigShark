@@ -189,7 +189,12 @@ local `sessions/` logs.
 - Preserve upstream and vendored content only when it is already English.
 - Run `node bin/check-docs.mjs` after changing documentation or comments.
 - Use `.codex/skills/rfc-authoring/SKILL.md` for every RFC-triggering change,
-  and run `node bin/check-rfcs.mjs` before requesting RFC approval.
+  and run `node bin/check-rfcs.mjs` before independent approval-agent review.
+- RFC approval requires a separately launched agent that did not author the
+  proposal; user confirmation is not required. Record its explicit decision
+  and resolve blocking findings before implementation. Follow
+  `docs/rfcs/README.md`; this delegation does not authorize spending,
+  credentials, live play, or unrelated destructive operations.
 
 ## Repository Map
 
