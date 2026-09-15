@@ -10,7 +10,7 @@ integration, and development documentation.
 | Area | Document | Status | Purpose |
 | --- | --- | --- | --- |
 | Architecture | [System overview](architecture/system-overview.md) | Current | Components, boundaries, data flow, and runtime safety |
-| Design | [GTO engine](design/gto-engine.md) | Current | Implemented decision logic, solvers, range tracking, and limitations |
+| Design | [GTO engine](design/gto-engine.md) | Current | Implemented decision logic, solvers, range tracking, RFC 0005 strategy artifacts, and limitations |
 | Reference | [Engine protocol](reference/engine-protocol.md) | Current | NDJSON request and response contract used by the C++ process |
 | Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | Implemented v1 IDL, pinned generation, compatibility baseline, and conformance vectors |
 | Integration | [River Club](integrations/river-club.md) | Current | River Club adapter, state machine, and operational mapping |

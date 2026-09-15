@@ -2,9 +2,9 @@
 
 Status: Current
 
-Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 11, and
-the isolated Stage 12 ICM complete with recorded evidence. Stage 5 artifact
-storage is next. RFC 0005 remains Accepted.
+Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 5, 11,
+and the isolated Stage 12 ICM are complete with recorded evidence. Stage 6
+(artifact resident lookup) is next. RFC 0005 remains Accepted.
 
 Active goal: finish all accepted RFC 0004-0006 scope. A checkpoint is not
 goal completion; continue remaining stages until their acceptance evidence
@@ -29,8 +29,8 @@ evidence specified for each stage.
 
 ## Stages and Evidence
 
-Stages 1, 2, 3, 4, 11, and the isolated Stage 12 ICM are complete;
-Stage 5 and all other work remain Pending. Owners name existing
+Stages 1, 2, 3, 4, 5, 11, and the isolated Stage 12 ICM are complete;
+Stage 6 and all other work remain Pending. Owners name existing
 modules or the explicitly approved artifact boundary, not separate services.
 
 | Stage | Roadmap IDs | Owner | Implementation | Required completion evidence |
@@ -228,13 +228,228 @@ Stage 4 evidence (2026-09-15):
   `docs/design/gto-engine.md`, and the manual target in
   `docs/development/build-and-test.md`. No new ctest was registered.
 
+## Stage 5 Evidence (2026-09-15)
+
+- New offline static library `bigshark_artifacts` under RFC 0005's approved
+  `engine`-owned boundary. Public surface: `engine/include/bs/strategy_artifact.hpp`
+  (domain records only; no SQLite or OpenSSL types); private implementation in
+  `engine/src/artifacts/artifact_codec.cpp`, `strategy_artifact.cpp`,
+  `artifact_digest.cpp`, and the private `artifact_internal.hpp`. The library
+  links `bigshark_solver` PUBLIC for the domain types and the storage/crypto
+  dependencies PRIVATELY; no host, service, client, platform, v0 protocol, or
+  live path links it in this stage. The only solver-domain change is a
+  sanctioned `HeadsUpPolicy` friend grant for the artifact record assembler and
+  a test-only resume hook behind the existing debug passkey; the Stage 1-4
+  CFR math and benchmarks are unchanged.
+- Vendored SQLite: official public-domain amalgamation SQLite 3.50.0
+  (`sqlite-amalgamation-3500000.zip`, published 2025-05-29), unmodified files
+  `sqlite3.c`, `sqlite3.h`, `sqlite3ext.h` under `engine/third_party/sqlite/`
+  with the public-domain `LICENSE`; built privately as `bigshark_sqlite` with
+  `-w`, `SQLITE_THREADSAFE=1`, and `SQLITE_OMIT_LOAD_EXTENSION=1`. The
+  system/Homebrew SQLite is never linked; SQLite 3.37+ is asserted at both
+  compile time and open time. SHA-256 uses OpenSSL 3 Crypto only: on this
+  Apple arm64 machine CMake resolves `OpenSSL::Crypto` 3.6.3
+  (`brew openssl@3 3.6.3`, headers `/opt/homebrew/opt/openssl@3/include`,
+  `lib/libcrypto.3.dylib`) and links it PRIVATELY; a Homebrew keg-prefix and
+  `OPENSSL_ROOT_DIR` fallback follows, and configure fails clearly when
+  OpenSSL 3 is absent. Notices: `THIRD_PARTY_NOTICES.md`,
+  `engine/third_party/sqlite/LICENSE`, and `engine/third_party/openssl/LICENSE`
+  (verbatim Apache 2.0).
+- Authoritative schema v1: `application_id = 0x42534754`, `user_version = 1`,
+  STRICT tables, foreign keys on, prepared statements throughout. Tables
+  `manifest`, `game`, `sizes`, `ranges`, `information_states`, `actions`,
+  `training` (checkpoint only), `bounds`, and `measurements` (the last two
+  exist, are validated, and are empty in this stage). INTEGERs are range
+  checked to `2^53 - 1`; REALs reject NaN/Infinity; per-row action
+  probabilities must sum to one within `1e-12`. The public information key is
+  the RFC 0005 canonical ASCII `street|board_ids|events` (justified in
+  `docs/design/gto-engine.md`), stored with separate player/own-combo columns;
+  combo ids are a canonical zero-based index of the 1326 unordered hands.
+  Checkpoint writes are one transaction per complete iteration with rollback
+  journaling and `synchronous=FULL`; resume compares the full canonical
+  identity and refuses published policies. Publication fills a unique temp file
+  on the destination filesystem, fsyncs file and parent directory, links it
+  exclusively into a new never-overwritten `0444` generation, verifies
+  SHA-256/size, and reopens it read-only (`query_only`, defensive, untrusted
+  schema, 64 MiB cache, extension loading compiled out). The reader validates
+  physical header/database-size agreement before open, rejects files over the
+  8 GiB bound, unknown schema objects, bad keys, and all non-finite or
+  out-of-range values; rows are eagerly loaded, with bounded resident subsets
+  explicitly deferred to Stage 6.
+- Native evidence: `engine/tests/test_artifacts.cpp`, registered as
+  `artifacts`, independently authored. It covers (1) full-traversal
+  checkpoint round trip with exact sizes/cards/combo/target identity, bit-exact
+  raw regret/average replay, tolerance-checked probabilities, an independent
+  schema/STRICT/count oracle, and a forked second-process reader; (2)
+  hand-authored canonical-key bytes and malformed-key rejection; (3) split-run
+  equality: 60 then checkpoint/resume versus 120 uninterrupted sampled
+  iterations, reloaded policies and raw rows matching with maximum policy
+  probability delta exactly `0` (reported by the test) and byte-identical
+  independently published generations; (4) canonical identity-mismatch resume
+  rejection for stacks, button, pot, board, runout, range weights, size
+  schedule, algorithm/PRNG id, and seed; (5) faults: deterministic
+  `SQLITE_FULL` injected through a test-only SQLite VFS shim at create and
+  commit (old-or-new, never partial, after hot-journal recovery), real
+  `fork()`/`_exit()` killed-writer rounds pre- and post-commit, and
+  journal-removal torn-file rejection; (6) page, magic, and page-size
+  corruption, truncation, unknown `application_id`/`user_version`, foreign-key
+  and STRICT rejection, byte-planted NaN/+Inf/-Inf REALs, bad probability
+  sums, and integers beyond `2^53 - 1`; (7) immutability: no overwrite, `0444`
+  mode, write refusal, no leftover temp names, digest mismatch on byte edit,
+  and refusal to publish an empty policy.
+- Gates: Release CTest 24/24 (203.57 seconds wall on this run, including the
+  existing benchmark families); ASan/UBSan CTest recorded below; format,
+  documentation, and RFC checks pass; `npm run check`, `npm run proto:check`,
+  and `node bin/replay.mjs` are unchanged and pass. The new library is
+  offline only; `apps/`, `clients/`, `platforms/`, the v0 protocol, and the
+  Stage 1-4 benchmarks and solver math were not wired or altered (apart from
+  the friend/passkey additions described above).
+- Dependency portability: SQLite is vendored and OpenSSL is the only new
+  system dependency. Native dependency builds were verified on macOS
+  (Apple arm64, OpenSSL 3.6.3) only; Linux distro-OpenSSL verification via the
+  existing `tools/ci` lane remains an explicit external gate.
+- Working-tree checkpoint; nothing is committed.
+
+ASan/UBSan result (initial Stage 5): 22/22 tests passed (exit 0, no ASan or
+UBSan reports), including `artifacts` in 4.29 seconds under instrumentation;
+the existing instrumented sampled test took 1,341.17 seconds as on prior
+stages. The artifacts transaction, hard-link/fsync, VFS fault shim, and
+corruption paths are all exercised under AddressSanitizer and
+UndefinedBehaviorSanitizer.
+
+### Stage 5 independent adversarial review hardening (2026-09-16)
+
+An independent skeptic double-confirmed five defects (2 P1, 3 P2); all five,
+plus the same-family audit, are fixed with adversarial regression tests that
+fail (red) when each production fix is reverted:
+
+- P1-1 fixed-array indexing from untrusted columns (`read_sizes`
+  street/kind, and the same-family audit over `read_ranges` player/combo,
+  `read_states` player/own-cards/ids, `read_actions`/`read_training`
+  info_id/ordinal/kind, `read_game` button/flop/runout): every file-derived
+  value now has an explicit C++ domain/range check before any fixed-size
+  indexing. Root cause hardened in `verify_schema_objects`: each table's
+  stored CREATE text must now be byte-identical to the canonical `kSchemaDdl`
+  constant, the table set must be exactly the canonical set (no more, no
+  fewer), indexes must be `sqlite_autoindex_*` with NULL CREATE text, and any
+  view/trigger/other `sqlite_schema` row is rejected, so CHECK/FK/STRICT
+  clauses can no longer be stripped. Cross-table orphan checks
+  (actions->states, training->actions, every state has an action) were added.
+  Mutation verification: removing the street check causes an immediate ASan
+  `stack-buffer-overflow` abort in `read_sizes` on a writable_schema,
+  street=16 fixture (release also rejects it).
+- P1-3 untrusted reader now uses `file:<percent-encoded absolute
+  path>?immutable=1` with `SQLITE_OPEN_READONLY|SQLITE_OPEN_URI` (no recovery,
+  no sidecar access); before opening it rejects any `<path>-wal/-shm/-journal`
+  sibling and the physical header check rejects WAL file-format bytes 18/19
+  != 1. A committed sidecar generated by a forked child genuinely returns
+  `completed_iterations=777` to an ordinary connection but is rejected by the
+  artifact reader; the immutable reader never creates an `-shm` or touches the
+  `-wal`, including with a pinned digest. The `commit_checkpoint` identity
+  probe uses the same immutable/sidecar-rejecting read; writer crash/ENOSPC
+  recovery is unchanged.
+- P2-2 `decode_public_key` now requires all public board IDs to be pairwise
+  distinct in addition to not overlapping the own combo; `0|3,3,3|` and a
+  turn repeating the flop are rejected at load and publish.
+- P2-4 a process-once `sqlite3_hard_heap_limit64(kReaderHeapBoundBytes)` with
+  `kReaderHeapBoundBytes = 512 MiB` is installed before opening an untrusted
+  reader (the 3.50 amalgamation exposes only the process-global API and this
+  private SQLite has no other in-process consumer); `SQLITE_NOMEM` maps to a
+  typed `CapacityExceeded` error. The regression exercises the view-zip-bomb
+  rejection path (500 CREATE VIEW) and asserts the heap ceiling is installed;
+  honestly, actually exhausting 512 MiB needs a >512 MiB fixture and is not
+  fabricated, so only the bounded-design and rejection path is tested.
+- P2-5 `open_writer` now fails closed: `apply_writer_pragmas` plus
+  `verify_writer_pragmas` read `synchronous` and `journal_mode` back on the
+  same writer connection and abort with a Sqlite error unless they are `2`
+  (FULL) and `delete`; a whitebox test sets `synchronous=OFF` and asserts the
+  verifier throws. The old cross-connection synchronous assertion (which read
+  the compile default and could not detect an OFF change) is removed; the
+  file-header `journal_mode` cross-connection check is retained.
+- Cleanups: removed unused includes/using-decls and added required includes
+  per the reviewer's clangd findings; no solver math or the `1e-12` tolerance
+  was changed.
+
+New evidence: the `adversarial` case in `engine/tests/test_artifacts.cpp`
+(now 8 cases) constructs all malicious files with a separate ordinary
+sqlite3 connection or the platform `unix` VFS, so the library's own code is
+not used to vouch for the tampered input.
+
+Post-hardening gates: Release CTest 24/24 (239.49 seconds wall; `artifacts`
+2.13 seconds); ASan/UBSan recorded below; format-check, `npm run check`
+32/32, `npm run proto:check`, `node bin/replay.mjs` (Decisions 156, Illegal 0,
+JS fallbacks 0), `check-docs`, and `check-rfcs` all pass. Nothing committed;
+HEAD remains 3ff6d86.
+
+Post-hardening ASan/UBSan result: 22/22 tests passed (exit 0, no ASan or
+UBSan reports); the hardened `artifacts` suite (now including the
+`adversarial` case) passed in 5.93 seconds under instrumentation and the
+instrumented sampled test took 1,363.18 seconds. All fixed-array domain
+checks, byte-identical schema validation, immutable/sidecar rejection, board
+distinctness, the heap bound, and the synchronous=FULL writer gate are
+exercised under AddressSanitizer and UndefinedBehaviorSanitizer (the
+reverted street-check mutation aborts with a confirmed
+`stack-buffer-overflow` at `read_sizes`).
+
+### Stage 5 second-round review: int64 narrowing audit (2026-09-16)
+
+The second independent review found one residual P2 in the same P1-1 family:
+`read_states` narrowed player/card0/card1 and `read_actions` narrowed kind to
+`int` before the small-domain check, so `2^32`-congruent values (player
+`4294967296` -> 0, card0 `4294967296` -> 0, card1 `4294967297` -> 1, kind
+`4294967297` -> 1) passed after the information_states/actions CHECKs were
+stripped via writable_schema and the byte-canonical DDL restored, binding a
+probability row to a combo that never held it.
+
+A complete same-family audit of every `column_i64` narrowing site was done.
+All reads now validate the raw `std::int64_t` value before narrowing. Fixed
+in this round: `read_states` player/own-cards, `read_actions` kind,
+`read_game` button and fixed turn/river cards (the runout previously narrowed
+before its 0..51 check, so `2^32` would silently become card 0), and the
+manifest `information_key_revision` plus the reader's `application_id` /
+`user_version` comparisons (now exact raw-int64 comparisons instead of
+`uint32` truncation). Already correct and confirmed: `read_sizes`
+street/kind/ordinal, `read_ranges` player/combo, `read_training` info_id/
+ordinal, `read_actions` info_id/ordinal (raw checked first), all chip/
+counter values through `read_bounded_i64` (raw range 0..2^53-1 before
+cast), and the auxiliary `bounds`/`measurements` readers (values stay int64,
+range checked, never narrowed for indexing).
+
+New adversarial regressions (in the `adversarial` case): strip
+information_states/actions CHECKs, plant `2^32`-congruent player/cards/kind
+and a `2^32+52` negative control, restore canonical DDL, assert rejection.
+Mutation verified: reverting read_states/read_actions to narrow-first makes
+the congruence assertions fail red; the in-place fix restores green.
+
+Gates after this change: format + format-check pass; full Release CTest
+24/24 (314.63 seconds wall on the chained run, `artifacts` 14.86 seconds);
+targeted ASan `ctest -R artifacts` passes in 8.96 seconds with no ASan/UBSan
+report (no memory layout changed, only validation ordering, so the full
+22-minute ASan suite was not rerun as scoped); `check-docs` and
+`check-rfcs` pass.
+
+A third, fresh independent skeptic (not the implementer or either prior
+reviewer) rebuilt the current tree and executed the bypass end to end against
+the real static library: `2^32` player/cards and `2^32+1` action kind are all
+rejected with `InvalidSchema`/`InvalidValue`, the `2^32+52` negative control is
+rejected, and an unmodified checkpoint still loads (71 states); reverting to
+narrow-first made the planted files load and turned the adversarial regression
+red at `test_artifacts.cpp:1514`. A full narrowing-site audit found every
+`column_i64`/`pragma_i64` value raw-range-checked before narrowing. The only
+residual was a non-exploitable P3 statement ordering in `read_training` (the
+narrowed ordinal was dead until after the raw range check); that ordering was
+moved below the check for consistency. Final Release CTest after that reorder:
+24/24 (271.95 seconds wall; benchmark label 203.82 seconds), `artifacts` green,
+format-check clean.
+
 ## Next Implementation Checkpoint
 
-Stage 5 adds the RFC 0005 artifact boundary: the authoritative SQL schema,
-transactional checkpoints, immutable export, digest, and bounded reader, with
-crash/full-disk/corruption/version tests and macOS/Linux native dependency
-builds. Keep v0 contexts, production policy routing, and external commands
-unchanged.
+Stage 6 adds the RFC 0005 resident lookup layer: complete supported root
+subsets loaded eagerly from validated immutable artifacts, public policy reach
+with correct blocker filtering, explicit coverage misses, no request-path SQL,
+and latency measurements at 100,000 information sets. The artifact boundary and
+storage from Stage 5 are already in place; no host or live path is wired yet.
+Keep v0 contexts, production policy routing, and external commands unchanged.
 
 Before each later stage, define exact owned files and record which preceding
 gate passed. Use independent bounded reviewers for algorithm, persistence,

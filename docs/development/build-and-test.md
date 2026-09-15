@@ -11,13 +11,31 @@ Status: Current
 - Node.js 20 or newer
 - npm with dependencies installed through `npm ci`
 - unzip for the checksum-verified Protobuf compiler bootstrap
+- OpenSSL 3 development headers and `libcrypto` for the RFC 0005 strategy
+  artifact SHA-256 digest; this dependency is required, never optional
 - Optional: HiGHS for the exact river LP backend
 
-On macOS, install the optional solver with:
+On macOS, install the optional solver and the required crypto library with:
 
 ```bash
-brew install highs
+brew install highs openssl@3
 ```
+
+The engine build finds OpenSSL 3 Crypto in this order: first the CMake
+`find_package(OpenSSL 3)` imported `OpenSSL::Crypto` target; then, when that
+does not resolve, the Homebrew keg-only prefixes `/opt/homebrew/opt/openssl@3`
+and `/usr/local/opt/openssl@3` (arm64 and Intel macOS), followed by
+`OPENSSL_ROOT_DIR`. Only `libcrypto` is linked, PRIVATELY into
+`bigshark_artifacts`; `libssl` is not used. The configure step records the
+resolved target and version (`OpenSSL 3 Crypto for bigshark_artifacts: ...`)
+and fails with a clear error if OpenSSL 3 cannot be found rather than building
+without digest support. On this Apple arm64 development machine CMake finds
+Homebrew `openssl@3` 3.6.3 at `/opt/homebrew/opt/openssl@3` (headers under
+`include/openssl`, `lib/libcrypto.3.dylib`) through the imported target.
+
+Linux builds use the distribution OpenSSL 3 via `find_package(OpenSSL 3)`; no
+Homebrew fallback is needed. Linux native dependency verification is still an
+external gate: Stage 5 dependency builds were verified on macOS only.
 
 Without HiGHS, the engine builds and uses bounded DCFR for river solving.
 
@@ -180,6 +198,7 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `heads_up_solver` | Multi-size full CFR, exact pure-response oracle, coverage, convergence, and resource rollback |
 | `heads_up_solver_sampled` | Pinned SplitMix64, enumerated external-sampling update expectations under weighted ranges and free chance, kSimple averages, repeatability, PRNG/iteration rollback, chance-conditioned best response, and sampled convergence smoke gates |
 | `heads_up_allocations` | Every-allocation fault injection, transactional publication, and measured peak memory budgets |
+| `artifacts` | RFC 0005 checkpoint/export round trip, independent-process reader, split-run resume equality, canonical key grammar, identity-mismatch resume rejection, transactional ENOSPC, killed-writer and journal-removal recovery, page/header/truncation/version corruption, STRICT and foreign-key rejection, NaN/Inf and probability-sum validation, and immutable-publication guarantees |
 | `settlement` | Contribution layers, refunds, ties, capped rake, odd-chip order, exhaustive grids, and conservation |
 | `icm` | Bounded prize equity, independent permutation oracle, bust handling, and prize-unit conservation |
 | `equity` | Deterministic equity, multiway sanity, and draw classification |

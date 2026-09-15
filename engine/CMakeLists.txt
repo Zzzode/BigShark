@@ -81,6 +81,91 @@ add_library(bigshark_yyjson STATIC third_party/yyjson/yyjson.c)
 target_include_directories(bigshark_yyjson PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(bigshark_yyjson PRIVATE -w)
 
+# Vendored SQLite amalgamation (RFC 0005). The system/Homebrew SQLite is never
+# linked. SQLITE_OMIT_LOAD_EXTENSION removes extension loading at compile time;
+# threads stay enabled. The include directory is internal to the engine tree
+# and the artifacts public headers never expose sqlite3.h.
+add_library(bigshark_sqlite STATIC third_party/sqlite/sqlite3.c)
+target_include_directories(bigshark_sqlite PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite)
+target_compile_options(bigshark_sqlite PRIVATE -w)
+target_compile_definitions(bigshark_sqlite PRIVATE
+  SQLITE_THREADSAFE=1
+  SQLITE_OMIT_LOAD_EXTENSION=1
+)
+
+# OpenSSL 3 Crypto is required for SHA-256 artifact digests and is linked
+# PRIVATELY into bigshark_artifacts. Prefer the CMake package, then the
+# Homebrew keg-only prefixes; fail clearly instead of silently disabling.
+if(NOT DEFINED BS_OPENSSL_CRYPTO_TARGET)
+  find_package(OpenSSL 3 QUIET)
+  if(OPENSSL_FOUND AND TARGET OpenSSL::Crypto)
+    set(BS_OPENSSL_CRYPTO_TARGET OpenSSL::Crypto)
+    set(BS_OPENSSL_FOUND_VERSION "${OPENSSL_VERSION}")
+  else()
+    set(_bs_openssl_prefixes)
+    if(APPLE)
+      list(APPEND _bs_openssl_prefixes
+        /opt/homebrew/opt/openssl@3
+        /usr/local/opt/openssl@3
+      )
+    endif()
+    if(DEFINED ENV{OPENSSL_ROOT_DIR})
+      list(PREPEND _bs_openssl_prefixes "$ENV{OPENSSL_ROOT_DIR}")
+    endif()
+    foreach(_bs_prefix IN LISTS _bs_openssl_prefixes)
+      if(EXISTS "${_bs_prefix}/include/openssl/evp.h"
+         AND EXISTS "${_bs_prefix}/lib/libcrypto.dylib")
+        set(_bs_openssl_include "${_bs_prefix}/include")
+        set(_bs_openssl_lib "${_bs_prefix}/lib/libcrypto.dylib")
+        break()
+      elseif(EXISTS "${_bs_prefix}/include/openssl/evp.h"
+             AND EXISTS "${_bs_prefix}/lib/libcrypto.so")
+        set(_bs_openssl_include "${_bs_prefix}/include")
+        set(_bs_openssl_lib "${_bs_prefix}/lib/libcrypto.so")
+        break()
+      endif()
+    endforeach()
+    if(DEFINED _bs_openssl_lib)
+      add_library(bs_openssl_crypto SHARED IMPORTED)
+      set_target_properties(bs_openssl_crypto PROPERTIES
+        IMPORTED_LOCATION "${_bs_openssl_lib}"
+        INTERFACE_INCLUDE_DIRECTORIES "${_bs_openssl_include}"
+      )
+      set(BS_OPENSSL_CRYPTO_TARGET bs_openssl_crypto)
+      file(READ "${_bs_openssl_include}/openssl/opensslv.h" _bs_opensslv)
+      set(BS_OPENSSL_FOUND_VERSION "prefix ${_bs_prefix}")
+      unset(_bs_opensslv)
+    endif()
+  endif()
+  if(NOT DEFINED BS_OPENSSL_CRYPTO_TARGET)
+    message(FATAL_ERROR
+      "OpenSSL 3 Crypto was not found. RFC 0005 artifacts require it for "
+      "SHA-256. Install it (macOS: brew install openssl@3) or set "
+      "OPENSSL_ROOT_DIR. It is never acceptable to build without digest "
+      "support.")
+  endif()
+  message(STATUS "OpenSSL 3 Crypto for bigshark_artifacts: ${BS_OPENSSL_CRYPTO_TARGET} ${BS_OPENSSL_FOUND_VERSION}")
+endif()
+
+# RFC 0005 offline strategy artifacts. SQLite and Crypto stay PRIVATE; the
+# public surface exchanges only solver domain records.
+add_library(bigshark_artifacts STATIC
+  src/artifacts/artifact_codec.cpp
+  src/artifacts/strategy_artifact.cpp
+  src/artifacts/artifact_digest.cpp
+)
+target_include_directories(bigshark_artifacts
+  PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(bigshark_artifacts
+  PUBLIC  bigshark_solver
+  PRIVATE bigshark_sqlite
+  PRIVATE ${BS_OPENSSL_CRYPTO_TARGET}
+)
+
+
 # Vendored OpenSpiel is private to the solver target.
 add_subdirectory(third_party/open_spiel EXCLUDE_FROM_ALL)
 
@@ -266,6 +351,16 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_heads_up_allocations PRIVATE bigshark_poker)
   add_test(NAME heads_up_allocations COMMAND test_heads_up_allocations)
+
+  add_executable(test_artifacts tests/test_artifacts.cpp)
+  target_include_directories(test_artifacts PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_artifacts PRIVATE
+    bigshark_artifacts
+    bigshark_sqlite
+  )
+  add_test(NAME artifacts COMMAND test_artifacts)
 
   add_executable(test_equity tests/test_equity.cpp)
   target_link_libraries(test_equity PRIVATE bigshark_poker)

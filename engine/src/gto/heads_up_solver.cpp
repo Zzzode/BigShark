@@ -756,17 +756,30 @@ std::vector<std::uint64_t> HeadsUpSolverDebug::splitmix64(std::uint64_t seed, st
 }
 
 template <typename Rng>
-DebugTrainingOutput HeadsUpSolverDebug::run_sampled(const HeadsUpGame& game,
-                                                    std::uint64_t iterations, Rng& rng,
-                                                    std::uint64_t seed, TrainingLimits limits,
-                                                    bool export_raw_rows) {
+DebugTrainingOutput HeadsUpSolverDebug::run_sampled(
+    const HeadsUpGame& game, std::uint64_t iterations, Rng& rng, std::uint64_t seed,
+    TrainingLimits limits, bool export_raw_rows, const std::map<InformationKey, DebugRow>* resume,
+    std::uint64_t start_iterations) {
   const detail::HeadsUpDebugKey key;
   Budget budget(limits);
   DebugTrainingOutput output;
   output.result.seed = seed;
   Table committed;
   try {
-    budget.allocate(game_byte_charge(game));
+    if (resume != nullptr) {
+      // RFC 0005 resume: reinstall the checkpointed raw table before the first
+      // new iteration. Row byte charges go through the same budget as a newly
+      // grown row so resumed runs keep the same accounting profile.
+      budget.allocate(game_byte_charge(game));
+      for (const auto& [resume_key, row] : *resume) {
+        auto actions = row.actions;
+        budget.allocate(row_bytes(resume_key, actions.size()));
+        committed.emplace(resume_key, Info{std::move(actions), row.regrets, row.sums});
+      }
+      output.result.completed_iterations = start_iterations;
+    } else {
+      budget.allocate(game_byte_charge(game));
+    }
     detail::HeadsUpDebugKey::set_policy_game(output.result.policy, game, key);
     const auto deals = joint_deals(game, budget);
     std::vector<double> weights;
@@ -826,6 +839,20 @@ DebugTrainingOutput HeadsUpSolverDebug::train_sampled(const HeadsUpGame& game,
                                                       TrainingLimits limits) {
   SplitMix64 rng(seed);
   DebugTrainingOutput output = run_sampled(game, iterations, rng, seed, limits, true);
+  output.result.prng_state = rng.state;
+  return output;
+}
+
+DebugTrainingOutput HeadsUpSolverDebug::resume_sampled(
+    const HeadsUpGame& game, std::uint64_t additional_iterations, std::uint64_t seed,
+    std::uint64_t initial_prng_state, std::uint64_t completed_iterations,
+    const std::map<InformationKey, DebugRow>& initial, TrainingLimits limits) {
+  require(additional_iterations > 0, "resume requires at least one iteration");
+  SplitMix64 rng(seed);
+  // Continue the exact stream recorded by the checkpoint; no draws replayed.
+  rng.restore(initial_prng_state);
+  DebugTrainingOutput output = run_sampled(game, additional_iterations, rng, seed, limits, true,
+                                           &initial, completed_iterations);
   output.result.prng_state = rng.state;
   return output;
 }

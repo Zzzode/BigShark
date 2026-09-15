@@ -1,0 +1,18 @@
+SQLite Is Public Domain
+
+The author disclaims copyright to this source code. In place of a legal
+notice, here is a blessing:
+
+  May you do good and not evil.
+  May you find forgiveness for yourself and forgive others.
+  May you share freely, never taking more than you give.
+
+This directory vendors the official SQLite amalgamation, unmodified:
+
+  SQLite version 3.50.0 (sqlite-amalgamation-3500000.zip)
+  Published 2025-05-29
+  Source: https://www.sqlite.org/2025/sqlite-amalgamation-3500000.zip
+  Project: https://www.sqlite.org/
+
+The official copyright and blessing statement is at
+https://www.sqlite.org/copyright.html. SQLite Is Public Domain.

@@ -53,6 +53,7 @@ flowchart TD
 | `include/bs/eval.hpp` | Five-to-seven-card hand evaluation and comparable scores |
 | `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
 | `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response |
+| `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
 | `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..6-player ledger |
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
@@ -261,6 +262,113 @@ claiming the small-game threshold, with a documented `--freeze` rebase
 procedure for other platforms. The catalog, CSV fields, and reference-
 machine numbers are in [Benchmarking](../development/benchmarking.md). This
 is a bounded frozen matrix, not full-game equilibrium coverage.
+
+## Strategy Artifacts (RFC 0005 Stage 5)
+
+The offline `bigshark_artifacts` static library serializes RFC 0004 training
+checkpoints and immutable, validated policy exports. Its public surface is
+`include/bs/strategy_artifact.hpp`, implemented under `src/artifacts/`, and
+exchanges only solver domain records (`HeadsUpGame`, `HeadsUpPolicy`,
+`TrainingResult`, `InformationKey`, `PolicyRow`, and the checkpoint-only raw
+regret/average rows). SQLite and OpenSSL headers never appear in the public
+header; SQL handles never cross the boundary. The library links
+`bigshark_solver` publicly for the domain types and keeps the vendored SQLite
+amalgamation and OpenSSL Crypto PRIVATE. No host, service, client, platform, or
+live-decision path links it in this stage; wiring is deferred.
+
+```mermaid
+flowchart LR
+  Host[future host / offline trainer] --> Artifacts[bigshark_artifacts]
+  Artifacts --> Solver[bigshark_solver domain records]
+  Artifacts -.private.-> SQLite[(vendored SQLite 3.50.0)]
+  Artifacts -.private.-> Crypto[(OpenSSL 3 libcrypto SHA-256)]
+```
+
+The artifact is a SQLite database with `application_id = 0x42534754` ("BSGT"),
+`user_version = 1`, STRICT tables, foreign keys enforced, prepared statements
+throughout, and a compile/runtime requirement of SQLite 3.37 or newer. Tables:
+
+| Table | Content |
+| --- | --- |
+| `manifest` | Singleton: artifact kind (`checkpoint`/`policy`), algorithm revision, information-key revision, numeric profile, validation state, engine revision, completed iterations, PRNG identifier, seed and PRNG state (16 lowercase hex digits), run status, node/set/byte counters |
+| `game` | Singleton: rules and utility identifiers, button, big blind, flop, optional fixed turn/river, both stacks and contributions, pot |
+| `sizes` | Ordered `(street, kind, ordinal)` rational bet/raise numerator and denominator |
+| `ranges` | `(player, combo)` primary key, canonical zero-based unordered combo id 0..1325, nonnegative finite REAL weight |
+| `information_states` | Integer id, player, own combo columns, and the canonical ASCII public key; full identity unique |
+| `actions` | `(info_id, ordinal)` primary key with FK, kind, optional target total, finite probability; per-row probabilities sum to one within `1e-12` |
+| `training` | Checkpoint-only FK to `(info_id, ordinal)`: cumulative regret and nonnegative unnormalized average weight |
+| `bounds` | RFC 0005 certification columns; present and validated, empty in this stage |
+| `measurements` | Fixture, seed, iterations, metric, exact/estimated class, finite value; empty in this stage |
+
+The information-state public key is the RFC 0005 canonical ASCII sequence
+`street|board_ids|events`, chosen over a binary BLOB key because it is
+self-describing, directly inspectable with SQLite tooling, and keeps the
+versioned grammar explicit. It is stored alongside the acting player and own
+combo in typed columns; the key itself contains no private cards. Events are
+comma-separated `actor:kind:target` triples with kinds `f/x/c/b/r`; public
+deals are represented entirely by the ordered `board_ids` sequence, so
+revision-1 event text never contains `d` triples. Board counts pin the street,
+and the reader reparses the round-end grammar, decimal rules (no leading
+zeros), targets (`-` for non-aggressive actions), and board/hole separation.
+
+Chip and rational values follow the RFC 0004 `2^53 - 1` profile: every stored
+INTEGER is range-checked on read, doubles are stored as REAL with NaN and
+infinity rejected, and probabilities are validated per row. Rational sizes,
+card ids, combo identity, action kinds, and aggressive targets round-trip
+exactly; REAL probabilities and training values round-trip as IEEE doubles.
+
+Checkpoints are mutable. `create_checkpoint` writes one complete iteration in
+a single transaction with rollback journaling and `synchronous=FULL`;
+`commit_checkpoint` replaces the policy and training state in one transaction
+and only after a read-only identity probe proves the full canonical identity
+(root board and street, button, blinds, stacks, contributions, pot, utility,
+every range weight, ordered rational sizing schedule, algorithm/key/numeric
+revisions, PRNG identifier, and seed). A mismatch fails with a typed
+`IdentityMismatch` before any write. A published policy cannot be resumed as
+training state.
+
+Publication writes a fresh SQLite file to a unique temporary name in the
+destination directory, fills and validates it in one transaction, closes it,
+fsyncs the file, marks it `0444`, places it with an exclusive same-filesystem
+hard link (never overwriting), and fsyncs the parent directory before and
+after removing the temporary name. The generation is identified by SHA-256
+(OpenSSL 3 EVP, streamed within the file bound) of its bytes; the digest is
+never stored inside the hashed file. Publication independently reopens the
+linked file read-only with the computed digest before returning.
+
+Readers treat the file as untrusted: reject above an 8 GiB default bound
+(overridable), validate the physical header and committed in-header database
+size before opening, and require legacy (non-WAL) file-format version bytes;
+they reject any `<path>-wal`, `-shm`, or `-journal` sibling (the digest covers
+only the main file) and open through a percent-encoded
+`file:...?immutable=1` URI so SQLite performs no journal recovery or sidecar
+I/O and reads exactly the hashed bytes. They open `SQLITE_OPEN_READONLY` with
+foreign keys, `query_only`, `trusted_schema=OFF`, a 64 MiB page-cache cap, and
+extension loading compiled out; then verify application id and schema
+version, require byte-identical canonical CREATE definitions (not merely a
+STRICT suffix) with an exact table set and no views, triggers, user indexes,
+or other schema objects, run `integrity_check` and `foreign_key_check`, and
+validate every REAL, probability sum, integer range, canonical key (including
+public-card pairwise distinctness), referential link, and fixed-array
+domain. A process-once 512 MiB SQLite hard heap limit bounds schema-parse
+amplification. Every column value used as an array/enum index is range
+checked in C++ before indexing, independent of write-time SQL CHECKs.
+Optional digest pinning rejects a tampered file before parsing. Failures are
+typed `ArtifactError` values (including a dedicated capacity-exceeded kind).
+This stage eagerly loads all rows into immutable domain records; bounded
+resident subset selection and any decision-path access belong to Stage 6.
+Checkpoint writers fail closed: after setting the writer pragmas they read
+`synchronous` (`2`/FULL) and `journal_mode` (`delete`) back on the same
+connection and abort on mismatch; the per-connection synchronous setting is
+not observable through a second connection.
+
+The new fault evidence (`artifacts` CTest) covers lossless round trips
+including an independent forked-process reader, split-run resume equality
+within `1e-12`, full canonical identity mismatch rejection, transactional
+ENOSPC injected through a test-only VFS shim, real killed-writer rounds with
+and without the rollback journal, page/header/truncation corruption, unknown
+versions, foreign-key and STRICT rejection, NaN/Inf REALs, bad probability
+sums, oversized integers, and immutable-publication guarantees.
 
 ## Offline ICM Arithmetic
 

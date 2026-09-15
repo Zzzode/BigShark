@@ -9,6 +9,13 @@
 #include <optional>
 #include <vector>
 
+// RFC 0005 artifact storage reconstructs immutable policies from validated
+// checkpoint/export records through this one sanctioned assembler. The grant
+// adds no mutator to the public facade and changes no solver behavior.
+namespace bs::artifacts::detail {
+class PolicyAssembler;
+}
+
 namespace bs::solver {
 
 // Solver-private test/debug internals are reached only through a passkey whose
@@ -66,6 +73,7 @@ class HeadsUpPolicy {
  private:
   friend class HeadsUpTrainer;
   friend class detail::HeadsUpDebugKey;
+  friend class ::bs::artifacts::detail::PolicyAssembler;
   // Empty policies must be constructible while recovering from allocation
   // failure; avoid allocating the normal default size schedule here.
   HeadsUpGame game_{{}, {}, {StreetSizes{{}, {}}, StreetSizes{{}, {}}, StreetSizes{{}, {}}}, {}};

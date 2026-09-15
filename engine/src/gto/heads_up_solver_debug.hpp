@@ -65,6 +65,18 @@ class HeadsUpSolverDebug {
   // per-information-set regret and average-sum state.
   static DebugTrainingOutput train_sampled(const HeadsUpGame& game, std::uint64_t iterations,
                                            std::uint64_t seed, TrainingLimits limits = {});
+  // RFC 0005 Stage 5 resume driver (debug/test support only): continues the
+  // pinned sampled traversal from a checkpoint's raw table and the SplitMix64
+  // state recorded after its last committed iteration, running
+  // additional_iterations more. The traversal driver and updates are
+  // unchanged; only the initial table is supplied. result.completed_iterations
+  // starts from completed_iterations.
+  static DebugTrainingOutput resume_sampled(const HeadsUpGame& game,
+                                            std::uint64_t additional_iterations, std::uint64_t seed,
+                                            std::uint64_t initial_prng_state,
+                                            std::uint64_t completed_iterations,
+                                            const std::map<InformationKey, DebugRow>& initial,
+                                            TrainingLimits limits = {});
   // One fresh-table sampled episode for a single traverser, used to enumerate
   // exact one-sweep update expectations. Entropy must be exactly consumed.
   static DebugTrainingOutput run_episode_scripted(const HeadsUpGame& game,
@@ -116,7 +128,9 @@ class HeadsUpSolverDebug {
   template <typename Rng>
   static DebugTrainingOutput run_sampled(const HeadsUpGame& game, std::uint64_t iterations,
                                          Rng& rng, std::uint64_t seed, TrainingLimits limits,
-                                         bool export_raw_rows);
+                                         bool export_raw_rows,
+                                         const std::map<InformationKey, DebugRow>* resume = nullptr,
+                                         std::uint64_t start_iterations = 0);
 };
 
 }  // namespace bs::solver
