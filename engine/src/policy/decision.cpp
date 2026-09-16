@@ -18,8 +18,20 @@
 
 namespace bs {
 
-static int clampInt(int v, int lo, int hi) {
-  return std::max(lo, std::min(hi, v));
+// Preflop BB-rounded sizes were historically clamped to the raw legal bounds
+// (raiseMin can be 0), not to max(1, raiseMin); preserve that literal range
+// so in-range results are bit-identical to the v0 path.
+static int clampRawLegal(std::int64_t v, const Legal& L) {
+  return static_cast<int>(
+      std::clamp(v, static_cast<std::int64_t>(L.raiseMin), static_cast<std::int64_t>(L.raiseMax)));
+}
+
+// Round a double chip amount to a big-blind multiple in int64. The multiply
+// is int64 (not int*int): call-derived sizes can exceed INT_MAX before the
+// legal-range clamp. Callers must clamp to the int legal range via clampTarget
+// before narrowing.
+static std::int64_t roundBB(double v, int bb) {
+  return std::llround(v / static_cast<double>(bb)) * static_cast<std::int64_t>(bb);
 }
 
 // ---------- helpers ----------
@@ -41,12 +53,18 @@ static std::string openerBucket(const std::string& pos, int n) {
     return n <= 6 ? "HJ" : "EP";
   return pos;
 }
-static int roundBB(double v, int bb) {
-  return (int)std::round(v / bb) * bb;
-}
+// Open bet/lead: total = call + round-BB of frac*(pot + call), clamped to
+// legal. All chip arithmetic is widened to int64 before adding: pot and call
+// each fit int, but their sum can overflow a signed int. The clamped result
+// always lies inside the int legal range, so the narrowing cast is safe.
 static int targetTotal(const Legal& L, int pot, double frac, int bb) {
-  int t = L.call + roundBB(frac * (pot + L.call), bb);
-  return clampInt(t, std::max(1, L.raiseMin), std::max(1, L.raiseMax));
+  const std::int64_t open = static_cast<std::int64_t>(pot) + L.call;
+  const std::int64_t rounded =
+      static_cast<std::int64_t>(std::llround(frac * static_cast<double>(open) / bb)) * bb;
+  const std::int64_t target = static_cast<std::int64_t>(L.call) + rounded;
+  const std::int64_t low = std::max<std::int64_t>(1, L.raiseMin);
+  const std::int64_t high = std::max<std::int64_t>(1, L.raiseMax);
+  return static_cast<int>(std::clamp(target, low, high));
 }
 
 // ---------- preflop ----------
@@ -72,9 +90,14 @@ static Decision preflop(const Ctx& c, const std::string& k) {
       return {L.has("check") ? "check" : "fold", 0, "BB option", -1, -1};
     auto it = C.rfi.find(b);
     if (it != C.rfi.end() && it->second.count(k) && L.has("raise")) {
-      int size = (int)((2.5 + c.limpers * 1.5) * c.bb);
-      return {"raise", clampInt(roundBB(size, c.bb), L.raiseMin, L.raiseMax), "RFI " + b + " " + k,
-              -1, -1};
+      // The old path truncated the double to int before BB rounding; for
+      // in-range values static_cast<int64_t> truncates identically, while for
+      // over-large chip counts the result is clamped to the legal range below
+      // instead of overflowing.
+      const std::int64_t truncated =
+          static_cast<std::int64_t>((2.5 + c.limpers * 1.5) * static_cast<double>(c.bb));
+      return {"raise", clampRawLegal(roundBB(static_cast<double>(truncated), c.bb), L),
+              "RFI " + b + " " + k, -1, -1};
     }
     if (L.call == 0 && L.has("check"))
       return {"check", 0, "BB option", -1, -1};
@@ -87,12 +110,12 @@ static Decision preflop(const Ctx& c, const std::string& k) {
     const double mult = ob == "EP" ? 3.0 : 2.8;  // 3bet target = multiplier of opener total
     if (v.value.count(k)) {
       if (L.has("raise"))
-        return {"raise", clampInt(roundBB(mult * L.call, c.bb), L.raiseMin, L.raiseMax),
+        return {"raise", clampRawLegal(roundBB(mult * static_cast<double>(L.call), c.bb), L),
                 "3bet value " + k, -1, -1};
       return {"call", 0, "call strong " + k, -1, -1};
     }
     if (v.bluff.count(k) && L.has("raise"))
-      return {"raise", clampInt(roundBB(mult * L.call, c.bb), L.raiseMin, L.raiseMax),
+      return {"raise", clampRawLegal(roundBB(mult * static_cast<double>(L.call), c.bb), L),
               "3bet bluff " + k, -1, -1};
     if (v.call.count(k))
       return {"call", 0, "flat " + k, -1, -1};
@@ -103,7 +126,7 @@ static Decision preflop(const Ctx& c, const std::string& k) {
     if (C.fourValue.count(k) && L.has("raise"))
       return {"raise", L.raiseMax, "4bet value jam " + k, -1, -1};
     if (C.fourBluff.count(k) && L.has("raise"))
-      return {"raise", clampInt(roundBB(2.2 * L.call, c.bb), L.raiseMin, L.raiseMax),
+      return {"raise", clampRawLegal(roundBB(2.2 * static_cast<double>(L.call), c.bb), L),
               "4bet bluff " + k, -1, -1};
     if (C.vs3Call.count(k))
       return {"call", 0, "vs3 call " + k, -1, -1};
@@ -186,7 +209,12 @@ static Decision postflop(const Ctx& c) {
   XorShift64 rng(baseSeed ^ 0xABCDEF);
   const double bluffScale = c.style == "station-hunter" ? 0.35 : c.style == "lag" ? 1.4 : 1.0;
   const double valueThresh = c.style == "station-hunter" ? 0.52 : 0.58;
-  const double mdf = (c.pot + L.call) > 0 ? (double)c.pot / (c.pot + L.call) : 1.0;
+  // Widen before adding: pot and call each fit int, but their signed sum can
+  // overflow (UB). Both operands are exactly representable as double, and any
+  // exact integer sum here is below 2^53, so the widened double sum is
+  // bit-for-bit the same value for every non-overflow input.
+  const double potPlusCall = static_cast<double>(c.pot) + static_cast<double>(L.call);
+  const double mdf = potPlusCall > 0.0 ? static_cast<double>(c.pot) / potPlusCall : 1.0;
 
   // draw classification
   bool anyFd = false, nutFd = false, oesd = false;
@@ -348,7 +376,12 @@ static std::optional<Decision> riverGto(const Ctx& c, const std::array<int, 2>& 
   const int ai = sol->ChooseAction(combo, node, seed);
   const int na = gto::RiverSolution::NumActions(node);
 
-  const double mdf = (c.pot + L.call) > 0 ? (double)c.pot / (c.pot + L.call) : 1.0;
+  // Widen before adding: pot and call each fit int, but their signed sum can
+  // overflow (UB). Both operands are exactly representable as double, and any
+  // exact integer sum here is below 2^53, so the widened double sum is
+  // bit-for-bit the same value for every non-overflow input.
+  const double potPlusCall = static_cast<double>(c.pot) + static_cast<double>(L.call);
+  const double mdf = potPlusCall > 0.0 ? static_cast<double>(c.pot) / potPlusCall : 1.0;
   const char* tag = sol->result().exact ? "gto" : "gto-cfr";
 
   // translate action index -> protocol action, with hard legality validation
@@ -380,8 +413,16 @@ static std::optional<Decision> riverGto(const Ctx& c, const std::array<int, 2>& 
   auto reraiseto = [&]() -> std::pair<std::string, int> {
     if (!L.has("raise"))
       return {"", 0};
-    int raw = (int)std::round(c.riverRaiseFrac * (c.pot + 2 * L.call) / c.bb) * c.bb;
-    int amount = clampInt(raw, std::max(1, L.raiseMin), std::max(1, L.raiseMax));
+    // Widen the pot + 2*call geometry to int64 before adding or doubling;
+    // the rounded value is clamped back into the int legal range.
+    const std::int64_t geometry =
+        static_cast<std::int64_t>(c.pot) + 2 * static_cast<std::int64_t>(L.call);
+    const std::int64_t raw = static_cast<std::int64_t>(std::llround(
+                                 c.riverRaiseFrac * static_cast<double>(geometry) / c.bb)) *
+                             c.bb;
+    const std::int64_t low = std::max<std::int64_t>(1, L.raiseMin);
+    const std::int64_t high = std::max<std::int64_t>(1, L.raiseMax);
+    const int amount = static_cast<int>(std::clamp(raw, low, high));
     return {"raise", amount};
   };
 

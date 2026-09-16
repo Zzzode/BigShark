@@ -3,7 +3,7 @@ target_compile_features(bigshark-engine PRIVATE cxx_std_23)
 set_target_properties(bigshark-engine PROPERTIES CXX_EXTENSIONS OFF)
 target_compile_options(bigshark-engine PRIVATE -Wall -Wextra -Wno-unused-parameter)
 target_link_libraries(bigshark-engine
-  PRIVATE bigshark_service bigshark_v0_protocol
+  PRIVATE bigshark_v1_protocol bigshark_v0_protocol
 )
 if(BIGSHARK_ENABLE_SANITIZERS)
   target_compile_options(bigshark-engine PRIVATE

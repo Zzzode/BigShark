@@ -4,6 +4,10 @@ project(BigShark LANGUAGES C CXX)
 
 include(CTest)
 
+# Engine is configured before proto because its vendored Abseil must satisfy
+# protobuf's Abseil dependency; reordering creates duplicate Abseil targets.
+# The RFC 0002 v1 protocol target is therefore declared in proto/CMakeLists.txt,
+# while its sources and tests remain under engine/.
 add_subdirectory(engine)
 add_subdirectory(proto)
 add_subdirectory(apps/engine-host)

@@ -301,6 +301,13 @@ message DecisionOptions {
     defined_only: true
     not_in: 0
   }];
+  // Caller-provided preflop effective-stack depth in big blinds, a heuristic
+  // hint for the <=12 big-blind short-stack strategy. When absent the host
+  // reconstructs a physical approximation from structured chips (minimum of
+  // hero and shortest live opponent, or hero depth in multiway hands); clients
+  // with the platform-computed value should send it for exact parity. When
+  // present it must be positive and within a sane table-depth bound.
+  optional double preflop_effective_stack_bb = 7;
 }
 
 message DecisionRequest {

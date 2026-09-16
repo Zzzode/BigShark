@@ -78,6 +78,11 @@ export interface RiverWinner {
   description?: string;
 }
 
+export interface RiverPot {
+  size: number;
+  eligible: number[];
+}
+
 export interface RiverRoom {
   id: string;
   name?: string;
@@ -93,6 +98,7 @@ export interface RiverRoom {
   actor?: number | null;
   board: Card[];
   pot: number;
+  pots?: RiverPot[];
   seats: Array<RiverSeat | null>;
   legal?: LegalActions | null;
   solver?: RiverSolver;
@@ -218,10 +224,19 @@ export interface ExecutableDecision {
   reason: string;
 }
 
+/** Structural framed v1 client type; the concrete Envelope types live in the
+ * generated Protobuf bindings imported by v1-mapper. */
+export interface V1EnvelopeClient {
+  request(envelope: unknown, timeoutMs?: number): Promise<unknown>;
+}
+
 export interface EngineConfig {
   style?: string;
   heroName?: string;
   timeoutMs?: number;
+  /** Opt in to the RFC 0002 framed Protobuf engine path. */
+  proto?: boolean;
+  protoEngineClient?: V1EnvelopeClient;
   engineClient?: {
     request(message: V0DecisionContext, timeoutMs?: number): Promise<RawEngineDecision>;
   };
@@ -274,6 +289,8 @@ export function isRiverRoom(
     && (room.legal === undefined || room.legal === null || isLegalActions(room.legal))
     && (room.events === undefined
       || (Array.isArray(room.events) && room.events.every(isEvent)))
+    && (room.pots === undefined
+      || (Array.isArray(room.pots) && room.pots.every(isPot)))
     && (room.solver === undefined || isSolver(room.solver))
     && (room.winners === undefined
       || (Array.isArray(room.winners) && room.winners.every(isWinner)));
@@ -362,6 +379,13 @@ function isEvent(value: unknown): value is RiverEvent {
   return isObject(value)
     && typeof value.kind === 'string'
     && typeof value.text === 'string';
+}
+
+function isPot(value: unknown): value is RiverPot {
+  return isObject(value)
+    && typeof value.size === 'number'
+    && Array.isArray(value.eligible)
+    && value.eligible.every(seat => typeof seat === 'number');
 }
 
 function isSolver(value: unknown): value is RiverSolver {

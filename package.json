@@ -36,9 +36,9 @@
     "proto:toolchain": "cmake -DBIGSHARK_PROJECT_ROOT=. -DBIGSHARK_PROTO_TOOLCHAIN_DIR=build/generated/proto-toolchain -P tools/cmake/ensure-protobuf-toolchain.cmake",
     "proto:typecheck": "tsc -p proto/tsconfig.json --noEmit",
     "proto:update-golden": "npm run proto:generate && tsc -p proto/tsconfig.json && node build/generated/test-js/proto/tests/generate-golden.js",
-    "test:node": "npm run build:ts && npm run check:source-policy:compiled && npm run test:node:compiled",
+    "test:node": "npm run proto:generate --silent && npm run build:ts && npm run check:source-policy:compiled && npm run test:node:compiled",
     "test:node:compiled": "node --test dist/apps/river-club-agent/*.test.js dist/clients/node/tests/*.test.js dist/platforms/river-club/tests/*.test.js dist/tools/rfc/*.test.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "npm run proto:generate --silent && tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@bufbuild/buf": "1.73.0",

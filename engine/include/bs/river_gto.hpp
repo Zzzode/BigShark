@@ -114,5 +114,9 @@ TrackedRanges TrackRiverRanges(const std::vector<int>& board, int hero_combo, bo
                                const std::string& flop_line, const std::string& turn_line,
                                const TrackedRangesOptions& opt = {});
 
+// Reports whether the exact sequence-form LP backend (HiGHS) is compiled in.
+// The bounded DCFR backend is always available.
+bool hasExactRiverLp();
+
 }  // namespace gto
 }  // namespace bs

@@ -277,4 +277,12 @@ TrackedRanges TrackRiverRanges(const std::vector<int>& board, int hero_combo, bo
   return out;
 }
 
+bool hasExactRiverLp() {
+#if defined(BSGTO_HAVE_HIGHS)
+  return true;
+#else
+  return false;
+#endif
+}
+
 }  // namespace bs::gto

@@ -104,6 +104,40 @@ The preset enables AddressSanitizer and UndefinedBehaviorSanitizer through the
 failure. Leak detection is not enabled because Apple AddressSanitizer does not
 support it on the current development platform.
 
+The RFC 0002 framed protocol parsers are native untrusted-input code, so the
+full ASan ctest (not only the new targets) is required after changes to
+`engine/src/protocol/v1_*`.
+
+## Framed Protocol Fuzzing
+
+The libFuzzer target is off by default so release and ASan ctest runs are
+unaffected. Build it with Clang against the ASan preset:
+
+```bash
+cmake --preset asan -DBIGSHARK_ENABLE_FUZZ=ON
+cmake --build --preset asan --target fuzz_v1_proto
+# Apple Clang default: deterministic ASan/UBSan campaign over built-in seeds
+BS_FUZZ_MAX_RUNS=100000 ./build/asan/proto/fuzz_v1_proto
+# Replay saved corpus files directly
+./build/asan/proto/fuzz_v1_proto ./a.bin ./b.bin
+# Coverage-guided fuzzing with Homebrew LLVM
+cmake --preset asan -DBIGSHARK_ENABLE_FUZZ=ON -DBIGSHARK_FUZZ_LIBFUZZER=ON \
+  -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
+cmake --build --preset asan --target fuzz_v1_proto
+./build/asan/proto/fuzz_v1_proto -max_len=1048576
+```
+
+The target feeds arbitrary bytes to the ULEB128 frame decoder, Envelope
+parser, semantic validator, and request mapper. The standalone driver mutates
+both framing seeds and a version-controlled set of serialized structured
+decision envelopes (`engine/tests/fuzz_seeds.hpp`: a valid decision plus
+type/street/rank/suit 99 and -1 open-enum attacks, big-blind option, side
+pot, oversized pot, unknown status, and forced-solver seeds). It asserts no
+crash, hang, or out-of-bounds access and that any rejection is a clean
+`EngineError` or closed connection, never a fold-shaped strategy. The solver
+is not exercised by the fuzzer because its solve budget is for validated
+inputs.
+
 ## Formatting
 
 The format targets cover first-party C and C++ files under:
@@ -203,6 +237,10 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `icm` | Bounded prize equity, independent permutation oracle, bust handling, and prize-unit conservation |
 | `equity` | Deterministic equity, multiway sanity, and draw classification |
 | `v0_protocol` | Legacy JSON mapping and repeated response serialization |
+| `v1_frame_stream` | RFC 0002 ULEB128 framing, canonical varints, 1 MiB pre-allocation rejection, and truncation |
+| `v1_semantic_validator` | Hand-written protovalidate and poker-semantic rejection coverage |
+| `v1_request_mapper` | Structured v1 state to `Ctx` reconstruction and six-fixture decision parity |
+| `v1_response_mapper` | Strategy/error mapping, selected-action membership, capabilities, and sentinels |
 | `gto` | River LP/DCFR policy contracts, exploitability, and range tracking |
 | `multistreet_ref` | Independent fixed-run best-response reference |
 | `benchmark_multistreet` | Deterministic multi-street convergence, exploitability thresholds, and timing measurements |
@@ -214,7 +252,7 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `protobuf_breaking` | FILE compatibility against the accepted v1 descriptor baseline |
 | `protobuf_typescript` | Generated TypeScript compilation and shared vectors |
 | `typescript` | Strict TypeScript compiler diagnostics |
-| `node` | Process client, launchers, and River v0 golden decisions |
+| `node` | Process clients (NDJSON and framed Protobuf), launchers, River v0 golden decisions, and v0/v1 golden differential |
 | `rfc` | RFC metadata, lifecycle, sections, decisions, and index membership |
 | `docs` | English-only first-party text and valid local Markdown links |
 

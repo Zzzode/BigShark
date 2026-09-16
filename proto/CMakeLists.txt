@@ -106,6 +106,77 @@ if(BIGSHARK_ENABLE_SANITIZERS)
   )
 endif()
 
+# RFC 0002 Stage 7 framed Protobuf engine protocol. The target is declared in
+# this directory because engine/ is configured before proto/ (its vendored
+# Abseil satisfies protobuf's Abseil dependency); sources and tests remain in
+# engine/src/protocol and engine/tests. Generated Protobuf headers stay
+# PRIVATE: the public include/bs/v1_protocol.hpp boundary is protobuf-free.
+set(BIGSHARK_ENGINE_DIR "${CMAKE_SOURCE_DIR}/engine")
+add_library(bigshark_v1_protocol STATIC
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_frame_stream.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_semantic_validator.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_request_mapper.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_response_mapper.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_envelope.cpp"
+)
+target_compile_features(bigshark_v1_protocol PUBLIC cxx_std_23)
+target_compile_options(bigshark_v1_protocol PRIVATE
+  -Wall -Wextra -Wno-unused-parameter
+)
+target_include_directories(bigshark_v1_protocol
+  PUBLIC  "${BIGSHARK_ENGINE_DIR}/include"
+  PRIVATE "${BIGSHARK_ENGINE_DIR}/src"
+)
+target_link_libraries(bigshark_v1_protocol
+  PUBLIC  bigshark_service
+  PRIVATE bigshark_protocol
+)
+if(BIGSHARK_ENABLE_SANITIZERS)
+  target_compile_options(bigshark_v1_protocol PRIVATE
+    -fsanitize=address,undefined
+    -fno-omit-frame-pointer
+  )
+endif()
+
+# libFuzzer target for the untrusted-input framing, envelope parse, and
+# request validator/mapper paths. Off by default so release and ASan ctest
+# runs are unaffected; see docs/development/build-and-test.md. Apple Clang
+# does not ship the libclang_rt.fuzzer runtime, so under AppleClang the
+# target links a standalone ASan/UBSan driver (fuzz_main.cpp) instead; pass
+# BIGSHARK_FUZZ_LIBFUZZER=ON with Homebrew LLVM for coverage-guided fuzzing.
+option(BIGSHARK_ENABLE_FUZZ "Build the v1 protocol fuzz target" OFF)
+option(BIGSHARK_FUZZ_LIBFUZZER "Link the fuzz target against libFuzzer" OFF)
+if(BIGSHARK_ENABLE_FUZZ)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    message(FATAL_ERROR "BIGSHARK_ENABLE_FUZZ requires Clang.")
+  endif()
+  set(BIGSHARK_FUZZ_SOURCES
+    "${BIGSHARK_ENGINE_DIR}/tests/fuzz_v1_proto.cpp"
+  )
+  if(BIGSHARK_FUZZ_LIBFUZZER)
+    set(BIGSHARK_FUZZ_SANITIZERS fuzzer,address,undefined)
+  else()
+    set(BIGSHARK_FUZZ_SANITIZERS address,undefined)
+    list(APPEND BIGSHARK_FUZZ_SOURCES
+      "${BIGSHARK_ENGINE_DIR}/tests/fuzz_main.cpp"
+    )
+  endif()
+  add_executable(fuzz_v1_proto ${BIGSHARK_FUZZ_SOURCES})
+  target_compile_features(fuzz_v1_proto PRIVATE cxx_std_23)
+  target_compile_options(fuzz_v1_proto PRIVATE
+    -fsanitize=${BIGSHARK_FUZZ_SANITIZERS}
+    -fno-omit-frame-pointer
+    -g
+  )
+  target_link_options(fuzz_v1_proto PRIVATE
+    -fsanitize=${BIGSHARK_FUZZ_SANITIZERS}
+  )
+  target_include_directories(fuzz_v1_proto PRIVATE "${BIGSHARK_ENGINE_DIR}/src")
+  target_link_libraries(fuzz_v1_proto PRIVATE
+    bigshark_v1_protocol bigshark_protocol
+  )
+endif()
+
 add_custom_target(protobuf-lint
   COMMAND ${BIGSHARK_NPM_EXECUTABLE} run proto:lint
   WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
@@ -197,6 +268,44 @@ if(BUILD_TESTING)
     NAME protobuf_cpp_vector
     COMMAND write_protobuf_cpp_vector "${BIGSHARK_CPP_PROTO_VECTOR}"
   )
+
+  # RFC 0002 Stage 7 framed protocol tests. Sources live in engine/tests;
+  # targets are declared here so they can link bigshark_protocol directly.
+  add_executable(test_v1_frame_stream
+    "${BIGSHARK_ENGINE_DIR}/tests/test_v1_frame_stream.cpp"
+  )
+  target_compile_features(test_v1_frame_stream PRIVATE cxx_std_23)
+  target_compile_options(test_v1_frame_stream PRIVATE -Wall -Wextra)
+  target_link_libraries(test_v1_frame_stream PRIVATE bigshark_v1_protocol)
+  add_test(NAME v1_frame_stream COMMAND test_v1_frame_stream)
+
+  foreach(v1_test v1_semantic_validator v1_request_mapper v1_response_mapper)
+    add_executable(test_${v1_test}
+      "${BIGSHARK_ENGINE_DIR}/tests/test_${v1_test}.cpp"
+    )
+    target_compile_features(test_${v1_test} PRIVATE cxx_std_23)
+    target_compile_options(test_${v1_test} PRIVATE -Wall -Wextra)
+    target_include_directories(test_${v1_test} PRIVATE "${BIGSHARK_ENGINE_DIR}/src")
+    target_link_libraries(test_${v1_test} PRIVATE
+      bigshark_v1_protocol bigshark_protocol
+    )
+    if(BIGSHARK_ENABLE_SANITIZERS)
+      target_compile_options(test_${v1_test} PRIVATE
+        -fsanitize=address,undefined
+        -fno-omit-frame-pointer
+      )
+      target_link_options(test_${v1_test} PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME ${v1_test} COMMAND test_${v1_test})
+  endforeach()
+
+  if(BIGSHARK_ENABLE_SANITIZERS)
+    target_compile_options(test_v1_frame_stream PRIVATE
+      -fsanitize=address,undefined
+      -fno-omit-frame-pointer
+    )
+    target_link_options(test_v1_frame_stream PRIVATE -fsanitize=address,undefined)
+  endif()
 
   add_test(
     NAME protobuf_lint

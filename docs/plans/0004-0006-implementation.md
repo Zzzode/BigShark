@@ -644,6 +644,347 @@ Apple clang 21, after the independent adversarial review hardening):
 
 Working-tree checkpoint; nothing committed.
 
+## Stage 7 Evidence (2026-09-16)
+
+RFC 0002 Stage 7 (minor-0 Protobuf production migration), rollout steps
+3-6: C++ frame codec, strict semantic validator, request/response mappers,
+opt-in framed host modes, framed Node client, River v1 mapper, and the v0/v1
+golden differential. Preceding gate: commit `b8f7c06` (Stage 6), clean tree.
+
+Owned files (additive; v0 paths untouched):
+
+- NEW `engine/include/bs/v1_protocol.hpp`: protobuf-free public boundary
+  (frame codec, byte-level envelope entry point).
+- NEW `engine/src/protocol/v1_frame_stream.cpp`: canonical ULEB128 codec,
+  five-byte prefix bound, 1 MiB rejection before payload allocation.
+- NEW `engine/src/protocol/v1_mappers.hpp` (internal; includes generated
+  Protobuf, confined to `engine/src/protocol/v1_*` and the host).
+- NEW `engine/src/protocol/v1_semantic_validator.cpp`: hand-written
+  protovalidate and poker-semantic checks returning `FieldViolation`s.
+- NEW `engine/src/protocol/v1_request_mapper.cpp`: validated v1 request to
+  the existing `bs::Ctx`, including v0 token-round line reconstruction.
+- NEW `engine/src/protocol/v1_response_mapper.cpp`: degenerate minor-0
+  strategy, deterministic selected-action membership validation, error and
+  capability builders.
+- NEW `engine/src/protocol/v1_envelope.cpp`: parse/dispatch/error boundary;
+  never throws across the frame loop.
+- NEW tests `engine/tests/test_v1_{frame_stream,semantic_validator,
+  request_mapper,response_mapper}.cpp` and fuzz sources
+  `engine/tests/fuzz_v1_proto.cpp` plus the Apple-Clang standalone driver
+  `engine/tests/fuzz_main.cpp`.
+- MODIFIED `apps/engine-host/main.cpp`: adds `--proto` / `--serve-proto`
+  branches only; the default and `--serve` JSON paths are unchanged. The
+  parse-error fold and v0 serialization are byte-identical.
+- MODIFIED `proto/CMakeLists.txt`: declares `bigshark_v1_protocol` (sources
+  stay in `engine/src/protocol`), the four v1 ctests, and the off-by-default
+  fuzz target. Root ordering stays engine-before-proto because engine's
+  vendored Abseil satisfies protobuf (reordering collided on duplicate Abseil
+  targets, verified by configure failure).
+- NEW `clients/node/proto-engine-process-client.ts`: Buffer varint codec,
+  pre-allocation length cap, bigint-preserving binary envelopes, request-id
+  map correlation, identical warmup/timeout/exit/restart semantics.
+- NEW `clients/node/tests/fixtures/fake-proto-engine.ts` and
+  `clients/node/tests/proto-engine-process-client.test.ts` (10 cases).
+- NEW `platforms/river-club/src/v1-mapper.ts`: `RiverRoom` to
+  `DecisionRequest` and `Strategy`/`EngineError` to `ExecutableDecision`.
+- MODIFIED `platforms/river-club/src/engine.ts`: framed path selected only by
+  `BIGSHARK_ENGINE_PROTO=1` or `EngineConfig.proto`; unset keeps the v0
+  client. EngineError/transport failure routes to the existing operational
+  `safeFallback`, never a strategic fold.
+- MODIFIED `platforms/river-club/src/types.ts`: additive `RiverPot`,
+  `EngineConfig.proto`, and `protoEngineClient` fields plus `pots` validation.
+  `v0-normalizer.ts` is unmodified.
+- NEW `platforms/river-club/tests/v0-v1-differential.test.ts`: every frozen
+  fixture through the real binary on both transports.
+- MODIFIED `tsconfig.json` (compile the committed-path generated TS output)
+  and `package.json` (`typecheck`/`test:node` ensure generated TS exists).
+- MODIFIED docs: `docs/reference/protobuf-engine-protocol.md`,
+  `docs/development/build-and-test.md`, this plan.
+
+`engine.proto`, `buf.yaml`, and the breaking baseline are unchanged; the
+accepted IDL was not edited.
+
+### v1 -> Ctx reconstruction rules
+
+- Position: occupied seats sorted by seat, rotated from the button; heads-up
+  button is `BTN` and the other seat `BB`; otherwise `BTN`, `SB`, `BB`, then
+  `CO`/`HJ`/`UTG` counting back from the button (matching the v0 buckets).
+- `effectiveStackBb`: the additive optional hint
+  `options.preflop_effective_stack_bb` (tag 7) is used verbatim when present;
+  otherwise the host falls back to a structural estimate (heads-up
+  min-total/bb, multiway hero-depth/bb). The River adapter sends the platform
+  value with v0 precedence for exact parity.
+- `potOdds = to_call / (pot + to_call)`; pot, blinds, and inclusive
+  bet/raise targets are absolute integers checked against `INT_MAX` and the
+  2^53-1 profile.
+- Cards use the exact v0 tokens: rank from `23456789TJQKA`, suit from
+  `shdc` (spades, hearts, diamonds, clubs).
+- Preflop `raises`, call `limpers`, and `openerPosition` are derived only
+  from structured preflop history; they stay zero on later streets.
+- River knobs replay the v0 normalizer's token-round grouping over the
+  structured sequence (folds freeze transitions; calls and two passive
+  actions close a round), then rebuild `flopLine`/`turnLine` actor tokens
+  (`H`/`O` plus `x/c/b/r/f`) and the compact `riverLine` state machine
+  (`""`, `c`, `b`, `cb`, `br`, `cbr`, with terminals disabling the solver),
+  enabling the Nash solver only heads-up with five board cards and complete
+  fold-free rounds.
+- The TS adapter assigns history streets with the same replay, capped at the
+  current street, so a lone early-river check (frozen fixture 4) stays in the
+  turn round exactly as v0 groups it.
+- Seed is full `uint64`; the v0 signed cast remains v0-only.
+
+### Parity matrix
+
+All six frozen `v0-golden.json` fixtures reproduce action and exact target
+through the real engine binary on both transports:
+
+| Fixture | v0 / v1 action | Target | River solver |
+| --- | --- | --- | --- |
+| preflop-facing-reraise | raise / raise | 2000 / 2000 | off |
+| multiway-flop-check-option | check / check | 0 / 0 | off |
+| multiway-turn-facing-raise | raise / raise | 340 / 340 | off |
+| heads-up-river-check-option | check / check | 0 / 0 | on, river line `""` |
+| multiway-river-facing-bet | fold / fold | 0 / 0 | off (multiway) |
+| short-stack-heads-up-river | bet / bet | 250 / 250 | on, river line `c` |
+
+`test_v1_request_mapper` independently asserts the mapped `Ctx` fields for the
+same six hand-built requests. The only tolerated label difference is the
+reason prefix (`cpp:` on the executable wrapper); action and amount compare
+equal.
+
+Representability notes: v1 cannot carry per-opponent `opponentPcts`, the
+`riverRaiseFrac` override (the mapper uses the fixed 1.0 the heuristic
+defaults to), or a style beyond tag/lag/station-hunter; none of the frozen
+fixtures use those knobs, and unknown profiles/features fail validation rather
+than silently defaulting. General actor attribution uses full display-name
+prefix matching (hero precedence, longest-name tie-break); an unmatched actor
+is treated as an opponent. The preflop opener intentionally replicates v0's
+first-token exact-match quirk (multi-word opener -> no opener -> HJ default)
+via an empty actor id; this adapter-only shim is removed with the v0 path.
+The v1 player stack is the actual chip stack behind (`seat.stack`); the
+platform preflop effective depth now travels through the additive hint field
+for exact parity, with a structural estimate only as the hint-absent
+fallback. Target legality is checked against `stack + street_committed`.
+
+### Independent adversarial review (2026-09-16)
+
+A 21-agent independent adversarial review (four paths plus a skeptic, zero
+dismissals) confirmed 17 defects, several P1, all reproduced end to end on the
+real release/ASan binaries. Disposition:
+
+- Open-enum root cause: a single closed-set predicate per wire enum now runs
+  before any indexing, mapping, or decision use — ActionType (the
+  `std::array<bool,5>` index is now guarded; type 99/-1 rejected), Rank,
+  Suit, decision/history Street (SHOWDOWN and unknown rejected, fixing river
+  hands being played as flop semibluffs), PlayerStatus, ForcedContributionType,
+  GameVariant, BettingStructure, GameType, SolverMode. Mapper conversion
+  functions throw on unknown values instead of emitting empty streets,
+  one-character cards, or dropped actions. Response-only enums are never read
+  from a request.
+- Integer chip narrowing: every chip field reaching the integer Ctx uses
+  `chipFitsInt` (pot total/main/side, blinds, stacks, commitments, forced
+  amounts, history targets, to_call, legal ranges), closing the 2^53-1 pass
+  that narrowed to a possibly negative int.
+- Bet/raise maximum is bounded by `hero.stack + hero.street_committed`
+  (all-in boundary legal).
+- Pot consistency: no-side-pot case requires total == main; the TS adapter now
+  populates every River side pot with eligible seats and a multiway side-pot
+  hand returns `UNSUPPORTED_FEATURE` -> EngineError -> safeFallback.
+- Big-blind option: fold/check/raise with `to_call == 0` is accepted only in
+  the structured unopened-big-blind state (hero posted exactly BB this street,
+  no voluntary preflop raise yet); all other no-bet spots stay check/bet.
+  Frozen-option regression added; the rule is not broadened to arbitrary
+  raises.
+- potOdds: investigation of the frozen platform data showed River rounds
+  `to_call/(pot+to_call)` to four decimal places (0.3061 vs 0.306122...,
+  0.0313 vs 0.03125). The mapper reconstructs that exact four-decimal value;
+  all six fixtures now produce `Ctx.potOdds` equal to the frozen v0 context,
+  and action/target parity is unchanged.
+- solver_mode: forced RIVER_LP/RIVER_DCFR/MULTISTREET_CFR are
+  `UNSUPPORTED_FEATURE` (never silently ignored), unknown values invalid;
+  capabilities advertise exactly AUTOMATIC and HEURISTIC as selectable modes
+  while the exact_lp/DCFR feature bits honestly report internal backends.
+- Response amplification: `FieldViolation` is capped at 32 with an omission
+  marker, so every error envelope fits one frame; the host logs and continues
+  on an over-large response instead of killing the coprocess.
+- Fuzz integrity: structured serialized decision seeds (valid plus
+  type/street/rank/suit 99/-1, BB option, side pot, oversized pot, unknown
+  status, forced solver) join the framing seeds in `fuzz_seeds.hpp`; a 100k
+  ASan campaign over 17 seeds passed with zero crashes.
+- TS name resolution: multi-word and unmatched actor names map as opponents,
+  never as hard throws; dedicated multi-word, side-pot, and BB-option tests
+  added. Delete-the-fix red tests accompany every change in
+  `test_v1_semantic_validator.cpp`, `test_v1_request_mapper.cpp`, and
+  `test_v1_response_mapper.cpp`.
+
+### Fourth-round adversarial review (2026-09-17)
+
+The final skeptic verdict (real release binary, fixed-state sweep) found two
+latent full-input-space parity divergences. Closed with one authorized
+strictly-additive IDL change and an adapter-only quirk shim.
+
+- Effective stack (IDL additive). `DecisionOptions` gains
+  `optional double preflop_effective_stack_bb = 7` (nothing existing moved);
+  `buf breaking` against the unchanged baseline still passes. The C++ mapper
+  uses the hint verbatim (validator rejects non-finite, non-positive, or
+  >10000 bb) and otherwise falls back to the structural estimate. The River
+  TS adapter sets it with v0-normalizer's exact precedence
+  (`solver.effectiveStackBb ?? hero.effectiveStackBb ?? 100`). A 156-room plus
+  six-fixture corpus study had already shown the server value is not
+  structurally reconstructable (83/162 hero-depth, 35/162 min-total), so the
+  hint is required for exact full-space parity; the fallback remains for
+  generic hint-less clients and is documented as an approximation.
+- Multi-word opener quirk. v0 derives the opener from the first whitespace
+  token by exact seat-name equality, so a multi-word opener matches no seat
+  and defaults to HJ; v1's correct full-name parse diverged. The TS adapter
+  now applies that v0 rule only to the first preflop raise, emitting an empty
+  `actor_player_id`; the C++ mapper accepts an empty id as an unresolved
+  opener (raise counts accrue, opener position/last raiser unset) while all
+  other actors keep correct full-name attribution. Shim is adapter-only and
+  deleted with v0.
+
+Differential honesty: 9 real dual-transport action+target parity cases (the
+six frozen snapshots, the short heads-up hint jam, the cross-gate HU 260 /
+server-12 room, and the four-way multi-word opener). The BB-option,
+side-pot fail-closed, unmatched-name, and transport-failure cases are v1-only
+rejection/validation semantics with no v0 counterpart and are labeled as
+such, not counted as parity.
+
+### Gates (2026-09-17; post-fourth-review)
+
+- IDL: seven added lines, one additive optional field; baseline unchanged and
+  `npm run proto:check` (lint/format/breaking/generate/typecheck + 7/7 golden
+  vectors) green. No existing fixture sets the field, so existing wire bytes
+  are unchanged.
+- format + format-check pass; Release CTest 29/29; benchmark-multistreet 3/3.
+- `npm run check`: 56/56 (14 differential cases); replay 156/0/0 with the
+  unchanged mix `{raise 32, check 48, fold 68, bet 5, call 3}`.
+- check-docs (185) and check-rfcs (6) pass.
+- v0 identity: v0_json.cpp, v0-normalizer.ts, JSON client, IDL baseline
+  unmodified; `decision.cpp` untouched this round. The opener shim is only in
+  the new v1-mapper.ts and the empty-id wire marker.
+- ASan: v1/v0/protobuf native targets green against the rebuilt instrumented
+  binary; 27/27 passed in 1468.04 s, exit 0, zero sanitizer reports.
+
+(Third-round gates: Release 29/29, ASan 27/27 in 1470.91 s, 120k/19 fuzz; the
+80m arithmetic differential and 2,000,000,000 jam verification stand.)
+
+A final review (with a 49-million-case old-vs-new arithmetic differential
+proving the prior four widenings) found three P2 residuals:
+
+- P2-1 preflop `roundBB` int multiply overflow. Complete money-arithmetic
+  audit of `decision.cpp`: widened `roundBB` to int64, widened the RFI
+  `(2.5+limpers*1.5)*bb` cast, and clamped all four preflop BB-sized sites
+  (`RFI`, 3bet value, 3bet bluff, 4bet bluff) to the legal int range in a
+  dedicated `clampRawLegal` (preserving the historical raw
+  `[raiseMin,raiseMax]` bounds, which can include 0, so in-range output is
+  bit-identical). Direct `raiseMax` jam sites need no arithmetic. The postflop
+  targetTotal/reraiseto/MDF sites were widened in the prior round.
+  Equivalence: an 80,000,000-case randomized old-vs-new differential
+  (`/tmp/arith_diff.cpp`, discarded) matched every in-range value; the
+  reviewer's frame (call 715,827,887, max 2,000,000,000, AA) now outputs
+  `3bet value AA -> 2000000000` on both release and ASan binaries with empty
+  stderr (zero UBSan). v0 replay stayed 156/0/0 with the unchanged mix.
+- P2-2 effective stack parity. Platform source confirmed:
+  `v0-normalizer.ts:192` passes the server-supplied
+  `room.solver.effectiveStackBb` (estimate; default 100); v1 has no field.
+  Corpus analysis (156 local rooms plus the six frozen snapshots) showed the
+  server value is not a single reconstructable formula (best structural
+  hypothesis matched only 96/162 exactly; min-total 35/162; deltas up to 166
+  bb). The only consumer is the preflop `<=12bb` jam gate, so the C++ mapper
+  reconstructs the physical effective stack decision-equivalently: heads-up
+  `min(stack+street_committed, single live opponent total)/bb`, multiway
+  `hero.stack/bb`. This matches five of six frozen fixtures and the reviewer's
+  short heads-up room exactly (10 bb -> jam 200); zero jam-gate flips exist in
+  the corpora (the one frozen deep-pot difference 96/97 is above the gate; the
+  three server-0 session rooms hold garbage hands that fold either way). The
+  rule and its evidence are documented in the reference protocol doc.
+- P2-3 multi-word hero name. The TS replay kept the full event text and
+  `resolveActor` now matches seats by full display-name prefix with hero
+  precedence and longest-name tie-break (mirroring v0's
+  `text.startsWith(heroName)`), so a multi-word hero's raise is attributed to
+  the hero and a shared first token cannot shadow the hero. A multi-word hero
+  plus multi-word opponent differential case asserts the derived ids.
+
+The differential suite grew to 12 cases, adding the real-dual-transport
+short-effective-stack jam (raise/200 on both transports) and the multi-word
+hero attribution. Fuzz seeds remain 19 (the structured large-chip and INT_MAX
+overflow seeds exercise the arithmetic fix).
+
+### Gates (2026-09-16, reference machine Apple arm64 / macOS 25.5 / Apple
+clang 21; post-third-review)
+
+- `format` + `format-check`: pass; release build clean; Release CTest 29/29.
+- `benchmark-multistreet`: 3/3 PASS.
+- `npm run check`: 54/54 (12 differential cases included); `npm run
+  proto:check`: lint/format/breaking/generate/typecheck + 7/7 vectors;
+  `engine.proto` and the baseline unchanged.
+- `node bin/replay.mjs`: 156/0/0, action mix
+  `{raise 32, check 48, fold 68, bet 5, call 3}` unchanged.
+- `check-docs` (185 files) and `check-rfcs` (6 RFCs): pass.
+- v0 identity: `v0_json.cpp`, `v0-normalizer.ts`, JSON client, default host,
+  IDL, and baseline unmodified; `v0_protocol` and `v0-golden` green.
+- 80m-case old-vs-new arithmetic differential: exact in-range equality.
+- Full ASan/UBSan `ctest --preset asan`: 27/27 passed in 1470.91 s, exit 0, zero AddressSanitizer/UBSan/signed-overflow reports;
+  the reviewer large preflop frame returns the 2,000,000,000 jam with no
+  UBSan. Structured fuzz: 120,000 inputs over 19 seeds, zero crashes.
+
+(Earlier rounds: second review Release 29/29, ASan 27/27 in 1506.04 s,
+120k/19 fuzz; first review 100k/17; initial 50k framing-seed campaign found
+the UTF-8 hardening.)
+
+Eleven of thirteen first-round fixes closed; one residual P2 and one P3
+defense item were confirmed against the release/ASan binaries and fixed:
+
+- P2 signed-int `pot_total + to_call` overflow (negative potOdds flipped a
+  fold to a call; UBSan at the mapper and in shared policy). Fixed in two
+  layers: (a) the validator and mapper now reject the combination in `uint64`
+  before narrowing when the sum exceeds `INT_MAX`
+  (`v1_semantic_validator.cpp` derived-sum block; mapper defense re-check),
+  with delete-the-fix red tests at 2e9+2e9, INT_MAX+1, and an inclusive
+  INT_MAX boundary; (b) the shared `engine/src/policy/decision.cpp` chip
+  arithmetic was widened to `int64`/`double` with no threshold or constant
+  changes — `targetTotal` (call + rounded geometry), both MDF denominators,
+  and the river re-raise geometry.
+- P3 defense: a preflop BET (not only RAISE) now closes the big-blind option;
+  hand-frame regression added. Fuzz seeds grew to 19 with explicit
+  near-INT_MAX and pot+to_call overflow combinations.
+
+Equivalence argument for the shared-file change: the old code added two
+non-negative ints in `int` then converted the ratio operands to `double`; for
+every non-overflow input the exact integer sum is <= 2^53-1, so
+`(double)a + (double)b` is exactly the same value as the widened
+`int64`/`double` sum. `targetTotal` returns the same value because its result
+is clamped to the int legal range; the intermediate `llround`/`*bb` are done
+in `int64`. Zero v0 drift is proven by `test_v0_protocol`, the eight
+`v0-golden` tests, and replay 156/0/0 with an unchanged action mix
+`{raise 32, check 48, fold 68, bet 5, call 3}`.
+
+### Gates (2026-09-16, reference machine Apple arm64 / macOS 25.5 / Apple
+clang 21; post-second-review)
+
+- `format` + `format-check`: pass; release build clean; Release CTest 29/29.
+- `benchmark-multistreet`: 3/3 PASS.
+- `npm run check`: 52/52; `npm run proto:check`: lint/format/breaking/
+  generate/typecheck + 7 vectors; `engine.proto` and baseline unchanged.
+- `node bin/replay.mjs`: 156/0/0 with the identical action mix;
+  `check-docs` (185 files) and `check-rfcs` (6 RFCs): pass.
+- v0 identity re-proven: `v0_json.cpp`, `v0-normalizer.ts`, JSON client,
+  default host path, IDL, and baseline unmodified; `v0_protocol` and
+  `v0-golden` green.
+- Full ASan/UBSan `ctest --preset asan`: 27/27 passed in 1506.04 s, exit 0, zero AddressSanitizer/UBSan/signed-overflow reports.
+- Structured fuzz: 120,000 mutated inputs over 19 seeds (including INT_MAX
+  and pot+to_call overflow) under ASan, zero crashes/hangs.
+
+(First review-round gates: Release CTest 29/29; ASan 27/27 in 1557.41 s;
+100k/17-seed fuzz clean. Pre-review first pass: 50k framing-seed campaign
+found and fixed the UTF-8 hardening.)
+
+No live dry-run/canary, v0 removal, replay switch, or minor-1 full
+distribution was performed; those remain explicit external gates. The v0
+JSON host, NDJSON client, published binary default, and River defaults are
+unchanged.
+
 ## Next Implementation Checkpoint
 
 Stage 7 begins the RFC 0002 minor-0 protocol migration; it is independent of

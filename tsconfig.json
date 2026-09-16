@@ -23,10 +23,10 @@
     "apps/**/*.ts",
     "clients/**/*.ts",
     "platforms/**/*.ts",
-    "tools/**/*.ts"
+    "tools/**/*.ts",
+    "build/generated/ts/**/*.ts"
   ],
   "exclude": [
-    "build",
     "dist",
     "engine/third_party",
     "sessions"
