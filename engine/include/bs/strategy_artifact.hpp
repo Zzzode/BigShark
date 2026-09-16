@@ -174,6 +174,31 @@ struct LoadedArtifact {
 // loading is compiled out and untrusted schemas are disabled.
 LoadedArtifact load_artifact(const std::filesystem::path& path, const LoadOptions& options = {});
 
+// Lightweight, fully validating startup probe for a published policy. It
+// performs the same physical checks as load_artifact (size, digest, sidecar
+// rejection, immutable open, application/schema version, canonical schema
+// objects, integrity check) and materializes only the manifest, the game
+// identity (root, ordered rational sizing schedule, bit-exact declared
+// ranges), and SQL aggregates over the stored information states and
+// actions. It never reconstructs policy rows, training rows, vectors of
+// actions, or probabilities, so a large root can be budget-gated before the
+// full eager load. The probe changes no Stage 5 read or publication
+// behavior; callers that actually advertise the root still call
+// load_artifact afterward.
+struct ArtifactProbe {
+  ArtifactManifest manifest;
+  solver::HeadsUpGame game;
+  std::uint64_t information_sets = 0;
+  std::uint64_t action_count = 0;
+  // Sum and maximum of stored canonical key lengths in 64-bit words.
+  std::uint64_t total_key_words = 0;
+  std::uint64_t max_key_words = 0;
+  std::uint64_t file_bytes = 0;
+  Sha256Digest sha256{};
+  std::string sha256_hex;
+};
+ArtifactProbe probe_artifact(const std::filesystem::path& path, const LoadOptions& options = {});
+
 struct PublishedPolicy {
   std::filesystem::path path;
   Sha256Digest sha256{};

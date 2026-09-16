@@ -165,6 +165,22 @@ target_link_libraries(bigshark_artifacts
   PRIVATE ${BS_OPENSSL_CRYPTO_TARGET}
 )
 
+# RFC 0005 Stage 6 resident policy lookup. Offline-only, immutable compact
+# indices over validated artifacts; it never opens SQLite on a lookup and is
+# not linked by the policy, service, host, v0, or protocol targets.
+add_library(bigshark_resident STATIC
+  src/resident/resident_policy.cpp
+  src/resident/public_reach.cpp
+  src/resident/resident_index.cpp
+)
+target_include_directories(bigshark_resident
+  PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(bigshark_resident
+  PUBLIC bigshark_artifacts
+)
+
 
 # Vendored OpenSpiel is private to the solver target.
 add_subdirectory(third_party/open_spiel EXCLUDE_FROM_ALL)
@@ -276,6 +292,29 @@ add_custom_target(benchmark-heads-up-matrix
   USES_TERMINAL
 )
 
+# RFC 0005 Stage 6 resident lookup latency benchmark. Deterministically
+# publishes a complete ~100k+ information-set artifact and measures cold
+# construction plus warm lookup p50/p95/p99 with a counting allocator. It is a
+# manual target, NOT a registered or timing-gated CTest.
+add_executable(bigshark-resident-lookup-benchmark
+  benchmarks/resident_lookup_benchmark.cpp
+)
+target_include_directories(bigshark-resident-lookup-benchmark PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_include_directories(bigshark-resident-lookup-benchmark PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite
+)
+target_link_libraries(bigshark-resident-lookup-benchmark PRIVATE
+  bigshark_resident
+)
+add_custom_target(benchmark-resident-lookup
+  COMMAND $<TARGET_FILE:bigshark-resident-lookup-benchmark>
+  DEPENDS bigshark-resident-lookup-benchmark
+  COMMENT "Running the RFC 0005 Stage 6 resident lookup benchmark"
+  USES_TERMINAL
+)
+
 add_library(bigshark_policy STATIC
   src/policy/decision.cpp
 )
@@ -361,6 +400,23 @@ if(BUILD_TESTING)
     bigshark_sqlite
   )
   add_test(NAME artifacts COMMAND test_artifacts)
+
+  # RFC 0005 Stage 6 resident lookup. The gto debug passkey header is used
+  # ONLY to synthesize complete policy fixtures, as in test_artifacts.
+  add_executable(test_resident_policy tests/test_resident_policy.cpp)
+  target_include_directories(test_resident_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_compile_definitions(test_resident_policy PRIVATE
+    BS_RESIDENT_HEADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/include/bs/resident_policy.hpp"
+  )
+  target_include_directories(test_resident_policy PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite
+  )
+  target_link_libraries(test_resident_policy PRIVATE
+    bigshark_resident
+  )
+  add_test(NAME resident COMMAND test_resident_policy)
 
   add_executable(test_equity tests/test_equity.cpp)
   target_link_libraries(test_equity PRIVATE bigshark_poker)

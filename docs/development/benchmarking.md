@@ -376,3 +376,89 @@ declared frozen games only. The SPR 4/10 finals (0.137-0.366 and 4.37-5.52
 normalized NashConv respectively) are unconverged large-game measurements
 behind frozen reference-machine regression gates, not equilibrium claims and
 not evidence of full-game hold\'em coverage.
+
+## Resident Lookup Benchmark (RFC 0005 Stage 6, schema 1)
+
+The RFC 0005 Stage 6 manual runner
+`engine/benchmarks/resident_lookup_benchmark.cpp` (target
+`benchmark-resident-lookup`, intentionally NOT a CTest) measures cold
+resident construction and warm lookup latency for the offline
+`bigshark_resident` layer. All timing uses `std::chrono::steady_clock`;
+p50/p95/p99 are sort-based percentiles (there is no percentile utility in
+the tree), and a process-wide counting `operator new` measures allocations
+per batch. The harness pre-builds long strings outside every counter region
+so only resident lookups are charged.
+
+Two deterministic measurements are produced from COMPLETE published
+artifacts built with `HeadsUpSolverDebug::train_full` at one or more full
+traversal iterations (all-zero initial regrets give a uniform policy whose
+average weights normalize exactly to the stored probabilities, so the
+exports validate). Neither number is a strategy-quality claim.
+
+1. **Single-root budget gate.** The frozen RFC 0004 Stage 4 SPR-10 dry
+   asymmetric fixture (Ks7h2c, 100/200 behind, 10-chip pot, the shared
+   three-combo weighted ranges with the AcAd/AcAs cross-block, fixed 3s/5h
+   runout) is trained at 4 iterations and published. Its tree is the
+   matrix-measured 493,500 information sets. The artifact is loaded and
+   measured, then correctly REFUSED under the 256 MiB default resident
+   budget (`OverBudget`, not advertised).
+
+2. **Warm latency over a six-root aggregate.** Six complete supported roots
+   use the same ranges and SPR-4 stack profile (the frozen matrix depth,
+   19,176 sets per root at 100 iterations) on six pairwise distinct flops
+   that never collide with the range cards: Ks7h2c, 9s8s4h, QdQc6s,
+   Js9d2h, 7s6h5c, 5s4s3h (all with the fixed 3s/5h runout). The aggregate
+   resident set totals 115,056 information sets (above the 100,000 target)
+   and is advertised as one `ResidentPolicySet`. The runner enumerates EVERY
+   covered hero decision of EVERY root into independent per-root vectors
+   (the total is asserted to equal the published information-set count, so
+   the timed batch touches the complete 115,056-row working set rather than
+   the first root), runs an untimed one-pass warmup outside every counter
+   region, then times a 100,000-call hero-decision batch cycling over all
+   enumerated nodes. A 20,000-call miss batch rotates through all coverage
+   miss kinds (unsupported root, pinned-identity mismatch, over-budget,
+   off-tree amount, untrained combo, board-blocked combo, runout divergence,
+   zero-probability observed action, and an unknown digest pin).
+
+### Measured results (Apple M5 Pro, 48 GB, macOS 26.5.1, Apple clang 21)
+
+Measured 2026-09-16 under the release preset. All numbers are observations,
+not portable gates except the 10 ms warm p99 promotion target from RFC 0005.
+
+| Metric | Value |
+| --- | ---: |
+| SPR-10 fixture information sets | 493,500 |
+| SPR-10 published file bytes | 184,516,608 (175.97 MiB) |
+| SPR-10 honest resident bytes | 315,855,352 (301.21 MiB) |
+| SPR-10 outcome vs 256 MiB budget | OverBudget, not advertised (correct) |
+| SPR-10 4-iteration train time | 42,854.9 ms |
+| Aggregate roots | 6 |
+| Aggregate information sets | 115,056 (19,176 per root) |
+| Enumerated timed hit queries | 115,056 (asserted == information sets) |
+| Aggregate 6x100-iteration train time | 110,084.7 ms |
+| Cold construction (probe + verified load + index build) | 1,329.6 ms |
+| Aggregate honest resident bytes | 54,746,736 (52.21 MiB) of 256 MiB |
+| Process peak RSS (after all builds) | 2,936,078,336 bytes (2.73 GiB) |
+| Warm hit calls / time | 100,000 / 5,425.6 ms |
+| Warm hit p50 / p95 / p99 | 53.21 / 69.67 / 87.63 microseconds |
+| Warm miss calls / p99 | 20,000 / 16.54 microseconds |
+| Unexpected miss hits | 0 |
+| Heap allocations: hit batch / miss batch | 0 / 0 |
+| Warm p99 target (<= 10 ms) | MET |
+
+The 256 MiB budget is enforced against honest in-memory resident records
+(contiguous key/action/probability blobs, fixed row records, and the
+open-addressing slot table, plus the immutable game copy), never the file
+size or the SQLite page cache. A lightweight additive artifact probe
+(`probe_artifact`) performs every physical and schema validation and
+aggregates state/action/key sizes without materializing rows, so the
+over-budget SPR-10 root is refused by a conservative pre-gate before the
+full eager load; the final truth remains the exact measurement after the
+index is built. The single 493,500-set SPR-10 root needs 301.21 MiB
+resident against a 184.52 MiB file, so it is correctly withheld; the
+115,056-set six-root aggregate needs 52.21 MiB and advertises. Across the
+complete six-root working set, warm lookup p99 is 87.6 microseconds, far
+below the 10 ms RFC 0005 promotion target, with zero heap allocations
+across both the 100,000 hit and 20,000 miss calls. Peak RSS is dominated by
+training artifacts retained in the benchmark process and is not the
+resident footprint. Linux verification remains an external gate.

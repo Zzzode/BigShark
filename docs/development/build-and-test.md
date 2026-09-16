@@ -257,6 +257,16 @@ cmake --build --preset release --target benchmark-heads-up-matrix
 The benchmark contract and CSV fields are documented in
 [Benchmarking](benchmarking.md).
 
+The RFC 0005 Stage 6 resident lookup runner is a manual target and is not a
+CTest. It deterministically publishes complete artifacts (including the
+493,500-set SPR-10 budget-gate root and a six-root 115,056-set aggregate),
+so it spends several minutes training before measuring cold construction and
+warm lookup latency:
+
+```bash
+cmake --build --preset release --target benchmark-resident-lookup
+```
+
 Run the RFC check directly with:
 
 ```bash

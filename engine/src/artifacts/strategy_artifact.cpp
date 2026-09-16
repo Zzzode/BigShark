@@ -1289,39 +1289,43 @@ void verify_integrity(dt::Db& db) {
     fail(ArtifactErrorKind::Corrupt, "foreign_key_check reported violations");
 }
 
-LoadedArtifact load_path(const std::filesystem::path& path, const LoadOptions& options) {
+// Opens and fully validates an artifact for reading, exactly as load_path.
+struct OpenedArtifact {
+  dt::Db db;
+  Sha256Digest digest;
+  std::uint64_t file_bytes = 0;
+};
+
+OpenedArtifact open_validated(const std::filesystem::path& path, const LoadOptions& options) {
   const std::uint64_t file_bytes = dt::file_size_required(path, options.max_file_bytes);
   dt::validate_database_header(path, file_bytes);
-  // The content authenticity control covers exactly the hashed main file.
-  // WAL/SHM/journal sidecars are not hashed and would be replayed transparently
-  // by an ordinary read-only open, so reject any sidecar outright.
   dt::reject_sqlite_sidecars(path);
-
-  // Hash before opening so a tampered file is rejected on digest even if the
-  // corruption happens to be structurally parseable.
   const Sha256Digest digest = dt::sha256_file(path, options.max_file_bytes);
   if (options.expected_sha256 && *options.expected_sha256 != digest)
     fail(ArtifactErrorKind::DigestMismatch, "artifact digest mismatch for " + path.string());
-
   dt::ensure_reader_heap_bound();
-  dt::Db db;
-  // Immutable URI open: SQLite performs no recovery, creates no sidecars, and
-  // reads exactly the bytes hashed above. The publication directory itself is
-  // not assumed locked, so the sidecar rejection above is what makes the
-  // digest a complete content claim.
-  dt::open_immutable_reader(db, path);
-
-  const std::int64_t application_id = db.pragma_i64("application_id", "read application id");
+  OpenedArtifact opened;
+  opened.file_bytes = file_bytes;
+  opened.digest = digest;
+  dt::open_immutable_reader(opened.db, path);
+  const std::int64_t application_id = opened.db.pragma_i64("application_id", "read application id");
   if (application_id != static_cast<std::int64_t>(kArtifactApplicationId))
     fail(ArtifactErrorKind::UnsupportedVersion,
          "unexpected application_id " + std::to_string(application_id));
-  const std::int64_t user_version = db.pragma_i64("user_version", "read schema version");
+  const std::int64_t user_version = opened.db.pragma_i64("user_version", "read schema version");
   if (user_version != static_cast<std::int64_t>(kArtifactSchemaVersion))
     fail(ArtifactErrorKind::UnsupportedVersion,
          "unsupported artifact schema user_version " + std::to_string(user_version));
+  verify_schema_objects(opened.db);
+  verify_integrity(opened.db);
+  return opened;
+}
 
-  verify_schema_objects(db);
-  verify_integrity(db);
+LoadedArtifact load_path(const std::filesystem::path& path, const LoadOptions& options) {
+  OpenedArtifact opened = open_validated(path, options);
+  dt::Db& db = opened.db;
+  const Sha256Digest digest = opened.digest;
+  const std::uint64_t file_bytes = opened.file_bytes;
 
   ArtifactManifest manifest = read_manifest(db);
   HeadsUpGame game = read_game(db);
@@ -1438,6 +1442,79 @@ LoadedArtifact load_path(const std::filesystem::path& path, const LoadOptions& o
   return loaded;
 }
 
+// SQL aggregate word count for one canonical key's 64-bit storage layout:
+// actor, two own cards, board size (4 header words), the ordered board words,
+// then four words per stored betting event. The board and event lists are
+// the two pipe-separated text fields of `street|board|events`.
+const char* const kProbeKeyAggregateSql =
+    "WITH split1 AS ("
+    "  SELECT substr(public_key, instr(public_key, '|') + 1) AS rest"
+    "  FROM information_states"
+    "), split2 AS ("
+    "  SELECT substr(rest, 1, instr(rest, '|') - 1) AS board_text,"
+    "         substr(rest, instr(rest, '|') + 1) AS event_text"
+    "  FROM split1"
+    "), measured AS ("
+    "  SELECT 4"
+    "    + CASE WHEN board_text = '' THEN 0"
+    "           ELSE length(board_text) - length(replace(board_text, ',', '')) + 1 END"
+    "    + CASE WHEN event_text = '' THEN 0"
+    "           ELSE 4 * (length(event_text) - length(replace(event_text, ',', '')) + 1) END"
+    "      AS key_words"
+    "  FROM split2"
+    ")"
+    "SELECT COUNT(*), COALESCE(SUM(key_words), 0), COALESCE(MAX(key_words), 0) FROM measured";
+
+ArtifactProbe probe_path(const std::filesystem::path& path, const LoadOptions& options) {
+  OpenedArtifact opened = open_validated(path, options);
+  dt::Db& db = opened.db;
+
+  ArtifactProbe probe;
+  probe.manifest = read_manifest(db);
+  check(probe.manifest.kind == ArtifactKind::Policy, ArtifactErrorKind::InvalidArgument,
+        "resident probe supports published policies only: " + path.string());
+  check(probe.manifest.run_status == RunStatus::Complete, ArtifactErrorKind::InvalidArgument,
+        "cannot probe a resource-limited policy");
+
+  probe.game = read_game(db);
+  read_sizes(db, probe.game);
+  read_ranges(db, probe.game);
+  validate_game(probe.game);
+  read_auxiliary_tables(db);
+
+  dt::Stmt states(db.get(), "SELECT COUNT(*) FROM information_states", "probe information states");
+  check(states.step("probe information states"), ArtifactErrorKind::Corrupt,
+        "information state aggregate returned no row");
+  probe.information_sets = static_cast<std::uint64_t>(states.column_i64(0));
+  check(probe.information_sets > 0, ArtifactErrorKind::InvalidSchema,
+        "cannot probe an empty policy");
+  check(probe.information_sets == probe.manifest.information_sets, ArtifactErrorKind::InvalidSchema,
+        "probe information_sets disagrees with the manifest");
+
+  dt::Stmt actions(db.get(), "SELECT COUNT(*) FROM actions", "probe actions");
+  check(actions.step("probe actions"), ArtifactErrorKind::Corrupt,
+        "action aggregate returned no row");
+  probe.action_count = static_cast<std::uint64_t>(actions.column_i64(0));
+  check(probe.action_count >= probe.information_sets, ArtifactErrorKind::InvalidSchema,
+        "probe found a state without actions");
+
+  dt::Stmt keys(db.get(), kProbeKeyAggregateSql, "probe key aggregate");
+  check(keys.step("probe key aggregate"), ArtifactErrorKind::Corrupt,
+        "key aggregate returned no row");
+  const std::int64_t counted_states = keys.column_i64(0);
+  check(static_cast<std::uint64_t>(counted_states) == probe.information_sets,
+        ArtifactErrorKind::InvalidSchema, "probe key aggregate count disagrees");
+  probe.total_key_words = static_cast<std::uint64_t>(keys.column_i64(1));
+  probe.max_key_words = static_cast<std::uint64_t>(keys.column_i64(2));
+  check(probe.total_key_words >= probe.information_sets * 4, ArtifactErrorKind::InvalidSchema,
+        "probe key word aggregate is impossibly small");
+
+  probe.file_bytes = opened.file_bytes;
+  probe.sha256 = opened.digest;
+  probe.sha256_hex = dt::to_hex(opened.digest);
+  return probe;
+}
+
 }  // namespace
 
 void create_checkpoint(const std::filesystem::path& path, const TrainingResult& result,
@@ -1534,6 +1611,10 @@ void commit_checkpoint(const std::filesystem::path& path, const TrainingResult& 
 
 LoadedArtifact load_artifact(const std::filesystem::path& path, const LoadOptions& options) {
   return load_path(path, options);
+}
+
+ArtifactProbe probe_artifact(const std::filesystem::path& path, const LoadOptions& options) {
+  return probe_path(path, options);
 }
 
 PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,

@@ -54,6 +54,7 @@ flowchart TD
 | `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
 | `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response |
 | `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
+| `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 offline resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup; unwired and offline in this stage |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
 | `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..6-player ledger |
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
@@ -369,6 +370,127 @@ ENOSPC injected through a test-only VFS shim, real killed-writer rounds with
 and without the rollback journal, page/header/truncation corruption, unknown
 versions, foreign-key and STRICT rejection, NaN/Inf REALs, bad probability
 sums, oversized integers, and immutable-publication guarantees.
+
+## Resident Policy Lookup (RFC 0005 Stage 6)
+
+The offline `bigshark_resident` static library adds the resident layer over
+validated artifacts. Its public surface is
+`include/bs/resident_policy.hpp`, implemented under `src/resident/`
+(`resident_policy.cpp`, `public_reach.{hpp,cpp}`,
+`resident_index.{hpp,cpp}`). It links `bigshark_artifacts` PUBLIC (which
+brings the solver and poker domain records) and is linked by nothing else:
+not the policy, service, host, v0, protocol, client, or platform targets.
+The layer is offline only and is not wired to any decision path in this
+stage.
+
+```mermaid
+flowchart LR
+  Future[future offline host / trainer] --> Resident[bigshark_resident]
+  Resident --> Artifacts[bigshark_artifacts]
+  Artifacts --> Solver[solver domain records]
+```
+
+Startup takes an explicit list of supported roots: a filesystem path and a
+pinned SHA-256 digest per root (the pin is mandatory). Each artifact is
+first inspected with an additive lightweight probe
+(`artifacts::probe_artifact`): the probe performs every physical check
+(size, digest, sidecar rejection, immutable open, application/schema
+version, canonical schema objects, integrity check) and materializes only
+the manifest, the game identity (root, ordered rational sizes, bit-exact
+ranges), and SQL aggregates over information states, actions, and canonical
+key lengths — it never reconstructs policy rows. A conservative tight upper
+bound on the compact resident footprint,
+`ResidentIndex::estimate_bytes`, gates the full eager load, so an oversized
+root is refused (`OverBudget`) before the map-plus-index construction
+transient; the bound is proven in tests to be at least the exact footprint
+and tight (slack is a fixed per-vector term plus bounded vector growth).
+Accepted roots are still fully loaded and their exact post-build
+`resident_bytes` is the final advertising truth, so the pre-gate can never
+advertise a root the exact measurement would refuse. Roots whose declared
+ranges leave no positive card-compatible joint deal (zero or fully
+cross-blocked ranges, which the loader itself accepts) are refused with
+`InvalidRange`; the same canonical root listed twice is `DuplicateRoot`; a
+bad artifact is `LoadFailed` and never disables the other roots. Capacity
+failure cannot affect any other component because the library is not wired
+to the old solver in this stage.
+
+Root identity at a query is the full canonical notion shared with the
+solver's `same_root` and the artifact reader's `same_game`: ordered flop,
+stacks, matched contributions, pot, big blind, and button. The range weights
+and ordered rational sizing schedule cannot be spoilt by a query because
+they come from the advertised artifact itself; two artifacts with the same
+root but different range/size identity are both refused as duplicates. A
+fixed turn or river card that differs from the artifact's reserved runout
+misses exactly as `HeadsUpPolicy::lookup` diverges.
+
+The compact index flattens each artifact `std::map` into four contiguous
+buffers: a key blob (8-byte header plus the canonical key words), an action
+blob, a probability blob, fixed row records, and an open-addressing slot
+table at a 50 percent load factor. Lookup hashes the caller's fixed key
+span, linear-probes, and verifies every candidate with a full length and
+word comparison before resolving offsets; hash collisions can never return a
+wrong row. Action identity is action kind plus the exact street target
+total, never kind alone. Warm lookups perform no SQLite call, no lock, and
+no heap allocation: every buffer a query touches lives in a caller-owned
+`ResidentScratch` (per-player per-combo raw reach, marginals, per-card mass,
+an action-probability scratch, and a fixed 256-word key).
+
+Public belief is computed once per public node with no hero hole-card
+input. Starting from the artifact's declared pair of weighted ranges, the
+model replays the observed public path:
+
+- an observed action by actor `a` multiplies each live `a`-combination reach
+  by that node's policy probability for the action (kind plus exact target);
+  a missing row is `MissingHistory`, an action absent from the row's action
+  set is `OffTreeAmount`, and an action whose probability is zero for every
+  live actor combination is `ZeroProbabilityObservedAction`;
+- an observed public card zeroes every combination of either player holding
+  it, which simultaneously removes the incompatible joint deals, and the
+  card-compatible joint distribution is renormalized. At a free chance slot
+  the replay also enforces the solver's chance support
+  (`public_cards`): the dealt card must not be one reserved for a LATER
+  fixed slot (fixed slots themselves must equal their reserved card, as
+  `runout_matches` already requires); an out-of-support card is an `OffTree`
+  miss because that branch was never trained.
+
+An actor combination with positive raw reach but no positive
+card-compatible opponent combination after a free card is an orphan: the
+full traversal never visited that branch for the combination, so a complete
+artifact has no row for it. The replay requires a row only when the
+combination still has positive compatible joint mass; the orphan's action
+factor is left at zero (its joint mass and marginal are already zero), so
+the node stays covered for the combinations that do have rows. If the joint
+mass is ever non-finite or non-positive (zero declared range, fully
+cross-blocked ranges, or a zero-probability observation for every live
+deal), the lookup fails closed with `EmptyJointRange` or
+`ZeroProbabilityObservedAction` and never returns non-finite belief. After a successful public replay, the hero step also fails safe
+when the actual hero combination's conditioned raw reach is exactly zero
+along the observed path (`ZeroProbabilityHeroCombination`): a blueprint row
+is never returned for a combination the observer knows the hero cannot hold,
+even though the hero-independent belief update itself remains valid.
+
+The joint mass is the exact sum over player-0 combinations of raw reach
+times the player-1 mass not sharing either card, evaluated with
+inclusion-exclusion over per-card masses. The normalization constant is
+folded into one player's raw vector only; the joint distribution and both
+marginals always divide by the same current joint mass, so positive
+constant factors (including the solver's `1/legal-cards` chance factor)
+cancel, matching the solver convention verified through
+`response_value_with_reach`. By construction the answer is identical for
+every hero combination.
+
+The hero-private step is separate and runs only when an actual hero hand
+selects an action: it rejects hero combinations sharing a board card
+(`ComboBlockedByBoard`), fetches the hero combination's own policy row at
+the node (`UntrainedCombo` if absent), and copies the opponent marginal
+with combinations sharing either hero card removed. That private view is
+never renormalized into a relabeled equilibrium range; if every opponent
+combination is blocked the result is `OpponentRangeFullyBlocked`. The
+component never emits a fallback policy, never invents a uniform policy,
+never scales stacks, and exposes no bound or certification symbol: artifact
+v1 leaves the `bounds` and `measurements` tables validated and empty, so a
+resident continuation is advertised for blueprint lookup only. The
+resolving gadget and certification remain a later stage.
 
 ## Offline ICM Arithmetic
 

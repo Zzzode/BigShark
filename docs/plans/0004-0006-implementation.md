@@ -2,9 +2,9 @@
 
 Status: Current
 
-Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 5, 11,
-and the isolated Stage 12 ICM are complete with recorded evidence. Stage 6
-(artifact resident lookup) is next. RFC 0005 remains Accepted.
+Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 5, 6,
+11, and the isolated Stage 12 ICM are complete with recorded evidence.
+Stage 7 (protocol minor-0 migration) is next. RFC 0005 remains Accepted.
 
 Active goal: finish all accepted RFC 0004-0006 scope. A checkpoint is not
 goal completion; continue remaining stages until their acceptance evidence
@@ -29,8 +29,8 @@ evidence specified for each stage.
 
 ## Stages and Evidence
 
-Stages 1, 2, 3, 4, 5, 11, and the isolated Stage 12 ICM are complete;
-Stage 6 and all other work remain Pending. Owners name existing
+Stages 1, 2, 3, 4, 5, 6, 11, and the isolated Stage 12 ICM are complete;
+all other work remains Pending. Owners name existing
 modules or the explicitly approved artifact boundary, not separate services.
 
 | Stage | Roadmap IDs | Owner | Implementation | Required completion evidence |
@@ -442,14 +442,214 @@ moved below the check for consistency. Final Release CTest after that reorder:
 24/24 (271.95 seconds wall; benchmark label 203.82 seconds), `artifacts` green,
 format-check clean.
 
+## Stage 6 Evidence (2026-09-16)
+
+Preceding gate: commit `189ca31` (RFC 0005 Stage 5 SQLite strategy
+artifacts), Release CTest 24/24, ASan/UBSan 22/22, clean tree.
+
+Owned files (additive only):
+
+- NEW `engine/include/bs/resident_policy.hpp`: public offline API and domain
+  types only; no SQLite or OpenSSL types.
+- NEW `engine/src/resident/resident_policy.cpp`: explicit supported-root
+  construction, root advertisement and identity gate, the 256 MiB budget,
+  and coverage-miss orchestration.
+- NEW `engine/src/resident/public_reach.{hpp,cpp}`: hero-card-independent
+  joint belief and public-reach propagation with exact joint-mass
+  renormalization.
+- NEW `engine/src/resident/resident_index.{hpp,cpp}`: compact immutable
+  flat index (key/action/probability blobs, fixed row records, open
+  addressing at a 50 percent load factor), contiguous probabilities, and
+  honest byte accounting.
+- NEW `engine/tests/test_resident_policy.cpp`, registered as CTest
+  `resident`; links `bigshark_resident`, includes `engine/src`, and uses the
+  GTO debug passkey plus the artifacts `PolicyAssembler` only to synthesize
+  complete fixtures, as `test_artifacts` does.
+- NEW `engine/benchmarks/resident_lookup_benchmark.cpp` and the
+  `benchmark-resident-lookup` custom target; not a timing-gated CTest.
+- MODIFIED `engine/CMakeLists.txt` only to add the static library, test,
+  and benchmark. `docs/development/benchmarking.md`, `docs/design/gto-engine.md`,
+  and this plan carry the evidence. No service, policy, decision, river_gto,
+  v0, app, client, platform, host, or protocol file was modified.
+
+The new static library `bigshark_resident` links PUBLIC
+`bigshark_artifacts` (which brings solver and poker domain records). No
+policy, service, host, v0, protocol, client, or platform target links it;
+the layer is offline and unwired in this stage. Explicitly deferred: the
+resolving gadget, certification and bounds production (Stage 9; the v1
+`bounds`/`measurements` tables are validated and empty, so resident
+continuations are advertised for BLUEPRINT lookup only and the public header
+exposes no bound/guarantee/certification symbol), protocol minor 0/1
+(Stages 7/8), eligibility, host wiring, and preflop (Stage 10).
+
+Contract implemented:
+
+- Startup takes an explicit list of `{path, pinned sha256}` supported roots.
+  Each artifact is digest-verified and validated through `load_artifact`,
+  flattened into immutable resident records, measured, and advertised only
+  when its footprint fits the shared 256 MiB budget. Per-root results report
+  `Advertised`, `LoadFailed`, `OverBudget`, or `DuplicateRoot`; one bad
+  artifact never disables another. `kDefaultResidentBudgetBytes` is
+  256 MiB.
+- Root identity is the full canonical notion: ordered flop, stacks, matched
+  contributions, pot, big blind, button (the query cannot alter range
+  weights or the ordered rational sizing schedule because those come from
+  the artifact); a pinned digest on a different root is
+  `RootIdentityMismatch`; fixed turn/river divergence misses like
+  `HeadsUpPolicy::lookup`.
+- Honest byte accounting counts the resident key/action/probability blobs,
+  row records, slot table, and immutable game copy at actual vector
+  capacities; it never uses the SQLite page cache, file size, or manifest
+  estimate as truth. The 493,500-set SPR-10 root measures 301.21 MiB against
+  a 175.97 MiB file and is correctly withheld.
+- Warm lookups make zero SQLite calls, take no lock, and allocate no heap
+  memory (all per-query buffers are caller-owned `ResidentScratch`). The
+  benchmark's counting allocator records 0 allocations over 100,000 hits and
+  20,000 misses.
+- A pre-load additive `artifacts::probe_artifact` performs the complete
+  physical/schema validation and SQL aggregates (state, action, key-word
+  counts) without materializing rows; `ResidentIndex::estimate_bytes` is a
+  conservative tight upper bound (verified in tests to be at least and very
+  near the exact footprint) used to refuse oversized roots before the
+  map-plus-index transient. Accepted roots are still measured exactly after
+  the index is built.
+- Declared ranges with no positive card-compatible joint deal (zero weight
+  or fully cross-blocked) are refused at startup as `InvalidRange`; a query
+  whose observed path leaves zero joint mass fails closed with
+  `EmptyJointRange` rather than returning NaN.
+- Free-chance orphan combos (positive raw reach but no compatible opponent
+  deal on the dealt branch) require no row and do not turn covered nodes
+  into MissingHistory; a free-slot card reserved for a later fixed slot is
+  rejected as `OffTree`, matching the solver's `public_cards` support; a hero
+  combination with exactly zero conditioned reach never returns its row
+  (`ZeroProbabilityHeroCombination`).
+- Public belief is computed once per public node with no hero hole-card
+  input; observed actions multiply actor-combo reach by the policy
+  probability matched by kind plus exact target total; public cards zero
+  combinations of both players and renormalize the exact card-compatible
+  joint distribution. Missing row, action-set mismatch, and zero-probability
+  observations are distinct misses. The hero-private blocker filter is
+  separate and never renormalizes into a relabeled range. The miss enum
+  covers RootNotSupported, RootIdentityMismatch, OverBudgetNotAdvertised,
+  MissingHistory, OffTree, ZeroProbabilityObservedAction, OffTreeAmount,
+  EmptyJointRange, UntrainedCombo, ComboBlockedByBoard, RunoutDivergence,
+  OpponentRangeFullyBlocked, and ZeroProbabilityHeroCombination.
+
+Correctness evidence:
+
+- Hand-computed golden tests on a two-vs-two fixed-runout game with exact
+  decimals: root weighted marginals (0.4/0.6 and 5/12, 7/12), check/check
+  invariance, bet/call and bet/fold updates (4/11, 7/11), a mixed lead
+  (5/19, 14/19), a partial zero-prob action removing one combo, and a
+  zero-for-every-combo call reported as ZeroProbabilityObservedAction, all
+  within 1e-12.
+- Public-card blocker removal on a free-turn fixture (the As turn removes
+  player 0's AsKs combination, joint deals renormalize, and the same hero
+  combo is rejected as ComboBlockedByBoard).
+- Solver convention cross-check: the independent oracle now zeroes joint
+  deals that hold a newly dealt free card before applying 1/legal-cards,
+  multiplies BOTH players' observed action probabilities (non-constant
+  responder own factors), and feeds per-deal reaches to
+  `HeadsUpSolverDebug::response_value_with_reach` next to reaches rebuilt
+  from the resident raw factors; normalized response values agree within
+  1e-10 at flop, turn, and river nodes (including a free-turn branch) for
+  best and profile evaluation.
+- Street conditioning: exact hand-derived fractions after observed turn and
+  river bet/call/fold actions (turn bet 25/49, 24/49; turn call 4/11, 7/11;
+  river jam 25/37, 12/37; fold/call reply collapsing one opponent combo),
+  covering the event-street board-prefix slice; non-constant player-0 factors
+  are asserted by these fractions.
+- Orphan free-chance regression (3v3 free-turn artifact): an actor combo
+  whose remaining opponents all share the newly dealt card has no row but the
+  node stays covered; the orphan marginal is exactly zero, the other combos
+  return rows, and replaying an orphan action into the response node does not
+  produce MissingHistory. A free turn dealing the reserved river card is
+  OffTree.
+- Second independent review found the orphan partner gate was exact only for
+  actor-0 observations: `renormalize` folded the joint mass into `raw[0]` but
+  left the cached `card_mass[0]` at pre-fold scale, so when observing an
+  actor-1 action `has_positive_partner(1,...)` mixed post-fold totals with
+  pre-fold card masses and could read a true zero-partner player-1 combo as
+  positive, forcing a missing row on a covered node. Fix: scale
+  `card_mass[0]` by the same joint factor in `renormalize`, keeping the
+  scratch representation internally consistent for both actors
+  (`engine/src/resident/public_reach.cpp`). The symmetric regression
+  `test_orphan_actor_one` (p0 KhKc/QhJd/As9d vs p1 KhQh/9sTs, free As turn,
+  nonuniform player-0 turn checks) queries the boundary after player-1's turn
+  check, asserts the KhQh orphan marginal is exactly zero, 9sTs is one, both
+  live player-0 combos stay positive, and the folded
+  `sum(card_mass[0]) == 2*sum(raw[0])` invariant; reverting the scaling makes
+  the covered node fail (`node.hit`), and the existing actor-0 orphan test
+  stays green.
+- Empty-joint regression: a zero-weight and a fully cross-blocked single-combo
+  artifact both validate on disk but start as `InvalidRange` and query as
+  `EmptyJointRange` (never hit plus NaN).
+- Shared two-card combination present in BOTH declared ranges exercises the
+  inclusion-exclusion add-back; the self-pair contributes zero and the
+  marginals match a brute-force oracle.
+- Zero conditioned hero reach returns ZeroProbabilityHeroCombination even
+  though the public belief update stays valid.
+- Probe regression: `probe_artifact` aggregates match the full load exactly;
+  the byte bound is an upper bound on and tight relative to the exact
+  measured footprint; digest mismatch and checkpoint-kind probes are
+  rejected.
+- Public belief is asserted identical for every hero combination; the
+  cross-blocked matrix root matches an independent nine-pair oracle; the
+  compact index agrees with a brute-force `std::map` scan over 5,000 random
+  keys including absent ones; the continuity walk requires rows only for
+  combos with positive compatible joint mass (matching the training tree) for
+  three published roots; truncated history yields MissingHistory and wrong
+  flop order yields RootNotSupported/RootIdentityMismatch; empty
+  `bounds`/`measurements` tables are asserted via a raw SQLite count and the
+  public header contains no bound/guarantee/certification symbol outside
+  comments. Every production fix above was verified red-on-revert by
+  mutating the production source and rebuilding the suite.
+
+Latency evidence (reference machine Apple M5 Pro / 48 GB / macOS 26.5.1 /
+Apple clang 21, release preset, post-review corrected methodology): the
+benchmark enumerates EVERY covered hero decision of all six roots
+(115,056 queries, asserted equal to the published set count), runs an untimed
+full-pass warmup, then times the batches. The six-root aggregate cold
+construction (probe, verified loads, index builds) took 1,329.6 ms and
+52.21 MiB resident; warm hits over the complete six-root working set p50
+53.21 us, p95 69.67 us, p99 87.63 us (target <= 10 ms, MET), miss p99
+16.54 us, zero unexpected miss hits, zero warm allocations. The SPR-10
+single root measures 315,855,352 resident bytes and is refused by the probe
+pre-gate. The full catalog and CSV contract are in
+`docs/development/benchmarking.md`.
+
+Gates (2026-09-16, reference machine Apple M5 Pro / 48 GB / macOS 26.5.1 /
+Apple clang 21, after the independent adversarial review hardening):
+
+- `cmake --preset release`: clean configure.
+- `format` and `format-check`: pass.
+- Full release build: clean.
+- Release CTest: 25/25 passed (the expanded `resident` suite and the gated
+  benchmark families included).
+- `benchmark-resident-lookup`: builds and runs across the complete six-root
+  115,056-query working set; p99 87.625 us, target <= 10 ms MET, 0/0 warm
+  allocations.
+- `benchmark-multistreet`: PASS for all three cases, repeat_delta 0.
+- `npm run check`: 32/32 subtests pass; `npm run proto:check`: pass.
+- `node bin/replay.mjs`: Decisions 156, Illegal 0, JS fallbacks 0.
+- `check-docs` (164 text files) and `check-rfcs` (6 RFCs): pass.
+- Targeted ASan/UBSan `ctest --preset asan -R "resident|artifacts"`: 2/2
+  passed with zero ASan or UBSan reports (`artifacts` 5.50 s, `resident`
+  20.07 s under instrumentation). The artifacts source gained the additive
+  probe, so both run instrumented; no other shared solver/poker/service
+  source changed, so the full instrumented suite was not rerun (scoped gate).
+- No existing target (`bigshark_policy`, `bigshark_service`,
+  `bigshark_v0_protocol`, host, clients, platforms) links
+  `bigshark_resident`; existing v0 behavior is byte-identical.
+
+Working-tree checkpoint; nothing committed.
+
 ## Next Implementation Checkpoint
 
-Stage 6 adds the RFC 0005 resident lookup layer: complete supported root
-subsets loaded eagerly from validated immutable artifacts, public policy reach
-with correct blocker filtering, explicit coverage misses, no request-path SQL,
-and latency measurements at 100,000 information sets. The artifact boundary and
-storage from Stage 5 are already in place; no host or live path is wired yet.
-Keep v0 contexts, production policy routing, and external commands unchanged.
+Stage 7 begins the RFC 0002 minor-0 protocol migration; it is independent of
+solver strategy changes. Keep v0 contexts, production policy routing, and
+external commands unchanged. The resident layer stays opt-in and unwired
+until the Stage 7/8 protocol and Stage 9 eligibility work land.
 
 Before each later stage, define exact owned files and record which preceding
 gate passed. Use independent bounded reviewers for algorithm, persistence,
