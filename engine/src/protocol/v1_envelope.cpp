@@ -5,6 +5,7 @@
 #include <string>
 
 #include "v1_mappers.hpp"
+#include "v1_resident_mapper.hpp"
 
 namespace bs::v1 {
 namespace {
@@ -14,11 +15,12 @@ namespace pv = ::bigshark::engine::v1;
 constexpr std::size_t kMaxRequestIdBytes = 128;
 
 EnvelopeResult respondWithDecision(const std::string& requestId,
-                                   const pv::DecisionResponse& response) {
+                                   const pv::DecisionResponse& response,
+                                   std::uint32_t negotiated_minor) {
   EnvelopeResult result;
   result.outcome = EnvelopeOutcome::Respond;
   pv::Envelope envelope;
-  envelope.set_protocol_minor(0);
+  envelope.set_protocol_minor(negotiated_minor);
   envelope.set_request_id(requestId);
   *envelope.mutable_decision_response() = response;
   result.response = envelope.SerializeAsString();
@@ -26,11 +28,12 @@ EnvelopeResult respondWithDecision(const std::string& requestId,
 }
 
 EnvelopeResult respondWithCapabilities(const std::string& requestId,
-                                       const pv::GetCapabilitiesResponse& response) {
+                                       const pv::GetCapabilitiesResponse& response,
+                                       std::uint32_t negotiated_minor) {
   EnvelopeResult result;
   result.outcome = EnvelopeOutcome::Respond;
   pv::Envelope envelope;
-  envelope.set_protocol_minor(0);
+  envelope.set_protocol_minor(negotiated_minor);
   envelope.set_request_id(requestId);
   *envelope.mutable_get_capabilities_response() = response;
   result.response = envelope.SerializeAsString();
@@ -70,43 +73,206 @@ const char* messageFor(pv::ErrorCode code) {
   }
 }
 
+// Shared decision-error envelope for the coverage misses unique to minor 1.
+EnvelopeResult blueprintMissResponse(const std::string& requestId, const std::string& detail) {
+  std::string message = "blueprint coverage unavailable";
+  if (!detail.empty()) {
+    message += ": ";
+    message += detail;
+  }
+  return respondWithDecision(
+      requestId, errorResponse(pv::ERROR_CODE_UNSUPPORTED_FEATURE, message, /*retryable=*/false),
+      1);
+}
+
+// Runs one resident lookup end to end. Returns true only when the
+// reconstructed state has a legal, fully mappable blueprint row.
+bool tryBlueprint(const V1HostServices& services, const pv::DecisionRequest& request,
+                  pv::DecisionResponse& response, std::string& miss_detail) {
+  if (!services.blueprintAdvertised()) {
+    miss_detail = "no resident blueprint root advertised";
+    return false;
+  }
+  ReconstructedPostflop reconstructed;
+  V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
+  if (!reconstructPostflop(request, reconstructed, reconstruct_miss)) {
+    miss_detail = to_string(reconstruct_miss);
+    return false;
+  }
+  const V1BlueprintResult answer = services.blueprintHeroDecision(
+      *reconstructed.state, reconstructed.hero_cards, std::string_view{});
+  if (!answer.hit) {
+    miss_detail = to_string(answer.miss);
+    return false;
+  }
+  // An abstract row action outside the client legal window is a coverage
+  // miss, never a clamp.
+  if (!blueprintRowIsLegal(request, answer.row)) {
+    miss_detail = "off-tree-amount";
+    return false;
+  }
+  response = mapBlueprintExpandedResponse(request, answer.row);
+  return true;
+}
+
+// Negotiated minor 1 decision dispatch.
+EnvelopeResult handleMinor1Decision(const std::string& requestId,
+                                    const pv::DecisionRequest& request,
+                                    const V1HostServices& services) {
+  ValidationReport report;
+  bs::Ctx context;
+  const pv::ErrorCode validationCode = validateAndMap(request, report, context, 1);
+  if (validationCode != pv::ERROR_CODE_UNSPECIFIED) {
+    return respondWithDecision(
+        requestId,
+        errorResponse(validationCode, messageFor(validationCode), retryableFor(validationCode),
+                      std::move(report.violations)),
+        1);
+  }
+
+  const pv::SolverMode mode = request.options().solver_mode();
+  if (mode == pv::SOLVER_MODE_BLUEPRINT) {
+    pv::DecisionResponse response;
+    std::string miss_detail;
+    if (!tryBlueprint(services, request, response, miss_detail))
+      return blueprintMissResponse(requestId, miss_detail);
+    return respondWithDecision(requestId, response, 1);
+  }
+
+  // AUTOMATIC may use a resident hit; an explicit HEURISTIC request always
+  // runs the heuristic. Any automatic-mode miss falls through to the existing
+  // heuristic engine, which reports its real source.
+  if (mode == pv::SOLVER_MODE_AUTOMATIC) {
+    pv::DecisionResponse response;
+    std::string miss_detail;
+    if (tryBlueprint(services, request, response, miss_detail))
+      return respondWithDecision(requestId, response, 1);
+  }
+
+  const bs::Decision decision = bs::decide(context);
+  if (decision.action.empty()) {
+    return respondWithDecision(
+        requestId,
+        errorResponse(pv::ERROR_CODE_NO_DECISION, messageFor(pv::ERROR_CODE_NO_DECISION),
+                      retryableFor(pv::ERROR_CODE_NO_DECISION)),
+        1);
+  }
+  return respondWithDecision(requestId, mapHeuristicExpandedResponse(request, decision), 1);
+}
+
 }  // namespace
 
+const char* to_string(V1BlueprintMiss miss) noexcept {
+  switch (miss) {
+    case V1BlueprintMiss::None:
+      return "none";
+    case V1BlueprintMiss::UnsupportedHandState:
+      return "unsupported-hand-state";
+    case V1BlueprintMiss::RootNotSupported:
+      return "root-not-supported";
+    case V1BlueprintMiss::RootIdentityMismatch:
+      return "root-identity-mismatch";
+    case V1BlueprintMiss::OverBudgetNotAdvertised:
+      return "over-budget-not-advertised";
+    case V1BlueprintMiss::MissingHistory:
+      return "missing-history";
+    case V1BlueprintMiss::OffTree:
+      return "off-tree";
+    case V1BlueprintMiss::OffTreeAmount:
+      return "off-tree-amount";
+    case V1BlueprintMiss::ZeroProbabilityObservedAction:
+      return "zero-probability-observed-action";
+    case V1BlueprintMiss::EmptyJointRange:
+      return "empty-joint-range";
+    case V1BlueprintMiss::UntrainedCombo:
+      return "untrained-combo";
+    case V1BlueprintMiss::ComboBlockedByBoard:
+      return "combo-blocked-by-board";
+    case V1BlueprintMiss::RunoutDivergence:
+      return "runout-divergence";
+    case V1BlueprintMiss::OpponentRangeFullyBlocked:
+      return "opponent-range-fully-blocked";
+    case V1BlueprintMiss::ZeroProbabilityHeroCombination:
+      return "zero-probability-hero-combination";
+  }
+  return "unknown";
+}
+
+namespace {
+
+class NoResidentServices final : public V1HostServices {
+ public:
+  bool blueprintAdvertised() const noexcept override { return false; }
+
+  V1BlueprintResult blueprintHeroDecision(const bs::poker::HeadsUpState&, const std::array<int, 2>&,
+                                          std::string_view) const noexcept override {
+    V1BlueprintResult result;
+    result.hit = false;
+    result.miss = V1BlueprintMiss::RootNotSupported;
+    return result;
+  }
+};
+
+}  // namespace
+
+const V1HostServices& noResidentServices() noexcept {
+  static const NoResidentServices services;
+  return services;
+}
+
 EnvelopeResult handleEnvelope(const std::string& frame) {
+  return handleEnvelope(frame, noResidentServices());
+}
+
+EnvelopeResult handleEnvelope(const std::string& frame, const V1HostServices& services) {
   pv::Envelope envelope;
   if (!envelope.ParseFromArray(frame.data(), static_cast<int>(frame.size()))) {
     return respondWithDecision(
-        "", errorResponse(pv::ERROR_CODE_INVALID_REQUEST, "malformed envelope", false));
+        "", errorResponse(pv::ERROR_CODE_INVALID_REQUEST, "malformed envelope", false), 0);
   }
 
   const std::string requestId = envelope.request_id();
   if (requestId.empty() || requestId.size() > kMaxRequestIdBytes) {
-    return respondWithDecision("", errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
-                                                 "request_id must be 1..128 characters", false));
+    return respondWithDecision("",
+                               errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
+                                             "request_id must be 1..128 characters", false),
+                               envelope.protocol_minor() <= 1 ? envelope.protocol_minor() : 0);
   }
   if (!isValidUtf8(requestId)) {
     return respondWithDecision(
-        "", errorResponse(pv::ERROR_CODE_INVALID_REQUEST, "request_id must be valid UTF-8", false));
+        "", errorResponse(pv::ERROR_CODE_INVALID_REQUEST, "request_id must be valid UTF-8", false),
+        envelope.protocol_minor() <= 1 ? envelope.protocol_minor() : 0);
   }
-  if (envelope.protocol_minor() != 0) {
+
+  const std::uint32_t minor = envelope.protocol_minor();
+  const std::uint32_t echo_minor = minor <= 1 ? minor : 0;
+  if (minor > 1) {
     return respondWithDecision(requestId,
                                errorResponse(pv::ERROR_CODE_UNSUPPORTED_PROTOCOL,
-                                             "only protocol minor 0 is supported", false));
+                                             "only protocol minors 0 and 1 are supported", false),
+                               echo_minor);
   }
 
   switch (envelope.payload_case()) {
     case pv::Envelope::kGetCapabilitiesRequest:
-      return respondWithCapabilities(requestId, buildCapabilities());
+      if (minor == 0)
+        return respondWithCapabilities(requestId, buildCapabilities(), 0);
+      return respondWithCapabilities(requestId,
+                                     buildCapabilities(1, services.blueprintAdvertised()), 1);
 
     case pv::Envelope::kGetCapabilitiesResponse:
       return respondWithDecision(
-          requestId, errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
-                                   "capability responses are not accepted by the host", false));
+          requestId,
+          errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
+                        "capability responses are not accepted by the host", false),
+          echo_minor);
 
     case pv::Envelope::kDecisionResponse:
       return respondWithDecision(
-          requestId, errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
-                                   "decision responses are not accepted by the host", false));
+          requestId,
+          errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
+                        "decision responses are not accepted by the host", false),
+          echo_minor);
 
     case pv::Envelope::kDecisionRequest:
       break;
@@ -114,38 +280,51 @@ EnvelopeResult handleEnvelope(const std::string& frame) {
     case pv::Envelope::PAYLOAD_NOT_SET:
       return respondWithDecision(requestId,
                                  errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
-                                               "envelope requires exactly one payload", false));
+                                               "envelope requires exactly one payload", false),
+                                 echo_minor);
   }
 
   const pv::DecisionRequest& request = envelope.decision_request();
   try {
-    ValidationReport report;
-    bs::Ctx context;
-    const pv::ErrorCode validationCode = validateAndMap(request, report, context);
-    if (validationCode != pv::ERROR_CODE_UNSPECIFIED) {
-      return respondWithDecision(
-          requestId, errorResponse(validationCode, messageFor(validationCode),
-                                   retryableFor(validationCode), std::move(report.violations)));
+    // Minor 0 keeps the exact Stage-7 call graph and response bytes: it never
+    // consults host services, never touches resident code, and never emits the
+    // expanded oneof or the new enums.
+    if (minor == 0) {
+      ValidationReport report;
+      bs::Ctx context;
+      const pv::ErrorCode validationCode = validateAndMap(request, report, context);
+      if (validationCode != pv::ERROR_CODE_UNSPECIFIED) {
+        return respondWithDecision(
+            requestId,
+            errorResponse(validationCode, messageFor(validationCode), retryableFor(validationCode),
+                          std::move(report.violations)),
+            0);
+      }
+      const bs::Decision decision = bs::decide(context);
+      if (decision.action.empty()) {
+        return respondWithDecision(
+            requestId,
+            errorResponse(pv::ERROR_CODE_NO_DECISION, messageFor(pv::ERROR_CODE_NO_DECISION),
+                          retryableFor(pv::ERROR_CODE_NO_DECISION)),
+            0);
+      }
+      pv::DecisionResponse response = mapDecisionResponse(request, decision);
+      return respondWithDecision(requestId, response, 0);
     }
-    const bs::Decision decision = bs::decide(context);
-    if (decision.action.empty()) {
-      return respondWithDecision(
-          requestId,
-          errorResponse(pv::ERROR_CODE_NO_DECISION, messageFor(pv::ERROR_CODE_NO_DECISION),
-                        retryableFor(pv::ERROR_CODE_NO_DECISION)));
-    }
-    pv::DecisionResponse response = mapDecisionResponse(request, decision);
-    return respondWithDecision(requestId, response);
+
+    return handleMinor1Decision(requestId, request, services);
   } catch (const MappingError& error) {
-    return respondWithDecision(requestId, errorResponse(error.code(), error.what(),
-                                                        error.retryable(), error.violations()));
+    return respondWithDecision(
+        requestId, errorResponse(error.code(), error.what(), error.retryable(), error.violations()),
+        echo_minor);
   } catch (const std::bad_alloc&) {
     return respondWithDecision(requestId,
                                errorResponse(pv::ERROR_CODE_RESOURCE_EXHAUSTED,
-                                             messageFor(pv::ERROR_CODE_RESOURCE_EXHAUSTED), true));
+                                             messageFor(pv::ERROR_CODE_RESOURCE_EXHAUSTED), true),
+                               echo_minor);
   } catch (const std::exception& error) {
-    return respondWithDecision(requestId,
-                               errorResponse(pv::ERROR_CODE_INTERNAL, error.what(), true));
+    return respondWithDecision(
+        requestId, errorResponse(pv::ERROR_CODE_INTERNAL, error.what(), true), echo_minor);
   }
 }
 

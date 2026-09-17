@@ -34,6 +34,23 @@ inline pv::Envelope envelopeFor(const pv::DecisionRequest& request, const char* 
   return envelope;
 }
 
+inline pv::Envelope envelopeForMinor(const pv::DecisionRequest& request, const char* id,
+                                     std::uint32_t minor) {
+  pv::Envelope envelope;
+  envelope.set_protocol_minor(minor);
+  envelope.set_request_id(id);
+  *envelope.mutable_decision_request() = request;
+  return envelope;
+}
+
+inline pv::Envelope capabilitiesFor(std::uint32_t minor, const char* id) {
+  pv::Envelope envelope;
+  envelope.set_protocol_minor(minor);
+  envelope.set_request_id(id);
+  envelope.mutable_get_capabilities_request();
+  return envelope;
+}
+
 inline pv::DecisionRequest baseRequest() {
   pv::DecisionRequest request;
   pv::HandState* state = request.mutable_state();
@@ -183,6 +200,84 @@ inline std::vector<std::string> structuredSeeds() {
     pv::DecisionRequest request = baseRequest();
     request.mutable_state()->mutable_players(1)->set_status(static_cast<pv::PlayerStatus>(99));
     seeds.push_back(frame(envelopeFor(request, "status99")));
+  }
+
+  // ---- RFC 0002 Stage 8 minor-1 / expanded-strategy frames. ---------------
+  // Capability queries at every minor reach the negotiation branch.
+  seeds.push_back(frame(capabilitiesFor(0, "cap0")));
+  seeds.push_back(frame(capabilitiesFor(1, "cap1")));
+  seeds.push_back(frame(capabilitiesFor(2, "cap2")));
+  seeds.push_back(frame(capabilitiesFor(0xffffffffu, "caphuge")));
+  {
+    // Minor 1 with the new BLUEPRINT mode: no resident services, so it must
+    // resolve to a non-retryable UNSUPPORTED_FEATURE error, never a crash.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_BLUEPRINT);
+    seeds.push_back(frame(envelopeForMinor(request, "blueprint1", 1)));
+  }
+  {
+    // Minor 1 with RESOLVING (7): always UNSUPPORTED_FEATURE.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_RESOLVING);
+    seeds.push_back(frame(envelopeForMinor(request, "resolve1", 1)));
+  }
+  {
+    // Minor 1 AUTOMATIC: reconstruction runs against a VALID base flop
+    // request (check/bet, no resident root configured), then the heuristic
+    // answers with an ExpandedStrategy, exercising the expanded response
+    // invariants in the harness.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_state()->mutable_legal_actions(0)->set_type(pv::ACTION_TYPE_CHECK);
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_AUTOMATIC);
+    seeds.push_back(frame(envelopeForMinor(request, "automatic1", 1)));
+  }
+  {
+    // Minor 1 HEURISTIC bypasses resident code.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_HEURISTIC);
+    seeds.push_back(frame(envelopeForMinor(request, "heuristic1", 1)));
+  }
+  {
+    // BLUEPRINT on minor 0 is rejected even though the enum is known.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_BLUEPRINT);
+    seeds.push_back(frame(envelopeFor(request, "blueprint0")));
+  }
+  {
+    // Minor 1 with an open enum one past RESOLVING.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(static_cast<pv::SolverMode>(8));
+    seeds.push_back(frame(envelopeForMinor(request, "solver8-minor1", 1)));
+  }
+  {
+    // Minor 1 with a malformed structured history exercising the postflop
+    // reconstructor's miss path (unresolved actor).
+    pv::DecisionRequest request = baseRequest();
+    pv::ActionEvent* event = request.mutable_state()->add_action_history();
+    event->set_sequence(0);
+    event->set_street(pv::STREET_FLOP);
+    event->set_actor_player_id("nobody");
+    event->set_action(pv::ACTION_TYPE_CHECK);
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_BLUEPRINT);
+    seeds.push_back(frame(envelopeForMinor(request, "reconmiss1", 1)));
+  }
+  {
+    // A manually constructed minor-1 expanded_strategy response must be
+    // re-parseable by the fuzz harness (protobuf-unknown-oneof tolerance).
+    pv::Envelope envelope;
+    envelope.set_protocol_minor(1);
+    envelope.set_request_id("expanded-response-seed");
+    pv::ExpandedStrategy* expanded =
+        envelope.mutable_decision_response()->mutable_expanded_strategy();
+    pv::ActionPolicy* check = expanded->add_actions();
+    check->set_type(pv::ACTION_TYPE_CHECK);
+    check->set_probability(1.0);
+    expanded->mutable_selected_action()->set_type(pv::ACTION_TYPE_CHECK);
+    expanded->mutable_solver()->set_source(pv::SOLVER_SOURCE_BLUEPRINT);
+    expanded->mutable_solver()->set_artifact_sha256(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+    expanded->mutable_solver()->set_guarantee("uncertified");
+    seeds.push_back(frame(envelope));
   }
   return seeds;
 }

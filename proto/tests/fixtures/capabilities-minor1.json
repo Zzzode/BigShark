@@ -1,0 +1,51 @@
+{
+  "protocolMinor": 1,
+  "requestId": "capabilities-minor1-vector",
+  "getCapabilitiesResponse": {
+    "supportedProtocolMinors": [
+      0,
+      1
+    ],
+    "engineBuildVersion": "bigshark-engine-v1.1.0",
+    "supportedGameVariants": [
+      "GAME_VARIANT_NLHE"
+    ],
+    "supportedBettingStructures": [
+      "BETTING_STRUCTURE_NO_LIMIT"
+    ],
+    "minimumPlayers": 2,
+    "maximumPlayers": 10,
+    "supportedStreets": [
+      "STREET_PREFLOP",
+      "STREET_FLOP",
+      "STREET_TURN",
+      "STREET_RIVER"
+    ],
+    "supportedActions": [
+      "ACTION_TYPE_FOLD",
+      "ACTION_TYPE_CHECK",
+      "ACTION_TYPE_CALL",
+      "ACTION_TYPE_BET",
+      "ACTION_TYPE_RAISE"
+    ],
+    "amountSemantics": "AMOUNT_SEMANTICS_TARGET_TOTAL_INCLUSIVE",
+    "solverModes": [
+      "SOLVER_MODE_AUTOMATIC",
+      "SOLVER_MODE_HEURISTIC",
+      "SOLVER_MODE_BLUEPRINT"
+    ],
+    "strategyProfiles": [
+      "tag",
+      "lag",
+      "station-hunter"
+    ],
+    "exactLp": "FEATURE_SUPPORT_SUPPORTED",
+    "dcfr": "FEATURE_SUPPORT_SUPPORTED",
+    "multistreet": "FEATURE_SUPPORT_EXPERIMENTAL",
+    "sidePots": "FEATURE_SUPPORT_UNSUPPORTED",
+    "rake": "FEATURE_SUPPORT_UNSUPPORTED",
+    "tournamentIcm": "FEATURE_SUPPORT_UNSUPPORTED",
+    "maximumRequestBytes": "1048576",
+    "maximumSolveTimeMs": 120000
+  }
+}

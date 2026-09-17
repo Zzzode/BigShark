@@ -87,6 +87,11 @@ enum SolverMode {
   SOLVER_MODE_RIVER_LP = 3;
   SOLVER_MODE_RIVER_DCFR = 4;
   SOLVER_MODE_MULTISTREET_CFR = 5;
+  // Negotiated minor 1 only: lookup a resident offline blueprint.
+  SOLVER_MODE_BLUEPRINT = 6;
+  // Registered for wire stability; resolving is a later stage and is always
+  // rejected in this version.
+  SOLVER_MODE_RESOLVING = 7;
 }
 
 enum SolverSource {
@@ -96,6 +101,10 @@ enum SolverSource {
   SOLVER_SOURCE_RIVER_LP = 3;
   SOLVER_SOURCE_RIVER_DCFR = 4;
   SOLVER_SOURCE_MULTISTREET_CFR = 5;
+  // Negotiated minor 1 only: an immutable resident blueprint row.
+  SOLVER_SOURCE_BLUEPRINT = 6;
+  // Registered for wire stability; resolving is a later stage.
+  SOLVER_SOURCE_RESOLVING = 7;
 }
 
 enum FeatureSupport {
@@ -359,12 +368,39 @@ message SolverMetadata {
     max_len: 64
   }];
   optional string diagnostic_reason = 8 [(buf.validate.field).string.max_len = 512];
+  // Negotiated minor 1 only. Lowercase hex SHA-256 of the immutable resident
+  // policy artifact bytes that produced the row.
+  optional string artifact_sha256 = 9 [(buf.validate.field).string = {pattern: "^[a-f0-9]{64}$"}];
+  // Negotiated minor 1 only. What the host certifies about a distribution:
+  //   modeled_exact_bound - passed modeled certification bounds (never emitted
+  //                         before certification exists);
+  //   uncertified         - a complete, validated blueprint without bounds;
+  //   baseline            - reserved for a future resolving-deadline fallback.
+  optional string guarantee = 10 [(buf.validate.field).string = {
+    in: [
+      "modeled_exact_bound",
+      "uncertified",
+      "baseline"
+    ]
+  }];
 }
 
 message Strategy {
   repeated ActionPolicy actions = 1 [(buf.validate.field).repeated = {
     min_items: 1
     max_items: 5
+  }];
+  optional SelectedAction selected_action = 2;
+  SolverMetadata solver = 3 [(buf.validate.field).required = true];
+}
+
+// Negotiated minor 1 only. The full resident blueprint distribution: unlike
+// the minor-0 Strategy the action list carries up to 32 abstract actions and
+// is never truncated to five.
+message ExpandedStrategy {
+  repeated ActionPolicy actions = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 32
   }];
   optional SelectedAction selected_action = 2;
   SolverMetadata solver = 3 [(buf.validate.field).required = true];
@@ -399,6 +435,8 @@ message DecisionResponse {
     option (buf.validate.oneof).required = true;
     Strategy strategy = 1;
     EngineError error = 2;
+    // Negotiated minor 1 only; never set on a minor-0 response.
+    ExpandedStrategy expanded_strategy = 3;
   }
 }
 

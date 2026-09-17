@@ -3,11 +3,12 @@ import {
   type ChildProcessByStdio,
   type SpawnOptions,
 } from 'node:child_process';
-import { fromBinary, toBinary } from '@bufbuild/protobuf';
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import type { Readable, Writable } from 'node:stream';
 
 import {
   EnvelopeSchema,
+  GetCapabilitiesRequestSchema,
   type Envelope,
 } from '../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
 
@@ -32,6 +33,15 @@ export interface ProtoEngineClientOptions {
   /** Capabilities or decision envelope used to validate the spawned process. */
   warmupEnvelope: Envelope;
   warmupTimeoutMs?: number;
+  /**
+   * RFC 0005 negotiated minor 1 opt-in. When true the client performs the
+   * two-step capability handshake (query at minor 0, re-query advertising
+   * minor 1) before use and downgrades to minor 0 on a host that does not
+   * negotiate it. Callers that do not opt in always stay on minor 0; the
+   * client never auto-upgrades a caller. Negotiation repeats after every hard
+   * restart.
+   */
+  negotiateMinor1?: boolean;
 }
 
 // RFC 0002 transport limit. Declared lengths above this are rejected before
@@ -107,12 +117,16 @@ export class ProtoEngineProcessClient {
   readonly spawnProcess: SpawnProcess;
   readonly warmupEnvelope: Envelope;
   readonly warmupTimeoutMs: number;
+  readonly negotiateMinor1Option: boolean;
 
   private process: EngineChild | null = null;
   private pending = new Map<string, PendingRequest>();
   private chunks: Buffer[] = [];
   private startPromise: Promise<void> | null = null;
   private requestCounter = 0;
+  // Negotiated result for the current process: 0 by default, 1 only after the
+  // explicit minor-1 capability handshake succeeds.
+  private negotiatedMinor = 0;
 
   constructor({
     command,
@@ -120,6 +134,7 @@ export class ProtoEngineProcessClient {
     spawnProcess = spawn as SpawnProcess,
     warmupEnvelope,
     warmupTimeoutMs = 600,
+    negotiateMinor1 = false,
   }: ProtoEngineClientOptions) {
     if (!command) throw new Error('Engine process command is required');
     this.command = command;
@@ -127,11 +142,49 @@ export class ProtoEngineProcessClient {
     this.spawnProcess = spawnProcess;
     this.warmupEnvelope = warmupEnvelope;
     this.warmupTimeoutMs = warmupTimeoutMs;
+    this.negotiateMinor1Option = negotiateMinor1;
+  }
+
+  /**
+   * Negotiated protocol minor for the current process (0 or 1). Available once
+   * start() resolves; reset and re-negotiated after a hard restart.
+   */
+  get negotiatedProtocolMinor(): 0 | 1 {
+    return this.negotiatedMinor === 1 ? 1 : 0;
+  }
+
+  /** True only when the current process successfully negotiated minor 1. */
+  get minor1Capable(): boolean {
+    return this.negotiatedProtocolMinor === 1;
   }
 
   async request(envelope: Envelope, timeoutMs = 2000): Promise<Envelope> {
     await this.start();
     return this.enqueue(envelope, timeoutMs);
+  }
+
+  // RFC 0005 353: capabilities are queried at minor 0 first, then re-queried
+  // advertising minor 1 before any minor-1 feature is used. The host must
+  // echo minor 1 and list 1 in supported_protocol_minors; anything else keeps
+  // the client safely on minor 0.
+  private async negotiate(): Promise<void> {
+    this.negotiatedMinor = 0;
+    if (!this.negotiateMinor1Option)
+      return;
+    const probe = create(EnvelopeSchema, {
+      protocolMinor: 1,
+      requestId: `negotiate-minor1-${process.pid}-${++this.requestCounter}`,
+    });
+    probe.payload = {
+      case: 'getCapabilitiesRequest',
+      value: create(GetCapabilitiesRequestSchema),
+    };
+    const response = await this.enqueue(probe, this.warmupTimeoutMs);
+    if (response.protocolMinor !== 1
+      || response.payload.case !== 'getCapabilitiesResponse')
+      return;
+    if (response.payload.value.supportedProtocolMinors.includes(1))
+      this.negotiatedMinor = 1;
   }
 
   start(): Promise<void> {
@@ -142,6 +195,7 @@ export class ProtoEngineProcessClient {
     });
     this.process = child;
     this.chunks = [];
+    this.negotiatedMinor = 0;
     child.stdout.on('data', (chunk: Buffer) => this.onData(child, chunk));
     child.on('error', error => this.onExit(child, error));
     child.on('exit', (code, signal) => {
@@ -156,6 +210,7 @@ export class ProtoEngineProcessClient {
     child.unref?.();
 
     this.startPromise = this.enqueue(this.warmupEnvelope, this.warmupTimeoutMs)
+      .then(() => this.negotiate())
       .then(() => undefined)
       .catch((error: unknown) => {
         this.stop();

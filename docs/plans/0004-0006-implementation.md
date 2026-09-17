@@ -985,12 +985,219 @@ distribution was performed; those remain explicit external gates. The v0
 JSON host, NDJSON client, published binary default, and River defaults are
 unchanged.
 
+## Stage 8 Evidence (2026-09-17)
+
+RFC 0002 Stage 8 (negotiated minor 1, full resident blueprint
+distributions, opt-in), RFC 0005 328-359. Preceding gate: commit `f8b1654`
+(Stage 7 minor-0 production migration), Release CTest 29/29, replay
+156/0/0 with action mix `{raise 32, check 48, fold 68, bet 5, call 3}`,
+clean tree.
+
+### Additive IDL diff (buf breaking against the unchanged baseline: pass)
+
+- `SolverMode`: `SOLVER_MODE_BLUEPRINT = 6`, `SOLVER_MODE_RESOLVING = 7`.
+- `SolverSource`: `SOLVER_SOURCE_BLUEPRINT = 6`, `SOLVER_SOURCE_RESOLVING = 7`.
+- `SolverMetadata`: `optional string artifact_sha256 = 9` (pattern
+  `^[a-f0-9]{64}$`), `optional string guarantee = 10` (in
+  `modeled_exact_bound|uncertified|baseline`).
+- NEW message `ExpandedStrategy` (`repeated ActionPolicy actions = 1`
+  1..32, `optional SelectedAction selected_action = 2`, required
+  `SolverMetadata solver = 3`); `DecisionResponse.result` gains
+  `ExpandedStrategy expanded_strategy = 3`. The minor-0 `Strategy` keeps
+  its 1..5 entry cap; nothing was renumbered, retyped, or widened.
+- NEW golden vectors, old fixtures byte-identical:
+  `expanded-strategy` (7 actions, BLUEPRINT/uncertified/64-hex digest),
+  `expanded-strategy-bound` (`modeled_exact_bound` wire pin, never emitted),
+  `expanded-strategy-baseline` (`baseline` wire pin, reserved),
+  `capabilities-minor1` (minors [0,1] with BLUEPRINT),
+  `solver-enum-presence` (enum ordinals 6 AND 7 on the wire).
+
+### Host-services seam
+
+- MODIFIED `engine/include/bs/v1_protocol.hpp`: protobuf-free
+  `V1HostServices` (`blueprintAdvertised`, const `blueprintHeroDecision`
+  returning poker-domain `V1BlueprintRow`/`V1BlueprintResult`),
+  `V1BlueprintMiss` mirroring the resident miss vocabulary plus
+  `UnsupportedHandState`, `noResidentServices()`, and the two-arg
+  `handleEnvelope(frame, services)`. The one-arg entry point delegates to
+  the shared no-resident service. Minor 0 never touches services and keeps
+  the exact Stage-7 call graph and response bytes (asserted against the
+  captured Stage-7 capability envelope inside `test_v1_minor1`).
+- MODIFIED `apps/engine-host/main.cpp`: the proto modes parse repeatable
+  `--resident-root <path>=<64 lowercase hex sha256>`, build ONE
+  `bs::resident::ResidentPolicySet` before serving, print per-root results
+  to stderr only, and inject the resident-backed service into `runProto`.
+  Default/`--serve` JSON paths, `--proto` without flags, v0 serialization,
+  and the parse-error fold are unchanged.
+
+### Negotiation, validator, response mapping
+
+- Accept exactly minors 0/1; >1 is `UNSUPPORTED_PROTOCOL` echoing minor 0.
+  Capabilities: minor 0 returns the frozen Stage-7 response byte-for-byte
+  (minor 0 only, AUTOMATIC/HEURISTIC, build `v1.0.0`); minor 1 lists [0,1],
+  build `v1.1.0`, and adds BLUEPRINT only with an advertised root.
+  RESOLVING and guarantees are never advertised.
+- Validator is minor-aware: BLUEPRINT/RESOLVING known ordinals
+  (`isKnownSolverMode` now 1..7); BLUEPRINT on minor 0 and RESOLVING on
+  either minor are UNSUPPORTED_FEATURE; forced LP/DCFR/multistreet remain
+  rejected. Minor-0 diagnostic wording is preserved exactly.
+- `mapBlueprintExpandedResponse`: 1..32 verbatim rows, probabilities
+  finite/non-negative summing to 1 within 1e-12, target only on
+  bet/raise, `all_in` derived as legal max == hero capacity, sampled action
+  via one domain-separated SplitMix64 draw, selected membership checked
+  against BOTH the row and the request legal set, source BLUEPRINT,
+  cache_hit, reason `blueprint`, artifact digest, guarantee
+  `uncertified`. `modeled_exact_bound` is unreachable.
+- `mapHeuristicExpandedResponse`: minor-1 degenerate ExpandedStrategy with
+  the heuristic's REAL source and no digest/guarantee (never relabeled
+  BLUEPRINT).
+- NEW `engine/include/bs/prng.hpp`: shared SplitMix64 with a fixed protocol
+  sampler domain constant `0x425356312d73616d` XORed into the seed; lookup
+  is seed-independent, one draw, first prefix bucket strictly greater than
+  the top-53-bit point (zero-prob buckets can never be chosen).
+
+### HandState -> HeadsUpState reconstruction
+
+NEW `engine/src/protocol/v1_resident_mapper.{hpp,cpp}`: postflop heads-up,
+no-ante/equal-matched profile only. Player index is occupied seat order and
+`root.button` is the button player's index (matching artifact range/key
+convention — verified against the trained fixture: player order is seat
+order, the button is a root field, not a rotation). Flop root derived from
+current stacks plus exact target-total payments and current pot minus
+postflop payments (or the first event's `pot_before` when supplied);
+preflop events only establish the root pot. Flop/turn/river voluntary
+events replay through the exact poker engine with absolute targets and
+dealt cards; final stacks/street commitments/pot/to_call/actor must match
+the snapshot. Every reject class is a deterministic miss
+(RootNotSupported/OffTree), never a clamp or invented root.
+
+Independent oracle `test_v1_resident_mapper` builds expected roots/nodes
+directly with the poker API and compares field by field: flop first action,
+check-to-button and facing-lead, turn check-to-BB after bet/call, river
+after turn raise/call, the all-in jam, the button-on-seat-1 player mapping,
+plus rejects for preflop, multiway, antes, folded opponent, odd matched
+pot, unresolved actor, missing target/increment, illegal check-after-bet,
+tampered pot/to_call, hero/board card collision, and a turn event without
+the turn card.
+
+### Link and build
+
+- `bigshark_v1_protocol` links `bigshark_resident` PRIVATE in
+  `proto/CMakeLists.txt`: SQLite/OpenSSL/resident symbols never cross the
+  public boundary into v0/service/policy/decision/host-public. v0, JSON,
+  and default-host paths are byte-identical (proved below).
+- NEW ctests `v1_resident_mapper`, `v1_minor1` (negotiation/cap
+  filtering/forced-mode matrix/full 1..32 mapping/exact-seed
+  sampling/membership/coverage misses/minor-0 byte identity), and the
+  offline `bs_resident_fixture` publisher (also copied to `bin/` under the
+  release publish preset) that trains a complete six-root-action postflop
+  artifact for the real-binary matrix.
+- Fuzz seeds extended (`fuzz_seeds.hpp`) with minor 0/1/2/huge capability
+  frames, minor-1 BLUEPRINT/RESOLVING/AUTOMATIC/HEURISTIC decisions,
+  BLUEPRINT-on-minor-0, open enum 8, a reconstruction-miss history, and a
+  hand-built expanded_strategy response. Standalone ASan driver: 20,000
+  inputs over 31 seeds cleanly.
+
+### Node + River
+
+- `ProtoEngineProcessClient` gains the explicit `negotiateMinor1` opt-in:
+  warmup at minor 0, then the minor-1 capability probe;
+  `negotiatedProtocolMinor`/`minor1Capable` expose the result; downgrade to
+  0 on an old host; renegotiated after every hard restart. uint64 stays
+  bigint. Non-opted-in callers never send minor 1.
+- `v1-mapper.ts`: `decisionEnvelope(request, minor)`;
+  `fromV1DecisionResponse` decodes both result oneofs and validates the
+  sampled action against the FULL reported list (up to 32) before
+  execution. Engine errors keep surfacing as `V1EngineError` -> operational
+  `safeFallback`, never a fold.
+- `engine.ts`/`types.ts`: `BIGSHARK_ENGINE_PROTO_MINOR1=1` negotiates at
+  client construction; `EngineConfig.protoBlueprint` forces BLUEPRINT only
+  on a minor-1 client. Minor-1 AUTOMATIC tries resident then heuristic.
+- Fake hosts extended and a new old-host fake; 17 client tests including
+  new-client/old-host downgrade, the >5 expanded hit, bad-member detection,
+  and the minor-1 heuristic provenance. NEW real-binary matrix
+  `v1-minor1-blueprint.test.ts` (10 tests) publishes a fixture through
+  `bs-resident-fixture`, serves it with `--resident-root`, and verifies
+  the handshake, a six-action blueprint hit with digest/uncertified and
+  all-in jam row, seed-independent distributions, RootNotSupported on a
+  changed flop, the wrong-pin hidden-BLUEPRINT miss, non-opted-in minor-0
+  isolation, RESOLVING rejection, and mapper membership/legal-window
+  validation.
+
+### Explicitly deferred (not implemented)
+
+Resolving gadget, certification bounds, modeled_exact_bound/baseline
+emission, whole-range selection, eligibility gates, live River
+minor-1 rollout (the River default stays minor 0), and v0 removal.
+
+### Independent adversarial review fixes (4-way + skeptic, 0 dismissals)
+
+Three findings were confirmed (#1/#2 share one root defect, demonstrated
+end-to-end by two reviewers) and fixed without weakening any validation or
+the minor-0 path:
+
+- #1/#2 (P2, core) production adapter omitted postflop action amounts, so a
+  forced blueprint could only ever hit the flop-open node. `v1-mapper.ts`
+  fills the postflop `ActionEvent` chip fields the resident reconstructor
+  replays. Source of amounts: the tokenized event text carries the only
+  per-historical-action chip number (current `seat.bet`/`pot` are
+  decision-snapshot values and cannot recover an earlier action), and the
+  current-street snapshot supplies exact structured values. Three exactness
+  rules (see the reference doc):
+  1. exact-integer text ONLY is trusted — the last whitespace token must be
+     pure digits; any decimal or K/M/B multiplier token ("1.2K", "ALL IN
+     3.6K", "70.5") is a rounded display and is never sent as an exact target;
+  2. current decision street: when the text is rounded, the exact value is
+     recovered from the live structured snapshot (`seat.bet`, current street
+     commitment) only for the actor's FINAL chip action this street, with a
+     per-(street,actor) ledger-completeness guard so an actor with an earlier
+     unfillable same-street action is never mis-subtracted;
+  3. past/closed streets accept exact-integer text only; rounded display
+     stays unset -> deterministic OffTree miss. fold/check carry no amount.
+  No amount is ever guessed; an unparseable past-street amount is the honest
+  fail-safe miss. Corrected, reproducible corpus coverage
+  (`sessions/2026-09-11.jsonl`, keyed on every postflop chip action in a room
+  snapshot with events): of **3357 postflop chip actions, 3318 (98.84%) are
+  exact integer tokens and 39 are K-suffix rounded display** (zero plain
+  decimal tokens). The 39 rounded events break down by room
+  `solver.playersInHand` as `{3: 1, 4: 3, 5: 15, 6: 20}` — i.e. every one is
+  multiway (no heads-up room); on actionable postflop decision snapshots only
+  2 sit on the current decision street and both are structurally recoverable
+  to the exact integer. No HU-specific subset claim is made (a prior draft
+  claimed "1112/1135 HU exact / 16/17 current-street recovery", which is not
+  reproducible and was retracted). Current-street structured recovery exists
+  for the future heads-up case; the present corpus exercises it via
+  production/unit tests rather than live frequencies.
+  Tests: NEW `v1-amount-parsing.test.ts` (980/1225 exact; 1.2K/2.5K/1K/
+  1.0K/ALL IN 2.5K/70.5 -> null) and a production `v1-minor1-walk.test.ts`
+  case where the opponent's current-street bet is displayed with a K suffix
+  but the exact structured seat commitment is recovered and the node still
+  hits SOLVER_SOURCE_BLUEPRINT, plus a direct assertion that a "1.2K"/1225
+  room emits `target_total = 1225`, never 1200. Mutation verified: restoring
+  the old K-scaling parser fails both the parser unit test and the 1225
+  regression. Existing walk tests (flop facing bet, turn bet/call, river
+  facing raise, strip-amounts miss) all pass.
+- #3 (P3) sampler tolerance mismatch. `sampleBucket` now scales the uniform
+  draw onto the row's actual recorded prefix sum and clamps to the last
+  positive bucket, so every row passing the 1e-12 probability-sum check
+  deterministically samples (sums 1 +/- 1e-13 covered for 64 seeds), zero
+  probability buckets remain unselectable, and the pinned golden vectors on
+  exactly normalized distributions are unchanged (seed 42 -> bucket 3, 0 ->
+  6, 1 -> 4).
+- Hardening (P3, fail-closed): the reconstructor explicitly rejects any
+  player with status ALL_IN at a postflop decision (previously only FOLDED),
+  and verifies equal matched preflop contributions from forced blinds plus
+  the full attributed voluntary ledger — 15+25=40 is rejected while 20+20=40
+  reconstructs; even-pot with blinds-only and no attributed completion keeps
+  the matched assumption (both players non-all-in, and an asymmetric shape
+  cannot reach an action node).
+
+
 ## Next Implementation Checkpoint
 
-Stage 7 begins the RFC 0002 minor-0 protocol migration; it is independent of
-solver strategy changes. Keep v0 contexts, production policy routing, and
-external commands unchanged. The resident layer stays opt-in and unwired
-until the Stage 7/8 protocol and Stage 9 eligibility work land.
+Stage 9 (resolving) begins only after explicit eligibility/certification
+approval; Stage 8 is offline and does not change live behavior. Keep v0
+contexts, production policy routing, and external commands unchanged.
 
 Before each later stage, define exact owned files and record which preceding
 gate passed. Use independent bounded reviewers for algorithm, persistence,

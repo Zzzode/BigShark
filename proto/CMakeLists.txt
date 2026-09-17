@@ -117,6 +117,7 @@ add_library(bigshark_v1_protocol STATIC
   "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_semantic_validator.cpp"
   "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_request_mapper.cpp"
   "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_response_mapper.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_resident_mapper.cpp"
   "${BIGSHARK_ENGINE_DIR}/src/protocol/v1_envelope.cpp"
 )
 target_compile_features(bigshark_v1_protocol PUBLIC cxx_std_23)
@@ -130,6 +131,12 @@ target_include_directories(bigshark_v1_protocol
 target_link_libraries(bigshark_v1_protocol
   PUBLIC  bigshark_service
   PRIVATE bigshark_protocol
+  # RFC 0002 Stage 8: negotiated minor 1 serves resident blueprints. The link
+  # is PRIVATE so SQLite/OpenSSL and resident symbols do not cross the public
+  # boundary: bigshark_v0_protocol, the service, policy, solver, and decision
+  # targets never see the dependency, and a host built without --resident-root
+  # behaves exactly as before.
+  PRIVATE bigshark_resident
 )
 if(BIGSHARK_ENABLE_SANITIZERS)
   target_compile_options(bigshark_v1_protocol PRIVATE
@@ -298,6 +305,56 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME ${v1_test} COMMAND test_${v1_test})
   endforeach()
+
+  # RFC 0002 Stage 8 tests: minor negotiation/capability filtering/forced-mode
+  # matrix/full-distribution mapping/exact-seed sampling/membership/coverage
+  # misses (seam fakes, no artifacts), and the HandState -> HeadsUpState
+  # reconstruction oracle.
+  foreach(v1_test v1_resident_mapper v1_minor1)
+    add_executable(test_${v1_test}
+      "${BIGSHARK_ENGINE_DIR}/tests/test_${v1_test}.cpp"
+    )
+    target_compile_features(test_${v1_test} PRIVATE cxx_std_23)
+    target_compile_options(test_${v1_test} PRIVATE -Wall -Wextra)
+    target_include_directories(test_${v1_test} PRIVATE "${BIGSHARK_ENGINE_DIR}/src")
+    target_link_libraries(test_${v1_test} PRIVATE
+      bigshark_v1_protocol bigshark_protocol
+    )
+    if(BIGSHARK_ENABLE_SANITIZERS)
+      target_compile_options(test_${v1_test} PRIVATE
+        -fsanitize=address,undefined
+        -fno-omit-frame-pointer
+      )
+      target_link_options(test_${v1_test} PRIVATE -fsanitize=address,undefined)
+    endif()
+    add_test(NAME ${v1_test} COMMAND test_${v1_test})
+  endforeach()
+
+  # Offline tool that publishes a tiny complete postflop blueprint artifact
+  # for the real-binary minor-1 matrix tests. It prints the artifact path,
+  # pinned SHA-256, and the JSON root/range spec the test client must build.
+  add_executable(bs_resident_fixture
+    "${BIGSHARK_ENGINE_DIR}/tests/resident_fixture_publisher.cpp"
+  )
+  target_compile_features(bs_resident_fixture PRIVATE cxx_std_23)
+  target_compile_options(bs_resident_fixture PRIVATE -Wall -Wextra)
+  target_include_directories(bs_resident_fixture PRIVATE "${BIGSHARK_ENGINE_DIR}/src")
+  target_link_libraries(bs_resident_fixture PRIVATE bigshark_v1_protocol bigshark_protocol)
+  if(BIGSHARK_ENABLE_SANITIZERS)
+    target_compile_options(bs_resident_fixture PRIVATE
+      -fsanitize=address,undefined
+      -fno-omit-frame-pointer
+    )
+    target_link_options(bs_resident_fixture PRIVATE -fsanitize=address,undefined)
+  endif()
+  if(BIGSHARK_PUBLISH_ENGINE)
+    add_custom_command(TARGET bs_resident_fixture POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_SOURCE_DIR}/bin
+      COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:bs_resident_fixture>
+              ${CMAKE_SOURCE_DIR}/bin/bs-resident-fixture
+      COMMENT "Publishing bs-resident-fixture to bin"
+    )
+  endif()
 
   if(BIGSHARK_ENABLE_SANITIZERS)
     target_compile_options(test_v1_frame_stream PRIVATE

@@ -8,6 +8,7 @@
 #include <bigshark/engine/v1/engine.pb.h>
 
 #include <bs/decision.hpp>
+#include <bs/v1_protocol.hpp>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
@@ -40,8 +41,10 @@ bool isKnownGameVariant(pv::GameVariant value);
 bool isKnownBettingStructure(pv::BettingStructure value);
 bool isKnownGameType(pv::GameType value);
 // Decision options solver modes are a capability check, not a plain closed
-// set: AUTOMATIC/HEURISTIC are accepted, the selectable river/multistreet
-// backends are UNSUPPORTED_FEATURE in minor 0, anything else is invalid.
+// set. Minor 0 accepts AUTOMATIC/HEURISTIC only; minor 1 additionally accepts
+// BLUEPRINT, while RESOLVING is registered but never selectable, and the
+// selectable river/multistreet backends remain UNSUPPORTED_FEATURE on both
+// minors. Anything outside 0..7 is invalid.
 bool isKnownSolverMode(pv::SolverMode value);
 
 // Hard cap on reported FieldViolations so a sub-1 MiB request with hundreds of
@@ -83,13 +86,16 @@ bool isValidUtf8(std::string_view value);
 // Returns ERROR_CODE_UNSPECIFIED when the request is valid, otherwise the
 // applicable failure class (INVALID_REQUEST or UNSUPPORTED_*). All discovered
 // violations are appended to the report regardless of the returned code.
-pv::ErrorCode validateDecisionRequest(const pv::DecisionRequest& request, ValidationReport& report);
+// negotiated_minor is 0 or 1; it only changes the solver-mode capability
+// checks, so minor 0 produces exactly the Stage-7 results.
+pv::ErrorCode validateDecisionRequest(const pv::DecisionRequest& request, ValidationReport& report,
+                                      unsigned negotiated_minor = 0);
 
 // Maps a semantically valid DecisionRequest into the v0-equivalent heuristic
 // Ctx. Any unrepresentable knob is reported as a MappingError rather than
 // silently defaulted.
 pv::ErrorCode validateAndMap(const pv::DecisionRequest& request, ValidationReport& report,
-                             bs::Ctx& context);
+                             bs::Ctx& context, unsigned negotiated_minor = 0);
 
 // Maps a heuristic decision into a minor-0 degenerate Strategy (one action at
 // probability 1). Includes the deterministic selected action only when
@@ -99,9 +105,40 @@ pv::ErrorCode validateAndMap(const pv::DecisionRequest& request, ValidationRepor
 pv::DecisionResponse mapDecisionResponse(const pv::DecisionRequest& request,
                                          const bs::Decision& decision);
 
-// Builds the host capability advertisement. Minor 0 only; minor 1 is owned by
-// a later stage.
-pv::GetCapabilitiesResponse buildCapabilities();
+// Maps a heuristic decision into a negotiated minor-1 ExpandedStrategy. The
+// distribution stays degenerate (one probability-1 row), the solver keeps its
+// REAL source (a heuristic fallback is never relabeled as a blueprint), and
+// no artifact digest or guarantee is attached. Legal membership is validated
+// exactly as on minor 0.
+pv::DecisionResponse mapHeuristicExpandedResponse(const pv::DecisionRequest& request,
+                                                  const bs::Decision& decision);
+
+// Maps a resident blueprint hit into a minor-1 ExpandedStrategy: every row
+// action becomes one ActionPolicy (1..32, verbatim probabilities, target total
+// only on bet/raise, all_in derived from the legal maximum), the sampled
+// action is selected by the pinned domain-separated SplitMix64 convention
+// only when requested, source is BLUEPRINT, and the guarantee is
+// "uncertified". Every emitted action must be a member of the request legal
+// set by kind and exact target; otherwise the caller treats the lookup as an
+// OffTreeAmount coverage miss and never emits the strategy. Throws
+// MappingError only for an internally inconsistent resident row.
+pv::DecisionResponse mapBlueprintExpandedResponse(const pv::DecisionRequest& request,
+                                                  const V1BlueprintRow& row);
+
+// Every resident row action must be a member of the request legal set by kind
+// and exact target total. A blueprint whose abstract action is legal in the
+// poker game but outside the client's [min,max] window is a coverage miss
+// (OffTreeAmount); the amount is never clamped.
+bool blueprintRowIsLegal(const pv::DecisionRequest& request, const V1BlueprintRow& row);
+
+// Builds the host capability advertisement for the negotiated minor.
+//   minor 0, any blueprint state: the exact Stage-7 response (minor 0 only,
+//            AUTOMATIC/HEURISTIC), byte for byte;
+//   minor 1: supported minors 0 and 1, AUTOMATIC/HEURISTIC, plus BLUEPRINT
+//            only when at least one resident root was advertised. RESOLVING
+//            and any guarantee/certification feature are never advertised.
+pv::GetCapabilitiesResponse buildCapabilities(unsigned negotiated_minor = 0,
+                                              bool blueprint_advertised = false);
 
 // Constructs a DecisionResponse carrying an EngineError.
 pv::DecisionResponse errorResponse(pv::ErrorCode code, const std::string& message, bool retryable,

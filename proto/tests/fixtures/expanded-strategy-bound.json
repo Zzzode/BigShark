@@ -1,0 +1,25 @@
+{
+  "protocolMinor": 1,
+  "requestId": "expanded-bound-vector",
+  "decisionResponse": {
+    "expandedStrategy": {
+      "actions": [
+        {
+          "type": "ACTION_TYPE_CHECK",
+          "probability": 0.6
+        },
+        {
+          "type": "ACTION_TYPE_BET",
+          "targetTotal": "40",
+          "probability": 0.4
+        }
+      ],
+      "solver": {
+        "source": "SOLVER_SOURCE_BLUEPRINT",
+        "reasonCode": "blueprint",
+        "artifactSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "guarantee": "modeled_exact_bound"
+      }
+    }
+  }
+}

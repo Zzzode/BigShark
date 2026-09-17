@@ -30,7 +30,8 @@ bool inRangeInt(int value, int low, int high) {
 // against its closed set here; see the isKnown* predicates below.
 class SemanticValidator {
  public:
-  explicit SemanticValidator(const pv::DecisionRequest& request) : request_(request) {}
+  explicit SemanticValidator(const pv::DecisionRequest& request, unsigned negotiated_minor = 0)
+      : request_(request), minor_(negotiated_minor) {}
 
   pv::ErrorCode run() {
     checkRequestPresence();
@@ -45,6 +46,7 @@ class SemanticValidator {
 
  private:
   const pv::DecisionRequest& request_;
+  const unsigned minor_;
   ValidationReport report_;
   bool unsupportedGame_ = false;
   bool unsupportedFeature_ = false;
@@ -52,6 +54,10 @@ class SemanticValidator {
   void reject(const std::string& field, const std::string& description) {
     report_.add(field, description);
   }
+
+  // Minor-0 diagnostic wording is pinned byte-for-byte; minor 1 uses a
+  // minor-neutral note.
+  const char* profileNote() const { return minor_ == 0 ? "in minor 0" : "by the engine"; }
 
   void rejectGame(const std::string& field, const std::string& description) {
     unsupportedGame_ = true;
@@ -129,7 +135,8 @@ class SemanticValidator {
     // Minor-0 supports integral chips only; fractional units are an
     // unsupported feature rather than a malformed request.
     if (unit.name() != "chip" || unit.decimal_places() != 0)
-      rejectFeature(field, "only chip units with decimal_places=0 are supported in minor 0");
+      rejectFeature(field, std::string("only chip units with decimal_places=0 are supported ") +
+                               profileNote());
   }
 
   void checkGame(const pv::GameDefinition& game, const std::string& field) {
@@ -163,23 +170,29 @@ class SemanticValidator {
       reject(field + ".small_blind", "small blind must be positive and smaller than the big blind");
     if (game.ante() != 0) {
       chipFitsInt(game.ante(), field + ".ante", "ante");
-      rejectFeature(field + ".ante", "ante decisions are unsupported in minor 0");
+      rejectFeature(field + ".ante", std::string("ante decisions are unsupported ") +
+                                         (minor_ == 0 ? "in minor 0" : "on the minor-1 profile"));
     }
     if (game.button_ante() != 0) {
       chipFitsInt(game.button_ante(), field + ".button_ante", "button ante");
-      rejectFeature(field + ".button_ante", "button ante decisions are unsupported in minor 0");
+      rejectFeature(field + ".button_ante",
+                    std::string("button ante decisions are unsupported ") +
+                        (minor_ == 0 ? "in minor 0" : "on the minor-1 profile"));
     }
     if (game.has_rake()) {
       if (game.rake().basis_points() > 10000)
         reject(field + ".rake.basis_points", "rake basis points must be at most 10000");
       chipFitsInt(game.rake().cap(), field + ".rake.cap", "rake cap");
-      rejectFeature(field + ".rake", "rake-aware decisions are unsupported in minor 0");
+      rejectFeature(field + ".rake", std::string("rake-aware decisions are unsupported ") +
+                                         (minor_ == 0 ? "in minor 0" : "on the minor-1 profile"));
     }
     if (game.has_straddle() && game.straddle().enabled()) {
       if (game.straddle().has_seat() && game.straddle().seat() > 9)
         reject(field + ".straddle.seat", "straddle seat must be at most 9");
       chipFitsInt(game.straddle().amount(), field + ".straddle.amount", "straddle amount");
-      rejectFeature(field + ".straddle", "straddle decisions are unsupported in minor 0");
+      rejectFeature(field + ".straddle",
+                    std::string("straddle decisions are unsupported ") +
+                        (minor_ == 0 ? "in minor 0" : "on the minor-1 profile"));
     }
   }
 
@@ -234,7 +247,9 @@ class SemanticValidator {
         reject(field, "pot total must equal main pot plus side pots");
       // Side-pot-aware utility is an advertised capability gap; fail closed
       // rather than silently evaluating the main pot.
-      rejectFeature(field + ".side_pots", "side-pot-aware decisions are unsupported in minor 0");
+      rejectFeature(field + ".side_pots",
+                    std::string("side-pot-aware decisions are unsupported ") +
+                        (minor_ == 0 ? "in minor 0" : "on the minor-1 profile"));
     } else if (pot.main_pot() != pot.pot_total()) {
       reject(field, "with no side pots the pot total must equal the main pot");
     }
@@ -248,7 +263,8 @@ class SemanticValidator {
     } else if (contribution.type() != pv::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND &&
                contribution.type() != pv::FORCED_CONTRIBUTION_TYPE_BIG_BLIND) {
       rejectFeature(field + ".type",
-                    "antes, dead blinds, and straddles are unsupported in minor 0");
+                    std::string("antes, dead blinds, and straddles are unsupported ") +
+                        (minor_ == 0 ? "in minor 0" : "on the minor-1 profile"));
     }
     if (contribution.amount() == 0)
       reject(field + ".amount", "forced contribution amount must be positive");
@@ -546,11 +562,19 @@ class SemanticValidator {
     } else if (options.solver_mode() == pv::SOLVER_MODE_RIVER_LP ||
                options.solver_mode() == pv::SOLVER_MODE_RIVER_DCFR ||
                options.solver_mode() == pv::SOLVER_MODE_MULTISTREET_CFR) {
-      // Minor 0 always runs the heuristic engine, which may internally select
-      // a river backend; callers cannot force a backend.
+      // The heuristic engine may internally select a river backend; callers
+      // cannot force one on either negotiated minor.
       rejectFeature(
           field + ".solver_mode",
-          "forced solver backends (river LP/DCFR, multistreet) are unsupported in minor 0");
+          std::string("forced solver backends (river LP/DCFR, multistreet) are unsupported") +
+              (minor_ == 0 ? " in minor 0" : ""));
+    } else if (options.solver_mode() == pv::SOLVER_MODE_RESOLVING) {
+      // Registered for wire stability; the resolving gadget is a later stage.
+      rejectFeature(field + ".solver_mode", "resolving is not supported by this engine");
+    } else if (options.solver_mode() == pv::SOLVER_MODE_BLUEPRINT && minor_ == 0) {
+      // Minor 0 never sees the new modes even when a resident root exists.
+      rejectFeature(field + ".solver_mode",
+                    "blueprint lookup requires negotiated protocol minor 1");
     }
     if (options.has_preflop_effective_stack_bb()) {
       const double hint = options.preflop_effective_stack_bb();
@@ -613,7 +637,8 @@ bool isKnownGameType(pv::GameType value) {
 bool isKnownSolverMode(pv::SolverMode value) {
   return value == pv::SOLVER_MODE_AUTOMATIC || value == pv::SOLVER_MODE_HEURISTIC ||
          value == pv::SOLVER_MODE_RIVER_LP || value == pv::SOLVER_MODE_RIVER_DCFR ||
-         value == pv::SOLVER_MODE_MULTISTREET_CFR;
+         value == pv::SOLVER_MODE_MULTISTREET_CFR || value == pv::SOLVER_MODE_BLUEPRINT ||
+         value == pv::SOLVER_MODE_RESOLVING;
 }
 
 bool isValidUtf8(std::string_view value) {
@@ -664,9 +689,9 @@ void ValidationReport::add(const std::string& fieldPath, const std::string& desc
   violations.push_back(std::move(violation));
 }
 
-pv::ErrorCode validateDecisionRequest(const pv::DecisionRequest& request,
-                                      ValidationReport& report) {
-  SemanticValidator validator(request);
+pv::ErrorCode validateDecisionRequest(const pv::DecisionRequest& request, ValidationReport& report,
+                                      unsigned negotiated_minor) {
+  SemanticValidator validator(request, negotiated_minor);
   pv::ErrorCode code = validator.run();
   for (const pv::FieldViolation& violation : validator.report().violations)
     report.violations.push_back(violation);

@@ -1,0 +1,24 @@
+{
+  "protocolMinor": 1,
+  "requestId": "expanded-baseline-vector",
+  "decisionResponse": {
+    "expandedStrategy": {
+      "actions": [
+        {
+          "type": "ACTION_TYPE_FOLD",
+          "probability": 0.25
+        },
+        {
+          "type": "ACTION_TYPE_CALL",
+          "probability": 0.75
+        }
+      ],
+      "solver": {
+        "source": "SOLVER_SOURCE_BLUEPRINT",
+        "reasonCode": "blueprint",
+        "artifactSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "guarantee": "baseline"
+      }
+    }
+  }
+}

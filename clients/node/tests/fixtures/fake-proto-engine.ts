@@ -4,8 +4,11 @@ import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import {
   ActionType,
   DecisionResponseSchema,
+  EngineErrorSchema,
   EnvelopeSchema,
+  ExpandedStrategySchema,
   GetCapabilitiesResponseSchema,
+  SolverMode,
   SolverSource,
   StrategySchema,
   type Envelope,
@@ -28,8 +31,8 @@ function encodeVarint(value: number): Buffer {
 
 let accumulated = Buffer.alloc(0);
 
-function responseEnvelope(requestId: string, envelope: Envelope): Buffer {
-  envelope.protocolMinor = 0;
+function responseEnvelope(requestId: string, envelope: Envelope, minor: number): Buffer {
+  envelope.protocolMinor = minor;
   envelope.requestId = requestId;
   const payload = Buffer.from(toBinary(EnvelopeSchema, envelope));
   return Buffer.concat([encodeVarint(payload.length), payload]);
@@ -42,7 +45,103 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
   const handId = state?.handId ?? '';
   const toCall = state?.toCall ?? 0n;
   const bigintEcho = handId === 'bigint';
+  const minor = request.protocolMinor;
   const decision = create(DecisionResponseSchema);
+
+  // Minor-1 scripted scenarios.
+  if (minor === 1) {
+    if (handId === 'blueprint-hit') {
+      decision.result = {
+        case: 'expandedStrategy',
+        value: create(ExpandedStrategySchema, {
+          actions: [
+            { type: ActionType.CHECK, probability: 0.4 },
+            { type: ActionType.BET, targetTotal: 100n, probability: 0.3 },
+            {
+              type: ActionType.BET,
+              targetTotal: 200n,
+              allIn: false,
+              probability: 0.2,
+            },
+            { type: ActionType.BET, targetTotal: 400n, probability: 0.1 },
+          ],
+          selectedAction: { type: ActionType.BET, targetTotal: 200n },
+          solver: {
+            source: SolverSource.BLUEPRINT,
+            reasonCode: 'blueprint',
+            cacheHit: true,
+            artifactSha256:
+              '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+            guarantee: 'uncertified',
+          },
+        }),
+      };
+      const envelope = create(EnvelopeSchema);
+      envelope.payload = { case: 'decisionResponse', value: decision };
+      return envelope;
+    }
+    if (handId === 'blueprint-bad-member') {
+      decision.result = {
+        case: 'expandedStrategy',
+        value: create(ExpandedStrategySchema, {
+          actions: [
+            { type: ActionType.CHECK, probability: 0.6 },
+            { type: ActionType.BET, targetTotal: 100n, probability: 0.4 },
+          ],
+          // Sampled action is not a member of the distribution.
+          selectedAction: { type: ActionType.BET, targetTotal: 999n },
+          solver: {
+            source: SolverSource.BLUEPRINT,
+            reasonCode: 'blueprint',
+            artifactSha256:
+              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            guarantee: 'uncertified',
+          },
+        }),
+      };
+      const envelope = create(EnvelopeSchema);
+      envelope.payload = { case: 'decisionResponse', value: decision };
+      return envelope;
+    }
+    if (handId === 'blueprint-miss') {
+      decision.result = {
+        case: 'error',
+        value: create(EngineErrorSchema, {
+          code: 4,  // UNSUPPORTED_FEATURE
+          message: 'blueprint coverage unavailable: off-tree-amount',
+          retryable: false,
+        }),
+      };
+      const envelope = create(EnvelopeSchema);
+      envelope.payload = { case: 'decisionResponse', value: decision };
+      return envelope;
+    }
+    // Default minor-1 echo: a degenerate expanded strategy carrying the
+    // heuristic's real source (never BLUEPRINT).
+    decision.result = {
+      case: 'expandedStrategy',
+      value: create(ExpandedStrategySchema, {
+        actions: [
+          {
+            type: bigintEcho ? ActionType.FOLD : ActionType.CHECK,
+            ...(bigintEcho ? { targetTotal: toCall } : {}),
+            probability: 1,
+          },
+        ],
+        ...(bigintEcho
+          ? { selectedAction: { type: ActionType.FOLD, targetTotal: toCall } }
+          : { selectedAction: { type: ActionType.CHECK } }),
+        solver: {
+          source: SolverSource.POSTFLOP_HEURISTIC,
+          reasonCode: 'postflop-heuristic',
+        },
+      }),
+    };
+    const envelope = create(EnvelopeSchema);
+    envelope.payload = { case: 'decisionResponse', value: decision };
+    return envelope;
+  }
+
   decision.result = {
     case: 'strategy',
     value: create(StrategySchema, {
@@ -65,10 +164,10 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
   return envelope;
 }
 
-function capabilitiesEnvelope(): Envelope {
+function capabilitiesEnvelope(minor: number): Envelope {
   const capabilities = create(GetCapabilitiesResponseSchema, {
-    supportedProtocolMinors: [0],
-    engineBuildVersion: 'fake',
+    supportedProtocolMinors: minor === 1 ? [0, 1] : [0],
+    engineBuildVersion: minor === 1 ? 'fake-v1.1' : 'fake',
     supportedGameVariants: [1],
     supportedBettingStructures: [1],
     minimumPlayers: 2,
@@ -76,7 +175,11 @@ function capabilitiesEnvelope(): Envelope {
     supportedStreets: [1, 2, 3, 4],
     supportedActions: [1, 2, 3, 4, 5],
     amountSemantics: 1,
-    solverModes: [1],
+    // Minor-1 capabilities advertise BLUEPRINT (6); RESOLVING (7) is never
+    // advertised.
+    solverModes: minor === 1
+      ? [SolverMode.AUTOMATIC, SolverMode.HEURISTIC, SolverMode.BLUEPRINT]
+      : [1],
     strategyProfiles: ['tag'],
     exactLp: 3,
     dcfr: 3,
@@ -116,9 +219,12 @@ function pump(): void {
 
 function handle(request: Envelope): void {
   const requestId = request.requestId;
+  const minor = request.protocolMinor <= 1 ? request.protocolMinor : 0;
 
   if (request.payload.case === 'getCapabilitiesRequest') {
-    process.stdout.write(responseEnvelope(requestId, capabilitiesEnvelope()));
+    process.stdout.write(
+      responseEnvelope(requestId, capabilitiesEnvelope(minor), minor),
+    );
     return;
   }
   if (request.payload.case !== 'decisionRequest'
@@ -134,7 +240,7 @@ function handle(request: Envelope): void {
     return;
   }
   if (mode === 'truncated') {
-    const frame = responseEnvelope(requestId, decisionResponseEnvelope(request));
+    const frame = responseEnvelope(requestId, decisionResponseEnvelope(request), minor);
     process.stdout.write(frame.subarray(0, Math.min(frame.length, 6)));
     setTimeout(() => process.exit(0), 30);
     return;
@@ -145,10 +251,10 @@ function handle(request: Envelope): void {
     return;
   }
   if (mode === 'unknown-payload') {
-    process.stdout.write(responseEnvelope(requestId, capabilitiesEnvelope()));
+    process.stdout.write(responseEnvelope(requestId, capabilitiesEnvelope(minor), minor));
     return;
   }
-  const frame = responseEnvelope(requestId, decisionResponseEnvelope(request));
+  const frame = responseEnvelope(requestId, decisionResponseEnvelope(request), minor);
   if (mode === 'split') {
     const middle = Math.floor(frame.length / 2);
     process.stdout.write(frame.subarray(0, middle));

@@ -17,6 +17,7 @@ import { create } from '@bufbuild/protobuf';
 import {
   EnvelopeSchema,
   GetCapabilitiesRequestSchema,
+  SolverMode,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
 import type {
   EngineConfig,
@@ -75,6 +76,9 @@ function protoEngineClient(): ProtoEngineProcessClient | null {
       args: ['--serve-proto'],
       warmupEnvelope: warmup,
       warmupTimeoutMs: 10_000,
+      // The framed path stays minor 0 by default; callers must explicitly
+      // negotiate minor 1 before blueprint features can be used.
+      negotiateMinor1: process.env.BIGSHARK_ENGINE_PROTO_MINOR1 === '1',
     });
   }
   return defaultProtoClient;
@@ -94,12 +98,21 @@ async function decideV1(
     ?? protoEngineClient();
   if (!client)
     return safeFallback(room);
+  // Minor 1 is used only with a client whose capability handshake succeeded
+  // (explicit opt-in at client construction). On minor 1 a forced blueprint
+  // request runs in BLUEPRINT mode; otherwise AUTOMATIC tries the resident
+  // blueprint and deterministically falls back to the heuristic on any miss.
+  const minor: 0 | 1 = client.minor1Capable ? 1 : 0;
+  const solverMode = config.protoBlueprint && minor === 1
+    ? SolverMode.BLUEPRINT
+    : SolverMode.AUTOMATIC;
   const request = toV1DecisionRequest(room, {
     ...(config.style !== undefined ? { style: config.style } : {}),
     ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
+    ...(minor === 1 ? { solverMode } : {}),
   });
   const envelope = await client.request(
-    decisionEnvelope(request),
+    decisionEnvelope(request, minor),
     config.timeoutMs ?? 2000,
   ) as Envelope;
   return fromV1DecisionResponse(envelope, room);

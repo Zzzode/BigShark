@@ -16,6 +16,7 @@
 //   ./build/asan/proto/fuzz_v1_proto
 //   ./build/asan/proto/fuzz_v1_proto ./a.bin ./b.bin
 #include <bs/v1_protocol.hpp>
+#include <cmath>
 #include <cstdint>
 #include <sstream>
 #include <string>
@@ -47,13 +48,30 @@ void exerciseEnvelopeBytes(const std::string& frame) {
   if (response.payload_case() != pv::Envelope::kDecisionResponse)
     return;
   const pv::DecisionResponse& decision = response.decision_response();
-  if (decision.has_strategy()) {
+  if (decision.has_strategy() || decision.has_expanded_strategy()) {
     pv::Envelope requestEnvelope;
     if (!requestEnvelope.ParseFromString(frame))
       __builtin_trap();
     if (requestEnvelope.payload_case() != pv::Envelope::kDecisionRequest ||
         !requestIsValid(requestEnvelope.decision_request()))
       __builtin_trap();
+    // Minor 0 may only return the v1.0 Strategy; the expanded oneof and the
+    // new enums are minor-1-only.
+    if (requestEnvelope.protocol_minor() == 0 && decision.has_expanded_strategy())
+      __builtin_trap();
+    if (decision.has_expanded_strategy()) {
+      const pv::ExpandedStrategy& expanded = decision.expanded_strategy();
+      if (expanded.actions_size() < 1 || expanded.actions_size() > 32 || !expanded.has_solver())
+        __builtin_trap();
+      double sum = 0.0;
+      for (const pv::ActionPolicy& policy : expanded.actions()) {
+        if (!std::isfinite(policy.probability()) || policy.probability() < 0.0)
+          __builtin_trap();
+        sum += policy.probability();
+      }
+      if (!std::isfinite(sum) || std::abs(sum - 1.0) > 1e-9)
+        __builtin_trap();
+    }
   } else if (!decision.has_error()) {
     __builtin_trap();
   }

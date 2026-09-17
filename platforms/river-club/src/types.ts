@@ -228,6 +228,11 @@ export interface ExecutableDecision {
  * generated Protobuf bindings imported by v1-mapper. */
 export interface V1EnvelopeClient {
   request(envelope: unknown, timeoutMs?: number): Promise<unknown>;
+  /** Negotiated protocol minor (0 unless the client opted into minor 1 and the
+   * host capability handshake succeeded). */
+  readonly negotiatedProtocolMinor?: 0 | 1;
+  /** True when the current process negotiated minor 1. */
+  readonly minor1Capable?: boolean;
 }
 
 export interface EngineConfig {
@@ -240,6 +245,11 @@ export interface EngineConfig {
   engineClient?: {
     request(message: V0DecisionContext, timeoutMs?: number): Promise<RawEngineDecision>;
   };
+  /** Negotiated minor 1: force a resident blueprint lookup for covered
+   * postflop heads-up decisions (a coverage miss routes to the operational
+   * safe fallback) instead of AUTOMATIC heuristic-first mode. Requires a
+   * client that negotiated minor 1; otherwise requests stay on minor 0. */
+  protoBlueprint?: boolean;
 }
 
 export interface GoldenFixture {

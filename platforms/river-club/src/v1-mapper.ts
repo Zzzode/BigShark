@@ -16,10 +16,13 @@ import {
   PlayerStateSchema,
   Rank,
   SolverMode,
+  SolverSource,
   Street,
   Suit,
   type DecisionRequest,
   type Envelope,
+  type ExpandedStrategy,
+  type Strategy,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
 import { validateEngineDecision } from './v0-normalizer.js';
 import type {
@@ -209,7 +212,7 @@ function mapCard(rank: string, suit: string): MessageInitShape<typeof CardSchema
  * consumes. Throws on any amount outside the safe integer chip profile. */
 export function toV1DecisionRequest(
   room: RiverRoom,
-  config: { style?: string; heroName?: string } = {},
+  config: { style?: string; heroName?: string; solverMode?: SolverMode } = {},
 ): DecisionRequest {
   if (!room.legal)
     throw new Error('legal actions are required');
@@ -336,6 +339,62 @@ export function toV1DecisionRequest(
   const replayedActions = replayActionRounds(room.events ?? []);
   let openerApplied = false;
 
+  // Current-street exact commitments drive structured amount recovery. The
+  // snapshot seat.bet is a live exact integer (never a rounded display).
+  const streetCommitment = currentStreetCommitments(room);
+
+  // Pre-compute, for each replayed chip event, whether it is the actor's LAST
+  // chip-moving action of the current decision street. Only such an event can
+  // be recovered exactly from the structured seat commitment: its resulting
+  // cumulative total equals the snapshot seat.bet. An earlier (non-final)
+  // action by a player who acts again this street is not recoverable from the
+  // end-of-street snapshot and must rely on exact-integer text.
+  const isLastCurrentStreetChip = replayedActions.map((replayed, index) => {
+    const wireStreet = streetForGroup(replayed.group, street);
+    if (wireStreet !== street || !['b', 'r', 'c'].includes(replayed.code))
+      return false;
+    const actorId = resolveActor(replayed.actorName);
+    for (let later = index + 1; later < replayedActions.length; later += 1) {
+      const other = replayedActions[later]!;
+      if (streetForGroup(other.group, street) !== wireStreet)
+        continue;
+      if (!['b', 'r', 'c'].includes(other.code))
+        continue;
+      if (resolveActor(other.actorName) === actorId)
+        return false;  // this actor moves chips again later this street
+    }
+    return true;
+  });
+  // Per-(street, actor) street-paid from amounts actually emitted, so a
+  // structured CALL increment can subtract that actor's EARLIER current-street
+  // commitment. Street-scoped: seat.bet and the C++ ledger reset at each
+  // dealing boundary, so preflop/postflop amounts never mix.
+  //
+  // The preflop street ledger is seeded with each actor's posted blind,
+  // matching the C++ reconstructor (v1_resident_mapper.cpp seeds
+  // preflopStreetPaid from forced contributions before replaying voluntary
+  // events). Without this, the structured recovery of a blind-posting
+  // actor's final preflop CALL would compute finalCommit - 0 and include the
+  // blind (SB limp: would emit 100 instead of the 90 new chips); postflop
+  // streets have no blind seed and are unaffected.
+  // (street, actor) pairs whose ledger already has an amount we could not
+  // fill; later structured recovery there would mis-subtract, so it is
+  // disabled (the request will deterministically miss).
+  const actorLedgerIncomplete = new Set<string>();
+  const paidKey = (wireStreetValue: number | string, actor: string) =>
+    `${wireStreetValue}:${actor}`;
+
+  const structuredStreetPaid = new Map<string, bigint>();
+  for (const seat of seats) {
+    if (seat.blind !== 'SB' && seat.blind !== 'BB')
+      continue;
+    const blindAmount = seat.blind === 'BB' ? blinds[1] : blinds[0];
+    structuredStreetPaid.set(
+      paidKey(Street.PREFLOP, playerId(seat.seat)),
+      toChip(blindAmount, 'blind'),
+    );
+  }
+
   // Assign streets through the v0 betting-round replay so grouped rounds
   // match the C++ line reconstruction exactly; tags are capped at the current
   // street for multi-round preflop ladders.
@@ -359,12 +418,53 @@ export function toV1DecisionRequest(
             : replayed.code === 'r'
               ? 'raise'
               : 'fold';
-      return {
+      const wireEvent: MessageInitShape<typeof ActionEventSchema> = {
         sequence: BigInt(sequence),
         street: streetForGroup(replayed.group, street),
         actorPlayerId: actor,
         action: ACTION_BY_NAME[kind],
       };
+      // Chip amount rules (minor 1 resident replay; minor 0 ignores these):
+      //  1. past/closed streets: exact-integer text ONLY; rounded K/M/B text
+      //     is left unset (deterministic OffTree miss);
+      //  2. current street: exact-integer text when present, otherwise a
+      //     structured recovery from the live seat commitment is allowed only
+      //     for the actor's final chip action this street;
+      //  3. folded/check actions carry no amount.
+      // Rounded display text is never emitted as an exact chip value.
+      const wireStreet = streetForGroup(replayed.group, street);
+      if (kind === 'bet' || kind === 'raise' || kind === 'call') {
+        const exact = parseExactChipAmount(replayed.event.text);
+        const ledgerKey = paidKey(wireStreet, actor);
+        const prior = structuredStreetPaid.get(ledgerKey) ?? 0n;
+        let targetTotal: bigint | null = null;
+        let incrementalAmount: bigint | null = null;
+        if (exact !== null) {
+          if (kind === 'call')
+            incrementalAmount = exact;
+          else
+            targetTotal = exact;
+        } else if (wireStreet === street && isLastCurrentStreetChip[sequence]
+                   && !actorLedgerIncomplete.has(ledgerKey)) {
+          const finalCommit = streetCommitment.get(actor);
+          if (finalCommit !== undefined && finalCommit > 0n && finalCommit >= prior) {
+            if (kind === 'call')
+              incrementalAmount = finalCommit - prior;
+            else
+              targetTotal = finalCommit;
+          }
+        }
+        if (targetTotal !== null && targetTotal > 0n) {
+          wireEvent.targetTotal = targetTotal;
+          structuredStreetPaid.set(ledgerKey, targetTotal);
+        } else if (incrementalAmount !== null && incrementalAmount > 0n) {
+          wireEvent.incrementalAmount = incrementalAmount;
+          structuredStreetPaid.set(ledgerKey, prior + incrementalAmount);
+        } else {
+          actorLedgerIncomplete.add(ledgerKey);
+        }
+      }
+      return wireEvent;
     });
 
   const legalActions: MessageInitShape<typeof LegalActionSchema>[] =
@@ -429,7 +529,7 @@ export function toV1DecisionRequest(
       seed: 0n,
       includeSampledAction: true,
       includeFullStrategy: false,
-      solverMode: SolverMode.AUTOMATIC,
+      solverMode: config.solverMode ?? SolverMode.AUTOMATIC,
       // Exact parity with v0-normalizer.ts: pass the platform-computed
       // preflop effective stack (solver preferred, then hero snapshot).
       // v0_json sanitizes a missing/non-positive value to the 100 bb default,
@@ -440,12 +540,51 @@ export function toV1DecisionRequest(
   });
 }
 
-export function decisionEnvelope(request: DecisionRequest): Envelope {
+export function decisionEnvelope(request: DecisionRequest, protocolMinor: 0 | 1 = 0): Envelope {
   const envelope = create(EnvelopeSchema, {
-    protocolMinor: 0,
+    protocolMinor,
   });
   envelope.payload = { case: 'decisionRequest', value: request };
   return envelope;
+}
+
+type StrategyLike = Strategy | ExpandedStrategy;
+
+// River localizes chip moves as a trailing chip token. Two display classes
+// exist in production:
+//
+//   1) exact integers ("... 70", "<name> 980") — authoritative;
+//   2) rounded display ("... 1.2K", "ALL IN 3.6K", "2.5M") — rounded to a
+//      100/1000 grid and NOT the exact chip total (a real half-pot bet of 1225
+//      is displayed "1.2K"; treating 1200 as the target would replay the wrong
+//      node).
+//
+// Only class 1 is trusted: the LAST whitespace token must be pure digits with
+// no decimal point and no K/M/B multiplier suffix. Any decimal or suffix, or a
+// missing amount, returns null. The caller then leaves the wire amount unset
+// (deterministic engine OffTree miss) unless current-street structured data
+// recovers the exact value. No rounded value is ever sent as exact. Exported
+// for direct unit testing.
+export function parseExactChipAmount(text: string): bigint | null {
+  const token = (text || '').trim().split(/\s+/).at(-1) ?? '';
+  if (!/^[0-9]+$/.test(token))
+    return null;
+  const value = Number(token);
+  if (!Number.isSafeInteger(value) || value <= 0)
+    return null;
+  return BigInt(value);
+}
+
+// Exact current-street commitment per wire player id, taken from the live
+// structured snapshot (seat.bet). These are exact integers, never rounded.
+function currentStreetCommitments(room: RiverRoom): Map<string, bigint> {
+  const commitments = new Map<string, bigint>();
+  for (const seat of room.seats ?? []) {
+    if (!seat)
+      continue;
+    commitments.set(playerId(seat.seat), toChip(seat.bet ?? 0, 'seat bet'));
+  }
+  return commitments;
 }
 
 function chipToNumber(value: bigint | undefined, field: string): number | undefined {
@@ -457,9 +596,61 @@ function chipToNumber(value: bigint | undefined, field: string): number | undefi
   return Number(value);
 }
 
+// Validates the sampled action against the FULL reported distribution (up to
+// 32 actions on minor 1) by kind and exact target total, then converts it into
+// the executable decision the v0 runner validates against the platform legal
+// set. Engine errors and transport anomalies throw; the caller applies the
+// operational safe fallback rather than folding.
+function executeFromStrategy(strategy: StrategyLike,
+                             room: Parameters<typeof fromV1DecisionResponse>[1]):
+    Awaited<ReturnType<typeof fromV1DecisionResponse>> {
+  if (strategy.actions.length < 1)
+    throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
+
+  // The sampled action is what executes. It must be a member of the full
+  // reported distribution by kind and exact target total.
+  const selected = strategy.selectedAction;
+  if (!selected) {
+    throw new V1EngineError(
+      'NO_DECISION',
+      ErrorCode.NO_DECISION,
+      true,
+    );
+  }
+  const isMember = strategy.actions.some(policy =>
+    policy.type === selected.type
+    && (policy.targetTotal ?? 0n) === (selected.targetTotal ?? 0n));
+  if (!isMember)
+    throw new Error('selected action is not a member of the strategy distribution');
+
+  const action = ACTION_NAME_BY_KIND[selected.type];
+  if (action === undefined)
+    throw new Error(`unknown engine action kind ${selected.type}`);
+  const target = chipToNumber(selected.targetTotal, 'selected target');
+
+  const raw = {
+    action,
+    ...(target !== undefined ? { amount: target } : {}),
+    reason: strategy.solver?.diagnosticReason
+      || strategy.solver?.reasonCode
+      || (strategy.solver?.source === SolverSource.BLUEPRINT ? 'blueprint' : 'v1'),
+    ...(strategy.solver?.equity !== undefined ? { equity: strategy.solver.equity } : {}),
+    ...(strategy.solver?.minimumDefenseFrequency !== undefined
+      ? { mdf: strategy.solver.minimumDefenseFrequency }
+      : {}),
+  };
+  const validated = validateEngineDecision(room, raw);
+  if (!validated)
+    throw new Error('engine strategy failed platform legality validation');
+  return validated;
+}
+
 /** Converts a v1 DecisionResponse into the executable decision shape the v0
- * runner already validates. Engine errors and transport anomalies throw; the
- * caller applies the operational safe fallback rather than folding. */
+ * runner already validates. Handles both the minor-0 Strategy (at most five
+ * actions, degenerate) and the negotiated minor-1 ExpandedStrategy (the full
+ * resident distribution, up to 32 actions). Engine errors and transport
+ * anomalies throw; the caller applies the operational safe fallback rather
+ * than folding. */
 export function fromV1DecisionResponse(
   envelope: Envelope,
   room: RiverRoom,
@@ -473,40 +664,9 @@ export function fromV1DecisionResponse(
     const name = ErrorCode[error.code] ?? 'UNSPECIFIED';
     throw new V1EngineError(name, error.code, error.retryable);
   }
-  if (response.result.case !== 'strategy') {
-    throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
-  }
-  const strategy = response.result.value;
-
-  // Minor-0 returns a single probability-1 action; the selected action must
-  // agree with it exactly when present.
-  const policy = strategy.actions[0];
-  if (!policy)
-    throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
-  const action = ACTION_NAME_BY_KIND[policy.type];
-  if (action === undefined)
-    throw new Error(`unknown engine action kind ${policy.type}`);
-  const target = chipToNumber(policy.targetTotal, 'strategy target');
-  if (strategy.selectedAction) {
-    if (strategy.selectedAction.type !== policy.type
-      || ((strategy.selectedAction.targetTotal ?? 0n) !== (policy.targetTotal ?? 0n))) {
-      throw new Error('selected action is not a member of the strategy');
-    }
-  }
-
-  const raw = {
-    action,
-    ...(target !== undefined ? { amount: target } : {}),
-    reason: strategy.solver?.diagnosticReason
-      || strategy.solver?.reasonCode
-      || 'v1',
-    ...(strategy.solver?.equity !== undefined ? { equity: strategy.solver.equity } : {}),
-    ...(strategy.solver?.minimumDefenseFrequency !== undefined
-      ? { mdf: strategy.solver.minimumDefenseFrequency }
-      : {}),
-  };
-  const validated = validateEngineDecision(room, raw);
-  if (!validated)
-    throw new Error('engine strategy failed platform legality validation');
-  return validated;
+  if (response.result.case === 'strategy')
+    return executeFromStrategy(response.result.value, room);
+  if (response.result.case === 'expandedStrategy')
+    return executeFromStrategy(response.result.value, room);
+  throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
 }

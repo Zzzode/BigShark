@@ -8,9 +8,14 @@ Status: Current
 protocol definition. RFC 0002 Stage 7 ships an opt-in framed Protobuf host
 mode, C++ request/response mappers with a strict hand-written semantic
 validator, a framed TypeScript client, a River v1 mapper, and v0/v1 golden
-differential parity. The v0 NDJSON host, the Node JSON client, and live River
-Club traffic remain the default; the framed path is selected only explicitly
-(see [Framed host](#framed-host)).
+differential parity. RFC 0002 Stage 8 adds the negotiated minor-1 RPC
+integration (`ExpandedStrategy`, full resident blueprint distributions up to
+32 actions, `SOLVER_MODE_BLUEPRINT`/`SOLVER_SOURCE_BLUEPRINT`, artifact
+digest and guarantee metadata) behind an explicit capability handshake and
+the offline `--resident-root` host flag. The v0 NDJSON host, the Node JSON
+client, and live River Club traffic remain the default; the framed path and
+minor 1 are selected only explicitly (see [Framed host](#framed-host) and
+[Negotiated minor 1](#negotiated-minor-1)).
 
 ## Toolchain
 
@@ -109,9 +114,183 @@ covering both cross-language directions.
 ## Pending Runtime Work
 
 Length-delimited framing, semantic request validation, capability handling,
-and service-domain mapping are implemented as the RFC 0002 Stage 7 minor-0
-path below. Live dry-run/canary, v0 removal, and minor-1 full mixed-strategy
-distributions remain explicit external gates.
+service-domain mapping, and the minor-1 resident blueprint distribution path
+are implemented (Stages 7 and 8). Live dry-run/canary, v0 removal, the
+resolving gadget and certification/eligibility gates, and whole-range
+selection remain explicit external gates.
+
+## Negotiated minor 1
+
+Minor 1 is negotiated, never assumed. A client that wants it performs the
+handshake before using any minor-1 feature:
+
+1. query capabilities on minor 0 (the warmup call);
+2. re-query capabilities with `protocol_minor = 1`;
+3. use minor 1 only when the response echoes minor 1 and lists 1 in
+   `supported_protocol_minors`; otherwise stay on minor 0.
+
+The host accepts exactly minors 0 and 1: an envelope advertising minor 2 or
+higher is answered `UNSUPPORTED_PROTOCOL` echoing minor 0. Minor 0 and minor
+1 use the same request schema; only the selectable solver modes and the
+decision response oneof differ.
+
+### Capability filtering
+
+- A minor-0 capabilities query returns the frozen Stage-7 response byte for
+  byte: `supported_protocol_minors = [0]`, build version `v1.0.0`, and exactly
+  `SOLVER_MODE_AUTOMATIC` and `SOLVER_MODE_HEURISTIC`, regardless of which
+  resident roots are loaded. The host never serves `expanded_strategy`, enum
+  6/7, or the new metadata to a minor-0 client.
+- A minor-1 capabilities query lists minors `[0, 1]`, build version `v1.1.0`,
+  and adds `SOLVER_MODE_BLUEPRINT` to `solver_modes` only when at least one
+  resident root was advertised at startup. `SOLVER_MODE_RESOLVING` (7) and
+  any guarantee/certification feature are never advertised.
+
+### Selectable modes
+
+| Mode | Minor 0 | Minor 1 |
+| --- | --- | --- |
+| `AUTOMATIC` (1) | heuristic only | tries a resident blueprint, then the heuristic on any miss |
+| `HEURISTIC` (2) | heuristic | heuristic (resident never consulted) |
+| `BLUEPRINT` (6) | `UNSUPPORTED_FEATURE` | resident blueprint; any coverage miss is a non-retryable `UNSUPPORTED_FEATURE` |
+| `RESOLVING` (7) | `UNSUPPORTED_FEATURE` | always `UNSUPPORTED_FEATURE` (later stage) |
+| `RIVER_LP`/`RIVER_DCFR`/`MULTISTREET_CFR` (3/4/5) | `UNSUPPORTED_FEATURE` | `UNSUPPORTED_FEATURE` |
+
+### ExpandedStrategy
+
+A minor-1 blueprint hit returns `DecisionResponse.expanded_strategy` (field
+3), never `Strategy`:
+
+- `actions` carries the full resident row: 1..32 `ActionPolicy` entries,
+  verbatim non-negative probabilities summing to one within 1e-12, a target
+  total only on bet/raise, and `all_in` derived as the legal max equal to the
+  hero's `stack + street_committed`. The minor-0 five-entry cap does not
+  apply and a distribution is never truncated to fit it.
+- every emitted action is a member of the request legal set by kind and
+  exact target. A resident abstract action that is legal in the poker game
+  but outside the client's `[min_target_total, max_target_total]` window is
+  an `OffTreeAmount` coverage miss; the host never clamps the amount.
+- `selected_action` is present only when `include_sampled_action` is set. It
+  is chosen by one draw of a domain-separated SplitMix64 over the row (see
+  [Sampling](#sampling)) and is independently validated against both the row
+  and the request legal window by kind and exact target.
+- `solver.source` is `SOLVER_SOURCE_BLUEPRINT` (6), `cache_hit` is true,
+  `reason_code` is `blueprint`, `artifact_sha256` is the lowercase hex
+  SHA-256 of the artifact bytes, and `guarantee` is `uncertified`.
+  `modeled_exact_bound` is unreachable until certification exists; `baseline`
+  is reserved for a future resolving-deadline fallback and is not emitted by
+  the host (the ordinal/string are pinned in golden vectors for wire
+  stability).
+
+A minor-1 heuristic result (the AUTOMATIC miss fallback, or explicit
+HEURISTIC) is also returned as an `ExpandedStrategy`, but it stays
+degenerate (one probability-1 row), keeps the heuristic's REAL source
+(postflop heuristic, preflop chart, river LP/DCFR — never BLUEPRINT), and
+carries no `artifact_sha256` and no `guarantee`.
+
+### Coverage misses
+
+Forced `BLUEPRINT` resolves to a non-retryable `UNSUPPORTED_FEATURE` error
+(with a machine-readable diagnostic suffix) on every miss: the snapshot is
+not postflop heads-up on the no-ante/equal-matched profile, no advertised
+root matches (or the pinned digest mismatches), the structured history does
+not replay exactly, the node/runout is off the trained tree, the row action
+is outside the client window, the hero combo is untrained/board-blocked/zero
+reach, or joint belief is empty. The host never returns a fold strategy on a
+miss and never invents or clamps a root.
+
+### Resident provisioning
+
+The host owns one immutable resident set, built before serving from
+repeatable flags:
+
+```text
+bigshark-engine --serve-proto \
+  --resident-root /path/to/policy.db=<64 lowercase hex sha256>
+```
+
+The SHA-256 is mandatory. Each root is probed, digest-verified, fully
+validated, flattened, and advertised only when it fits the shared 256 MiB
+resident budget; one bad root never disables another. Per-root results
+(status, digest, information-set count, resident bytes, or failure detail)
+are reported on standard error only, never on framed stdout. With no flags
+the binary is the default host: no resident roots, BLUEPRINT unadvertised,
+and the v0/JSON/minor-0 paths unchanged. `bigshark_resident` is linked
+PRIVATE to `bigshark_v1_protocol`, so SQLite/OpenSSL and resident symbols do
+not cross the public boundary into the host's v0, service, policy, decision,
+client, or platform targets.
+
+### Postflop state reconstruction
+
+`v1_resident_mapper.cpp` converts the current `HandState` into a
+`bs::poker::HeadsUpState` at the decision node. Player index is occupied
+seat order (lower seat first), `root.button` is the button player's index,
+and cards map `(Rank-1)*4 + (Suit-1)` to the poker id. The flop root is
+`{ordered flop, stacks-behind-at-flop, equal matched contributions, pot,
+big blind, button}`: postflop stacks are current stacks plus exactly the
+chips paid postflop, and the flop pot is the current pot minus those
+payments (or the first postflop event's `pot_before` when the platform
+supplies it). Preflop events establish only the root pot and are never
+replayed; flop/turn/river voluntary events replay through the exact poker
+engine with absolute bet/raise target totals, inserting turn/river cards at
+dealing boundaries. The reconstructor fail-closes (`OffTree` /
+`RootNotSupported`) on non-postflop, multiway, antes/button-antes/enabled
+straddles/rakes, non-blind forced contributions, side pots, a folded seat,
+unresolved actors, card collisions, illegal transitions, unmatched
+stacks/street commitments/pot/to_call, or an unparseable ledger.
+`incremental_amount` is advisory (platforms report either the total payment
+or the raise-only increment); the authoritative replay quantity is always
+the exact target total. The River adapter fills these fields for every
+postflop action under three exactness rules:
+
+1. **Exact-integer text only.** The trailing token of the localized event
+   text is trusted only when it is pure digits with no decimal point or
+   K/M/B multiplier ("bet to 70", "<name> 980"). A rounded display
+   ("bet to 1.2K" for an exact 1225 half-pot bet, "ALL IN 3.6K", "70.5") is
+   never sent as an exact target.
+2. **Current-street structured recovery.** On the decision street, when the
+   text is rounded the exact value is recovered from the live structured
+   snapshot (`seat.bet` current-street commitment, an exact integer) — but
+   only for the actor's final chip action of the street; a per-(street,
+   actor) ledger guard refuses recovery when an earlier same-street action
+   by that actor is unaccounted, so a CALL increment is never mis-subtracted.
+3. **Past streets are text-only.** Closed flop/turn actions with rounded
+   display text cannot be recovered from the current snapshot and stay
+   unset, which is the deterministic OffTree miss. Fold/check carry no
+   amount.
+
+No amount is ever guessed; unparseable/rounded past-street amounts are the
+honest fail-safe miss (an error/heuristic decision, never a wrong node).
+Corpus coverage (`sessions/2026-09-11.jsonl`, every postflop chip action in
+room snapshots carrying events): 3318/3357 (98.84%) are exact integer
+tokens and 39 are K-suffix rounded display (zero plain decimals); those 39
+break down by `solver.playersInHand` as `{3:1, 4:3, 5:15, 6:20}` (all
+multiway — none heads-up), and on actionable postflop decision snapshots
+only 2 are current-street actions and both recover structurally. Preflop
+structured CALL recovery seeds the street ledger with the posted blinds
+(SB/BB forced contributions) so a blind-posting actor's rounded final call
+returns only the new chips (SB limp to 100 with a 10 SB emits 90; a BB
+call to 40 with a 20 BB emits 20), matching the C++ preflop street-paid
+seed; postflop streets carry no blind seed and are unaffected. The
+reconstructor also rejects any ALL_IN player at a postflop decision and
+verifies equal matched preflop contributions when the full attributed
+preflop ledger is present (an even pot alone is insufficient; 15+25=40
+fails and 20+20=40 reconstructs).
+
+### Sampling
+
+The sampler is a shared, domain-separated SplitMix64 (`engine/include/bs/
+prng.hpp`): the state starts at `seed XOR 0x425356312d73616d`, a constant
+distinct from the trainer's stream. The lookup itself consumes no entropy —
+the distribution is identical for every seed — and one draw selects the
+sampled bucket: top 53 bits mapped to `[0,1)` then scaled onto the row's
+actual recorded prefix sum, first prefix-CDF bucket strictly greater than
+the draw, with a clamp to the final positive bucket. This makes every row
+passing the 1e-12 probability-sum check deterministically sample-able
+(including rows summing to 1 +/- 1e-13) while a zero-probability bucket can
+never be selected; on exactly normalized distributions the pinned golden
+vectors hold (seed 42 -> bucket 3, seed 0 -> bucket 6, seed 1 -> bucket 4).
+`include_sampled_action: false` suppresses the field.
 
 ## Framed Host
 
@@ -151,12 +330,16 @@ cannot tear down a persistent coprocess.
 
 ## C++ Protocol Boundary
 
-The public boundary header `engine/include/bs/v1_protocol.hpp` exposes only
-the frame codec and a byte-level `handleEnvelope` entry point; it includes no
-generated Protobuf types. The mappers and semantic validator live in
-`engine/src/protocol/v1_*` and are the only translation units (with the host
-and the v1 tests) that include generated headers. The dependency chain is
-host -> generated protobuf -> v1 mapper -> `bs::decide`; domain, solver,
+The public boundary header `engine/include/bs/v1_protocol.hpp` exposes the
+frame codec, the byte-level `handleEnvelope` entry points, and a
+protobuf-free `V1HostServices` seam (`blueprintAdvertised` plus a
+`blueprintHeroDecision` lookup returning poker-domain rows). It includes no
+generated Protobuf and no resident types; the host composition root supplies
+the resident-backed implementation and the default entry point uses a shared
+no-resident service. The mappers, semantic validator, and reconstructor live
+in `engine/src/protocol/v1_*` and are the only translation units (with the
+host and the v1 tests) that include generated headers. The dependency chain
+is host -> generated protobuf -> v1 mapper -> `bs::decide`; domain, solver,
 policy, and service headers never see generated messages.
 
 ### Semantic validation
@@ -221,9 +404,12 @@ invariants:
   straddles, tournament/ICM games, forced RIVER_LP/RIVER_DCFR/MULTISTREET_CFR
   solver modes, and any side pot return `UNSUPPORTED_FEATURE`/
   `UNSUPPORTED_GAME` rather than approximations. Minor 0 accepts only
-  AUTOMATIC and HEURISTIC as selectable modes; the capabilities list
-  advertises exactly those two, while the exact-LP/DCFR feature bits still
-  report which internal river backend the heuristic engine may select;
+  AUTOMATIC and HEURISTIC as selectable modes (BLUEPRINT/RESOLVING are
+  rejected there even when a resident root is loaded); minor 1 additionally
+  accepts BLUEPRINT, while RESOLVING remains rejected. The capabilities list
+  advertises exactly the selectable modes per minor, while the
+  exact-LP/DCFR feature bits still report which internal river backend the
+  heuristic engine may select;
 
 ### v1 to heuristic Ctx reconstruction
 
@@ -278,9 +464,10 @@ heuristic).
 | Condition | ErrorCode | Retryable |
 | --- | --- | --- |
 | malformed envelope, missing/unspecified fields, poker-semantic violation | `INVALID_REQUEST` | no |
-| `protocol_minor != 0` | `UNSUPPORTED_PROTOCOL` | no |
+| `protocol_minor > 1` | `UNSUPPORTED_PROTOCOL` | no |
 | non-NLHE, limit structure, tournament/ICM | `UNSUPPORTED_GAME` | no |
-| fractional units, antes, rake, straddle, side pots, forced multistreet mode | `UNSUPPORTED_FEATURE` | no |
+| fractional units, antes, rake, straddle, side pots, forced multistreet/resolving mode | `UNSUPPORTED_FEATURE` | no |
+| minor-1 forced BLUEPRINT coverage miss (unsupported hand state, no matching root, off-tree history/runout/amount, blocked/untrained/zero-reach combo) | `UNSUPPORTED_FEATURE` | no |
 | empty engine action | `NO_DECISION` | yes |
 | solve budget exhausted | `DEADLINE_EXCEEDED` | yes |
 | allocation failure | `RESOURCE_EXHAUSTED` | yes |
@@ -288,11 +475,13 @@ heuristic).
 
 Errors are never converted into fold-shaped strategies; a genuine strategic
 fold is a `Strategy` containing `ACTION_TYPE_FOLD` at probability 1. The
-capabilities response advertises only `supported_protocol_minors = [0]`
-(minor 1 full distributions are a later stage), NLHE no-limit cash, the
-target-total-inclusive amount semantics, the tag/lag/station-hunter profiles,
-actual exact-LP/DCFR support, experimental multistreet status, unsupported
-side pots, rake, and ICM, and a 1 MiB / 120 s maximum.
+minor-0 capabilities response advertises only `supported_protocol_minors =
+[0]`, NLHE no-limit cash, the target-total-inclusive amount semantics, the
+tag/lag/station-hunter profiles, actual exact-LP/DCFR support, experimental
+multistreet status, unsupported side pots, rake, and ICM, and a 1 MiB /
+120 s maximum. Minor-1 capabilities re-list `[0, 1]` and add BLUEPRINT only
+with an advertised resident root (see [Negotiated minor
+1](#negotiated-minor-1)).
 
 ## TypeScript Framed Client and River Adapter
 
@@ -327,7 +516,18 @@ and transport errors surface the code and route to the existing operational
 
 The framed path is selected only by `BIGSHARK_ENGINE_PROTO=1` or an explicit
 `EngineConfig.proto`; with the env unset and no config flag, the v0 JSON
-client and behavior are unchanged.
+client and behavior are unchanged. Minor 1 is an additional explicit opt-in:
+the client is constructed with `negotiateMinor1: true` (the built-in River
+client does this when `BIGSHARK_ENGINE_PROTO_MINOR1=1`) and exposes the
+negotiated result as `negotiatedProtocolMinor` / `minor1Capable`. A caller
+that does not opt in never sends minor 1, and the River adapter forces
+BLUEPRINT only with `EngineConfig.protoBlueprint` against a minor-1 client;
+minor-1 AUTOMATIC otherwise tries the resident and transparently falls back
+to the heuristic. The River mapper reads whichever decision oneof is
+returned (`Strategy` or `ExpandedStrategy`), validating the sampled action
+against the FULL reported list (up to 32 entries) before execution, so an
+expanded distribution with a non-member sampled action is an operational
+error routed to `safeFallback`, never a fold.
 
 ## Golden Differential
 

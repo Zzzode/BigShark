@@ -1,0 +1,54 @@
+{
+  "protocolMinor": 1,
+  "requestId": "expanded-strategy-vector",
+  "decisionResponse": {
+    "expandedStrategy": {
+      "actions": [
+        {
+          "type": "ACTION_TYPE_FOLD",
+          "probability": 0.1
+        },
+        {
+          "type": "ACTION_TYPE_CHECK",
+          "probability": 0.1
+        },
+        {
+          "type": "ACTION_TYPE_CALL",
+          "probability": 0.1
+        },
+        {
+          "type": "ACTION_TYPE_BET",
+          "targetTotal": "40",
+          "probability": 0.1
+        },
+        {
+          "type": "ACTION_TYPE_BET",
+          "targetTotal": "60",
+          "probability": 0.2
+        },
+        {
+          "type": "ACTION_TYPE_RAISE",
+          "targetTotal": "80",
+          "probability": 0.2
+        },
+        {
+          "type": "ACTION_TYPE_RAISE",
+          "targetTotal": "120",
+          "probability": 0.2
+        }
+      ],
+      "selectedAction": {
+        "type": "ACTION_TYPE_RAISE",
+        "targetTotal": "80"
+      },
+      "solver": {
+        "source": "SOLVER_SOURCE_BLUEPRINT",
+        "solveTimeUs": "7",
+        "cacheHit": true,
+        "reasonCode": "blueprint",
+        "artifactSha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "guarantee": "uncertified"
+      }
+    }
+  }
+}

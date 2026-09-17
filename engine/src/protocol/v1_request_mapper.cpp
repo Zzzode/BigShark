@@ -148,8 +148,8 @@ int asInt(std::uint64_t value) {
 }  // namespace
 
 pv::ErrorCode validateAndMap(const pv::DecisionRequest& request, ValidationReport& report,
-                             bs::Ctx& context) {
-  pv::ErrorCode code = validateDecisionRequest(request, report);
+                             bs::Ctx& context, unsigned negotiated_minor) {
+  pv::ErrorCode code = validateDecisionRequest(request, report, negotiated_minor);
   if (code != pv::ERROR_CODE_UNSPECIFIED)
     return code;
 

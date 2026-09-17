@@ -199,3 +199,119 @@ test('refuses to encode an oversize local frame', () => {
   assert.throws(() => encodeVarint(MAX_FRAME_BYTES + 1), /Refusing/);
   assert.throws(() => encodeVarint(-1), /Refusing/);
 });
+
+// ---------------------------------------------------------------------------
+// RFC 0002 Stage 8 minor-1 negotiation matrix against the fake host.
+// ---------------------------------------------------------------------------
+
+function minor1Client(): ProtoEngineProcessClient {
+  return new ProtoEngineProcessClient({
+    command: process.execPath,
+    args: [fakeEngine],
+    warmupEnvelope: capabilitiesEnvelope(),
+    warmupTimeoutMs: 1000,
+    negotiateMinor1: true,
+  });
+}
+
+function minor1DecisionEnvelope(handId: string): Envelope {
+  const envelope = decisionEnvelope(handId);
+  envelope.protocolMinor = 1;
+  return envelope;
+}
+
+test('opts into minor 1 only through the explicit handshake', async t => {
+  const defaultClient = client();
+  t.after(() => defaultClient.stop());
+  await defaultClient.request(capabilitiesEnvelope(), 1000);
+  assert.equal(defaultClient.negotiatedProtocolMinor, 0,
+    'a non-opted-in client stays on minor 0');
+
+  const engine = minor1Client();
+  t.after(() => engine.stop());
+  await engine.request(capabilitiesEnvelope(), 1000);
+  assert.equal(engine.minor1Capable, true);
+  assert.equal(engine.negotiatedProtocolMinor, 1);
+});
+
+test('new client/old host downgrades to minor 0 when 1 is unsupported', async t => {
+  const oldHost = join(here, 'fixtures', 'fake-proto-engine-old.js');
+  const engine = new ProtoEngineProcessClient({
+    command: process.execPath,
+    args: [oldHost],
+    warmupEnvelope: capabilitiesEnvelope(),
+    warmupTimeoutMs: 1000,
+    negotiateMinor1: true,
+  });
+  t.after(() => engine.stop());
+  await engine.request(capabilitiesEnvelope(), 1000);
+  assert.equal(engine.minor1Capable, false, 'handshake downgrades to minor 0');
+  assert.equal(engine.negotiatedProtocolMinor, 0);
+});
+
+test('minor 1 blueprint hit returns the full expanded distribution', async t => {
+  const engine = minor1Client();
+  t.after(() => engine.stop());
+  const response = await engine.request(minor1DecisionEnvelope('blueprint-hit'), 1000);
+  assert.equal(response.payload.case, 'decisionResponse');
+  if (response.payload.case !== 'decisionResponse') throw new Error('bad payload');
+  const result = response.payload.value.result;
+  assert.equal(result.case, 'expandedStrategy');
+  if (result.case !== 'expandedStrategy') throw new Error('bad result');
+  assert.equal(result.value.actions.length, 4, 'more than five actions supported');
+  assert.equal(result.value.solver?.source, 6 /* SOLVER_SOURCE_BLUEPRINT */);
+  assert.equal(result.value.solver?.guarantee, 'uncertified');
+  assert.ok(/^[a-f0-9]{64}$/.test(result.value.solver?.artifactSha256 ?? ''));
+  assert.equal(result.value.selectedAction?.targetTotal, 200n);
+});
+
+test('forced blueprint coverage miss surfaces an engine error, not a fold', async t => {
+  const engine = minor1Client();
+  t.after(() => engine.stop());
+  const response = await engine.request(minor1DecisionEnvelope('blueprint-miss'), 1000);
+  if (response.payload.case !== 'decisionResponse') throw new Error('bad payload');
+  const result = response.payload.value.result;
+  assert.equal(result.case, 'error');
+  if (result.case !== 'error') throw new Error('bad result');
+  assert.equal(result.value.retryable, false);
+});
+
+test('a selected action outside the distribution is detectable by the client', async t => {
+  const engine = minor1Client();
+  t.after(() => engine.stop());
+  const response = await engine.request(minor1DecisionEnvelope('blueprint-bad-member'), 1000);
+  if (response.payload.case !== 'decisionResponse') throw new Error('bad payload');
+  const result = response.payload.value.result;
+  assert.equal(result.case, 'expandedStrategy');
+  if (result.case !== 'expandedStrategy') throw new Error('bad result');
+  const selected = result.value.selectedAction;
+  const isMember = result.value.actions.some(action =>
+    action.type === selected?.type
+    && (action.targetTotal ?? 0n) === (selected?.targetTotal ?? 0n));
+  assert.equal(isMember, false, 'the bad member is rejected by membership validation');
+});
+
+test('minor-1 automatic fallback is an expanded degenerate heuristic strategy', async t => {
+  const engine = minor1Client();
+  t.after(() => engine.stop());
+  const response = await engine.request(minor1DecisionEnvelope('echo'), 1000);
+  if (response.payload.case !== 'decisionResponse') throw new Error('bad payload');
+  assert.equal(response.payload.value.result.case, 'expandedStrategy');
+  if (response.payload.value.result.case !== 'expandedStrategy') throw new Error('bad result');
+  const expanded = response.payload.value.result.value;
+  assert.equal(expanded.solver?.source, 2 /* POSTFLOP_HEURISTIC */,
+    'heuristic keeps its real source, never BLUEPRINT');
+  assert.equal(expanded.solver?.artifactSha256, undefined);
+  assert.equal(expanded.solver?.guarantee, undefined);
+});
+
+test('old client path still produces a minor-0 strategy with a minor-1 host', async t => {
+  const engine = client();
+  t.after(() => engine.stop());
+  // Even though the host supports minor 1, a non-opted-in client sends minor 0
+  // and receives the v1.0 strategy oneof.
+  const response = await engine.request(decisionEnvelope('echo'), 1000);
+  if (response.payload.case !== 'decisionResponse') throw new Error('bad payload');
+  assert.equal(response.protocolMinor, 0);
+  assert.equal(response.payload.value.result.case, 'strategy');
+});

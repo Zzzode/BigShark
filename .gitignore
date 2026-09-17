@@ -16,6 +16,7 @@ config.json
 /build/
 /build-*/
 /bin/bigshark-engine
+/bin/bs-resident-fixture
 engine/build/
 engine/build-asan/
 engine/compile_commands.json
