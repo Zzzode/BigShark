@@ -6,10 +6,21 @@ Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 5, 6,
 7, 8, 9, 11, and the isolated Stage 12 ICM are complete with recorded
 evidence. Stage 10 is PARTIALLY complete: the heads-up preflop RULES and their
 independent native tests are implemented, but preflop training and
-continuation-range export are NOT, because a full traversal from a preflop
-root is unbounded (measured: >3M nodes and >1M postflop information sets at a
-three-big-blind stack) and the bounded abstraction it needs touches the
-artifact byte-accounting contract, which requires its own accepted design.
+continuation-range export are NOT. The blocker is measured, not assumed: a
+full traversal from a preflop root is unbounded (probe-level: >3M nodes and
+>1M postflop information sets at a three-big-blind stack), and the preflop
+street's own information-set count grows with range size and stack depth (30
+at 6bb, 606 at 25bb, 8,010 at 100bb, 29,946 at 200bb for six combos per seat).
+RFC 0007 is now ACCEPTED and unblocks the first, narrow slice: the
+flop-terminal abstraction, artifact coexistence, and a measured convergence
+result for a DECLARED SMALL preflop profile. It does NOT satisfy Stage 10's
+criterion as written, which implies a realistic-size profile. Bounding the
+preflop street at realistic range and stack depth needs a card or action
+abstraction with a measured error bound; RFC 0004 defers that to a separate
+design, and that follow-up RFC is the critical path item for Stage 10 and is
+not yet scheduled. Stage 10 must not be marked delivered on the back of RFC
+0007 alone, and any stage-4 training numbers must be published as
+declared-profile coverage, never as Stage 10 completion.
 Stage 13 (multiway) and Stage 14 (final audit) remain. RFC 0005 is implemented
 through the Stage 9 resolving scope; its general live subgame work remains
 explicitly deferred. Live enablement of resolving still requires explicit
@@ -38,9 +49,11 @@ evidence specified for each stage.
 
 ## Stages and Evidence
 
-Stages 1, 2, 3, 4, 5, 6, 11, and the isolated Stage 12 ICM are complete;
-all other work remains Pending. Owners name existing
-modules or the explicitly approved artifact boundary, not separate services.
+Stages 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, and the isolated Stage 12 ICM are
+complete; Stage 10 is PARTIAL (rules only); Stage 13 is in progress (rules and
+joint-deal sampling landed, training and deviation evaluation remain); Stage 14
+remains Pending. Owners name existing modules or the explicitly approved
+artifact boundary, not separate services.
 
 | Stage | Roadmap IDs | Owner | Implementation | Required completion evidence |
 | --- | --- | --- | --- | --- |

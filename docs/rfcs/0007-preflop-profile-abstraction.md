@@ -1,7 +1,7 @@
 ---
 rfc: "0007"
 subject: "Preflop Profile Abstraction and Artifact Coexistence"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark engine agent"
 created: "2026-09-18"
 updated: "2026-09-18"
@@ -116,7 +116,7 @@ Verified in the working tree at commit `c16798f`:
   `completed_iterations=0`.
 - The artifact `sizes` table, size reader/writer, size comparison, and public
   key encoder all assume a flop root, cited above.
-- `game_byte_charge` reads `2 * sizeof(HeadsUpGame)`.
+- `game_byte_charge` derives its STRUCTURAL term from `2 * sizeof(HeadsUpGame)` and additionally charges ranges and sizes (`engine/src/gto/heads_up_solver.cpp:200-208`). Two other paths read the same `sizeof` into accounting decisions - `game_resident_bytes` (`engine/src/resident/resident_policy.cpp:46`) and `estimate_bytes` (`engine/src/resident/resident_index.cpp:170`), the latter consumed by the resident eligibility and upper-bound checks - so the struct-layout decoupling below is stated repo-wide, not only for the trainer.
 
 **Correction after independent review (2026-09-18).** An earlier revision of
 this document asserted that the preflop street is small and that terminating at
@@ -152,14 +152,26 @@ Consequences, stated plainly:
   declared profile and only for it. Whether a realistic-size preflop profile is
   reachable at all is left open and explicitly flagged as a risk, not assumed.
 
-The bounded-walk numbers that motivate the postflop half of the argument: a
-bounded walk from a preflop root visits over 3,000,000 nodes and more than
-1,000,000 distinct postflop information sets (a 4,000,000-node probe on a
-one-combo, 3-big-blind fixture reached 1,410,475 distinct postflop keys against
-2 preflop keys). A shallow three-big-blind stack therefore does not converge
-either: the limit is consumed by postflop enumeration, which is what the
-flop-terminal declaration removes. A committed bounded-walk regression pins
-this order of magnitude (see Verification Plan).
+Three distinct quantities are involved in this argument and they are kept
+apart deliberately, because only the first is pinned by a committed test:
+
+1. **Committed.** The reachable-flop count from one preflop line,
+   `C(48,3) = 17,296`, asserted by `test_preflop_full_tree_is_unbounded`
+   (`engine/tests/test_heads_up_preflop.cpp:326-360`).
+2. **Probe-level today.** A bounded walk from a preflop root visits over
+   3,000,000 nodes and more than 1,000,000 distinct postflop information sets;
+   the probe that produced it (4,000,000-node cap, one-combo, three-big-blind
+   fixture) reported 1,410,475 distinct postflop keys against 2 preflop keys.
+   This order of magnitude is what the flop-terminal declaration answers, and
+   the Verification Plan commits an information-set counter so the number stops
+   depending on an uncommitted probe.
+3. **Not yet measured.** The declared small profile's own preflop key count.
+   Deliberately deferred to stage 4, which must publish it rather than assume
+   it.
+
+A shallow three-big-blind stack therefore does not converge either: the limit is
+consumed by postflop enumeration, which is exactly what the flop-terminal
+declaration removes.
 
 ## Design Principles
 
@@ -371,7 +383,7 @@ Affected surfaces and their disposition:
 | Existing flop-rooted artifacts | Unchanged bytes and digest; `street 0..2` rows still valid |
 | Existing information keys and their encoded strings | Frozen; only `board_count == 0` gains a form |
 | `HeadsUpGame` size and layout | Changes; the accounting term is decoupled in the same change |
-| Published benchmark `accounted_bytes` | One-time, documented rebase - and NOT only the published CSV: the frozen matrix quality gates (`docs/development/benchmarking.md:344-353`) and `engine/tests/test_heads_up_allocations.cpp` (exact-fit and `< 256 KiB` checks) are load-bearing consumers of the same number and must be rebased with recorded evidence in the same change |
+| Published benchmark `accounted_bytes` | One-time, documented rebase - and NOT only the published CSV: the frozen matrix quality gates (`docs/development/benchmarking.md:344-353`), `engine/tests/test_heads_up_allocations.cpp` (exact-fit and `< 256 KiB` checks), and the resident footprint estimate (`engine/src/resident/resident_policy.cpp:46`, `engine/src/resident/resident_index.cpp:170`) are all load-bearing consumers of the same number and must be rebased with recorded evidence in the same change. The allocations exact-fit gate is a knife edge (`max_bytes = accounted_bytes - 1` must yield `ResourceLimit` with zero nodes, `= accounted_bytes` must yield `Complete`), so the declared constant and the checker's computation must stay bit-identical. |
 | v0 / minor-0 wire behavior | Unchanged; no wire field is added |
 | Live six-max preflop decisions | Unchanged; no production routing is touched |
 
@@ -439,6 +451,27 @@ resource limits is proposed.
   unsupported root street rejects rather than misreads.
 - Byte identity: split-run versus uninterrupted-run equality still holds
   exactly, on both profiles.
+- Version-bump completeness: the schema-major bump must also set
+  `information_key_revision` deliberately - the reader requires it to EQUAL the
+  schema version (`engine/src/artifacts/strategy_artifact.cpp:1049-1050`) while
+  the manifest default is `1` - and the standing
+  `user_version = 2` rejection fixture
+  (`engine/tests/test_artifacts.cpp:1154-1160`) must be revised in the same
+  change, because once v2 is accepted by version the same bytes fail later as
+  `InvalidSchema` instead. Both sites are named here so the bump is not a
+  one-line edit.
+- Game identity completeness: `same_game`
+  (`engine/src/artifacts/strategy_artifact.cpp:96-102`) must learn the fields
+  that distinguish the new profile - `root.preflop`, `root.blinds_posted`, and
+  the terminal depth - in the stage that lands the first preflop checkpoint.
+  Today it is quiescent only because `read_game` rejects a preflop artifact
+  before `same_game` is reached, which is an accident of ordering rather than a
+  guarantee.
+- Multi-line flop coverage: the continuation-range export targets "each flop
+  root reached with positive probability", while a first-visit counter bounds
+  what the trainer records. A flop reachable through several preflop lines must
+  not be silently omitted from the export; the landing stage states how the
+  count is accumulated.
 - No-regression gates: the Stage 1 exhaustive oracle, the replay suite
   (`156 decisions / 0 illegal / 0 JS fallbacks`, mix unchanged), the frozen
   matrix, and the full `AGENTS.md` gate including ASan/UBSan.
@@ -500,39 +533,18 @@ existing data. No old artifact is overwritten or reinterpreted at any point.
 
 ## Decision
 
-Pending independent approval-agent review.
+Author agent: BigShark engine agent
+Approved by: a4cce2b7202123eb1
+Decision date: 2026-09-18
+Review outcome: Approved
+Reviewed scope: Complete revised proposal - the flop-terminal abstraction and its scoped declared-small profile, the frontier representation contract, the schema-major coexistence mechanism and its identity surfaces, the size-schedule widening with the accounting decoupling, compatibility, rollout, rollback, and the full verification plan. Approval is for this RFC's stated scope and only for it.
+Review summary: Formal independent re-review confirmed both prior blocking findings are genuinely resolved and verified the replacement mechanism against the reader code rather than against the Decision summary: the schema-major bump is rejected by version at the cited gate, `root_street` and `rules_id` are the only rules-identity sites, and the `decode_public_key` gate independently needs the new key form (the half a naive patch would miss). F3-F6 are resolved to the standard RFC 0005 sets. Four non-blocking implementation-stage precisions were recorded as errata and as verification-plan items: the version bump must also set `information_key_revision` and revise the standing v2-rejection fixture; `same_game` must learn the new identity fields in the stage that lands the first preflop checkpoint; the accounting decoupling is repo-wide rather than trainer-local, including the resident footprint estimate and the knife-edge allocations exact-fit gate; and the postflop-key order of magnitude is probe-level today, so an information-set counter is committed to pin it. No finding required re-review before implementation planning.
 
-**Prior review history.** Formal review 2026-09-18 by agent a367abd25bec61794
-returned **Changes Requested** on the revision as filed (pre-decision SHA-256
-`abbe3a6`). The review reproduced every cited current-state number and code
-location and falsified two load-bearing conclusions by measurement:
+**Scope floor, recorded so this approval is not mistaken for Stage 10 completion.** This RFC delivers the flop-terminal abstraction, the coexistence machinery, the frontier contract, and a measured convergence result for a DECLARED SMALL preflop profile. It does NOT deliver RFC 0004 Stage 10's criterion as written, which implies a realistic-size profile: bounding the preflop street at realistic range and stack depth needs a card or action abstraction with a measured error bound, which RFC 0004 defers to a separate design. The implementation plan therefore keeps Stage 10 marked PARTIAL, and the stage-4 training numbers must be published as declared-profile coverage, never as Stage 10 completion. That follow-up abstraction is the critical path item for Stage 10 and is not yet scheduled.
 
-- **F1 (blocking).** The claim that the preflop street is small and that a
-  flop-terminal declaration would therefore bound training is false: preflop
-  information sets measure 606 at 25 bb and 29,946 at 200 bb for six combos per
-  seat, growing with both range size and stack depth. Termination at the flop
-  removes the postflop half of the explosion only.
-- **F2 (blocking).** The proposed "widen the `sizes` CHECK" coexistence
-  mechanism is wrong about the reader that exists: `verify_schema_objects`
-  compares stored `CREATE TABLE` text byte-for-byte against the canonical DDL,
-  so a widened CHECK is rejected by the current reader (demonstrated end to end
-  against the published binary).
-- **F3 (blocking).** The continuation-value contract deferred too much to a
-  measurement gate: normalization, conditioning, identity, and scope naming must
-  be fixed at design time.
-- **F4-F6 (non-blocking).** The frontier gate was not decidable on its stated
-  criteria; several figures were imprecise; and the verification plan omitted
-  the consumers whose numbers move when the byte charge changes, the key-decode
-  direction, and the writer/reader landing order.
+**Prior review history.** Formal review 2026-09-18 by agent a367abd25bec61794 returned Changes Requested on the revision as filed (pre-decision SHA-256 `abbe3a6`). It reproduced every cited current-state number and code location and falsified two load-bearing conclusions by measurement:
 
-Dispositions: F1 by removing the false premise and scoping the profile to a
-declared small profile, with the growth measured and the residual question
-recorded as a risk rather than assumed; F2 by replacing the mechanism with a
-schema-major bump plus the `root_street`/`rules_id` identity surfaces already
-designed for identity; F3 by stating the evaluator contract at design time;
-F4-F6 by making the frontier gate eligibility-first with a stated byte estimate,
-correcting the figures, and naming the allocation and matrix gates, both key
-directions, and the landing order in the verification plan.
-
-All six findings are revised in this document, which is resubmitted for
-independent re-review. No implementation starts before a subsequent approval.
+- **F1 (blocking).** The claim that the preflop street is small and that a flop-terminal declaration would therefore bound training is false: preflop information sets grow with both range size and stack depth. Removed and replaced with the measured growth and an explicitly scoped profile.
+- **F2 (blocking).** The proposed "widen the `sizes` CHECK" mechanism was wrong about the reader that exists, since `verify_schema_objects` compares stored `CREATE TABLE` text byte-for-byte against the canonical DDL. Replaced with the schema-major bump plus the identity surfaces already designed for identity.
+- **F3 (blocking).** The continuation-value contract was under-specified. Now stated at design time: identity, normalization, conditioning, and scope naming.
+- **F4-F6 (non-blocking).** The frontier gate was not decidable on its stated criteria; several figures were imprecise; the verification plan omitted consumers whose numbers move with the byte charge, the key-decode direction, and the writer/reader landing order. All revised.
