@@ -226,6 +226,7 @@ add_library(bigshark_solver STATIC
   src/gto/range_tracker.cpp
   src/gto/multistreet_cfr.cpp
   src/gto/heads_up_solver.cpp
+  src/gto/multiway_sampler.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
 )
@@ -407,6 +408,13 @@ if(BUILD_TESTING)
   add_executable(test_multiway tests/test_multiway.cpp)
   target_link_libraries(test_multiway PRIVATE bigshark_poker)
   add_test(NAME multiway COMMAND test_multiway)
+
+  # RFC 0006 joint-deal sampling: the enumerated joint distribution, the
+  # rejection-conditional sampler that must match it, and reproducibility.
+  add_executable(test_multiway_sampler tests/test_multiway_sampler.cpp)
+  target_link_libraries(test_multiway_sampler PRIVATE bigshark_solver)
+  target_include_directories(test_multiway_sampler PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME multiway_sampler COMMAND test_multiway_sampler)
 
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)
