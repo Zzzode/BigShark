@@ -43,7 +43,7 @@ bool same_root(const poker::HeadsUpRoot& a, const poker::HeadsUpRoot& b) {
 
 // Honest footprint of the immutable game copy kept with an advertised root.
 std::size_t game_resident_bytes(const HeadsUpGame& game) {
-  std::size_t bytes = sizeof(HeadsUpGame);
+  std::size_t bytes = solver::kGameCopyAccountingBytes;
   for (const auto& range : game.ranges)
     bytes += range.capacity() * sizeof(solver::WeightedHand);
   for (const auto& street : game.sizes) {

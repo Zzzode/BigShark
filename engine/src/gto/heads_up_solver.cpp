@@ -199,7 +199,7 @@ std::size_t row_bytes(const InformationKey& key, std::size_t actions) {
 // Conservative permanent charge for two game copies and their range/size
 // storage, shared by the committed and prospective publications.
 std::size_t game_byte_charge(const HeadsUpGame& game) {
-  std::size_t game_bytes = 2 * sizeof(HeadsUpGame);
+  std::size_t game_bytes = 2 * kGameCopyAccountingBytes;
   for (const auto& range : game.ranges)
     game_bytes += 2 * range.size() * sizeof(WeightedHand);
   for (const auto& street : game.sizes)

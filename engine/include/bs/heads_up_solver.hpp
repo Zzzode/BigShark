@@ -56,6 +56,21 @@ struct HeadsUpGame {
   std::array<std::optional<int>, 2> fixed_runout{};
 };
 
+// Declared accounting constant for one game copy, used instead of
+// `sizeof(HeadsUpGame)` by every byte-charge site. RFC 0007 requires this
+// decoupling: `accounted_bytes` reaches the artifact manifest, the frozen
+// matrix gates, the allocation exact-fit test, and the resident footprint
+// estimate, and deriving it from struct layout would let an unrelated field
+// addition move all of them silently. Extending `SizeSchedule` (a fourth
+// street entry) is exactly such an addition.
+//
+// The value is a documented budget, not a measurement: it is at least the
+// current struct size, so the charge stays conservative, and it changes only by
+// a deliberate edit with the rebase evidence the RFC requires.
+inline constexpr std::size_t kGameCopyAccountingBytes = 320;
+static_assert(kGameCopyAccountingBytes >= sizeof(HeadsUpGame),
+              "the declared game-copy charge must stay at least the real struct size");
+
 std::vector<poker::Action> abstract_actions(const poker::HeadsUpState& state,
                                             const SizeSchedule& sizes);
 

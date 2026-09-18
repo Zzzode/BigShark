@@ -162,11 +162,12 @@ std::size_t ResidentIndex::estimate_bytes(std::size_t row_count, std::size_t act
   bytes += capacity * sizeof(Slot);
 
   // Immutable game copy. Element storage is copied from the reader's vectors
-  // and keeps an unknown allocator capacity; charge sizeof(HeadsUpGame), a
-  // fixed per-vector slack term, and four times the exact element bytes so
-  // ordinary geometric growth capacity is always covered. The game copies
-  // are tiny relative to the row blobs.
-  bytes += sizeof(solver::HeadsUpGame) + 8 * 64;
+  // and keeps an unknown allocator capacity; charge the declared game-copy
+  // accounting constant (RFC 0007 decouples this from struct layout so a field
+  // addition cannot move the estimate), a fixed per-vector slack term, and four
+  // times the exact element bytes so ordinary geometric growth capacity is
+  // always covered. The game copies are tiny relative to the row blobs.
+  bytes += solver::kGameCopyAccountingBytes + 8 * 64;
   for (const auto& range : game.ranges)
     bytes += 4 * range.size() * sizeof(solver::WeightedHand);
   for (const auto& street : game.sizes) {
