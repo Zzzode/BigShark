@@ -24,6 +24,7 @@ integration, and development documentation.
 | RFC | [RFC 0004: Heads-up blueprint](rfcs/0004-heads-up-blueprint.md) | Implementing | Real betting rules, multi-size offline training, coverage, and quality gates |
 | RFC | [RFC 0005: Artifacts and resolving](rfcs/0005-strategy-artifacts-and-resolving.md) | Implementing | Durable strategies, bounded lookup, certified on-tree resolving, and minor-1 integration |
 | RFC | [RFC 0006: Extended poker utility](rfcs/0006-extended-poker-utility.md) | Implementing | Side pots, rake, ICM, experimental multiway evaluation, and production prerequisites |
+| RFC | [RFC 0007: Preflop profile abstraction](rfcs/0007-preflop-profile-abstraction.md) | Proposed | Bounded preflop training, policy-derived continuation ranges, and additive artifact coexistence |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [GTO delivery roadmap](plans/gto-delivery-roadmap.md) | Proposed | Complete follow-up scope, dependencies, acceptance evidence, and outstanding decisions |

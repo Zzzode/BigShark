@@ -20,6 +20,7 @@ their own RFC.
 | [0004](0004-heads-up-blueprint.md) | Heads-Up Multi-Size Blueprint Training | Implementing | Poker, solver, benchmarks |
 | [0005](0005-strategy-artifacts-and-resolving.md) | Strategy Artifacts and Bounded Heads-Up Resolving | Accepted | Artifact boundary, solver, policy, service, protocol, host |
 | [0006](0006-extended-poker-utility.md) | Extended Poker Utility and Multiway Evaluation | Implementing | Poker, solver, benchmarks, protocol, service |
+| [0007](0007-preflop-profile-abstraction.md) | Preflop Profile Abstraction and Artifact Coexistence | Proposed | Poker, solver, artifact boundary, benchmarks |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.
