@@ -569,8 +569,11 @@ class SemanticValidator {
           std::string("forced solver backends (river LP/DCFR, multistreet) are unsupported") +
               (minor_ == 0 ? " in minor 0" : ""));
     } else if (options.solver_mode() == pv::SOLVER_MODE_RESOLVING) {
-      // Registered for wire stability; the resolving gadget is a later stage.
-      rejectFeature(field + ".solver_mode", "resolving is not supported by this engine");
+      // RFC 0005 Stage 9: terminal-only resolving is a negotiated minor-1
+      // feature. Minor 0 keeps the exact Stage-8 rejection code and message;
+      // only minor 1 passes validation through to the resolver.
+      if (minor_ == 0)
+        rejectFeature(field + ".solver_mode", "resolving is not supported by this engine");
     } else if (options.solver_mode() == pv::SOLVER_MODE_BLUEPRINT && minor_ == 0) {
       // Minor 0 never sees the new modes even when a resident root exists.
       rejectFeature(field + ".solver_mode",

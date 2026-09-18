@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <bs/service.hpp>
 #include <bs/v1_protocol.hpp>
+#include <cstdint>
 #include <exception>
 #include <new>
 #include <string>
@@ -115,6 +117,50 @@ bool tryBlueprint(const V1HostServices& services, const pv::DecisionRequest& req
   return true;
 }
 
+// Runs one RFC 0005 Stage 9 terminal-only resolve end to end. Returns the
+// response classification; the caller maps it to an expanded strategy or an
+// error. Reconstruction admits a facing-all-in node; the BLUEPRINT gate is
+// untouched.
+bool tryResolving(const V1HostServices& services, const pv::DecisionRequest& request,
+                  const std::uint32_t deadline_ms, pv::DecisionResponse& response,
+                  V1ResolveOutcome& outcome, std::string& miss_detail) {
+  if (!services.resolvingAdvertised()) {
+    miss_detail = "no resolving root advertised";
+    outcome = V1ResolveOutcome::Unsupported;
+    return false;
+  }
+  ReconstructedPostflop reconstructed;
+  V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
+  if (!reconstructPostflopForResolve(request, reconstructed, reconstruct_miss)) {
+    miss_detail = to_string(reconstruct_miss);
+    outcome = V1ResolveOutcome::Unsupported;
+    return false;
+  }
+  const V1ResolveResult result = services.resolvingDecision(
+      *reconstructed.state, reconstructed.hero_cards, std::string_view{}, deadline_ms);
+  outcome = result.outcome;
+  if (result.outcome == V1ResolveOutcome::Unsupported) {
+    miss_detail =
+        to_string(result.miss == V1BlueprintMiss::None ? V1BlueprintMiss::OffTree : result.miss);
+    return false;
+  }
+  if (result.outcome == V1ResolveOutcome::DeadlineExceeded)
+    return false;
+  if (result.row.size == 0 || !blueprintRowIsLegal(request, result.row)) {
+    miss_detail = "off-tree-amount";
+    outcome = V1ResolveOutcome::Unsupported;
+    return false;
+  }
+  if (result.outcome == V1ResolveOutcome::Certified) {
+    response = mapResolvedExpandedResponse(request, result.row, pv::SOLVER_SOURCE_RESOLVING,
+                                           "modeled_exact_bound");
+  } else {
+    response =
+        mapResolvedExpandedResponse(request, result.row, pv::SOLVER_SOURCE_BLUEPRINT, "baseline");
+  }
+  return true;
+}
+
 // Negotiated minor 1 decision dispatch.
 EnvelopeResult handleMinor1Decision(const std::string& requestId,
                                     const pv::DecisionRequest& request,
@@ -137,6 +183,28 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
     if (!tryBlueprint(services, request, response, miss_detail))
       return blueprintMissResponse(requestId, miss_detail);
     return respondWithDecision(requestId, response, 1);
+  }
+
+  // RFC 0005 Stage 9: forced resolving on minor 1 only. AUTOMATIC never
+  // resolves. A certified candidate is source RESOLVING/modeled_exact_bound; a
+  // deadline with a complete validated baseline is source BLUEPRINT/baseline;
+  // otherwise the forced request fails DEADLINE_EXCEEDED, and any unsupported
+  // node/coverage/digest case fails UNSUPPORTED_FEATURE.
+  if (mode == pv::SOLVER_MODE_RESOLVING) {
+    pv::DecisionResponse response;
+    V1ResolveOutcome outcome = V1ResolveOutcome::Unsupported;
+    std::string miss_detail;
+    const std::uint32_t deadline_ms = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(request.options().solve_time_budget_ms(), 120000));
+    if (tryResolving(services, request, deadline_ms, response, outcome, miss_detail))
+      return respondWithDecision(requestId, response, 1);
+    if (outcome == V1ResolveOutcome::DeadlineExceeded)
+      return respondWithDecision(requestId,
+                                 errorResponse(pv::ERROR_CODE_DEADLINE_EXCEEDED,
+                                               messageFor(pv::ERROR_CODE_DEADLINE_EXCEEDED),
+                                               retryableFor(pv::ERROR_CODE_DEADLINE_EXCEEDED)),
+                                 1);
+    return blueprintMissResponse(requestId, miss_detail);
   }
 
   // AUTOMATIC may use a resident hit; an explicit HEURISTIC request always
@@ -257,8 +325,9 @@ EnvelopeResult handleEnvelope(const std::string& frame, const V1HostServices& se
     case pv::Envelope::kGetCapabilitiesRequest:
       if (minor == 0)
         return respondWithCapabilities(requestId, buildCapabilities(), 0);
-      return respondWithCapabilities(requestId,
-                                     buildCapabilities(1, services.blueprintAdvertised()), 1);
+      return respondWithCapabilities(
+          requestId,
+          buildCapabilities(1, services.blueprintAdvertised(), services.resolvingAdvertised()), 1);
 
     case pv::Envelope::kGetCapabilitiesResponse:
       return respondWithDecision(

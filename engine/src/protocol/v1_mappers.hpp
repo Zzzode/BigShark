@@ -125,6 +125,15 @@ pv::DecisionResponse mapHeuristicExpandedResponse(const pv::DecisionRequest& req
 pv::DecisionResponse mapBlueprintExpandedResponse(const pv::DecisionRequest& request,
                                                   const V1BlueprintRow& row);
 
+// RFC 0005 Stage 9: maps a resolved terminal-only row exactly like the
+// blueprint mapper (same membership and sampler rules) but tags the metadata
+// with an explicit SolverSource and guarantee. Used for a certified candidate
+// (SOLVER_SOURCE_RESOLVING / "modeled_exact_bound") and for a deadline
+// baseline row (SOLVER_SOURCE_BLUEPRINT / "baseline"). The digest is required.
+pv::DecisionResponse mapResolvedExpandedResponse(const pv::DecisionRequest& request,
+                                                 const V1BlueprintRow& row, pv::SolverSource source,
+                                                 std::string_view guarantee);
+
 // Every resident row action must be a member of the request legal set by kind
 // and exact target total. A blueprint whose abstract action is legal in the
 // poker game but outside the client's [min,max] window is a coverage miss
@@ -138,7 +147,8 @@ bool blueprintRowIsLegal(const pv::DecisionRequest& request, const V1BlueprintRo
 //            only when at least one resident root was advertised. RESOLVING
 //            and any guarantee/certification feature are never advertised.
 pv::GetCapabilitiesResponse buildCapabilities(unsigned negotiated_minor = 0,
-                                              bool blueprint_advertised = false);
+                                              bool blueprint_advertised = false,
+                                              bool resolving_advertised = false);
 
 // Constructs a DecisionResponse carrying an EngineError.
 pv::DecisionResponse errorResponse(pv::ErrorCode code, const std::string& message, bool retryable,

@@ -487,10 +487,114 @@ with combinations sharing either hero card removed. That private view is
 never renormalized into a relabeled equilibrium range; if every opponent
 combination is blocked the result is `OpponentRangeFullyBlocked`. The
 component never emits a fallback policy, never invents a uniform policy,
-never scales stacks, and exposes no bound or certification symbol: artifact
-v1 leaves the `bounds` and `measurements` tables validated and empty, so a
-resident continuation is advertised for blueprint lookup only. The
-resolving gadget and certification remain a later stage.
+never scales stacks, and exposes no bound or certification symbol on the
+resident lookup itself: artifact v1 leaves the `bounds` and `measurements`
+tables validated and empty, so a resident continuation is advertised for
+blueprint lookup only.
+
+## Bounded Resolving Gadget (RFC 0005 Stage 9)
+
+The resolver (`bs::resolver::Resolver`, static `bigshark_resolver`) re-solves a
+single **terminal-only** postflop hero decision rooted at a reconstructed
+descendant of an immutable blueprint game. It does not modify the frozen RFC
+0004 trainer: normal poker transitions and exact settlement are reused, while
+the synthetic weighted root chance, the responder `-x` infosets, and the
+constant-payoff `TERMINATE` action live only in a sibling augmented-game
+traversal under `engine/src/resolver/`.
+
+Terminal-only is a graph property, not a list of spots: from the current node
+the resolver walks every ordered abstract action for every declared compatible
+combination and confirms each branch reaches `Folded`/`Showdown` through public
+cards alone, with no later decision for either player. The canonical live case
+is facing an all-in (fold or call, then the runout). A node with any remaining
+decision is reported ineligible (`UNSUPPORTED_FEATURE` on the wire), and the
+ordinary BLUEPRINT reconstruction gate still rejects every all-in shape.
+
+### Counterfactual mass and centered margins
+
+For joint deal `d = (hero h, responder r)` at the node the unnormalized
+counterfactual weight is `w(h,r) = rangeW_hero(h) * rangeW_resp(r) *
+pi^prefix_hero(h)`, zero when the hands share a card or block the board.
+`pi^prefix_hero` is the product of the locked blueprint probabilities of every
+prior hero action on the observed path; the responder's own action reach is
+excluded (its `-x` infoset starts fresh) and every hero action at/after the
+node is excluded. Per responder infoset `I`,
+
+```
+m(I) = sum_h w(h, r)                                   (zero recorded, never divided)
+b(I) = sum_h w(h,r) * C_base(h,r) / m(I)
+```
+
+where `C_base` locks the hero's current node to its blueprint row and averages
+the exact responder settlement through the remaining uniform/fixed public
+chance. (In the terminal-only profile the responder has no in-subtree
+decision, so this locked-continuation expectation is its baseline best
+response.) Already-dealt public cards condition the support; their uniform
+chance probability is a common constant across deals at the fixed board and is
+omitted without changing any ratio.
+
+The augmented root chance selects deals with `w / sum w`; each responder `-x`
+infoset then chooses `TERMINATE` (constant payoff `b(I)`, zero-sum to the
+hero) or `CONTINUE` (the real terminal subtree). The responder trunk and the
+hero's current decision are solved by full-traversal CFR using the RFC 0004
+regret-matching action selection and the two-player `kSimple` own-reach
+average ownership; Stage 9 adds **linear** iteration weighting (iteration `t`
+weights instantaneous regret and average contribution by `t`), which keeps
+`kSimple` ownership and improves the average-strategy rate from `O(1/T)` to
+`O(1/T^2)` so a bounded deadline reaches the `1e-8` root-pot equilibrium gate
+on the tiny terminal game. The terminal-only continuation payoff matrix is
+constant, so it is computed once per resolve and read by CFR; the independent
+certifier does not read that cache.
+
+### Independent certification and whole-range selection
+
+The candidate is constructed and certified for the whole hero range before
+the actual hero combination is consulted. A separately written enumeration
+(`certifier.cpp`, with its own runout and reach factors, and a third,
+independent test oracle in `engine/tests/resolver_oracle.*`) recomputes the
+responder best response against the whole candidate:
+
+```
+BR_cand(I) = max( b(I), sum_h w(h,r) C_cand(h,r) / m(I) )
+accept  <=>  BR_cand(I) <= b(I) + 1e-9 * root_pot   for every positive m(I)
+```
+
+Zero-mass infosets receive no gadget chance (the candidate is keyed by hero
+holdings and cannot route probability through them), are recorded with
+`m = 0` and no division, and are required to carry no positive-weight deal.
+Any resource/time limit while solving or certifying discards the candidate.
+Selection is private-independent: the only seed is a deterministic hash of
+the public context (digest, root, board, history, sizes), and complete
+certified policies are cached in-process under that exact key.
+
+Range completeness is enforced over the combos that actually participate in
+a positive-weight deal, not over every board-unblocked hero holding: a holding
+that blocks every declared opponent combo carries zero counterfactual mass,
+enters no responder infoset, and can never appear in any opponent best
+response, so requiring a row for it would discard an otherwise certifiable
+whole-range candidate. Such holdings stay recorded in `live_hero` and are
+never fabricated into the candidate.
+
+The request's `solve_time_budget_ms` bounds the training work, not only the
+wall-clock guard. `Resolver::resolve` derives a deterministic iteration cap
+after building the model, because the per-iteration cost driver is the joint
+deal count times the ordered-action count and those are only known there:
+`iteration_cap_for_budget` divides the solve share of the budget (70 percent
+after the return reserve, the same split used between solve and certification)
+by a conservative per-unit cost (`kGadgetIterationUnitCost`, about fifteen
+times the measured release-build cost per deal x traverser walk step) times
+two traverser sweeps over every deal and action, then applies the configured
+iteration count as an upper bound. A zero cap means the budget cannot pay for
+one bounded iteration and the candidate is discarded, never published
+untrained. Every input is public — budget, deal count, action count — so every
+counterfactual hero combination derives the identical cap and cache identity,
+and a wider range or larger action menu strictly lowers the cap, which is what
+makes it binding on the profiles the wall clock would otherwise govern. The
+cache identity includes that derived cap (not the caller's configured count),
+so two requests at the same public state with different solve budgets cannot
+collide on one key and serve each other's candidate. The baseline row used for
+deadline fallback is taken first, inside the same receipt-anchored window,
+rather than untimed after the solver consumed the budget.
 
 ## Offline ICM Arithmetic
 

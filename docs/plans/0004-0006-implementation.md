@@ -3,8 +3,11 @@
 Status: Current
 
 Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 5, 6,
-11, and the isolated Stage 12 ICM are complete with recorded evidence.
-Stage 7 (protocol minor-0 migration) is next. RFC 0005 remains Accepted.
+7, 8, 9, 11, and the isolated Stage 12 ICM are complete with recorded
+evidence. Stage 10 (heads-up preflop) is next. RFC 0005 is implemented
+through the Stage 9 resolving scope; its general live subgame work remains
+explicitly deferred. Live enablement of resolving still requires explicit
+authorization.
 
 Active goal: finish all accepted RFC 0004-0006 scope. A checkpoint is not
 goal completion; continue remaining stages until their acceptance evidence
@@ -1193,11 +1196,131 @@ the minor-0 path:
   cannot reach an action node).
 
 
+## Stage 9 Evidence (bounded resolving gadget + independent certification)
+
+Offline implementation; v0/minor-0 behavior and bytes are unchanged and no live
+canary is wired (`AUTOMATIC` never resolves; the River default stays minor 0).
+
+**Augmented-game / m(I)/b(I) normalization.** Exact chip terminals are reused
+from `HeadsUpState::settle_fold/settle_showdown`. For deal
+`w(h,r)=rangeW_hero(h)*rangeW_resp(r)*pi^prefix_hero(h)` (responder's own
+reach excluded), `m(I)=sum_h w`, `b(I)=sum_h w C_base(h,r)/m(I)` with zero
+mass recorded and never divided. Gadget root chance normalizes `w/sum w`;
+`TERMINATE` pays the centered `b(I)` zero-sum and `CONTINUE` enters the exact
+terminal subtree. Full-traversal CFR keeps RFC 0004 regret matching and the
+two-player `kSimple` own-reach average, with Stage-9 linear iteration weighting
+(algorithm id `rfc0005-stage9-gadget-linear-rev1`); the constant terminal
+payoff matrix is computed once per resolve.
+
+**Tiny-game cert tolerance and oracle cross-check.** Canonical fixed-runout
+terminal game (pot 2, matched 1/1, responder jams 1; hero AA/88 vs QQ): engine
+settlement fold `+1`, call `-2`/`+2`; `m=2`, `b(all-fold)=1`,
+`b(all-call)=0`, deceptive fold-winner/call-loser `=1.5` (RFC 425-430). The
+whole-range atomic certifier rejects 1.5 with `slack>0`; the equilibrium
+candidate (call winner/fold loser) passes, worst `slack = -1e-9*pot`, and the
+independently written `TerminalOracle` (`engine/tests/resolver_oracle.*`, its
+own runout/reach/pure-BR enumeration) reports gadget NashConv `4.585e-10` at
+100,000 linear-CFR iterations, inside the `1e-8*root_pot` gate. The
+production certifier and the oracle agree on the candidate margin to 1e-10.
+Zero-mass responder combos are recorded with mass zero and carry no deal.
+
+**Deadline behavior.** One steady-clock deadline starts at receipt; >=5 ms and
+10% are reserved for return processing, the remaining window is split solve
+(70%) then independent certify, and every per-node `Budget` cancels inside the
+traversal. Solve or certify limit => discard: complete validated resident
+blueprint is emitted as source BLUEPRINT/`baseline`; otherwise forced
+RESOLVING returns retryable `DEADLINE_EXCEEDED`. Non-terminal node / no root /
+off-tree / digest mismatch / coverage miss => `UNSUPPORTED_FEATURE`.
+Certified => source RESOLVING(7)/`modeled_exact_bound`, unreachable from any
+other path (enforced in the response mapper).
+
+**Files.** New static lib `bigshark_resolver`
+(`include/bs/resolver.hpp`, `src/resolver/{continuation,counterfactual_reach,
+gadget_cfr,certifier,resolver}.*`), terminal-only is a graph property (one
+structural trace per action); resident `resolver_source()` accessor; minor-1
+envelope/validator/capabilities/reconstruction (facing-all-in admitted on the
+resolve path only); host owns one resolver + per-request scratch; TS
+`ResolverEligibility` plus `classifyResolveResponse`; tests
+`test_resolver`, `test_v1_resolving`, `resolver-eligibility.test.ts`; manual
+benchmark `benchmark-resolver` (100k iterations solve+cert ≈ 69 ms on the tiny
+game, worst slack `-1e-9` pot).
+
+**Adversarial review round (2026-09-18).** An independent four-dimension
+review with per-finding skeptics (17 agents, 1.38M subagent tokens) confirmed
+2 P2 findings and refuted 11, including every P1 claim. One finder alleged the
+linear-CFR `O(1/T^2)` rate was false; an independent four-decade measurement
+(NashConv 4.58e-6 / 4.58e-8 / 4.59e-10 / 4.59e-12 at T = 1e3..1e6, with
+`NashConv*T^2` constant at 4.585) refuted it. The digest-channel P1s were
+refuted because RFC 0005 makes the pinned-digest comparison response-carried
+and adapter-owned (the host reports its process-pinned `artifact_sha256` on
+every expanded response) and forbids a request-side eligibility bit.
+
+Both confirmed P2s are fixed with mutation-red regressions:
+
+- **Range completeness over dealt combos.** `certify_candidate` previously
+  required a candidate row for every board-unblocked `live_hero` combo, but a
+  holding that blocks every declared opponent combo carries zero
+  counterfactual mass, enters no responder infoset, and is trained by no
+  gadget deal, so the size check failed and discarded a certifiable candidate
+  (reproduced: `live_hero=2, deals=1` -> `CoverageMiss`). The completeness
+  requirement now covers exactly the combos appearing in positive-weight
+  deals; such holdings remain recorded in `live_hero` and are never
+  fabricated into the candidate. Regression
+  `test_hero_combo_without_compatible_opponent` (mutation-red: restoring the
+  old check fails it).
+- **Budget-derived iteration cap.** The gadget loop ran a fixed
+  `limits.iterations` regardless of the request budget, so a short
+  `solve_time_budget_ms` could only stop work by exhausting the wall clock.
+  `Resolver::resolve` now derives a deterministic cap after `build_model`,
+  where the cost drivers (joint deals x ordered actions) are known:
+  `iteration_cap_for_budget` divides the solve share of the budget (70 percent
+  after the return reserve) by a conservative per-unit cost times two traverser
+  sweeps over every deal and action, with the configured count as an upper
+  bound. A zero cap discards rather than publishing an untrained candidate.
+  The derivation reads only public inputs (budget, deal count, action count),
+  so every counterfactual hero combination derives the identical cap. The
+  deadline-fallback baseline row is taken first, inside the same
+  receipt-anchored window. Regressions
+  `test_iteration_cap_scales_with_budget` (cap is monotone in budget, strictly
+  decreasing in deals and actions, honors the configured upper bound, and is
+  zero for degenerate shapes; a 1 ms budget discards with zero completed
+  iterations) and the rewritten `test_deadlines_discard` (mutation-red: making
+  the cap budget-independent fails the monotonicity assertions). The cache
+  identity carries the DERIVED cap rather than the configured count, so two
+  requests at the same public state with different budgets cannot share a
+  candidate; regression `test_cache_identity_includes_budget` (mutation-red:
+  keying on the configured count instead fails it). A focused follow-up review
+  then showed the key also omitted `max_nodes`/`certify_max_nodes`, so a warm
+  hit could silently bypass the documented certification safety valve; both are
+  now keyed and the same regression asserts a small `certify_max_nodes` still
+  discards through a warm resolver.
+
+**Re-review round (2026-09-18).** An independent re-review of both fixes with
+per-finding skeptics (6 agents, 655k subagent tokens) confirmed the range fix
+outright and rejected the first budget fix: three finders independently
+measured that a flat `kGadgetIterationCost = 12 us` is not conservative — real
+per-iteration cost grows linearly with the joint-deal count (about 0.65 us at
+2 deals, 140 us at 420 deals, ~29 ms at 300 combos per side), so the derived cap
+was non-binding on exactly the wide profiles the wall clock already governed.
+The fix was rebuilt around the measured cost model above
+(`kGadgetIterationUnitCost = 250 ns` per deal x traverser walk step, roughly
+fifteen times the measured cost) and re-verified: at 420 deals the model
+estimates 630 us/iteration against a measured 139 us, and a 100 ms budget
+derives a cap of 100 iterations that genuinely binds. No safety consequence
+existed in the rejected version — every path already failed closed to the
+whole-range baseline — so the correction is about the documented boundedness
+claim actually holding.
+
+**Explicitly deferred (external gates):** live/canary wiring, a real second
+platform, Linux portable verification, and nested/multiway/general
+off-tree/general custom-payoff solving. General multi-request resolving and
+crash-safe external baseline recovery still need their execution contracts.
+
 ## Next Implementation Checkpoint
 
-Stage 9 (resolving) begins only after explicit eligibility/certification
-approval; Stage 8 is offline and does not change live behavior. Keep v0
-contexts, production policy routing, and external commands unchanged.
+Stage 9 is implemented offline and gated; live enablement still requires
+explicit authorization. Keep v0 contexts, production policy routing, and
+external commands unchanged.
 
 Before each later stage, define exact owned files and record which preceding
 gate passed. Use independent bounded reviewers for algorithm, persistence,

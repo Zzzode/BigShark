@@ -305,6 +305,21 @@ warm lookup latency:
 cmake --build --preset release --target benchmark-resident-lookup
 ```
 
+The RFC 0005 Stage 9 bounded-resolve runner is also a manual target, not a
+CTest. On the exact tiny fixed-runout terminal game it reports solve +
+independent-certification wall time, the worst accepted bound slack, nodes,
+and information sets across iteration counts:
+
+```bash
+cmake --build --preset release --target benchmark-resolver
+```
+
+The solver-level resolver gate is a normal CTest (`resolver`, built from
+`engine/tests/test_resolver.cpp` plus the separately written
+`engine/tests/resolver_oracle.{hpp,cpp}`); minor-1 resolving protocol
+coverage is `v1_resolving` (proto test target). Both run under the full
+`ctest --preset release`.
+
 Run the RFC check directly with:
 
 ```bash

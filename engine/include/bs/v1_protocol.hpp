@@ -103,6 +103,23 @@ struct V1BlueprintResult {
   V1BlueprintRow row;
 };
 
+// RFC 0005 Stage 9 terminal-only resolving outcome. The host resolves the
+// complete hero range privately (no hero-card argument to the solve), then
+// selects the actual combination's row. The protobuf-free seam reports only
+// the outcome class and the selected row.
+enum class V1ResolveOutcome : std::uint8_t {
+  Unsupported,        // not terminal-only, no root, off-tree, or digest mismatch
+  Certified,          // independent bounds passed; source RESOLVING
+  DeadlineBlueprint,  // deadline during solve/certify; complete baseline row
+  DeadlineExceeded,   // forced resolving with no validated baseline available
+};
+
+struct V1ResolveResult {
+  V1ResolveOutcome outcome = V1ResolveOutcome::Unsupported;
+  V1BlueprintMiss miss = V1BlueprintMiss::None;
+  V1BlueprintRow row;
+};
+
 // Injectable protobuf-free host services. The default (noResidentServices)
 // advertises no blueprint roots and every blueprint lookup misses, which keeps
 // the published default binary on the minor-0/heuristic paths. The framed host
@@ -126,6 +143,26 @@ class V1HostServices {
   virtual V1BlueprintResult blueprintHeroDecision(
       const bs::poker::HeadsUpState& state, const std::array<int, 2>& hero_cards,
       std::string_view pinned_sha256) const noexcept = 0;
+
+  // True when a resolver plus at least one advertised terminal-only root is
+  // available, so minor-1 capabilities may advertise SOLVER_MODE_RESOLVING.
+  virtual bool resolvingAdvertised() const noexcept { return false; }
+
+  // RFC 0005 Stage 9 terminal-only resolve. The state is already reconstructed
+  // (including a facing-all-in node) and `deadline_ms` is the request's solve
+  // time budget in milliseconds. The solve is whole-range and hero-card
+  // independent; hero_cards selects only the returned row afterward. Default
+  // implementations never resolve.
+  virtual V1ResolveResult resolvingDecision(const bs::poker::HeadsUpState& state,
+                                            const std::array<int, 2>& hero_cards,
+                                            std::string_view pinned_sha256,
+                                            std::uint32_t deadline_ms) const noexcept {
+    (void)state;
+    (void)hero_cards;
+    (void)pinned_sha256;
+    (void)deadline_ms;
+    return V1ResolveResult{};
+  }
 };
 
 // Shared services instance meaning "no resident roots configured".

@@ -22,10 +22,12 @@
 
 #include <array>
 #include <bs/heads_up.hpp>
+#include <bs/resolver.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -216,6 +218,18 @@ class ResidentPolicySet {
   ResidentAnswer hero_decision(const poker::HeadsUpState& state, std::array<int, 2> hero_cards,
                                std::optional<std::string_view> pinned_sha256,
                                ResidentScratch& scratch) const;
+
+  // RFC 0005 Stage 9 offline resolver access. Binds an immutable blueprint
+  // source to the advertised record matching `state`'s canonical root (and an
+  // optional pinned digest), exposing the record's HeadsUpGame and ANY
+  // (state, player, own-cards) blueprint row for both players. This is OFF the
+  // warm no-allocation decision path and allocates; it exists only to feed the
+  // bounded resolver. Returns nullptr when no advertised record matches or the
+  // pin does not resolve. The returned source borrows the set's immutable
+  // records and stays valid while the set is alive and unmoved.
+  std::unique_ptr<resolver::BlueprintSource> resolver_source(
+      const poker::HeadsUpState& state,
+      std::optional<std::string_view> pinned_sha256 = std::nullopt) const;
 
   // TU-private record definition lives in resident_policy.cpp; the name is
   // public only so the implementation's file-local helpers can name it.

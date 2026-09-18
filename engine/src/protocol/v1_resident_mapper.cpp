@@ -49,8 +49,8 @@ struct PlannedAction {
 
 }  // namespace
 
-bool reconstructPostflop(const pv::DecisionRequest& request, ReconstructedPostflop& out,
-                         V1BlueprintMiss& miss) {
+bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPostflop& out,
+                             V1BlueprintMiss& miss, bool allow_facing_all_in) {
   const pv::HandState& state = request.state();
   auto fail = [&](V1BlueprintMiss reason) {
     miss = reason;
@@ -108,10 +108,14 @@ bool reconstructPostflop(const pv::DecisionRequest& request, ReconstructedPostfl
       actorPlayer[1]->status() == pv::PLAYER_STATUS_FOLDED)
     return fail(V1BlueprintMiss::RootNotSupported);
   // A postflop decision with any player all-in is outside the resident
-  // profile: unmatched/all-in pots and runout-only nodes do not fit the
-  // equal-matched postflop root the blueprints are trained on.
-  if (actorPlayer[0]->status() == pv::PLAYER_STATUS_ALL_IN ||
-      actorPlayer[1]->status() == pv::PLAYER_STATUS_ALL_IN)
+  // blueprint profile. The resolver path additionally admits the canonical
+  // terminal-only case in which the OPPONENT is all-in and the acting hero
+  // still has a fold/call decision; the hero itself may never be all-in at an
+  // action node. The BLUEPRINT gate keeps rejecting every all-in shape.
+  const bool hero_all_in = actorPlayer[out.hero_actor]->status() == pv::PLAYER_STATUS_ALL_IN;
+  const bool opponent_all_in =
+      actorPlayer[1 - out.hero_actor]->status() == pv::PLAYER_STATUS_ALL_IN;
+  if (hero_all_in || (opponent_all_in && !allow_facing_all_in))
     return fail(V1BlueprintMiss::RootNotSupported);
 
   // ---- Preflop matched-contribution accounting. The root requires EQUAL
@@ -386,6 +390,16 @@ bool reconstructPostflop(const pv::DecisionRequest& request, ReconstructedPostfl
   out.hero_cards = heroCards;
   miss = V1BlueprintMiss::None;
   return true;
+}
+
+bool reconstructPostflop(const pv::DecisionRequest& request, ReconstructedPostflop& out,
+                         V1BlueprintMiss& miss) {
+  return reconstructPostflopImpl(request, out, miss, /*allow_facing_all_in=*/false);
+}
+
+bool reconstructPostflopForResolve(const pv::DecisionRequest& request, ReconstructedPostflop& out,
+                                   V1BlueprintMiss& miss) {
+  return reconstructPostflopImpl(request, out, miss, /*allow_facing_all_in=*/true);
 }
 
 }  // namespace bs::v1

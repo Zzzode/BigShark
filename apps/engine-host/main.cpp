@@ -64,6 +64,8 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
 
   bool blueprintAdvertised() const noexcept override { return set_.advertised_roots() > 0; }
 
+  bool resolvingAdvertised() const noexcept override { return set_.advertised_roots() > 0; }
+
   bs::v1::V1BlueprintResult blueprintHeroDecision(
       const bs::poker::HeadsUpState& state, const std::array<int, 2>& hero_cards,
       std::string_view pinned_sha256) const noexcept override {
@@ -95,7 +97,137 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
     }
   }
 
+  bs::v1::V1ResolveResult resolvingDecision(const bs::poker::HeadsUpState& state,
+                                            const std::array<int, 2>& hero_cards,
+                                            std::string_view pinned_sha256,
+                                            std::uint32_t deadline_ms) const noexcept override {
+    bs::v1::V1ResolveResult result;
+    try {
+      auto source = set_.resolver_source(
+          state, pinned_sha256.empty() ? std::optional<std::string_view>{}
+                                       : std::optional<std::string_view>{pinned_sha256});
+      if (!source) {
+        result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
+        result.miss = bs::v1::V1BlueprintMiss::RootNotSupported;
+        return result;
+      }
+
+      // Resolve the baseline row FIRST, inside the request budget. The lookup
+      // is a warm in-memory read (measured p99 tens of microseconds), so
+      // taking it before training keeps it within the same receipt-anchored
+      // window instead of running untimed after the solver consumed the whole
+      // budget. A miss here is not fatal: the certified path may still succeed.
+      bs::v1::V1ResolveResult baseline_result;
+      bool have_baseline = false;
+      {
+        const bs::resident::ResidentAnswer answer = set_.hero_decision(
+            state, hero_cards,
+            pinned_sha256.empty() ? std::optional<std::string_view>{}
+                                  : std::optional<std::string_view>{pinned_sha256},
+            scratch_);
+        if (answer.hit) {
+          have_baseline = true;
+          baseline_result.outcome = bs::v1::V1ResolveOutcome::DeadlineBlueprint;
+          baseline_result.miss = bs::v1::V1BlueprintMiss::None;
+          baseline_result.row.size = answer.hero_row.size;
+          baseline_result.row.actions = answer.hero_row.actions;
+          baseline_result.row.probabilities = answer.hero_row.probabilities;
+          baseline_result.row.artifact_sha256 = answer.artifact_sha256;
+        }
+      }
+
+      bs::resolver::ResolveLimits limits;
+      limits.time = std::chrono::milliseconds(std::max<std::uint32_t>(deadline_ms, 1));
+      // The request's public budget bounds the training work itself, not just
+      // the wall-clock guard. The iteration cap is derived inside
+      // Resolver::resolve once the joint-deal and action counts are known
+      // (they are the cost drivers), from this budget alone; the configured
+      // count stays the upper bound. The derivation reads only public inputs,
+      // so every counterfactual hero combination derives the identical cap.
+      limits.public_seed = publicSeed(*source, state);
+      resolve_scratch_ = resolver_.resolve(state, *source, limits);
+
+      const auto baseline = [&]() -> bool {
+        if (!have_baseline)
+          return false;
+        result = baseline_result;
+        return true;
+      };
+
+      switch (resolve_scratch_.status) {
+        case bs::resolver::ResolveStatus::Certified: {
+          const auto key = bs::solver::information_key(state, hero_cards);
+          const auto found = resolve_scratch_.candidate.find(key);
+          if (found == resolve_scratch_.candidate.end())
+            return {bs::v1::V1ResolveOutcome::DeadlineExceeded,
+                    bs::v1::V1BlueprintMiss::UntrainedCombo,
+                    {}};
+          result.outcome = bs::v1::V1ResolveOutcome::Certified;
+          result.miss = bs::v1::V1BlueprintMiss::None;
+          result.row.size = found->second.probabilities.size();
+          result.row.actions = found->second.actions.data();
+          result.row.probabilities = found->second.probabilities.data();
+          result.row.artifact_sha256 = source->artifact_digest();
+          return result;
+        }
+        case bs::resolver::ResolveStatus::SolveDeadline:
+        case bs::resolver::ResolveStatus::CertifyDeadline:
+        case bs::resolver::ResolveStatus::CertificationRejected:
+          if (baseline())
+            return result;
+          result.outcome = bs::v1::V1ResolveOutcome::DeadlineExceeded;
+          return result;
+        case bs::resolver::ResolveStatus::Ineligible:
+          result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
+          result.miss = bs::v1::V1BlueprintMiss::RootNotSupported;
+          return result;
+        case bs::resolver::ResolveStatus::CoverageMiss:
+          result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
+          result.miss = bs::v1::V1BlueprintMiss::OffTree;
+          return result;
+        case bs::resolver::ResolveStatus::InvalidInput:
+          result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
+          result.miss = bs::v1::V1BlueprintMiss::OffTree;
+          return result;
+      }
+    } catch (const std::exception&) {
+      result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
+      result.miss = bs::v1::V1BlueprintMiss::OffTree;
+    }
+    return result;
+  }
+
  private:
+  // Deterministic public-context seed (FNV-1a over the digest, root identity,
+  // board, and exact public history). It never reads the actual hero hand.
+  static std::uint64_t publicSeed(const bs::resolver::BlueprintSource& source,
+                                  const bs::poker::HeadsUpState& state) {
+    std::uint64_t hash = 1469598103934665603ULL;
+    auto mix = [&hash](const void* data, std::size_t bytes) {
+      const auto* bytes_ptr = static_cast<const unsigned char*>(data);
+      for (std::size_t i = 0; i < bytes; ++i) {
+        hash ^= bytes_ptr[i];
+        hash *= 1099511628211ULL;
+      }
+    };
+    const std::string digest(source.artifact_digest());
+    mix(digest.data(), digest.size());
+    const auto& root = state.root();
+    mix(root.flop.data(), sizeof(root.flop));
+    mix(root.stacks.data(), sizeof(root.stacks));
+    mix(root.contributions.data(), sizeof(root.contributions));
+    mix(&root.pot, sizeof(root.pot));
+    mix(&root.button, sizeof(root.button));
+    mix(state.board().data(), state.board().size() * sizeof(int));
+    for (const auto& event : state.history()) {
+      mix(&event.street, sizeof(event.street));
+      mix(&event.actor, sizeof(event.actor));
+      mix(&event.action.type, sizeof(event.action.type));
+      mix(&event.action.target_total, sizeof(event.action.target_total));
+    }
+    return hash;
+  }
+
   static bs::v1::V1BlueprintMiss mapMiss(bs::resident::MissReason reason) {
     using bs::resident::MissReason;
     switch (reason) {
@@ -133,6 +265,11 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
 
   bs::resident::ResidentPolicySet set_;
   mutable bs::resident::ResidentScratch scratch_;
+  // One resolver and its per-request whole-range result. The frame loop is
+  // single threaded; the selected row pointers reference resolve_scratch_ and
+  // are consumed synchronously by the response mapper.
+  mutable bs::resolver::Resolver resolver_;
+  mutable bs::resolver::ResolveResult resolve_scratch_;
 };
 
 // Parses --resident-root path=sha256-hex entries. Returns false on a malformed

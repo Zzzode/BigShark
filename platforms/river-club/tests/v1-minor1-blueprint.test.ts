@@ -153,8 +153,10 @@ test('real binary: minor-1 capability handshake advertises BLUEPRINT with a root
       [0, 1],
     );
     assert.ok(caps.payload.value.solverModes.includes(SolverMode.BLUEPRINT));
-    assert.ok(!caps.payload.value.solverModes.includes(SolverMode.RESOLVING),
-      'RESOLVING is never advertised');
+    // RFC 0005 Stage 9: with an advertised root and a live resolver, minor 1
+    // advertises RESOLVING. Minor 0 still omits it (covered below).
+    assert.ok(caps.payload.value.solverModes.includes(SolverMode.RESOLVING),
+      'RESOLVING is advertised on minor 1 with a resolver and an advertised root');
   });
 
 test('real binary: forced BLUEPRINT hit returns the full (>5) distribution',

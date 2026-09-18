@@ -165,6 +165,25 @@ target_link_libraries(bigshark_artifacts
   PRIVATE ${BS_OPENSSL_CRYPTO_TARGET}
 )
 
+# RFC 0005 Stage 9 bounded heads-up resolving gadget plus independent
+# best-response certification. Offline solver-domain component; it reuses the
+# poker state machine and exact settlement but owns a parallel augmented-game
+# traversal. It never opens storage or touches the wire.
+add_library(bigshark_resolver STATIC
+  src/resolver/continuation.cpp
+  src/resolver/counterfactual_reach.cpp
+  src/resolver/gadget_cfr.cpp
+  src/resolver/certifier.cpp
+  src/resolver/resolver.cpp
+)
+target_include_directories(bigshark_resolver
+  PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(bigshark_resolver
+  PUBLIC bigshark_solver
+)
+
 # RFC 0005 Stage 6 resident policy lookup. Offline-only, immutable compact
 # indices over validated artifacts; it never opens SQLite on a lookup and is
 # not linked by the policy, service, host, v0, or protocol targets.
@@ -179,6 +198,7 @@ target_include_directories(bigshark_resident
 )
 target_link_libraries(bigshark_resident
   PUBLIC bigshark_artifacts
+  PUBLIC bigshark_resolver
 )
 
 
@@ -315,6 +335,22 @@ add_custom_target(benchmark-resident-lookup
   USES_TERMINAL
 )
 
+# RFC 0005 Stage 9 bounded-resolve microbenchmark. Tiny fixed-runout terminal
+# game; reports solve+cert wall time, worst bound slack, and iterations. Manual
+# target, NOT a registered CTest.
+add_executable(bigshark-resolver-benchmark
+  benchmarks/resolver_benchmark.cpp
+)
+target_link_libraries(bigshark-resolver-benchmark PRIVATE
+  bigshark_resolver
+)
+add_custom_target(benchmark-resolver
+  COMMAND $<TARGET_FILE:bigshark-resolver-benchmark>
+  DEPENDS bigshark-resolver-benchmark
+  COMMENT "Running the RFC 0005 Stage 9 bounded resolver benchmark"
+  USES_TERMINAL
+)
+
 add_library(bigshark_policy STATIC
   src/policy/decision.cpp
 )
@@ -417,6 +453,19 @@ if(BUILD_TESTING)
     bigshark_resident
   )
   add_test(NAME resident COMMAND test_resident_policy)
+
+  # RFC 0005 Stage 9 bounded resolver and independent certification. Internal
+  # resolver headers are included only to drive the whitebox fixtures; the
+  # independently written oracle is compiled as a separate translation unit.
+  add_executable(test_resolver
+    tests/test_resolver.cpp
+    tests/resolver_oracle.cpp
+  )
+  target_include_directories(test_resolver PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_resolver PRIVATE bigshark_resolver)
+  add_test(NAME resolver COMMAND test_resolver)
 
   add_executable(test_equity tests/test_equity.cpp)
   target_link_libraries(test_equity PRIVATE bigshark_poker)

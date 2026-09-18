@@ -216,10 +216,19 @@ inline std::vector<std::string> structuredSeeds() {
     seeds.push_back(frame(envelopeForMinor(request, "blueprint1", 1)));
   }
   {
-    // Minor 1 with RESOLVING (7): always UNSUPPORTED_FEATURE.
+    // Minor 1 with RESOLVING (7): with no resident services resolving is not
+    // advertised, so it resolves to a non-retryable UNSUPPORTED_FEATURE error,
+    // never a crash.
     pv::DecisionRequest request = baseRequest();
     request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_RESOLVING);
     seeds.push_back(frame(envelopeForMinor(request, "resolve1", 1)));
+  }
+  {
+    // RESOLVING (7) on minor 0 is rejected by the minor-aware validator before
+    // any service call; the response stays on the frozen minor-0 byte path.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_RESOLVING);
+    seeds.push_back(frame(envelopeFor(request, "resolve0")));
   }
   {
     // Minor 1 AUTOMATIC: reconstruction runs against a VALID base flop

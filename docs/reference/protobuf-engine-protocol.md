@@ -142,18 +142,19 @@ decision response oneof differ.
   resident roots are loaded. The host never serves `expanded_strategy`, enum
   6/7, or the new metadata to a minor-0 client.
 - A minor-1 capabilities query lists minors `[0, 1]`, build version `v1.1.0`,
-  and adds `SOLVER_MODE_BLUEPRINT` to `solver_modes` only when at least one
-  resident root was advertised at startup. `SOLVER_MODE_RESOLVING` (7) and
-  any guarantee/certification feature are never advertised.
+  adds `SOLVER_MODE_BLUEPRINT` to `solver_modes` when at least one resident
+  root was advertised, and adds `SOLVER_MODE_RESOLVING` (7) only when a live
+  resolver plus an advertised terminal-only root is available. Minor 0 never
+  emits enum 6/7.
 
 ### Selectable modes
 
 | Mode | Minor 0 | Minor 1 |
 | --- | --- | --- |
-| `AUTOMATIC` (1) | heuristic only | tries a resident blueprint, then the heuristic on any miss |
+| `AUTOMATIC` (1) | heuristic only | tries a resident blueprint, then the heuristic on any miss; never resolves |
 | `HEURISTIC` (2) | heuristic | heuristic (resident never consulted) |
 | `BLUEPRINT` (6) | `UNSUPPORTED_FEATURE` | resident blueprint; any coverage miss is a non-retryable `UNSUPPORTED_FEATURE` |
-| `RESOLVING` (7) | `UNSUPPORTED_FEATURE` | always `UNSUPPORTED_FEATURE` (later stage) |
+| `RESOLVING` (7) | `UNSUPPORTED_FEATURE` | terminal-only whole-range resolve; see [Resolving](#resolving-rfc-0005-stage-9) |
 | `RIVER_LP`/`RIVER_DCFR`/`MULTISTREET_CFR` (3/4/5) | `UNSUPPORTED_FEATURE` | `UNSUPPORTED_FEATURE` |
 
 ### ExpandedStrategy
@@ -176,11 +177,47 @@ A minor-1 blueprint hit returns `DecisionResponse.expanded_strategy` (field
   and the request legal window by kind and exact target.
 - `solver.source` is `SOLVER_SOURCE_BLUEPRINT` (6), `cache_hit` is true,
   `reason_code` is `blueprint`, `artifact_sha256` is the lowercase hex
-  SHA-256 of the artifact bytes, and `guarantee` is `uncertified`.
-  `modeled_exact_bound` is unreachable until certification exists; `baseline`
-  is reserved for a future resolving-deadline fallback and is not emitted by
-  the host (the ordinal/string are pinned in golden vectors for wire
-  stability).
+  SHA-256 of the artifact bytes, and `guarantee` is `uncertified` for an
+  ordinary forced BLUEPRINT lookup. A resolving-deadline baseline row (see
+  below) is the only response that pairs source BLUEPRINT with `baseline`.
+  `modeled_exact_bound` is emitted exclusively with source RESOLVING (7).
+
+### Resolving (RFC 0005 Stage 9)
+
+Forced `SOLVER_MODE_RESOLVING` on minor 1 runs the bounded terminal-only
+resolver. AUTOMATIC never resolves. The host is stateless about eligibility:
+the explicit mode is only the adapter's assertion that its per-hand monotone
+prefix conditions held (fresh pinned artifact-root snapshot followed by a
+matching blueprint execution); no eligibility bit crosses the RPC.
+
+The solve is whole-range and hero-card independent; the actual hero combo
+selects only the returned row afterward. Outcomes:
+
+- **Certified** — the independent per-infoset best-response check passed
+  (`BR_cand(I) <= b(I) + 1e-9*root_pot` for every positive-mass responder
+  infoset). Response `expanded_strategy`, `solver.source =
+  SOLVER_SOURCE_RESOLVING` (7), `guarantee = "modeled_exact_bound"`, full
+  distribution and the same membership/sampler rules as a blueprint row,
+  `artifact_sha256` the pinned digest.
+- **Deadline with a validated baseline** — the solve/certification window
+  expired (or the candidate failed the bounds) while a complete validated
+  blueprint row is available. Response `expanded_strategy`, source
+  `SOLVER_SOURCE_BLUEPRINT` (6), `guarantee = "baseline"`, the resident
+  blueprint row.
+- **Deadline with no baseline** — forced resolving returns a retryable
+  `ERROR_CODE_DEADLINE_EXCEEDED`; the host never returns a fold or a
+  heuristic.
+- **Unsupported** — non-terminal-only node, no advertised root, off-tree
+  history/runout/amount, digest mismatch, untrained/zero-reach combo, or an
+  unadvertised resolver: a non-retryable `UNSUPPORTED_FEATURE`.
+
+A facing-all-in fold/call node is admitted on the resolving path (the
+opponent may be `ALL_IN` while the acting hero retains chips) but is still
+rejected by the ordinary BLUEPRINT reconstruction gate. The request's
+`solve_time_budget_ms` (1..120000) bounds the solve; a steady-clock deadline
+starts at receipt and reserves at least 5 ms / 10% for return processing.
+Minor 0 mode 7 is rejected before any resolver call, keeping its bytes
+frozen.
 
 A minor-1 heuristic result (the AUTOMATIC miss fallback, or explicit
 HEURISTIC) is also returned as an `ExpandedStrategy`, but it stays

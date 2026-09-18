@@ -670,3 +670,43 @@ export function fromV1DecisionResponse(
     return executeFromStrategy(response.result.value, room);
   throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
 }
+
+/** RFC 0005 Stage 9 certification classification of a response, decoded
+ * WITHOUT executing it. The adapter uses this to decide whether a forced
+ * RESOLVING request produced a certified whole-range result. Anything other
+ * than source RESOLVING(7) with guarantee "modeled_exact_bound" is uncertified
+ * (a deadline baseline carries source BLUEPRINT / "baseline") and must be
+ * labeled as such by the caller; an EngineError is never a strategic fold. */
+export type ResolveCertification =
+  | { kind: 'modeled-exact-bound'; digest: string }
+  | { kind: 'baseline'; digest?: string }
+  | { kind: 'uncertified'; digest?: string }
+  | { kind: 'error'; code: number; retryable: boolean };
+
+export function classifyResolveResponse(envelope: Envelope): ResolveCertification {
+  if (envelope.payload.case !== 'decisionResponse')
+    return { kind: 'uncertified' };
+  const response = envelope.payload.value;
+  if (response.result.case === 'error') {
+    return {
+      kind: 'error',
+      code: response.result.value.code,
+      retryable: response.result.value.retryable,
+    };
+  }
+  const strategy: StrategyLike | undefined =
+    response.result.case === 'expandedStrategy'
+      ? response.result.value
+      : response.result.case === 'strategy'
+        ? response.result.value
+        : undefined;
+  const guarantee = strategy?.solver?.guarantee;
+  const digest = strategy?.solver?.artifactSha256;
+  if (strategy?.solver?.source === SolverSource.RESOLVING
+      && guarantee === 'modeled_exact_bound'
+      && digest !== undefined)
+    return { kind: 'modeled-exact-bound', digest };
+  if (guarantee === 'baseline')
+    return { kind: 'baseline', ...(digest !== undefined ? { digest } : {}) };
+  return { kind: 'uncertified', ...(digest !== undefined ? { digest } : {}) };
+}

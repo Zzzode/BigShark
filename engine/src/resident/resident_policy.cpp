@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
@@ -538,6 +539,54 @@ ResidentAnswer ResidentPolicySet::hero_decision(const HeadsUpState& state,
   answer.hit = true;
   answer.reason = MissReason::None;
   return answer;
+}
+
+namespace {
+
+// Immutable resolver blueprint view over one advertised resident record. It
+// borrows the record's compact rows; no allocation happens per row lookup
+// beyond constructing the canonical information key for the query.
+class ResidentBlueprintSource final : public resolver::BlueprintSource {
+ public:
+  explicit ResidentBlueprintSource(const ResidentPolicySet::Record& record) : record_(&record) {}
+
+  const solver::HeadsUpGame& game() const override { return record_->game; }
+
+  std::string_view artifact_digest() const override { return record_->result.sha256_hex; }
+
+  std::optional<resolver::BlueprintRowView> row(const HeadsUpState& state, std::size_t player,
+                                                std::array<int, 2> cards) const override {
+    if (player > 1 || !state.actor() || *state.actor() != player)
+      return std::nullopt;
+    std::sort(cards.begin(), cards.end());
+    if (cards[0] < 0 || cards[1] >= 52 || cards[0] == cards[1])
+      return std::nullopt;
+    for (int public_card : state.board())
+      if (public_card == cards[0] || public_card == cards[1])
+        return std::nullopt;
+    const solver::InformationKey key = solver::information_key(state, cards);
+    CompactRowView compact;
+    if (!record_->index.find(std::span<const std::uint64_t>(key.data(), key.size()), compact))
+      return std::nullopt;
+    resolver::BlueprintRowView view;
+    view.actions = compact.actions;
+    view.probabilities = compact.probabilities;
+    view.size = compact.count;
+    return view;
+  }
+
+ private:
+  const ResidentPolicySet::Record* record_;
+};
+
+}  // namespace
+
+std::unique_ptr<resolver::BlueprintSource> ResidentPolicySet::resolver_source(
+    const HeadsUpState& state, std::optional<std::string_view> pinned_sha256) const {
+  const ResolvedRoot resolved = resolve_root(records_, state, pinned_sha256);
+  if (!resolved.record || !resolved.record->advertised)
+    return nullptr;
+  return std::make_unique<ResidentBlueprintSource>(*resolved.record);
 }
 
 }  // namespace bs::resident

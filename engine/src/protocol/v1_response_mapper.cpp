@@ -268,8 +268,9 @@ bool blueprintRowIsLegal(const pv::DecisionRequest& request, const V1BlueprintRo
   return std::isfinite(sum) && std::abs(sum - 1.0) <= 1e-12;
 }
 
-pv::DecisionResponse mapBlueprintExpandedResponse(const pv::DecisionRequest& request,
-                                                  const V1BlueprintRow& row) {
+pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
+                                             const V1BlueprintRow& row, pv::SolverSource source,
+                                             std::string_view guarantee) {
   if (!blueprintRowIsLegal(request, row))
     throw MappingError(pv::ERROR_CODE_UNSUPPORTED_FEATURE,
                        "blueprint action is outside the requested legal action window", false);
@@ -332,17 +333,41 @@ pv::DecisionResponse mapBlueprintExpandedResponse(const pv::DecisionRequest& req
   }
 
   pv::SolverMetadata* metadata = expanded->mutable_solver();
-  metadata->set_source(pv::SOLVER_SOURCE_BLUEPRINT);
+  metadata->set_source(source);
   metadata->set_solve_time_us(0);
-  metadata->set_cache_hit(true);
-  metadata->set_reason_code("blueprint");
+  metadata->set_cache_hit(source == pv::SOLVER_SOURCE_BLUEPRINT);
+  metadata->set_reason_code(source == pv::SOLVER_SOURCE_RESOLVING ? "resolving" : "blueprint");
   metadata->set_artifact_sha256(std::string(row.artifact_sha256));
-  // Artifact v1 never writes certification bounds; a complete validated
-  // blueprint is therefore "uncertified". modeled_exact_bound is unreachable
-  // until certification exists, and "baseline" is reserved for the future
-  // resolving-deadline fallback.
-  metadata->set_guarantee("uncertified");
+  metadata->set_guarantee(std::string(guarantee));
   return response;
+}
+
+pv::DecisionResponse mapBlueprintExpandedResponse(const pv::DecisionRequest& request,
+                                                  const V1BlueprintRow& row) {
+  // Artifact v1 blueprint rows carry no certification bounds by construction;
+  // the guarantee is therefore "uncertified".
+  return mapExpandedResponseImpl(request, row, pv::SOLVER_SOURCE_BLUEPRINT, "uncertified");
+}
+
+pv::DecisionResponse mapResolvedExpandedResponse(const pv::DecisionRequest& request,
+                                                 const V1BlueprintRow& row, pv::SolverSource source,
+                                                 std::string_view guarantee) {
+  // modeled_exact_bound may be emitted only with the RESOLVING source; the
+  // deadline baseline must be tagged BLUEPRINT/baseline. Enforce the discipline
+  // at the boundary so the exact-bound string is unreachable any other way.
+  if (guarantee == "modeled_exact_bound") {
+    if (source != pv::SOLVER_SOURCE_RESOLVING)
+      throw MappingError(pv::ERROR_CODE_INTERNAL,
+                         "modeled_exact_bound requires the resolving source", /*retryable=*/true);
+  } else if (guarantee == "baseline") {
+    if (source != pv::SOLVER_SOURCE_BLUEPRINT)
+      throw MappingError(pv::ERROR_CODE_INTERNAL, "baseline requires the blueprint source",
+                         /*retryable=*/true);
+  } else {
+    throw MappingError(pv::ERROR_CODE_INTERNAL, "unsupported resolving guarantee label",
+                       /*retryable=*/true);
+  }
+  return mapExpandedResponseImpl(request, row, source, guarantee);
 }
 
 pv::DecisionResponse errorResponse(pv::ErrorCode code, const std::string& message, bool retryable,
@@ -372,8 +397,8 @@ pv::DecisionResponse errorResponse(pv::ErrorCode code, const std::string& messag
   return response;
 }
 
-pv::GetCapabilitiesResponse buildCapabilities(unsigned negotiated_minor,
-                                              bool blueprint_advertised) {
+pv::GetCapabilitiesResponse buildCapabilities(unsigned negotiated_minor, bool blueprint_advertised,
+                                              bool resolving_advertised) {
   pv::GetCapabilitiesResponse capabilities;
   // The minor-0 advertisement is the frozen Stage-7 output: only minor 0 and
   // no new enum values. A minor-1 query re-advertises 0 plus 1.
@@ -402,10 +427,13 @@ pv::GetCapabilitiesResponse buildCapabilities(unsigned negotiated_minor,
   capabilities.add_solver_modes(pv::SOLVER_MODE_AUTOMATIC);
   capabilities.add_solver_modes(pv::SOLVER_MODE_HEURISTIC);
   // Negotiated minor 1 advertises BLUEPRINT only when at least one resident
-  // root was advertised at startup. RESOLVING and any certification feature
-  // are deliberately never advertised.
+  // root was advertised at startup. SOLVER_MODE_RESOLVING is advertised only
+  // when the host also has a live resolver plus an advertised terminal-only
+  // root; minor 0 never emits either new enum value.
   if (negotiated_minor >= 1 && blueprint_advertised)
     capabilities.add_solver_modes(pv::SOLVER_MODE_BLUEPRINT);
+  if (negotiated_minor >= 1 && resolving_advertised)
+    capabilities.add_solver_modes(pv::SOLVER_MODE_RESOLVING);
   capabilities.add_strategy_profiles("tag");
   capabilities.add_strategy_profiles("lag");
   capabilities.add_strategy_profiles("station-hunter");

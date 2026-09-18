@@ -32,4 +32,12 @@ struct ReconstructedPostflop {
 bool reconstructPostflop(const pv::DecisionRequest& request, ReconstructedPostflop& out,
                          V1BlueprintMiss& miss);
 
+// RFC 0005 Stage 9 resolver-path variant. It is identical to reconstructPostflop
+// except it admits a postflop decision node reached facing an all-in: the
+// non-acting opponent may already be ALL_IN, which the BLUEPRINT gate still
+// rejects. The acting hero must retain chips (a genuine fold/call decision).
+// Exact ledger and terminal cross-checks are unchanged.
+bool reconstructPostflopForResolve(const pv::DecisionRequest& request, ReconstructedPostflop& out,
+                                   V1BlueprintMiss& miss);
+
 }  // namespace bs::v1

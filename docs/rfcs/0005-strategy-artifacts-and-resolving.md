@@ -1,7 +1,7 @@
 ---
 rfc: "0005"
 subject: "Strategy Artifacts and Bounded Heads-Up Resolving"
-status: "Accepted"
+status: "Implementing"
 authors: "BigShark maintainers"
 created: "2026-09-14"
 updated: "2026-09-14"
