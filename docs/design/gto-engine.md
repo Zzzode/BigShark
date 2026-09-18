@@ -647,6 +647,42 @@ collide on one key and serve each other's candidate. The baseline row used for
 deadline fallback is taken first, inside the same receipt-anchored window,
 rather than untimed after the solver consumed the budget.
 
+## Multiway Rules (RFC 0006 Stage 13)
+
+`bs::poker::MultiwayState` is the 3..6-player no-limit rules sibling of
+`HeadsUpState`. It is deliberately a separate type rather than a generalization:
+the heads-up state keeps its exact contract and both of its profiles are
+untouched, and the multiway profile is the RFC 0006 experimental one.
+
+Ownership and boundaries: `bigshark_poker` owns these rules; they depend on the
+shared `Settlement` ledger and the shared evaluator and on nothing else. No
+solver, artifact, transport, or provider type is involved, and no production
+path selects this profile.
+
+The contract the rules implement, all of it under test in
+`engine/tests/test_multiway.cpp`:
+
+- Blinds are posted from the seats clockwise of the button (small blind, then
+  big blind), and an optional ante is dead money from every player.
+- Preflop action starts LEFT OF THE BIG BLIND. Postflop action starts left of
+  the button, skipping seats that cannot act (folded or all in).
+- Raise rights follow the provider-independent reopening rule: only a full raise
+  restores the right to re-raise for players who already acted. A short all-in
+  never does, and cumulative short all-ins never do.
+- A player facing a wager may re-raise only while someone else can still
+  respond; a seat with no chips behind cannot raise.
+- Folded chips stay in the pot as dead money. Only a genuinely unmatched excess
+  returns to its owner, and folding does not create one.
+- A hand ends as soon as one live player remains, or at showdown once the board
+  is complete. Settlement uses the general contribution-layer ledger, which
+  already supports 2..6 players, so multiway pots, side pots, and odd-chip
+  awards reuse the single settlement implementation.
+
+The profile is experimental, matching RFC 0006: the two-player zero-sum
+convergence theorem does not extend to it, and no equilibrium or coverage claim
+is made. Training, joint-deal sampling, and unilateral-deviation evaluation are
+separate later work.
+
 ## Offline ICM Arithmetic
 
 `bs::poker::icm_equities()` requires an explicitly complete field of 2..10

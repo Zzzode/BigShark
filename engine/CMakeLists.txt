@@ -211,6 +211,7 @@ add_library(bigshark_poker STATIC
   src/poker/charts.cpp
   src/poker/heads_up.cpp
   src/poker/icm.cpp
+  src/poker/multiway.cpp
   src/poker/settlement.cpp
 )
 target_include_directories(bigshark_poker
@@ -400,6 +401,12 @@ if(BUILD_TESTING)
   add_executable(test_heads_up_preflop tests/test_heads_up_preflop.cpp)
   target_link_libraries(test_heads_up_preflop PRIVATE bigshark_poker)
   add_test(NAME heads_up_preflop COMMAND test_heads_up_preflop)
+
+  # RFC 0006 experimental multiway profile: 3..6-player order, the blinded
+  # preflop opener, the raise-reopening rule, and exact settlement.
+  add_executable(test_multiway tests/test_multiway.cpp)
+  target_link_libraries(test_multiway PRIVATE bigshark_poker)
+  add_test(NAME multiway COMMAND test_multiway)
 
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)
