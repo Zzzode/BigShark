@@ -143,6 +143,43 @@ cards are dealt without further betting.
 
 Persistence, resolving, and multiway rules are separate implementation stages.
 
+### Preflop size schedule and the accounting decoupling (RFC 0007 step 1)
+
+RFC 0007 rollout step 1 landed: the game-copy byte charge no longer derives from
+struct layout, and the size schedule gained the preflop entry the profile needs.
+
+- `kGameCopyAccountingBytes` (`engine/include/bs/heads_up_solver.hpp`) is the
+  declared accounting constant every byte-charge site now reads - the trainer's
+  `game_byte_charge`, the resident footprint estimate, and the resident index
+  estimate. A static assertion keeps it at least the real struct size, so it
+  stays a conservative budget rather than a measurement, and it moves only by a
+  deliberate edit. Measured on the current shape the struct is 352 bytes and the
+  declared budget is 368.
+- `SizeSchedule` is now `std::array<StreetSizes, 4>` indexed by the Street enum,
+  with `default_size_schedule()` supplying the postflop pot fractions and a
+  preflop menu. Because the preflop "pot" at the root is only the posted blinds,
+  the same pot-fraction form yields the larger blind-relative opens a preflop
+  game needs: at 1/2 blinds the menu produces a minimum raise plus roughly 2x,
+  2.5x, and 3.5x opens and the all-in target. A flop-rooted game never reads the
+  preflop entry, so its behavior is unchanged.
+
+Two bounds are deliberately wider than they look, and both are recorded because
+getting them wrong broke the artifact byte identity by exactly one entry:
+
+- `game_byte_charge` charges only the POSTFLOP schedule entries. Charging the
+  preflop entry too made `accounted_bytes` depend on whether a game was built
+  from defaults or restored from an artifact - the same stored game but not the
+  same in-memory preflop entry - and the split-run identity broke by 192 bytes.
+  The charge describes the game the artifact represents, not every field the
+  struct carries.
+- `same_size_schedule` compares the same three stored entries. Comparing the
+  fourth before the artifact stores it makes every resume fail as an identity
+  mismatch: a correct comparison applied one step early.
+
+Both widen together with the store in RFC 0007 rollout step 3, which is where
+the artifact learns the preflop entry (schema-major bump, `root_street`, and
+`rules_id`).
+
 ### Preflop root profile (RFC 0004 Stage 10)
 
 `HeadsUpRoot::preflop` selects a second, additive profile: no board, blinds

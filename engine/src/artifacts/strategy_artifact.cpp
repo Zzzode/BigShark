@@ -61,7 +61,16 @@ bool same_fraction(const solver::Fraction& a, const solver::Fraction& b) {
 }
 
 bool same_size_schedule(const solver::SizeSchedule& a, const solver::SizeSchedule& b) {
-  for (std::size_t street = 0; street < 3; ++street) {
+  // Only the POSTFLOP entries are compared, and that bound is deliberate rather
+  // than incidental: the artifact stores exactly those three (RFC 0007 rollout
+  // step 3 widens the store and this loop together), so a schedule restored
+  // from an artifact has an empty preflop entry while a freshly built one has
+  // the declared default. Comparing the fourth entry here - before the store
+  // knows about it - makes every resume fail as an identity mismatch, which is
+  // a correct comparison applied one step too early. The two must land in the
+  // same change.
+  constexpr std::size_t kStoredStreets = 3;
+  for (std::size_t street = 0; street < kStoredStreets; ++street) {
     if (a[street].bets.size() != b[street].bets.size() ||
         a[street].raises.size() != b[street].raises.size())
       return false;

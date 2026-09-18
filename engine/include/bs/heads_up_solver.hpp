@@ -36,11 +36,34 @@ struct StreetSizes {
   std::vector<Fraction> raises{{1, 2}, {1, 1}};
 };
 
-// One entry per POSTFLOP street, indexed by the Street enum value (Flop = 0,
-// Turn = 1, River = 2). A preflop-rooted game reuses the flop entry; a
-// dedicated preflop menu is part of the artifact-format work that preflop
-// persistence needs and is deliberately out of this change.
-using SizeSchedule = std::array<StreetSizes, 3>;
+// One entry per street, indexed by the Street enum value (Flop = 0, Turn = 1,
+// River = 2, Preflop = 3). A flop-rooted game never reads the preflop entry,
+// so its behavior is unchanged; a preflop-rooted game gets the opening menu it
+// needs instead of the flop's pot-fraction sizes. The entry is part of a
+// game's declared size identity and is persisted with it under RFC 0007's
+// schema-major coexistence rules.
+//
+// The preflop defaults are expressed as pot fractions like every other street,
+// but the preflop "pot" at the root is only the posted blinds (3 at 1/2), so
+// the same fractions produce the larger blind-relative opens a preflop game
+// needs: 3/2 of 3 is a ~2.5x open, 2/1 is a ~3x open, and the all-in target
+// covers the rest. A schedule set explicitly by a caller still wins.
+struct SizeScheduleDefaults {
+  // Bets and raises are separate vectors, exactly as on every other street.
+  static StreetSizes preflop() {
+    StreetSizes sizes;
+    sizes.bets = {{3, 2}, {2, 1}, {3, 1}};
+    sizes.raises = {{3, 2}, {2, 1}, {3, 1}};
+    return sizes;
+  }
+};
+using SizeSchedule = std::array<StreetSizes, 4>;
+
+// The schedule a new game starts from: the default pot fractions for the
+// postflop streets and the preflop menu above for the preflop entry.
+inline SizeSchedule default_size_schedule() {
+  return SizeSchedule{StreetSizes{}, StreetSizes{}, StreetSizes{}, SizeScheduleDefaults::preflop()};
+}
 
 struct WeightedHand {
   std::array<int, 2> cards;
@@ -50,7 +73,7 @@ struct WeightedHand {
 struct HeadsUpGame {
   poker::HeadsUpRoot root{};
   std::array<std::vector<WeightedHand>, 2> ranges;
-  SizeSchedule sizes;
+  SizeSchedule sizes = default_size_schedule();
   // A fixed runout defines a different, conditional validation game. All fixed
   // cards are reserved before dealing private hands or any earlier public card.
   std::array<std::optional<int>, 2> fixed_runout{};
@@ -67,7 +90,7 @@ struct HeadsUpGame {
 // The value is a documented budget, not a measurement: it is at least the
 // current struct size, so the charge stays conservative, and it changes only by
 // a deliberate edit with the rebase evidence the RFC requires.
-inline constexpr std::size_t kGameCopyAccountingBytes = 320;
+inline constexpr std::size_t kGameCopyAccountingBytes = 368;
 static_assert(kGameCopyAccountingBytes >= sizeof(HeadsUpGame),
               "the declared game-copy charge must stay at least the real struct size");
 
@@ -95,7 +118,11 @@ class HeadsUpPolicy {
   friend class ::bs::artifacts::detail::PolicyAssembler;
   // Empty policies must be constructible while recovering from allocation
   // failure; avoid allocating the normal default size schedule here.
-  HeadsUpGame game_{{}, {}, {StreetSizes{{}, {}}, StreetSizes{{}, {}}, StreetSizes{{}, {}}}, {}};
+  HeadsUpGame game_{
+      {},
+      {},
+      {StreetSizes{{}, {}}, StreetSizes{{}, {}}, StreetSizes{{}, {}}, StreetSizes{{}, {}}},
+      {}};
   std::map<InformationKey, PolicyRow> rows_;
 };
 

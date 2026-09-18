@@ -198,12 +198,23 @@ std::size_t row_bytes(const InformationKey& key, std::size_t actions) {
 
 // Conservative permanent charge for two game copies and their range/size
 // storage, shared by the committed and prospective publications.
+//
+// The size-schedule term charges exactly the POSTFLOP entries the artifact
+// stores. Charging the preflop entry as well made the reported
+// `accounted_bytes` depend on whether a game was built from defaults or
+// restored from an artifact - which have the same stored game but not the same
+// in-memory preflop entry - and the split-run byte identity broke by exactly
+// one entry's worth (192 bytes). The charge must describe the game the artifact
+// represents, not every field the struct happens to carry. RFC 0007 rollout
+// step 3 widens the store and this bound together.
 std::size_t game_byte_charge(const HeadsUpGame& game) {
+  constexpr std::size_t kStoredStreets = 3;
   std::size_t game_bytes = 2 * kGameCopyAccountingBytes;
   for (const auto& range : game.ranges)
     game_bytes += 2 * range.size() * sizeof(WeightedHand);
-  for (const auto& street : game.sizes)
-    game_bytes += 2 * (street.bets.size() + street.raises.size()) * sizeof(Fraction);
+  for (std::size_t street = 0; street < kStoredStreets; ++street)
+    game_bytes += 2 * (game.sizes[street].bets.size() + game.sizes[street].raises.size()) *
+                  sizeof(Fraction);
   return game_bytes;
 }
 
@@ -564,12 +575,13 @@ std::vector<Action> abstract_actions(const HeadsUpState& state, const SizeSchedu
   const Chips base = add(hero.street_committed, legal.call_amount);
   const Chips pot_after_call = add(state.pot(), legal.call_amount);
   std::vector<Chips> targets{bounds.minimum, cap};
-  // The schedule is indexed by the POSTFLOP street. A preflop street reuses the
-  // flop sizes until a dedicated preflop menu exists.
-  const std::size_t street_index = state.street() == poker::Street::Preflop
-                                       ? static_cast<std::size_t>(poker::Street::Flop)
-                                       : static_cast<std::size_t>(state.street());
-  const auto& schedule = sizes[street_index];
+  // One schedule entry per street, including preflop (RFC 0007). A preflop root
+  // therefore gets its own declared menu rather than borrowing the flop's
+  // pot-fraction sizes, and a flop root is unaffected because it never reads
+  // the preflop entry.
+  static_assert(static_cast<std::size_t>(poker::Street::Preflop) < SizeSchedule{}.size(),
+                "SizeSchedule must cover every Street value");
+  const auto& schedule = sizes[static_cast<std::size_t>(state.street())];
   const auto& fractions = bounds.type == ActionType::Bet ? schedule.bets : schedule.raises;
   for (auto f : fractions) {
     const auto target = add(base, ceil_fraction(pot_after_call, f));
