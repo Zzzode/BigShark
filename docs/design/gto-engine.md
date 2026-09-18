@@ -683,6 +683,37 @@ convergence theorem does not extend to it, and no equilibrium or coverage claim
 is made. Training, joint-deal sampling, and unilateral-deviation evaluation are
 separate later work.
 
+## Multiway Joint-Deal Sampling (RFC 0006 Stage 13)
+
+`bs::solver::enumerate_joint_deals` and `sample_joint_deal`
+(`engine/include/bs/multiway_sampler.hpp`) own the joint private-deal
+distribution for the experimental multiway profile.
+
+RFC 0006 states the requirement as a prohibition: sample joint deals
+proportional to the product of the supplied range weights conditioned on mutual
+card compatibility, and never sample each seat independently and renormalize.
+The two functions therefore come as a pair, and the enumerated table is the
+reference the sampler is checked against rather than the other way around.
+
+- `enumerate_joint_deals` walks the seats depth-first, skipping combinations
+  blocked by the board or conflicting with an already-chosen seat, and records
+  the unnormalized mass, the normalized per-deal probabilities, and how many
+  seat combinations were rejected for conflicts. It is exhaustive, so it is for
+  small validation games.
+- `sample_joint_deal` proposes a combination proportional to the per-seat
+  weights and rejects it when the seats conflict. That rejection-conditional
+  draw IS the joint distribution the RFC requires; the sampler deliberately does
+  not draw each seat independently and renormalize the last pool.
+
+Both take the caller's `SplitMix64` stream, so a run is reproducible from its
+seed, and both read only the declared ranges and the board: no solver state,
+no storage type, and no production path. The distributional evidence lives in
+`engine/tests/test_multiway_sampler.cpp`, which asserts the enumerated support
+shape, then checks empirical draw frequencies against the enumerated
+probabilities on a fixture whose joint weights are deliberately non-uniform (so
+a uniform-over-support or independent-per-seat sampler would visibly deviate),
+plus reproducibility, weight proportionality, and input validation.
+
 ## Offline ICM Arithmetic
 
 `bs::poker::icm_equities()` requires an explicitly complete field of 2..10

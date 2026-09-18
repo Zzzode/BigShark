@@ -33,12 +33,15 @@ blocked by a measurable scale problem plus two artifact contracts.
 
 A full traversal from a preflop root does not converge inside the declared
 resource limits. Every preflop line reaches every flop, so the tree spans all
-`C(48,3) = 17,296` boards per line times the action menu. A bounded walk on a
-deliberately shallow three-big-blind stack visits over 3,000,000 nodes and more
-than 1,000,000 distinct postflop information sets, while the preflop street
-itself carries only two. The convergence gates of RFC 0004 cannot be met by
-enumerating that tree, on any machine, at any iteration count — the workload is
-structural, not a tuning problem.
+`C(48,3) = 17,296` boards per line times the action menu, and a bounded walk
+visits over 3,000,000 nodes and more than 1,000,000 distinct postflop
+information sets. The limit is consumed by POSTFLOP enumeration. The preflop
+street is a separate question, and it is NOT small in general: its
+information-set count grows with both range size and stack depth (see Current
+State and Evidence), so removing the postflop explosion does not by itself make
+this stage bounded. The convergence gates of RFC 0004 cannot be met by
+enumerating the postflop tree, on any machine, at any iteration count — that
+part of the workload is structural, not a tuning problem.
 
 Two artifact contracts currently hard-code the flop-rooted assumption:
 
@@ -67,7 +70,10 @@ six-max charts untouched.
 ## Goals
 
 - A preflop-rooted game trains to a declared convergence gate inside the
-  bounded local limits, with coverage and cost reported honestly.
+  bounded local limits FOR A DECLARED SMALL PROFILE (declared range size and
+  declared stack cap), with coverage, cost, and the declared scope reported
+  honestly. No claim is made that realistic-size preflop training is reachable;
+  that question is recorded as a risk, not assumed.
 - Policy-derived continuation ranges: the postflop range pair a preflop
   solution hands to a flop-rooted profile is computed from actual policy reach,
   not from a chart or a hand-written assumption.
@@ -112,10 +118,48 @@ Verified in the working tree at commit `c16798f`:
   key encoder all assume a flop root, cited above.
 - `game_byte_charge` reads `2 * sizeof(HeadsUpGame)`.
 
-Assumptions, stated as such: the flop-terminal abstraction below is expected to
-make the preflop street's information-set count small (hundreds, not millions),
-because the preflop betting tree is bounded by stacks and the action menu. This
-RFC requires measuring it rather than asserting it (see Verification Plan).
+**Correction after independent review (2026-09-18).** An earlier revision of
+this document asserted that the preflop street is small and that terminating at
+the flop would therefore make training bounded. That assertion is FALSE and has
+been removed. Independent measurement shows the preflop information-set count
+grows with BOTH range size and stack depth:
+
+| combos per seat | 6 bb | 25 bb | 100 bb | 200 bb |
+| --- | --- | --- | --- | --- |
+| 1 | 2 measured | - | - | - |
+| 6 | 30 | 606 | 8,010 | 29,946 |
+
+(Measured with the trainer's own `information_key` over the full preflop tree;
+an independently written probe reproduced the 1-combo column and a bounded
+walk reproduced the ≥3,000,000-node / ≥1,000,000-postflop-key figures below.)
+Information keys are (actor, own combo, full ordered action history), so both
+factors scale linearly in stack depth.
+
+Consequences, stated plainly:
+
+- A flop-terminal abstraction removes the POSTFLOP half of the explosion (the
+  measured 1.4M postflop keys against 2 preflop keys at a one-combo, 3-big-blind
+  fixture). It does NOT by itself bound the preflop street at realistic range
+  sizes and stack depths.
+- Bounding the preflop street at realistic scale additionally requires reducing
+  the number of information keys it exposes - i.e. a card or action abstraction
+  with a measured error bound. RFC 0004's design principles deliberately defer
+  lossy card buckets to "a subsequent design and measured abstraction error",
+  so that work is NOT authorized by this RFC and is NOT claimed by it.
+- Therefore this RFC's preflop profile is scoped to a DECLARED SMALL profile:
+  a declared range size and declared stack cap for which the preflop key count
+  fits the existing default limits. Acceptance criterion 1 is met for that
+  declared profile and only for it. Whether a realistic-size preflop profile is
+  reachable at all is left open and explicitly flagged as a risk, not assumed.
+
+The bounded-walk numbers that motivate the postflop half of the argument: a
+bounded walk from a preflop root visits over 3,000,000 nodes and more than
+1,000,000 distinct postflop information sets (a 4,000,000-node probe on a
+one-combo, 3-big-blind fixture reached 1,410,475 distinct postflop keys against
+2 preflop keys). A shallow three-big-blind stack therefore does not converge
+either: the limit is consumed by postflop enumeration, which is what the
+flop-terminal declaration removes. A committed bounded-walk regression pins
+this order of magnitude (see Verification Plan).
 
 ## Design Principles
 
@@ -163,25 +207,74 @@ V(d) = sum over the postflop policy's value at the flop root for deal d,
        weighted by that policy's action probabilities
 ```
 
-which is exactly the locked-continuation expectation RFC 0005 already defines
-for its resolving gadget. Reusing that definition keeps one meaning of
-"continuation value" in the repository instead of two.
+which is the same locked-continuation expectation RFC 0005 already defines for
+its resolving gadget (`engine/include/bs/resolver.hpp:37-45`,
+`engine/src/resolver/counterfactual_reach.cpp:188-224`): the value of playing the
+declared continuation policy, evaluated with exact terminal settlement.
+Reusing that definition keeps one meaning of "continuation value" in the
+repository instead of two.
 
-Two implementation options are credible and this RFC deliberately leaves the
-choice to the implementation stage, with a measurement gate:
+**The evaluator contract is stated here, at design time.** RFC 0005's hardest
+lesson is that a wrong reach convention silently invalidates a safety claim, so
+the deferred choice is the IMPLEMENTATION (declared table versus nested
+evaluation) and its measured cost - never the semantics. The following are
+fixed by this RFC:
+
+- **Identity.** The continuation is identified by the declared game identity of
+  the flop-rooted policy it consumes (artifact digest, root, board, ranges,
+  size schedule). Different identities are different continuations and are never
+  compared or substituted.
+- **Normalization.** At a frontier leaf the continuation value is the
+  EXPECTATION over that policy's action distribution, in the same chip units
+  the rules' settlement uses, with no additional reach renormalization. Because
+  the flop arrival probability is a common constant across the deals at a fixed
+  public state, it is carried as a chance factor by the traversal like every
+  other chance branch, never folded into the leaf value; a normalized objective
+  must therefore appear exactly once, in the traversal, not twice.
+- **Conditioning.** The value is computed for the public state and the declared
+  ranges. It is NOT conditioned on the acting player's own holding: every
+  counterfactual holding at a fixed public state reads the same continuation.
+  This mirrors RFC 0005's private-independence requirement and is what keeps the
+  preflop solve from encoding a private-card-dependent opponent model.
+- **Scope and naming.** The exported range pair is a two-player, heads-up
+  object. It is explicitly NOT a multiway-safe range and NOT promoteable to the
+  live six-max path, both of which are outside RFC 0005's certified boundary
+  (`docs/rfcs/0005-strategy-artifacts-and-resolving.md:242-245`). The export
+  carries that limitation in its own naming and documentation, so a reader
+  cannot mistake it for a general range pair.
+
+Two implementation options are credible and this RFC leaves only their
+MEASURED COST to the implementation stage, not their semantics:
 
 - **A. Declared frontier table.** The caller supplies an immutable map from
   (flop, joint-deal) to value, produced offline by evaluating an existing
-  flop-rooted policy. Simple, exactly reproducible, and the artifact carries
-  it as an ordinary declared input.
+  flop-rooted policy. Simple, exactly reproducible, and the artifact carries it
+  as an ordinary declared input.
 - **B. Nested evaluation.** The frontier evaluator runs the existing
   flop-rooted blueprint lookup in-process at each frontier leaf. No large table,
   but the preflop solve's cost now depends on postflop lookup performance and
   must state that dependency.
 
-The stopping condition is measurement: whichever option keeps the preflop
-solve inside the declared limits with the smaller accounted bytes wins, and the
-result is recorded in the design document with the numbers.
+The decision rule, made decidable before the work starts:
+
+1. **Hard gate first.** An option is ELIGIBLE only if its declared byte cost
+   fits `TrainingLimits::max_bytes` (currently 1 GiB,
+   `engine/include/bs/heads_up_solver.hpp:91`) at the declared profile. Option
+   A's table is `17,296 flops x joint deals x record bytes`, which is tens of
+   megabytes at a ten-combo pair and approaches or exceeds the 1 GiB budget at a
+   few hundred combos per side, so eligibility is a real constraint rather than
+   a formality. An ineligible option is not chosen at any measured speed.
+2. **Cost estimate is part of the plan.** Stage 2 records the estimated table
+   bytes (option A) or the measured per-leaf lookup cost (option B) BEFORE
+   choosing, so the choice is a comparison of stated numbers rather than of
+   impressions.
+3. **Then, among eligible options, the smaller accounted bytes wins; ties break
+   on wall time.** The result and both numbers are recorded in the design
+   document.
+
+Because the preflop profile is scoped to a declared small profile (see Current
+State and Evidence), the declared profile is what these numbers are reported
+against, explicitly.
 
 ### Size schedule
 
@@ -196,20 +289,60 @@ other size schedule, and is written to the artifact's `sizes` table.
 
 ### Artifact coexistence
 
-The `sizes` table's `street` domain widens from `0..2` to `0..3`. This is
-additive: every existing artifact contains only `0..2` rows and reads
-unchanged, and its `manifest` bytes are untouched, so its digest is stable.
+**Correction after independent review (2026-09-18).** An earlier revision of
+this document proposed widening the `sizes` table's CHECK constraint from
+`street BETWEEN 0 AND 2` to `0 AND 3` and called the result additive. That is
+WRONG about the reader that actually exists, and the mechanism has been
+replaced.
 
-The preflop information state needs a canonical encoding. Rather than changing
-`encode_public_key`'s existing outputs, the encoder gains a single new form for
-`board_count == 0`, and the existing `board_count in 3..5` forms are frozen
-byte-for-byte. A key with `board_count` outside `{0, 3, 4, 5}` remains invalid.
+The reader compares the stored `CREATE TABLE` text byte-for-byte against the
+compiled-in canonical DDL (`verify_schema_objects`,
+`engine/src/artifacts/strategy_artifact.cpp:1226-1281`), deliberately, because
+CHECK and foreign-key clauses can be stripped from a tampered file. Measured
+consequence: an artifact written with the widened CHECK text is rejected by the
+current published reader with
+`invalid-schema: table definition differs from the canonical schema v1 DDL:
+sizes`. Changing the canonical DDL therefore breaks forward compatibility, not
+merely "adds an option".
 
-The root street recorded in an artifact is currently constrained to `0`
-(flop). A preflop artifact records a new declared root street value; the
-existing value keeps its meaning. Compaction, digest, and reader validation
-treat the two root streets as distinct, non-comparable profiles: an artifact
-never claims coverage of a root street it was not trained for.
+The mechanism this RFC now specifies is the one RFC 0005 already declares
+("New schema majors reject unsupported files"):
+
+- **Schema major bump.** A preflop-capable artifact is written with
+  `user_version = 2`. The existing reader rejects it by version through the
+  check it already has (`strategy_artifact.cpp:1315-1318`), which is the
+  intended behavior for an unsupported file: reject, never misread. The
+  extended reader accepts both versions. The canonical DDL for version 1 is
+  frozen unchanged, so no existing artifact's stored text, bytes, or digest
+  moves.
+- **Declared identity.** A version-2 artifact declares its root street through
+  the identity surfaces already designed for it: the `root_street` column and a
+  new `rules_id` value, alongside the existing `"rfc0004-heads-up-flop-v1"`
+  which keeps its meaning. `read_game`'s exact-equality check on `rules_id`
+  (`strategy_artifact.cpp:922`) and the `root_street = 0` gate
+  (`strategy_artifact.cpp:930`) are the two places that must learn the new
+  values, and they are the ONLY places: no other code path interprets rules
+  identity.
+- **Key encoding.** The preflop information state needs a canonical encoding.
+  The encoder gains a single new form for `board_count == 0`, and the existing
+  `board_count in 3..5` forms are frozen byte-for-byte, INCLUDING the decode
+  direction: `decode_public_key` currently requires the derived street to be
+  `<= 2` (`engine/src/artifacts/artifact_codec.cpp:123`), so that gate must
+  admit the new form explicitly rather than by widening the range. A key with
+  `board_count` outside `{0, 3, 4, 5}` remains invalid in both directions.
+- **Writer and reader land together, in both directions.** Because the
+  version-1 DDL is unchanged, the only coherence requirement is that the
+  extended writer, the extended reader, the `rules_id`/`root_street` gates, AND
+  the `decode_public_key` gate ship in the same change; no intermediate state
+  writes a file no reader in the same revision can open, and no key can be
+  encoded that the same revision cannot decode. The decode direction is called
+  out explicitly because it is the half that is easy to forget: an encoder that
+  emits a form its own decoder rejects is a latent corruption, not a
+  compatibility choice.
+
+Every consequence of `same_game` and `same_size_schedule` evolving for the new
+root street is recorded in the design document as part of the stage that lands
+it, so the identity surface is chosen deliberately rather than by accident.
 
 ### Continuation-range export
 
@@ -238,7 +371,7 @@ Affected surfaces and their disposition:
 | Existing flop-rooted artifacts | Unchanged bytes and digest; `street 0..2` rows still valid |
 | Existing information keys and their encoded strings | Frozen; only `board_count == 0` gains a form |
 | `HeadsUpGame` size and layout | Changes; the accounting term is decoupled in the same change |
-| Published benchmark `accounted_bytes` | One-time, documented rebase; the value is an accounting input, not a performance claim |
+| Published benchmark `accounted_bytes` | One-time, documented rebase - and NOT only the published CSV: the frozen matrix quality gates (`docs/development/benchmarking.md:344-353`) and `engine/tests/test_heads_up_allocations.cpp` (exact-fit and `< 256 KiB` checks) are load-bearing consumers of the same number and must be rebased with recorded evidence in the same change |
 | v0 / minor-0 wire behavior | Unchanged; no wire field is added |
 | Live six-max preflop decisions | Unchanged; no production routing is touched |
 
@@ -287,6 +420,11 @@ resource limits is proposed.
 
 ## Verification Plan
 
+- Bounded-walk regression (committed): a capped walk from a preflop root
+  asserts the postflop information-set count exceeds the declared order of
+  magnitude, and a companion measurement reports the declared small profile's
+  own preflop key count. Both are test assertions, so neither number can drift
+  without a failing test.
 - Enumerated preflop fixture: a small preflop game whose frontier values are
   computed independently, compared against the solver's traversal.
 - Frontier-option comparison: measured accounted bytes and wall time for both
@@ -342,8 +480,15 @@ existing data. No old artifact is overwritten or reinterpreted at any point.
 ## Acceptance Criteria
 
 - A preflop-rooted game trains to a declared convergence gate within the
-  bounded local limits, with nodes, information sets, accounted bytes, and
-  wall time reported.
+  bounded local limits FOR THE DECLARED SMALL PROFILE, with nodes, information
+  sets, accounted bytes, and wall time reported. The declared profile's
+  preflop information-set count is reported as a measured number, not as an
+  assumed one, and the design document states plainly that a realistic-size
+  preflop profile is not covered.
+- A committed bounded-walk regression pins the postflop enumeration order of
+  magnitude (over 1,000,000 distinct postflop information sets from a preflop
+  root), so the measurement behind the flop-terminal declaration cannot silently
+  drift.
 - Continuation ranges are policy-derived, independently checked, and named so
   they cannot be read as certified equilibrium ranges.
 - Every pre-existing artifact loads with an unchanged digest, and the key
@@ -356,3 +501,38 @@ existing data. No old artifact is overwritten or reinterpreted at any point.
 ## Decision
 
 Pending independent approval-agent review.
+
+**Prior review history.** Formal review 2026-09-18 by agent a367abd25bec61794
+returned **Changes Requested** on the revision as filed (pre-decision SHA-256
+`abbe3a6`). The review reproduced every cited current-state number and code
+location and falsified two load-bearing conclusions by measurement:
+
+- **F1 (blocking).** The claim that the preflop street is small and that a
+  flop-terminal declaration would therefore bound training is false: preflop
+  information sets measure 606 at 25 bb and 29,946 at 200 bb for six combos per
+  seat, growing with both range size and stack depth. Termination at the flop
+  removes the postflop half of the explosion only.
+- **F2 (blocking).** The proposed "widen the `sizes` CHECK" coexistence
+  mechanism is wrong about the reader that exists: `verify_schema_objects`
+  compares stored `CREATE TABLE` text byte-for-byte against the canonical DDL,
+  so a widened CHECK is rejected by the current reader (demonstrated end to end
+  against the published binary).
+- **F3 (blocking).** The continuation-value contract deferred too much to a
+  measurement gate: normalization, conditioning, identity, and scope naming must
+  be fixed at design time.
+- **F4-F6 (non-blocking).** The frontier gate was not decidable on its stated
+  criteria; several figures were imprecise; and the verification plan omitted
+  the consumers whose numbers move when the byte charge changes, the key-decode
+  direction, and the writer/reader landing order.
+
+Dispositions: F1 by removing the false premise and scoping the profile to a
+declared small profile, with the growth measured and the residual question
+recorded as a risk rather than assumed; F2 by replacing the mechanism with a
+schema-major bump plus the `root_street`/`rules_id` identity surfaces already
+designed for identity; F3 by stating the evaluator contract at design time;
+F4-F6 by making the frontier gate eligibility-first with a stated byte estimate,
+correcting the figures, and naming the allocation and matrix gates, both key
+directions, and the landing order in the verification plan.
+
+All six findings are revised in this document, which is resubmitted for
+independent re-review. No implementation starts before a subsequent approval.
