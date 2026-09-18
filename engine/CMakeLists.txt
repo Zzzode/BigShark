@@ -394,6 +394,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_heads_up PRIVATE bigshark_poker)
   add_test(NAME heads_up COMMAND test_heads_up)
 
+  # RFC 0004 Stage 10 preflop profile: blind posting, button-first order, the
+  # big blind option after a limp, postflop reversal, conservation, and the
+  # unchanged flop-rooted profile.
+  add_executable(test_heads_up_preflop tests/test_heads_up_preflop.cpp)
+  target_link_libraries(test_heads_up_preflop PRIVATE bigshark_poker)
+  add_test(NAME heads_up_preflop COMMAND test_heads_up_preflop)
+
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)
   add_test(NAME icm COMMAND test_icm)

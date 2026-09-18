@@ -52,6 +52,52 @@ HeadsUpState::HeadsUpState(const HeadsUpRoot& root) : root_(root) {
   require(root.button < 2, "button outside heads-up seats");
   require(root.big_blind > 0 && root.big_blind <= kMaxHeadsUpChips, "invalid big blind");
   require(root.pot > 0, "empty root pot");
+  if (root.preflop) {
+    // Preflop profile: no board, blinds posted, button (small blind) first, and
+    // the big blind keeps its option after a limp. The root pot covers any
+    // dead money; the posted blinds are live street commitments.
+    // An undealt flop is expressed with the same unset sentinel the fixed
+    // runout uses (-1), NOT with card 0: card 0 is a real card (2c), and a
+    // zero-filled flop would collide with it and be rejected downstream.
+    require(root.flop[0] < 0 && root.flop[1] < 0 && root.flop[2] < 0,
+            "preflop root must not carry a flop");
+    require(root.contributions[0] == root.contributions[1],
+            "unmatched closed-street contributions at preflop root");
+    require(add(root.contributions[0], root.contributions[1]) <= root.pot,
+            "preflop root contributions exceed the pot");
+    const Chips small_blind = root.big_blind / 2;
+    require(small_blind > 0, "big blind too small to post a small blind");
+    require(root.blinds_posted[root.button] == small_blind, "button must post the small blind");
+    require(root.blinds_posted[1 - root.button] == root.big_blind,
+            "non-button seat must post the big blind");
+    const Chips total = add(add(root.pot, root.stacks[0]), root.stacks[1]);
+    require(total <= kMaxHeadsUpChips, "root exceeds exact numeric profile");
+    street_ = Street::Preflop;
+    for (std::size_t p = 0; p < 2; ++p) {
+      require(root.blinds_posted[p] <= root.stacks[p], "blind exceeds stack");
+      players_[p].stack = root.stacks[p] - root.blinds_posted[p];
+      players_[p].street_committed = root.blinds_posted[p];
+      players_[p].contributed = add(root.contributions[p], root.blinds_posted[p]);
+    }
+    last_full_raise_ = root.big_blind;
+    for (std::size_t p = 0; p < 2; ++p)
+      all_in_[p] = players_[p].stack == 0;
+    if (all_in_[0] || all_in_[1]) {
+      // A blind committed the whole stack: no betting remains, so the street
+      // closes and any genuinely unmatched excess returns to its owner, exactly
+      // as every other closed street does.
+      close_street();
+    } else {
+      // Preflop the button acts first. The big blind keeps a live option until
+      // it acts on an unraised pot, which big_blind_option_ tracks; the pending
+      // flags then mean "this seat still owes an action on the current bet".
+      actor_ = root.button;
+      pending_ = {false, false};
+      big_blind_option_ = true;
+      raise_rights_ = {true, true};
+    }
+    return;
+  }
   require(root.contributions[0] == root.contributions[1],
           "unmatched contributions at closed-street root");
   require(add(root.contributions[0], root.contributions[1]) == root.pot,
@@ -69,6 +115,8 @@ HeadsUpState::HeadsUpState(const HeadsUpRoot& root) : root_(root) {
   }
   actor_ = 1 - root.button;
   last_full_raise_ = root.big_blind;
+  for (std::size_t p = 0; p < 2; ++p)
+    all_in_[p] = root.stacks[p] == 0;
   if (root.stacks[0] == 0 || root.stacks[1] == 0)
     close_street();
 }
@@ -132,9 +180,14 @@ void HeadsUpState::refund_unmatched() {
 }
 
 void HeadsUpState::close_street() {
+  // Settlement requires equal contribution levels, so any unmatched excess
+  // returns to its owner before the street closes. At the preflop root that
+  // excess is a blind the opponent never matched, which is still an uncalled
+  // wager and is returned by the same rule.
   refund_unmatched();
   pending_ = {false, false};
   raise_rights_ = {false, false};
+  big_blind_option_ = false;
   phase_ = street_ == Street::River ? Phase::Showdown : Phase::Deal;
 }
 
@@ -149,12 +202,17 @@ HeadsUpState HeadsUpState::after_action(std::size_t player, Action action) const
 
   next.pending_[player] = false;
   next.raise_rights_[player] = false;
+  const bool big_blind_acting =
+      street_ == Street::Preflop && next.big_blind_option_ && player == 1 - root_.button;
+  if (big_blind_acting)
+    next.big_blind_option_ = false;
   switch (action.type) {
     case ActionType::Fold:
       hero.folded = true;
       next.refund_unmatched();
       next.pending_ = {false, false};
       next.raise_rights_ = {false, false};
+      next.big_blind_option_ = false;
       next.phase_ = Phase::Folded;
       break;
     case ActionType::Check:
@@ -162,7 +220,11 @@ HeadsUpState HeadsUpState::after_action(std::size_t player, Action action) const
     case ActionType::Call:
       paid = std::min(high - hero.street_committed, hero.stack);
       next.pay(player, paid);
-      next.close_street();
+      // A call does not necessarily close the street: at the preflop root the
+      // big blind still holds its option after a limp. Every other profile
+      // keeps the historical immediate close.
+      if (street_ != Street::Preflop || !next.big_blind_option_)
+        next.close_street();
       break;
     case ActionType::Bet:
     case ActionType::Raise: {
@@ -170,6 +232,8 @@ HeadsUpState HeadsUpState::after_action(std::size_t player, Action action) const
       const Chips increment = action.target_total - high;
       next.pay(player, paid);
       next.pending_[opponent] = true;
+      // Any wager removes the big blind's free option: it now faces a bet.
+      next.big_blind_option_ = false;
       if (increment >= next.last_full_raise_) {
         next.last_full_raise_ = increment;
         next.raise_rights_[opponent] = true;
@@ -177,9 +241,13 @@ HeadsUpState HeadsUpState::after_action(std::size_t player, Action action) const
       break;
     }
   }
+  for (std::size_t p = 0; p < 2; ++p)
+    next.all_in_[p] = next.players_[p].stack == 0;
   next.history_.push_back({street_, player, action, paid});
   if (next.phase_ == Phase::Action) {
-    if (!next.pending_[opponent])
+    const bool option_holds =
+        next.big_blind_option_ && street_ == Street::Preflop && !next.pending_[opponent];
+    if (!next.pending_[opponent] && !option_holds)
       next.close_street();
     else
       next.actor_ = opponent;
@@ -195,14 +263,31 @@ HeadsUpState HeadsUpState::after_card(int card) const {
   use_card(card, used);
   HeadsUpState next = *this;
   next.board_.push_back(card);
-  next.street_ = next.board_.size() == 4 ? Street::Turn : Street::River;
+  // The street advances with the FIRST public card of that street; the Deal
+  // phase continues while the flop is being filled, so a partially dealt flop
+  // is already Street::Flop with fewer than three cards. Information keys
+  // distinguish the individual cards by board size, not by street.
+  const std::size_t dealt = next.board_.size();
+  if (dealt <= 3)
+    next.street_ = Street::Flop;
+  else if (dealt == 4)
+    next.street_ = Street::Turn;
+  else
+    next.street_ = Street::River;
+  if (dealt < 3)
+    return next;  // still dealing the flop, still in the Deal phase
   for (auto& player : next.players_)
     player.street_committed = 0;
   next.last_full_raise_ = root_.big_blind;
-  if (next.players_[0].stack == 0 || next.players_[1].stack == 0) {
+  if (next.all_in_[0] || next.all_in_[1]) {
+    // A seat is all in: no betting is possible on this street either, so the
+    // board keeps running out.
     next.phase_ = next.street_ == Street::River ? Phase::Showdown : Phase::Deal;
   } else {
     next.phase_ = Phase::Action;
+    // Postflop the non-button seat acts first. At the preflop root the button
+    // acts first, but the first COMPLETED street always opens postflop action,
+    // so the order reverses exactly once here.
     next.actor_ = 1 - root_.button;
     next.pending_ = {true, true};
     next.raise_rights_ = {true, true};
@@ -216,7 +301,7 @@ Settlement HeadsUpState::award(std::optional<std::size_t> winner) const {
   input.button = root_.button;
   input.odd_chip_rule = OddChipRule::ClockwiseLeftOfButton;
   input.rake = {RakeRule::PotPercentageFloor, 0, 0, true};
-  input.flop_dealt = true;
+  input.flop_dealt = board_.size() >= 3;
   for (std::size_t p = 0; p < 2; ++p)
     input.players.push_back({p, players_[p], winner && *winner == p ? 1U : 0U});
   const auto settled = settle_contributions(input);

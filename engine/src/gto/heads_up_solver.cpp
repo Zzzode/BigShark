@@ -53,8 +53,12 @@ void reserve_card(int card, std::array<bool, 52>& used) {
 }
 
 bool same_root(const poker::HeadsUpRoot& a, const poker::HeadsUpRoot& b) {
+  // The preflop marker and the posted blinds are part of the game identity: a
+  // preflop root and a flop root are different games even when every other
+  // field matches.
   return a.flop == b.flop && a.stacks == b.stacks && a.contributions == b.contributions &&
-         a.pot == b.pot && a.big_blind == b.big_blind && a.button == b.button;
+         a.pot == b.pot && a.big_blind == b.big_blind && a.button == b.button &&
+         a.preflop == b.preflop && a.blinds_posted == b.blinds_posted;
 }
 
 struct Exhausted {};
@@ -142,7 +146,10 @@ std::vector<Deal> joint_deals(const HeadsUpGame& game, Budget& budget) {
 
 std::vector<int> public_cards(const HeadsUpGame& game, const HeadsUpState& state,
                               const Deal& deal) {
-  const std::size_t slot = state.board().size() - 3;
+  // The slot counts COMPLETED postflop streets: a preflop Deal phase has an
+  // empty board and is filling the flop, so it maps to slot 0.
+  const std::size_t dealt = state.board().size();
+  const std::size_t slot = dealt < 3 ? 0 : dealt - 3;
   if (game.fixed_runout[slot])
     return {*game.fixed_runout[slot]};
   std::array<bool, 52> used{};
@@ -557,7 +564,12 @@ std::vector<Action> abstract_actions(const HeadsUpState& state, const SizeSchedu
   const Chips base = add(hero.street_committed, legal.call_amount);
   const Chips pot_after_call = add(state.pot(), legal.call_amount);
   std::vector<Chips> targets{bounds.minimum, cap};
-  const auto& schedule = sizes[static_cast<std::size_t>(state.street())];
+  // The schedule is indexed by the POSTFLOP street. A preflop street reuses the
+  // flop sizes until a dedicated preflop menu exists.
+  const std::size_t street_index = state.street() == poker::Street::Preflop
+                                       ? static_cast<std::size_t>(poker::Street::Flop)
+                                       : static_cast<std::size_t>(state.street());
+  const auto& schedule = sizes[street_index];
   const auto& fractions = bounds.type == ActionType::Bet ? schedule.bets : schedule.raises;
   for (auto f : fractions) {
     const auto target = add(base, ceil_fraction(pot_after_call, f));
@@ -603,8 +615,11 @@ const PolicyRow* HeadsUpPolicy::lookup(const HeadsUpState& state, std::array<int
 HeadsUpTrainer::HeadsUpTrainer(HeadsUpGame game) : game_(std::move(game)) {
   const HeadsUpState root(game_.root);
   std::array<bool, 52> blocked{};
+  // A preflop root carries no board; its flop entries are the unset sentinel
+  // and must not be reserved as cards.
   for (int card : game_.root.flop)
-    reserve_card(card, blocked);
+    if (card >= 0)
+      reserve_card(card, blocked);
   for (auto card : game_.fixed_runout)
     if (card)
       reserve_card(*card, blocked);

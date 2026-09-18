@@ -141,8 +141,59 @@ utility relative to hand-start chips. Zero-sum chip conservation applies
 throughout this supported profile. After an all-in call the remaining public
 cards are dealt without further betting.
 
-Persistence, resolving, multiway rules, and preflop-root rules are separate
-implementation stages.
+Persistence, resolving, and multiway rules are separate implementation stages.
+
+### Preflop root profile (RFC 0004 Stage 10)
+
+`HeadsUpRoot::preflop` selects a second, additive profile: no board, blinds
+posted for real, the button (small blind) acting first, and the big blind
+holding its option after a limp. The flop-rooted profile is untouched — the
+same roots, transitions, and results — and `Street` keeps its historical
+values (`Flop = 0`, `Turn = 1`, `River = 2`) with `Preflop` appended, so no
+existing encoding or comparison changes. An undealt flop is expressed with the
+same unset sentinel the fixed runout uses (`-1`), never with card `0`, which is
+a real card.
+
+The profile follows real heads-up rules: the button posts the small blind and
+the other seat the big blind, both drawn from the declared stacks; the button
+acts first; a call by the button is a limp, and the street stays open for the
+big blind to raise or check (its option). Any wager by either seat cancels the
+option. The first completed postflop street reverses the order, so the big
+blind acts first from the flop onward. A street advances with the FIRST public
+card of that street, so a partially dealt flop is already `Street::Flop` with
+fewer than three cards while the `Deal` phase continues; information keys
+distinguish those states by board size. Posted blinds are live wagers, not
+uncalled overbets: a street closes with equal commitments, and only a genuinely
+unmatched excess (a blind or an all-in that nobody could match) is returned to
+its owner. A seat that commits every chip it can still wager is recorded as
+all-in rather than inferred from `stack == 0`, because a returned excess
+restores the stack without restoring the ability to act; the board then runs
+out to showdown with no further betting. Preflop roots carrying a flop,
+mismatched blind posts, and blinds exceeding a stack are rejected.
+
+#### Stage 10 scope boundary
+
+This change delivers the preflop RULES and their independent native tests
+(`engine/tests/test_heads_up_preflop.cpp`), which is rollout step 1 of RFC 0004
+("rules and independent terminal tests, with no live policy change"). It does
+NOT deliver preflop training or continuation-range export, and the profile must
+not be described as solved.
+
+The blocker is measured, not assumed. A full traversal from a preflop root is
+not a bounded workload: every preflop line reaches every flop, so the tree spans
+all C(48,3) = 17,296 boards per line times the action menu. Even a deliberately
+shallow three-big-blind stack does not converge inside the declared limits — a
+bounded walk visits over 3,000,000 nodes and more than 1,000,000 distinct
+postflop information sets while the preflop street itself has only two. The
+convergence gates are therefore not met and no preflop coverage is claimed.
+
+A bounded preflop profile needs its own abstraction (a flop-terminal subgame
+with the postflop continuation represented rather than enumerated) plus a
+dedicated preflop size menu. That menu changes `SizeSchedule`, which is part of
+the artifact byte-accounting contract (`accounted_bytes` identity between a
+split run and an uninterrupted one), so it needs its own accepted design before
+implementation. Until then the live six-max preflop charts remain in force and
+are not replaced by any heads-up model.
 
 ## Full-Traversal Heads-Up Trainer
 

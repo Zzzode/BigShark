@@ -4,7 +4,13 @@ Status: Current
 
 Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 5, 6,
 7, 8, 9, 11, and the isolated Stage 12 ICM are complete with recorded
-evidence. Stage 10 (heads-up preflop) is next. RFC 0005 is implemented
+evidence. Stage 10 is PARTIALLY complete: the heads-up preflop RULES and their
+independent native tests are implemented, but preflop training and
+continuation-range export are NOT, because a full traversal from a preflop
+root is unbounded (measured: >3M nodes and >1M postflop information sets at a
+three-big-blind stack) and the bounded abstraction it needs touches the
+artifact byte-accounting contract, which requires its own accepted design.
+Stage 13 (multiway) and Stage 14 (final audit) remain. RFC 0005 is implemented
 through the Stage 9 resolving scope; its general live subgame work remains
 explicitly deferred. Live enablement of resolving still requires explicit
 authorization.
@@ -1315,6 +1321,39 @@ claim actually holding.
 platform, Linux portable verification, and nested/multiway/general
 off-tree/general custom-payoff solving. General multi-request resolving and
 crash-safe external baseline recovery still need their execution contracts.
+
+## Stage 10 Partial Evidence (heads-up preflop rules)
+
+Delivered: the preflop rules profile and its independent native regressions.
+
+- `engine/include/bs/heads_up.hpp`: `Street::Preflop` appended last (Flop/Turn/
+  River keep their historical values), `HeadsUpRoot::preflop` and
+  `blinds_posted`, `HeadsUpState::big_blind_option_` and `all_in_`.
+- `engine/src/poker/heads_up.cpp`: the posted-blind preflop root, button-first
+  order, the big blind option across a limp, one-card-at-a-time flop dealing,
+  live-blind and all-in settlement handling.
+- `engine/tests/test_heads_up_preflop.cpp`: independent public-API regressions
+  for button-first order, the option after a limp (raise and check endings), a
+  button open removing the option, both fold endings, exact chip conservation,
+  the short/all-in blind root with its board run-out, blind-post and
+  flop-carrying-root rejection, the unchanged flop profile, and the measured
+  preflop tree size (C(48,3) = 17,296 flops from a single line).
+
+Zero regression on the existing profile: the Stage 1 exhaustive oracle still
+reports 12,226 nodes / 2,852 folds / 3,002 showdowns, artifact split-run byte
+identity holds, and the replay suite is unchanged at 156 decisions / 0 illegal
+/ 0 JS fallbacks with mix {raise:32,check:48,fold:68,bet:5,call:3}.
+
+NOT delivered, with the blocker recorded rather than assumed: preflop training
+and policy-derived continuation ranges. A full traversal from a preflop root
+does not converge inside the declared limits (a bounded walk visits over
+3,000,000 nodes and more than 1,000,000 distinct postflop information sets
+while the preflop street has two), so no convergence gate and no preflop
+coverage is claimed. The bounded abstraction such a profile needs (a
+flop-terminal subgame) brings a dedicated preflop size menu, which changes
+`SizeSchedule` and therefore the artifact byte-accounting contract; that needs
+its own accepted design. The live six-max preflop charts remain in force and
+are not replaced by any heads-up model.
 
 ## Next Implementation Checkpoint
 

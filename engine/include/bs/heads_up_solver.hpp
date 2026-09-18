@@ -36,6 +36,10 @@ struct StreetSizes {
   std::vector<Fraction> raises{{1, 2}, {1, 1}};
 };
 
+// One entry per POSTFLOP street, indexed by the Street enum value (Flop = 0,
+// Turn = 1, River = 2). A preflop-rooted game reuses the flop entry; a
+// dedicated preflop menu is part of the artifact-format work that preflop
+// persistence needs and is deliberately out of this change.
 using SizeSchedule = std::array<StreetSizes, 3>;
 
 struct WeightedHand {
