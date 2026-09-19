@@ -213,8 +213,8 @@ std::size_t game_byte_charge(const HeadsUpGame& game) {
   for (const auto& range : game.ranges)
     game_bytes += 2 * range.size() * sizeof(WeightedHand);
   for (std::size_t street = 0; street < kStoredStreets; ++street)
-    game_bytes += 2 * (game.sizes[street].bets.size() + game.sizes[street].raises.size()) *
-                  sizeof(Fraction);
+    game_bytes +=
+        2 * (game.sizes[street].bets.size() + game.sizes[street].raises.size()) * sizeof(Fraction);
   return game_bytes;
 }
 
