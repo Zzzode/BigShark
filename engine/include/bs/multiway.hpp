@@ -59,24 +59,14 @@ struct MultiwayPlayer {
   Chips net_contributed() const { return contributed - refunded; }
 };
 
-struct MultiwayAction {
-  ActionType type;
-  // Only bets and raises carry a street target total.
-  Chips target_total = 0;
-  bool operator==(const MultiwayAction&) const = default;
-};
-
-// Legal actions for one acting player. The aggressive interval is present only
-// when a bet or raise is legal; `all_in_only` marks an interval whose minimum
-// is capped by the player's stack (a short all-in is the only raise available).
-struct MultiwayLegal {
-  bool fold = false;
-  bool check = false;
-  bool call = false;
-  Chips call_amount = 0;
-  std::optional<TargetRange> aggressive;
-  bool contains(MultiwayAction action) const;
-};
+// RFC 0008 measured these two as field-identical to `Action` and
+// `LegalActions`, with a byte-identical `contains` body. They are aliases now,
+// not parallel declarations: a multiway action IS an action, and the multiway
+// legal set IS the legal set. The names are kept so call sites read in the
+// multiway vocabulary and so the eventual unified game definition can retire
+// them deliberately rather than by accident.
+using MultiwayAction = Action;
+using MultiwayLegal = LegalActions;
 
 class MultiwayState {
  public:

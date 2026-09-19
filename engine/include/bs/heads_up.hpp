@@ -33,6 +33,13 @@ struct TargetRange {
   bool all_in_only;
 };
 
+// Legal actions for one acting player. The aggressive interval is present only
+// when a bet or raise is legal; `all_in_only` marks an interval whose minimum
+// is capped by the player's stack (a short all-in is the only raise available).
+//
+// RFC 0008 measured that `MultiwayLegal` declared these same six members and
+// that the two `contains` bodies were byte-identical, so multiway.hpp now
+// aliases this type rather than restating it. This is the one home.
 struct LegalActions {
   bool fold = false;
   bool check = false;

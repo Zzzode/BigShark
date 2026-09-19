@@ -9,25 +9,14 @@
 #include <optional>
 #include <stdexcept>
 
+#include "poker_detail.hpp"
+
 namespace bs::poker {
 namespace {
 
-Chips add(Chips left, Chips right) {
-  if (right > std::numeric_limits<Chips>::max() - left)
-    throw std::overflow_error("chip sum overflow");
-  return left + right;
-}
-
-void require(bool condition, const char* message) {
-  if (!condition)
-    throw std::invalid_argument(message);
-}
-
-void use_card(int card, std::array<bool, 52>& used) {
-  require(card >= 0 && card < 52, "card ID outside deck");
-  require(!used[card], "duplicate card");
-  used[card] = true;
-}
+using detail::add;
+using detail::require;
+using detail::use_card;
 
 }  // namespace
 

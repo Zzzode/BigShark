@@ -8,49 +8,17 @@
 #include <optional>
 #include <stdexcept>
 
+#include "poker_detail.hpp"
+
 namespace bs::poker {
 namespace {
 
-Chips add(Chips left, Chips right) {
-  if (right > std::numeric_limits<Chips>::max() - left)
-    throw std::overflow_error("chip sum overflow");
-  return left + right;
-}
-
-void require(bool condition, const char* message) {
-  if (!condition)
-    throw std::invalid_argument(message);
-}
-
-void use_card(int card, std::array<bool, 52>& used) {
-  require(card >= 0 && card < 52, "card ID outside deck");
-  require(!used[card], "duplicate card");
-  used[card] = true;
-}
-
-// Next seat clockwise from `from` (exclusive).
-std::size_t clockwise(std::size_t count, std::size_t from, std::size_t step = 1) {
-  return (from + step) % count;
-}
+using detail::add;
+using detail::clockwise;
+using detail::require;
+using detail::use_card;
 
 }  // namespace
-
-bool MultiwayLegal::contains(MultiwayAction action) const {
-  switch (action.type) {
-    case ActionType::Fold:
-      return fold && action.target_total == 0;
-    case ActionType::Check:
-      return check && action.target_total == 0;
-    case ActionType::Call:
-      return call && action.target_total == 0;
-    case ActionType::Bet:
-    case ActionType::Raise:
-      return aggressive && action.type == aggressive->type &&
-             action.target_total >= aggressive->minimum &&
-             action.target_total <= aggressive->maximum;
-  }
-  return false;
-}
 
 MultiwayState::MultiwayState(const MultiwayRoot& root) : root_(root) {
   require(root.players >= kMinMultiwayPlayers && root.players <= kMaxMultiwayPlayers,
