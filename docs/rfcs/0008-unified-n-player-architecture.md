@@ -26,7 +26,10 @@ returns. It then removes the duplicated and superseded paths in dependency
 order, with each removal gated on the replacement being verified.
 
 The target is a 2..10 seat engine whose strength degrades along a declared,
-measurable gradient instead of a table-and-heuristic fallback.
+measurable gradient instead of a table-and-heuristic fallback. That strength
+claim is conditional on stage 6 measuring it, and stage 6's baseline is pinned
+to the heuristic the engine would otherwise have deployed, precisely so the
+measurement cannot be satisfied by choosing a weaker opponent.
 
 ## Motivation
 
@@ -554,10 +557,17 @@ conservation, oracle, or interface-conformance failure.
      stage.
    - **Metric.** Per-fixture deviation gain at each seat count: the measured
      deviation estimate of the abstract policy against the declared reference
-     opponents, reported alongside the same estimate for the declared heuristic
-     on the identical fixtures and seeds. The abstract policy must beat the
-     declared heuristic on the aggregate of the declared fixture set, or the
-     result is recorded as a negative result and stage 6 is not complete.
+     opponents, reported alongside the same estimate for the baseline opponent
+     on the identical fixtures and seeds.
+   - **The baseline opponent is pinned, not chosen.** It is the engine's own
+     heuristic source (`POSTFLOP_HEURISTIC` plus the preflop chart source) as it
+     exists at the commit where stage 6 begins, identified by that commit's SHA,
+     with its existing tests retained unchanged. A stage 6 author may not
+     author a fresh, weaker opponent and beat that: the comparison that carries
+     the RFC's claim is against the policy the engine would actually have
+     deployed at the same seats, and a self-declared weak baseline would make
+     the gate unfalsifiable. Declaring a second, additional weak opponent is
+     allowed and changes nothing.
    - **Seeds and permutations.** A fixed, published seed list, with every
      reported figure reproducible from the seeds alone. Seat positions are
      permuted so a figure is not an artifact of one assignment of positions.
@@ -569,9 +579,15 @@ conservation, oracle, or interface-conformance failure.
      without a convergence guarantee (RFC 0006).
 
    Gate: the published table, reproducible from its seeds, with the estimate
-   labeled as an estimate. Negative results are reported as results and do not
-   block the rest of the RFC; they block only the stronger claims the RFC's
-   Non-Goals already disclaim.
+   labeled as an estimate. **A negative result completes this stage and does not
+   block the rest of the RFC** - stage 6 measures, it does not win, and the
+   Non-Goals already disclaim a quality result this RFC has not measured. What a
+   negative result does block is the Summary's capability claim: the RFC then
+   records that its headline empirical claim was measured and failed, the
+   larger-table policy is NOT promoted or enabled, and the remaining stages
+   proceed on the architecture alone. A stage that reports "the abstract policy
+   lost to the pinned baseline" and stops there is complete; a stage that
+   reports nothing, or that quietly swaps the baseline, is not.
 7. **Removal.** Delete the duplicated rule implementations (via the adapters),
    the hard-coded chart tables (removed from the decision path, per L2), the
    experimental solver paths subsumed by the interface, and v0. The default
