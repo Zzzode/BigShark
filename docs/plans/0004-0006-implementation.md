@@ -21,10 +21,48 @@ design, and that follow-up RFC is the critical path item for Stage 10 and is
 not yet scheduled. Stage 10 must not be marked delivered on the back of RFC
 0007 alone, and any stage-4 training numbers must be published as
 declared-profile coverage, never as Stage 10 completion.
-Stage 13 (multiway) and Stage 14 (final audit) remain. RFC 0005 is implemented
-through the Stage 9 resolving scope; its general live subgame work remains
-explicitly deferred. Live enablement of resolving still requires explicit
-authorization.
+Stage 13 (multiway) is PARTIALLY complete: the 3..6-player RULES and the
+joint-deal sampler are implemented and independently tested, but training and
+deviation evaluation are NOT, and a design gap was found while starting them.
+Stage 14 (final audit) remains. RFC 0005 is implemented through the Stage 9
+resolving scope; its general live subgame work remains explicitly deferred.
+Live enablement of resolving still requires explicit authorization.
+
+The Stage 13 gap, recorded rather than papered over:
+
+- **Stage 13's criterion names an artefact that was never designed.** The
+  required evidence is "compatible joint deals, seat permutations, unilateral
+  deviations, honest nonconvergence and quality reporting". The first two exist.
+  Unilateral-deviation evaluation does not, and it is not a one-parameter
+  generalization of anything that does: `ExactEvaluation` is
+  `std::array<double, 2>` (`engine/include/bs/heads_up_solver.hpp`), and the
+  resolver, river, and certifier best-response machinery are all heads-up. A
+  multiway evaluator is new code, not a widened call.
+- **What is genuinely blocked, stated accurately.** NashConv generalizes to N
+  players and is computable - a best response against a fixed profile is a
+  single-agent maximization, linear in tree size, and `NashConv = 0` still
+  characterizes a Nash equilibrium by definition. There is no definitional or
+  computational blocker, and this plan does not claim one. What does not
+  generalize is NashConv's role as a CONVERGENCE TARGET: CFR drives two-player
+  zero-sum exploitability to zero, while at larger seat counts it converges to a
+  coarse correlated equilibrium in general-sum games, and multiplayer Nash is
+  neither unique nor payoff-interchangeable (RFC 0006 says as much).
+- **What needs design (RFC-worthy).** RFC 0006's large-game requirement -
+  "predeclared adversarial policies, held-out seeds, seat permutations, and
+  confidence intervals" - is a sampling design with no existing analogue. The
+  heads-up side pairs a full enumeration with a certified bound; neither covers
+  a sampled multiway estimate. That estimator is the design work that does not
+  yet exist.
+- **Stage 13's training half is downstream of the abstraction.** Repeated full
+  multiway traversal is a documented dead end, so multiway training needs an
+  abstracted tree, which is RFC 0008 stages 3-4. RFC 0008's rollout order is
+  therefore correct and Stage 13 is not next in line: only its no-training parts
+  - a fold-only exact check, and the deviation evaluator once the estimator above
+  is designed - could land before the abstraction.
+
+Cross-reference: RFC 0008 stage 6 needs a measured larger-table deviation
+estimate, so the estimator above is on that RFC's critical path as well. The two
+should be designed once, not twice.
 
 Active goal: finish all accepted RFC 0004-0006 scope. A checkpoint is not
 goal completion; continue remaining stages until their acceptance evidence
