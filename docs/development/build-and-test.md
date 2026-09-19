@@ -351,14 +351,15 @@ npm run mutation
 
 The runner (`tools/mutation/verify.ts`) applies each mutation from the config,
 rebuilds only the affected target, classifies the result, and restores the file
-from a pristine copy. Every mutation has one of four outcomes: caught, an
-equivalence recorded in the config as changing no reachable state, a coverage
-gap, or a compile failure. Only the first two keep the command green, and an
-uncaught mutation must be resolved by measuring reachability — never by
-asserting equivalence from the source alone. Where an equivalence could become
-reachable under a different fixture, pin it with an assertion in the suite so
-the claim expires loudly instead of letting the mutant start passing for a new
-reason.
+from a pristine copy. A config may declare more than one target, since a claim in
+the stage evidence is often backed by a suite other than the one it is about.
+Every mutation has one of four outcomes: caught, an equivalence recorded in the
+config as changing no reachable state, a coverage gap, or a compile failure.
+Only the first two keep the command green, and an uncaught mutation must be
+resolved by measuring reachability — never by asserting equivalence from the
+source alone. Where an equivalence could become reachable under a different
+fixture, pin it with an assertion in the suite so the claim expires loudly
+instead of letting the mutant start passing for a new reason.
 
 ## Documentation Checks
 

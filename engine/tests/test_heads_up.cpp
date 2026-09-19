@@ -785,10 +785,34 @@ int test_exhaustive_small_stacks() {
   CHECK(counts.showdowns > 100);
   CHECK(counts.refunds > 100);
   CHECK(counts.short_raises > 0);
+  // Exact pins, not lower bounds. This suite is the reference every later rules
+  // change is checked against, and "the counts did not move" is only a check if
+  // the counts are asserted rather than printed and compared by eye. An
+  // independent reviewer caught that distinction in the RFC 0008 stage-1
+  // evidence, where the figures were cited as a preserved gate while the test
+  // itself only guaranteed they were positive. A fixture or rule change that
+  // moves any of these is a behavior change to the heads-up rules and must be
+  // justified as one, not absorbed silently.
+  static constexpr std::size_t kNodes = 12226;
+  static constexpr std::size_t kFolds = 2852;
+  static constexpr std::size_t kShowdowns = 3002;
+  static constexpr std::size_t kRefunds = 3480;
+  static constexpr std::size_t kShortRaises = 120;
+  if (counts.nodes != kNodes || counts.folds != kFolds || counts.showdowns != kShowdowns ||
+      counts.refunds != kRefunds || counts.short_raises != kShortRaises) {
+    std::printf(
+        "PIN FAILURE: expected nodes=%zu folds=%zu showdowns=%zu refunds=%zu short-raises=%zu\n",
+        kNodes, kFolds, kShowdowns, kRefunds, kShortRaises);
+  }
   std::printf(
       "heads-up exhaustive: nodes=%zu folds=%zu showdowns=%zu refunds=%zu "
       "short-raises=%zu\n",
       counts.nodes, counts.folds, counts.showdowns, counts.refunds, counts.short_raises);
+  CHECK(counts.nodes == kNodes);
+  CHECK(counts.folds == kFolds);
+  CHECK(counts.showdowns == kShowdowns);
+  CHECK(counts.refunds == kRefunds);
+  CHECK(counts.short_raises == kShortRaises);
   return 0;
 }
 

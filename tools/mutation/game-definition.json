@@ -23,6 +23,39 @@
     "command": "./build/release/engine/test_game_definition",
     "args": []
   },
+  "additional_targets": [
+    {
+      "name": "the heads-up exhaustive pins, which the stage-1 evidence cites",
+      "build": {
+        "command": "cmake",
+        "args": [
+          "--build",
+          "--preset",
+          "release",
+          "--target",
+          "test_heads_up"
+        ]
+      },
+      "test": {
+        "command": "./build/release/engine/test_heads_up",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "the pinned expected node count drifts",
+          "file": "engine/tests/test_heads_up.cpp",
+          "find": "  static constexpr std::size_t kNodes = 12226;",
+          "replace": "  static constexpr std::size_t kNodes = 12227;"
+        },
+        {
+          "name": "after_card opens action with one seat all in",
+          "file": "engine/src/poker/heads_up.cpp",
+          "find": "  if (next.all_in_[0] || next.all_in_[1]) {",
+          "replace": "  if (next.all_in_[0] && next.all_in_[1]) {"
+        }
+      ]
+    }
+  ],
   "mutations": [
     {
       "name": "close_street stops refunding the unmatched excess",

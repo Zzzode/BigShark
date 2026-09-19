@@ -42,13 +42,31 @@ interface Mutation {
   replace: string;
 }
 
+interface Command {
+  command: string;
+  args: string[];
+}
+
+interface Target {
+  /** Present only on additional targets; the primary target is unnamed. */
+  name?: string;
+  build: Command;
+  test: Command;
+  mutations: Mutation[];
+}
+
 interface Config {
   description: string;
   expected?: { equivalent?: string[]; rationale?: string };
-  build: { command: string; args: string[] };
-  test: { command: string; args: string[] };
+  // The primary target's build/test/mutations sit at the top level, and
+  // additional targets add more. A config covering several suites keeps one
+  // place to record equivalences and one exit status for the whole battery.
+  build: Command;
+  test: Command;
   mutations: Mutation[];
+  additional_targets?: Target[];
 }
+
 
 type Verdict = 'RED' | 'EQUIV' | 'GAP' | 'BUILD';
 
@@ -64,12 +82,18 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const configPath = resolve(root, configArg);
 const config = JSON.parse(readFileSync(configPath, 'utf8')) as Config;
 
+const targets: Target[] = [
+  { build: config.build, test: config.test, mutations: config.mutations },
+  ...(config.additional_targets ?? []),
+];
+
 const run = (command: string, args: string[]) =>
   spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: 'pipe' });
 
 // Pristine copies, taken before anything is touched, so a failure partway
 // through cannot leave the tree mutated.
-const files = [...new Set(config.mutations.map((m) => m.file))];
+const allMutations = targets.flatMap((t) => t.mutations);
+const files = [...new Set(allMutations.map((m) => m.file))];
 const backupDir = mkdtempSync(join(tmpdir(), 'bs-mutate-'));
 const backupPath = (file: string) => join(backupDir, file.replaceAll('/', '_'));
 const restore = (): void => {
@@ -90,7 +114,8 @@ interface Result {
 
 const results: Result[] = [];
 try {
-  for (const mutation of config.mutations) {
+  for (const target of targets) {
+  for (const mutation of target.mutations) {
     const path = join(root, mutation.file);
     const original = readFileSync(path, 'utf8');
     // An anchor that is missing or ambiguous would silently mutate the wrong
@@ -107,14 +132,14 @@ try {
     }
     writeFileSync(path, original.replace(mutation.find, mutation.replace));
 
-    const build = run(config.build.command, config.build.args);
+    const build = run(target.build.command, target.build.args);
     if (build.status !== 0) {
       writeFileSync(path, original);
       results.push({ name: mutation.name, verdict: 'BUILD', detail: 'mutation did not compile' });
       continue;
     }
 
-    const test = run(config.test.command, config.test.args);
+    const test = run(target.test.command, target.test.args);
     // The first line naming the failure is the most informative thing to keep:
     // it says WHICH invariant noticed, which is what a reviewer needs in order
     // to judge whether the suite caught the right thing rather than merely
@@ -133,6 +158,7 @@ try {
     });
     writeFileSync(path, original);
   }
+  }
 } finally {
   restore();
 }
@@ -143,6 +169,14 @@ for (const r of results) process.stdout.write(`${r.verdict.padEnd(5)} ${r.name.p
 const count = (verdict: Verdict) => results.filter((r) => r.verdict === verdict).length;
 const gaps = count('GAP');
 const unbuilt = count('BUILD');
+if (targets.length > 1)
+  process.stdout.write(
+    `\n${targets.length} targets, ${results.length} mutations:\n` +
+      targets
+        .map((t) => `  - ${t.name ?? '(primary)'}: ${t.mutations.length}`)
+        .join('\n') +
+      '\n',
+  );
 process.stdout.write(`\n${count('RED')}/${results.length} caught`);
 if (count('EQUIV')) process.stdout.write(`, ${count('EQUIV')} equivalent (recorded, pinned by the suite)`);
 if (gaps) process.stdout.write(`, ${gaps} UNCAUGHT GAP${gaps > 1 ? 'S' : ''}`);

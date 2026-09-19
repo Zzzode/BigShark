@@ -150,10 +150,13 @@ than a copy.
 assumed, because a sweep that never reaches the option proves nothing about it.
 
 **Mutation verification is machine-run**, not hand-run:
-`npm run mutation` applies each of sixteen semantic mutations, rebuilds only
-this target, classifies the result, and restores the file. Twelve are caught and
-four are equivalent, so the battery currently reports no coverage gap. Three of
-the twelve caught were gaps the suite had before the battery ran:
+`npm run mutation` applies eighteen semantic mutations across two targets,
+rebuilds only the affected target, classifies the result, and restores the file.
+Fourteen are caught and four are equivalent, so the battery currently reports no
+coverage gap. Twelve of the fourteen cover the new stage-1 code, and the other
+two cover `test_heads_up` itself, because its counts are what the rest of this
+section cites and a citation needs a check rather than a print. Three of the
+twelve were gaps the suite had before the battery ran:
 
 - a rooted flop with fewer than two actionable seats, reachable only from an
   empty stack, which the settlement sweep never produced because its stack range
@@ -201,10 +204,14 @@ ones.
 
 What actually must not move is `test_heads_up`, and it did not: it still reports
 `nodes=12226 folds=2852 showdowns=3002 refunds=3480 short-raises=120`, its ASan
-run prints the same figures, and the commit does not touch the file. Note the
-strength of that check honestly: those counts are asserted as LOWER BOUNDS plus
-a printed line (`test_heads_up.cpp:783-791`), not as named constants, so the
-comparison is a human one against this record rather than a machine pin.
+run prints the same figures, and the commit does not touch the file. Those
+figures are now asserted as EXACT pins rather than printed and compared by eye
+(the reviewer's point: as written they were lower bounds plus a printf, so
+"unchanged" was a human judgement, not a check). The pin was verified able to
+fail: the mutation battery perturbs the expected node count and requires
+`test_heads_up` to go red, and separately mutates `after_card` to open action
+with one seat all in and requires the same. Both do, so the pin is a check and
+not decoration.
 
 **Residual limitations, stated rather than implied.**
 

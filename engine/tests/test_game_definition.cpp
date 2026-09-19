@@ -22,12 +22,14 @@
 // recorded as equivalent below; a new GREEN is a coverage gap to close, a
 // surprising RED means the suite caught something other than what was intended.
 //
-// The battery catches TWELVE semantic mutations, including three this file had
-// missed: a rooted flop with fewer than two actionable seats (reachable only from
-// an empty stack, which the settlement sweep's range never produced), a
-// settlement that awards the pot by seat order rather than by hand score
-// (invisible while both fixture hands tied on a board straight flush), and
-// after_card opening action with a single actionable seat.
+// The battery catches TWELVE semantic mutations of the stage-1 code, including
+// three this file had missed: a rooted flop with fewer than two actionable seats
+// (reachable only from an empty stack, which the settlement sweep's range never
+// produced), a settlement that awards the pot by seat order rather than by hand
+// score (invisible while both fixture hands tied on a board straight flush), and
+// after_card opening action with a single actionable seat. The same config
+// carries a second target, `test_heads_up`, whose counts the stage evidence
+// cites; that target's own two mutations are what turn a citation into a check.
 //
 // FOUR mutants are EQUIVALENT at two seats: they change no reachable state. They
 // are recorded in tools/mutation/game-definition.json with their rationale, and
