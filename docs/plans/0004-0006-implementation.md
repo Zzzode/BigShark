@@ -290,6 +290,17 @@ have changed a live decision. It is still a real defect: the stage's acceptance
 criterion is reproducing the shipped rules exactly, and this violated it for a
 root the shipped suite pins.
 
+**A second reviewer finding, and one the sanitizers could not have made.** The
+test-vacuity reviewer found an out-of-bounds read in the oracle's own
+reachability probe: it tested the STATE's phase and then indexed the LEDGER with
+the ledger's actor, so a phase disagreement read `committed[-1]` and `stack[2]`
+on two-element `std::array`s. No sanitizer covers that -- `std::array` is a plain
+aggregate without container annotations, and libc++'s hardening modes pass it too
+(verified by building against the buggy source with three different hardening
+flags). It was found by reading. The probe now checks the ledger's own state
+before indexing it and counts the combination it cannot index, asserted zero,
+rather than skipping it quietly.
+
 ## Completed Checkpoint
 
 Stage 1 evidence (2026-09-14):
