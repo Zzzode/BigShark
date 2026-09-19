@@ -52,9 +52,15 @@ larger tables tractable does not exist. Concretely, measured in this repository:
   `heads_up_solver` (multi-size CFR with an `InformationKey` and a
   `HeadsUpPolicy`), and `multiway_sampler` (joint-deal enumeration). None share
   a policy or tree type.
-- **The preflop charts are hard-coded.** `engine/src/poker/charts.cpp` is 98
-  lines of `std::unordered_set<std::string>` literals produced from the
-  playbook, consumed directly by `preflop()` in `engine/src/policy/decision.cpp`.
+- **The preflop charts are compiled in and self-described as approximations.**
+  `engine/src/poker/charts.cpp` is 98 lines that build a `Charts` value from 22
+  literal range-spec strings ("22+ A2s+ KTs+ ...") parsed by `parseRange` into
+  `Range169` sets, consumed directly by `preflop()` in
+  `engine/src/policy/decision.cpp`. The header itself calls them
+  "solver-approximation preflop charts" and scopes them to 6-max 100bb
+  (`engine/include/bs/charts.hpp:1-2`), yet the decision that consumes them
+  reports nothing about their approximation status - the same defect as the
+  heuristic's, an approximation with no label.
 - **The heuristic is not distinguishable from a solver.** `decision.cpp` routes
   by street (preflop to charts, river to `river_gto`, everything else to
   heuristics) and returns a `Decision` with no statement of what, if anything,
