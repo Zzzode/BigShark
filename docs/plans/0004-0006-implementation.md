@@ -2,8 +2,9 @@
 
 Status: Current
 
-Execution state: RFCs 0004 and 0006 Implementing; Stages 1, 2, 3, 4, 5, 6,
-7, 8, 9, 11, and the isolated Stage 12 ICM are complete with recorded
+Execution state: RFCs 0004, 0006, and 0008 Implementing (0008 from
+stage 1, committed d60ce13); Stages 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, and
+the isolated Stage 12 ICM are complete with recorded
 evidence. Stage 10 is PARTIALLY complete: the heads-up preflop RULES and their
 independent native tests are implemented, but preflop training and
 continuation-range export are NOT. The blocker is measured, not assumed: a
@@ -95,7 +96,7 @@ artifact boundary, not separate services.
 
 | Stage | Roadmap IDs | Owner | Implementation | Required completion evidence |
 | --- | --- | --- | --- | --- |
-| 0008-1 | RFC 0008 §L1 | `engine` poker | One `GameDef` / `GameState` for 2..10 seats, constructing two seats only, with one legal-transition implementation behind the existing types. Additive: no existing behavior changes and nothing routes through it | Independent equivalence oracle with no dependency on the heads-up header; every semantic mutation of the new code shown red; pinned heads-up oracle counts unchanged |
+| 0008-1 | RFC 0008 §L1 | `engine` poker | One `GameDef` / `GameState` for 2..10 seats, constructing two seats only, with one legal-transition implementation. Additive: no existing behavior changes and no adapter forwards to it yet | Independent equivalence oracle that does not include the heads-up header; every semantic mutation of the new code either shown red or proven equivalent by a reachability measurement recorded in the mutation config; `test_heads_up` figures unchanged |
 | 1 | B1 | `engine` poker | Checked chip state, real actor order, commitments, legal targets, raise rights, refunds, and showdown | Table-driven legal transitions, overflow and all-in tests; independent exact chip conservation |
 | 2 | B2 | `engine` solver | Public heads-up facade, exact information keys, joint chance, full traversal and independent BR oracle | Tiny-game reference agreement; full-range normalized policies; no hidden-information conditioning |
 | 3 | B2/B3 | `engine` solver/benchmarks | External sampling, specified PRNG, regret/average updates, iteration rollback, resource caps | Enumerated expected updates, repeatability, interruption/resume, fixed/sampled quality thresholds and existing benchmark parity |
@@ -119,10 +120,13 @@ work. Do not parallelize changes to the same poker or service-domain contract.
 
 ## RFC 0008 Stage 1 Evidence (2026-09-19)
 
-RFC 0008 was accepted 2026-09-19 (`a927284`) after three independent review
-rounds. Its first rollout stage is the unified game definition for two seats,
-behind adapters, preserving `HeadsUpState` behavior exactly. This section is that
-stage's evidence. Scope is stage 1 only.
+RFC 0008 was accepted 2026-09-19 (`a927284`) after three review rounds by a
+separately launched approval agent (the RFC's own Decision section records all
+three, including the two it returned Changes Requested on). Its first rollout
+stage is the unified game definition for two seats, preserving `HeadsUpState`
+behavior exactly. That stage's plan wording says "behind adapters"; the adapters
+are NOT part of this stage, and no existing type forwards to the new one. This
+section is that stage's evidence. Scope is stage 1 only.
 
 **What landed.** `engine/include/bs/game_definition.hpp`,
 `engine/src/poker/game_definition.cpp`, and
@@ -190,10 +194,17 @@ was wrong; the ledger now states the two-seat rule it is meant to check.
 
 **Gates.** Release ctest 38/38, ASan/UBSan 36/36, format clean, both benchmark
 families, `npm run check`, `npm run proto:check`, and 156 replay decisions with
-0 illegal and 0 JS fallbacks. The two gates that must not move did not:
-`test_heads_up` reports the pinned `nodes=12226 folds=2852 showdowns=3002
-refunds=3480 short-raises=120` unchanged, and `test_unification_invariants`
-passes with zero edits to the file.
+0 illegal and 0 JS fallbacks. The counts rose from 36/34 because this change
+registers two new test targets (`game_definition` and, in the preceding commit
+`dd1d4a6`, `unification_invariants`); both are new suites rather than preserved
+ones.
+
+What actually must not move is `test_heads_up`, and it did not: it still reports
+`nodes=12226 folds=2852 showdowns=3002 refunds=3480 short-raises=120`, its ASan
+run prints the same figures, and the commit does not touch the file. Note the
+strength of that check honestly: those counts are asserted as LOWER BOUNDS plus
+a printed line (`test_heads_up.cpp:783-791`), not as named constants, so the
+comparison is a human one against this record rather than a machine pin.
 
 **Residual limitations, stated rather than implied.**
 

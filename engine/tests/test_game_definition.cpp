@@ -13,7 +13,10 @@
 // repository has already shipped two tests that could not fail.
 //
 // Mutation verification is machine-run, not hand-run:
-//   node tools/mutation/verify.mjs --config tools/mutation/game-definition.json
+//   npm run mutation
+// or directly, `node dist/tools/mutation/verify.js --config <config>`. The runner
+// is TypeScript; there is no .mjs copy, because handwritten JavaScript is
+// forbidden under tools/.
 // It applies each mutation, rebuilds this target, classifies the result, and
 // restores the file. Every mutation listed there must be RED except the ones
 // recorded as equivalent below; a new GREEN is a coverage gap to close, a

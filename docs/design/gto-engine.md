@@ -693,10 +693,11 @@ the heads-up state keeps its exact contract and both of its profiles are
 untouched, and the multiway profile is the RFC 0006 experimental one.
 
 RFC 0008 stage 1 adds `bs::poker::GameState` as the eventual single replacement
-for both, constructing two seats only for now. It is additive and unowned by any
-production path: `HeadsUpState` stays the shipping rules type and this section's
-type is unchanged. The seat-count stage (RFC 0008 stage 2) is what retires them,
-and until then this section describes what actually runs.
+for both, constructing two seats only for now. It is additive: `HeadsUpState`
+stays the shipping rules type, this section's type is unchanged, and nothing
+routes through the new type. Stage 2 widens `GameState` to 3..10 seats behind
+adapters; **stage 7 is where the duplicated implementations are actually
+deleted**, and until then this section describes what runs.
 
 Ownership and boundaries: `bigshark_poker` owns these rules; they depend on the
 shared `Settlement` ledger and the shared evaluator and on nothing else. No

@@ -1,7 +1,7 @@
 ---
 rfc: "0008"
 subject: "Unified N-Player Engine Architecture"
-status: "Accepted"
+status: "Implementing"
 authors: "BigShark engine agent"
 created: "2026-09-19"
 updated: "2026-09-19"
