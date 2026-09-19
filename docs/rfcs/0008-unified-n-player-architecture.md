@@ -56,9 +56,9 @@ larger tables tractable does not exist. Concretely, measured in this repository:
   `HeadsUpPolicy`), and `multiway_sampler` (joint-deal enumeration). None share
   a policy or tree type.
 - **The preflop charts are compiled in and self-described as approximations.**
-  `engine/src/poker/charts.cpp` is 98 lines that build a `Charts` value from 22
-  literal range-spec strings ("22+ A2s+ KTs+ ...") parsed by `parseRange` into
-  `Range169` sets, consumed directly by `preflop()` in
+  `engine/src/poker/charts.cpp` is 98 lines that build a `Charts` value from 24
+  `parseRange` calls over literal range-spec strings ("22+ A2s+ KTs+ ..."),
+  parsed into `Range169` sets, consumed directly by `preflop()` in
   `engine/src/policy/decision.cpp`. The header itself calls them
   "solver-approximation preflop charts" and scopes them to 6-max 100bb
   (`engine/include/bs/charts.hpp:1-2`), yet the decision that consumes them
@@ -225,7 +225,7 @@ poker semantics rather than in shape. Verified against both implementations:
 | `Phase::Folded` | The same enum name means the same thing in both - the whole hand ended by folding - but the multiway path reaches it only when `live_players().size() <= 1`, while a seat that folds mid-hand merely sets its `folded` flag and the action continues. A unified state must not let a reader conflate "this seat folded" with "the hand is over", which is the reading the shared name invites |
 | `legal` | Different structures (`LegalActions` versus `MultiwayLegal`) |
 | `award`, `settle_fold`, `settle_showdown` | Different types (`Settlement` with fixed two-seat arrays versus `ContributionSettlement` with vectors), and the multiway showdown must rank every live hand rather than take a winner index |
-| `pot` | Same definition, different arity |
+| `pot` | Same formula over a different summand type: `PlayerChips` versus `MultiwayPlayer` |
 | `actor` | Identical |
 
 Two consequences follow. First, unifying is not forwarding: each row above is a
@@ -257,9 +257,11 @@ The hard-coded preflop charts are NOT an abstraction and are not relocated into
 one. `engine/src/poker/charts.cpp` holds hand-class sets, which is a precomputed
 policy over hand classes, not a map from states to a smaller state space. They
 become a declared policy source with its own identity, recorded by the guarantee
-mapping below as `approximate`, and they leave the decision path rather than
-being re-expressed as an abstraction instance. Conflating the two would hide a
-policy inside the layer whose job is to make approximations visible.
+mapping below as `approximate`, and they are removed as an UNNAMED routing
+branch rather than being re-expressed as an abstraction instance. They are
+still consumed by the decision service - a declared source is a source, not an
+abstraction. Conflating the two would hide a policy inside the layer whose job
+is to make approximations visible.
 
 `AbstractionId` (name plus version plus parameters plus a digest) is part of a
 game's identity, so a policy trained under one abstraction can never be looked
@@ -353,7 +355,7 @@ sources are the seven values of `SolverSource`
 | --- | --- | --- |
 | `PREFLOP_CHART` | `approximate` | Becomes an abstract solve, or a declared policy source, per N5 |
 | `POSTFLOP_HEURISTIC` | `approximate` | Becomes an abstract solve for a declared model |
-| `RIVER_LP` | `approximate` | `abstract_solved` once the capped-range model is declared with a measured error; `exact_solved` only with the cap removed, which is the path the exact-versus-abstracted measurement runs on the enumerable fixtures. The cap is live and small (`TrackedRangesOptions::cap = 24`, `engine/include/bs/river_gto.hpp:101`), so the bounded-range solve is itself a measurable abstraction instance and the honest default is the weaker level |
+| `RIVER_LP` | `approximate` | `abstract_solved` once the capped-range model is declared with a measured error; `exact_solved` only with the cap removed, which is the path the exact-versus-abstracted measurement runs on the enumerable fixtures. The cap is live and small: the call site sets 36 (`engine/src/policy/decision.cpp:355`), against a header default of 24 (`engine/include/bs/river_gto.hpp:101`), so the bounded-range solve is itself a measurable abstraction instance and the honest default is the weaker level |
 | `RIVER_DCFR` | `approximate` | `abstract_solved` once its model and error are declared; a bounded iterative solver has no certificate |
 | `MULTISTREET_CFR` | `approximate` | Experimental and offline; no path to a stronger level is claimed |
 | `BLUEPRINT` | `approximate` | `abstract_solved` once the blueprint's game carries a measured abstraction error; a benchmark quality metric is not a bound |
@@ -388,8 +390,12 @@ explicit preference order.
 
 ### L7: protocol
 
-The v1 Protobuf contract gains the guarantee level as a structured field. v0 is
-removed in the removal stage below, after the replacement is verified.
+The guarantee level reaches the wire as a structured field under whichever
+mechanism §L6's wire disposition selects - a newly negotiated minor or the
+`bigshark.engine.v2` package - decided at stage 5, not by this layer. Protocol
+and adapter change in the same stage, so the field is never accepted without a
+contract that defines it. v0 is removed in the removal stage below, after the
+replacement is verified.
 
 ## Dependency Rules
 
@@ -411,7 +417,7 @@ removed in the removal stage below, after the replacement is verified.
 | `HeadsUpState` / `MultiwayState` | Keep working as adapters during the transition; deleted only in the removal stage |
 | Existing policies and artifacts | Keep their identity and digests; the game identity gains an abstraction field under RFC 0007's schema-major rules |
 | v0 NDJSON | Kept until the removal stage, where its removal is gated on no remaining callers and a rollback artifact |
-| Preflop charts | Behavior preserved while they are re-expressed as an abstraction instance; the numeric tables do not change in that step |
+| Preflop charts | Behavior preserved while they become a declared policy source with its own identity - NOT an abstraction instance (see L2); the numeric tables do not change in that step |
 | Live decision path | Unchanged in behavior until a source is explicitly promoted; every step is independently revertible |
 | Settlement | Extended to 10 seats; 2..6 behavior is unchanged and re-verified against the Stage 11 oracle |
 
@@ -561,19 +567,50 @@ conservation, oracle, or interface-conformance failure.
      on the identical fixtures and seeds.
    - **The baseline opponent is pinned, not chosen.** It is the engine's own
      heuristic source (`POSTFLOP_HEURISTIC` plus the preflop chart source) as it
-     exists at the commit where stage 6 begins, identified by that commit's SHA,
-     with its existing tests retained unchanged. A stage 6 author may not
-     author a fresh, weaker opponent and beat that: the comparison that carries
-     the RFC's claim is against the policy the engine would actually have
-     deployed at the same seats, and a self-declared weak baseline would make
-     the gate unfalsifiable. Declaring a second, additional weak opponent is
-     allowed and changes nothing.
-   - **Seeds and permutations.** A fixed, published seed list, with every
-     reported figure reproducible from the seeds alone. Seat positions are
-     permuted so a figure is not an artifact of one assignment of positions.
-   - **Reference opponents.** Declared and versioned: at minimum the current
-     heuristic, a fixed uniform-random policy, and the previous stage's policy at
-     the same seat count for a self-improvement comparison.
+     exists at the commit where stage 6 begins, identified by all three of: that
+     commit's SHA; the exact source files (`engine/src/poker/charts.cpp`,
+     `engine/include/bs/charts.hpp`, and the `preflop()` entry point in
+     `engine/src/policy/decision.cpp`); and a digest of the parsed chart data
+     recorded in the stage-6 evidence. A description in prose is not an
+     identifier: it can be wrong in ways a digest cannot, and a stage-6 author
+     who reconstructs the baseline from prose alone may reproduce a different
+     opponent. A stage 6 author may not author a fresh, weaker opponent and beat
+     that either: the comparison that carries the RFC's claim is against the
+     policy the engine would actually have deployed at the same seats. Declaring
+     a second, additional weak opponent is allowed and changes nothing.
+   - **The baseline's existing tests, named.** The gate retains the replay suite
+     (156 decisions / 0 illegal / 0 JS fallbacks), which is the only existing
+     check that exercises chart-driven decisions end to end, plus
+     `test_heads_up_preflop` and `test_v0_protocol` at the decision level.
+     Recorded plainly: the charts have no dedicated unit test today, so the
+     baseline's behavior is gated indirectly. A stage that adds one is
+     strengthening this RFC's own evidence, not expanding its scope.
+   - **Seeds and permutations.** A fixed, published seed list drawn from a
+     declared space (the joint-deal and action sampling space), with the list's
+     size declared and justified by the interval it produces below. Every
+     reported figure is reproducible from the seeds alone. Seat positions are
+     permuted across the list so a figure is not an artifact of one assignment
+     of positions. A one-element list satisfies "reproducible" while carrying no
+     statistical power, so the size is part of the evidence rather than a
+     formality.
+   - **Statistical strength.** Each figure is reported with its spread over the
+     seed list, as a confidence interval at a declared level, per RFC 0006's
+     large-game requirement. "Beats" is claimed only when the intervals for the
+     abstract policy and the pinned baseline are separated at that level;
+     otherwise the outcome is recorded as indistinguishable, which counts as a
+     negative result for the promotion gate. A single-seed figure, or a figure
+     without an interval, cannot satisfy this stage. This is what keeps a
+     positive result from being noise that happened to land on the right side
+     once.
+   - **Composition.** The evaluated profile places the abstract policy in EVERY
+     seat, with seat positions permuted across the seed list. A mixed profile in
+     which the pinned baseline occupies the other seats does not satisfy this
+     stage, because the baseline would then be carrying the comparison the RFC
+     claims the abstract policy wins.
+   - **Additional reference opponents.** Declared and versioned alongside the
+     pinned baseline: a fixed uniform-random policy, and the previous stage's
+     policy at the same seat count for a self-improvement comparison. These add
+     context; the promotion comparison is against the pinned baseline above.
    - **No convergence claim.** The report states the estimator, the seeds, and
      the fixture set, and states in the same place that the number is an estimate
      without a convergence guarantee (RFC 0006).
@@ -632,11 +669,15 @@ existing digest moves.
   decision is served from an abstraction whose error is unreported.
 - A reproducible stage 6 table reports the abstract policy's measured deviation
   estimate at each tested seat count, including at least one seat count strictly
-  greater than 6 and one at 10, against the declared reference opponents on the
-  fixed seed list, next to the declared heuristic's estimate on the same fixtures
-  and seeds. The figure is labeled an estimate, states its estimator, and makes
-  no convergence claim. A stage 6 that produces no such table is not complete,
-  and this criterion is met by reporting the result, positive or negative.
+  greater than 6 and one at 10, against the pinned baseline on the fixed seed
+  list, next to the baseline's own estimate on the same fixtures and seeds. Each
+  figure carries a confidence interval at a declared level over a declared seed
+  list, the evaluated profile holds the abstract policy in every seat with seats
+  permuted, the figure is labeled an estimate, states its estimator, and makes no
+  convergence claim. A stage 6 that produces no such table is not complete, and
+  this criterion is met by reporting the result, positive or negative; a result
+  whose intervals do not separate from the baseline's is recorded as
+  indistinguishable and does not promote the policy.
 - Every solver is reachable through one interface, refuses unsupported shapes
   explicitly, and reproduces its previous results bit-for-bit under the identity
   abstraction.
