@@ -276,10 +276,12 @@ std::optional<std::size_t> GameState::next_actor(std::size_t from) const {
   return std::nullopt;
 }
 
-bool GameState::any_pending() const {
+bool GameState::others_pending(std::size_t player) const {
   for (std::size_t p = 0; p < def_.player_count; ++p) {
-    const GamePlayer& player = players_[p];
-    if (player.pending && !player.folded && !player.all_in)
+    if (p == player)
+      continue;
+    const GamePlayer& other = players_[p];
+    if (other.pending && !other.folded && !other.all_in)
       return true;
   }
   return false;
@@ -328,11 +330,19 @@ void GameState::refund_unmatched() {
   players_[high].stack = add(players_[high].stack, excess);
   players_[high].refunded = add(players_[high].refunded, excess);
   players_[high].street_committed -= excess;
-  // `all_in` is NOT cleared here. A refund returns an amount nobody matched,
-  // and a seat that was all in had no such amount: it committed every chip it
-  // had. Re-deriving from the stack keeps the flag honest without ever turning
-  // an all-in seat back into one that can act on the same street.
-  players_[high].all_in = players_[high].stack == 0;
+  // `all_in` is NOT re-derived here, and that is the whole point of the field.
+  // A refund returns an amount NOBODY MATCHED, and a seat that went all in had
+  // no such amount: it committed every chip it had. Re-deriving from the stack
+  // would hand that seat chips and let it act again, which is exactly the
+  // divergence an independent reviewer found at a capped blind: a short big
+  // blind posts its stack, the unmatched part comes back at street close, and
+  // the shipped heads-up rule still treats that seat as all in for the rest of
+  // the hand. `engine/tests/test_heads_up_preflop.cpp:229` pins it: "The board
+  // runs out with no action at any street." So the flag, once set, STAYS set
+  // until a new street is dealt, which re-derives it from the stack.
+  // (Measured: dropping this line is what makes the two implementations agree
+  // on the short-big-blind root; keeping it produced 12 divergences over 40
+  // preflop roots at four-chip stacks.)
 }
 
 void GameState::close_street() {
@@ -414,7 +424,7 @@ GameState GameState::after_action(std::size_t player, Action action) const {
       other.pending = false;
     return next;
   }
-  if (!next.any_pending()) {
+  if (!next.others_pending(player)) {
     next.close_street();
     return next;
   }

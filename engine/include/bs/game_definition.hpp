@@ -21,11 +21,26 @@
 //    as it does today; the seat-count stage revisits this when the multiway
 //    type unifies. `board` stays here because transitions DO read it.
 //
-//  * ONE ALL-IN FIELD PER SEAT. The multiway representation
-//    (`all_in == stack == 0`, re-derived on every chip movement) is adopted
-//    because 10 seats need a general form and because the maintained alternative
-//    was measured to be observationally identical across 1,990,808 reachable
-//    nodes. The rule that makes it total is stated at `refund_unmatched`.
+//  * ONE ALL-IN FIELD PER SEAT, PRESERVED ACROSS A REFUND. `all_in` is derived
+//    from the stack at every chip movement EXCEPT `refund_unmatched`, which
+//    leaves it alone. That exception is load-bearing and was found the hard way:
+//    an earlier version re-derived it after a refund, on the reasoning that a
+//    refunded seat holds chips so it cannot be all in. The shipped heads-up rule
+//    says the opposite. A big blind capped at its poster's stack is all in for
+//    the rest of the hand, and the part nobody matched returns to it at street
+//    close WITHOUT making it able to act again
+//    (`engine/tests/test_heads_up_preflop.cpp:229`: "The board runs out with no
+//    action at any street"). Re-deriving produced a real divergence: one extra
+//    chip of stack and an entire extra betting round.
+//
+//    This corrects a claim the previous revision of this comment made. It said
+//    the two all-in representations were "observationally identical across
+//    1,990,808 reachable nodes", so a single derived field lost nothing. That
+//    measurement was taken over nodes reachable from roots whose blinds were
+//    never capped, and the state it missed -- chips behind, still all in -- is
+//    reachable from a root the shipped suite pins. The representations differ;
+//    the maintained one was right, for a reason its own comment had given and
+//    that measurement had not covered.
 #pragma once
 
 #include <array>
@@ -203,7 +218,21 @@ class GameState {
   void close_street();
   // First seat clockwise from `from` (exclusive) that still owes an action.
   std::optional<std::size_t> next_actor(std::size_t from) const;
-  bool any_pending() const;
+  // Whether any seat OTHER than `player` still owes an action. This -- not "can
+  // two seats still act" -- is what closes a street on the action path, and the
+  // difference is real rather than academic:
+  //   - a bet that leaves its bettor all in does NOT close the street, because
+  //     the opponent must still answer it, even though only one seat can now act
+  //     (`engine/src/poker/heads_up.cpp` sets `pending_[opponent] = true` and
+  //     then assigns the action to it);
+  //   - a call that empties the caller's stack DOES close the street, because
+  //     everybody else has already acted and nobody can answer a raise from a
+  //     seat with nothing behind it.
+  // An earlier version asked whether TWO SEATS could still act, which is a
+  // different question and got both cases wrong. The mutation config preserves
+  // that mistake as a regression mutant, and it is one of the twelve the oracle
+  // catches.
+  bool others_pending(std::size_t player) const;
   // Seats that are neither folded nor all in. Betting needs at least two of
   // them; with fewer the board runs out instead of opening a round nobody can
   // contest, which is the general form of the heads-up all-in rule.

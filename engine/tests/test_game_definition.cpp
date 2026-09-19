@@ -22,8 +22,9 @@
 // recorded as equivalent below; a new GREEN is a coverage gap to close, a
 // surprising RED means the suite caught something other than what was intended.
 //
-// The battery catches TWELVE semantic mutations of the stage-1 code, including
-// three this file had missed: a rooted flop with fewer than two actionable seats
+// The battery catches FOURTEEN semantic mutations of the stage-1 code, including
+// three this file had missed (and two that were added after the fact to hold the
+// mistakes an independent reviewer found): a rooted flop with fewer than two actionable seats
 // (reachable only from an empty stack, which the settlement sweep's range never
 // produced), a settlement that awards the pot by seat order rather than by hand
 // score (invisible while both fixture hands tied on a board straight flush), and
@@ -149,7 +150,14 @@ struct Ref {
     stack[high_seat] += excess;
     returned[high_seat] += excess;
     committed[high_seat] -= excess;
-    all_in[high_seat] = stack[high_seat] == 0;
+    // `all_in` is deliberately NOT re-derived. A refund returns an amount nobody
+    // matched, and a seat that went all in had no such amount: it committed
+    // every chip it had. Re-deriving here would revive it, and the shipped
+    // heads-up rule does the opposite -- a capped big blind returns the part
+    // nobody matched and still never acts again
+    // (`engine/tests/test_heads_up_preflop.cpp:229`: "The board runs out with no
+    // action at any street"). The difference is one chip of stack and a whole
+    // extra betting round, so it is a rules divergence, not a rounding detail.
   }
 
   void close_street() {
@@ -335,6 +343,7 @@ Ref ref_deal(const Ref& s, int public_card) {
 struct Counts {
   long nodes = 0, folds = 0, showdowns = 0, refunds = 0, short_raises = 0, calls = 0;
   long option_held = 0, flops = 0, preflop_roots = 0;
+  long refunded_all_in = 0;       // a seat holds chips AND is all in (refund on a capped blind)
   long folded_high = 0;           // M3: a folded seat holds the strict max commitment
   long rr_false = 0;              // M4: the actor holds no raise rights
   long rr_false_would_raise = 0;  // M4: ...and every other guard would allow a raise
@@ -356,6 +365,13 @@ int compare(const GameState& got, const Ref& want, Counts& counts) {
           if (want.committed[a] > want.committed[b])
             folded_high = true;
     counts.folded_high += folded_high ? 1 : 0;
+    // The state that separates "re-derive all_in after a refund" from "preserve
+    // it": a seat with chips behind that is nonetheless all in. Reaching it
+    // requires a blind capped at its poster's stack, so this counter is also the
+    // proof that the preflop sweep covers the shipped short-big-blind shape.
+    for (int p = 0; p < 2; ++p)
+      if (!want.folded[p] && want.all_in[p] && want.stack[p] > 0)
+        counts.refunded_all_in += 1;
     // M4 probe: the mutation can only show up when the actor lacks raise rights
     // AND every OTHER guard in `legal()` would still let a raise through.
     if (got.phase() == Phase::Action) {
@@ -420,10 +436,12 @@ int compare(const GameState& got, const Ref& want, Counts& counts) {
         g.contributed != want.contributed[p] || g.refunded != want.returned[p] ||
         g.folded != want.folded[p])
       goto mismatch;
-    // The all-in invariant, asserted on EVERY node rather than only where it is
-    // convenient: a flag that disagrees with the stack is the failure class the
-    // ante defect produced.
-    if (g.all_in != (g.stack == 0) && !g.folded)
+    // The all-in flag is compared against the LEDGER, not against the identity
+    // `all_in == (stack == 0)`. That identity looked like the stronger check but
+    // was the weaker one: it holds in every reachable state except the one that
+    // matters, where a refund on a capped blind leaves the seat holding chips
+    // and still all in. Comparing to the ledger is what makes this able to fail.
+    if (g.all_in != want.all_in[p])
       goto mismatch;
   }
   {
@@ -727,6 +745,7 @@ int case_flop_rooted_sweep() {
       "rr_would_raise=%ld hash=%ld\n",
       counts.nodes, counts.folds, counts.showdowns, counts.folded_high, counts.rr_false,
       counts.rr_false_would_raise, counts.node_hash);
+  std::printf("  flop sweep refunded_all_in=%ld\n", counts.refunded_all_in);
   std::printf("  flop sweep nodes=%ld folds=%ld showdowns=%ld\n", counts.nodes, counts.folds,
               counts.showdowns);
   CHECK(counts.nodes > 1000);
@@ -770,35 +789,50 @@ int case_flop_rooted_sweep() {
 int case_preflop_sweep() {
   Counts counts;
   for (Chips blind = 2; blind <= 4; blind += 2) {
-    for (Chips stack = blind; stack <= blind + 5; ++stack) {
-      for (std::size_t button = 0; button < 2; ++button) {
-        GameDef def{};
-        def.player_count = 2;
-        def.button = button;
-        def.big_blind = blind;
-        const Chips small = blind / 2;
-        def.stacks = {stack, stack, 0, 0, 0, 0, 0, 0, 0, 0};
-        def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-        def.pot = blind;
-        def.board = {-1, -1, -1, 0, 0};
-        def.board_size = 0;
-        def.preflop = true;
-        def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-        def.blinds_posted[button] = small;
-        def.blinds_posted[1 - button] = blind;
-        const GameState state(def);
-        ++counts.preflop_roots;
-        CHECK(walk(state, ref_start(def), counts) == 0);
+    // ASYMMETRIC stacks, both seats swept independently. Symmetric stacks are
+    // not enough and never were: the shipped short-big-blind fixture is
+    // `{2, 10}`, and the rule it pins -- a blind capped at its poster's stack
+    // makes that seat all in for the rest of the hand -- is only reachable when
+    // one seat is short and the other is not. An independent reviewer found the
+    // implementation got that rule wrong while this sweep, which used one shared
+    // stack value, could not see it. The cost is a few hundred thousand extra
+    // nodes; the alternative is a suite that certifies a rule it never tests.
+    for (Chips first = blind; first <= blind + 5; ++first) {
+      for (Chips second = blind; second <= blind + 5; ++second) {
+        for (std::size_t button = 0; button < 2; ++button) {
+          GameDef def{};
+          def.player_count = 2;
+          def.button = button;
+          def.big_blind = blind;
+          const Chips small = blind / 2;
+          def.stacks = {first, second, 0, 0, 0, 0, 0, 0, 0, 0};
+          def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+          def.pot = blind;
+          def.board = {-1, -1, -1, 0, 0};
+          def.board_size = 0;
+          def.preflop = true;
+          def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+          def.blinds_posted[button] = small;
+          def.blinds_posted[1 - button] = blind;
+          const GameState state(def);
+          ++counts.preflop_roots;
+          CHECK(walk(state, ref_start(def), counts) == 0);
+        }
       }
     }
   }
-  std::printf("  preflop sweep roots=%ld nodes=%ld folds=%ld option_held=%ld\n",
-              counts.preflop_roots, counts.nodes, counts.folds, counts.option_held);
+  std::printf("  preflop sweep roots=%ld nodes=%ld folds=%ld option_held=%ld refunded_all_in=%ld\n",
+              counts.preflop_roots, counts.nodes, counts.folds, counts.option_held,
+              counts.refunded_all_in);
   CHECK(counts.preflop_roots > 0);
   CHECK(counts.nodes > 100);
   // The option is the reason this sweep exists, so its reachability is asserted
   // rather than assumed.
   CHECK(counts.option_held > 0);
+  // The refunded-but-still-all-in state, which is what a capped blind creates and
+  // what the implementation got wrong. Asserted here, in the sweep whose fixture
+  // changes reach it, so the coverage cannot quietly lapse.
+  CHECK(counts.refunded_all_in > 0);
   return 0;
 }
 

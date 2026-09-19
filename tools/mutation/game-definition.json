@@ -7,7 +7,7 @@
       "constructor does not derive all_in after an ante",
       "roots a flop with `pending` keyed off the folded flag alone"
     ],
-    "rationale": "Four mutants change no reachable state at two seats. The first two are measured over every node and PINNED as standing assertions in the oracle (see the non-vacuity pins at the end of the flop sweep), so a fixture change that reaches one of those states fails the oracle instead of letting the mutant start passing for a new reason. The last two are equivalent for structural reasons the suite also pins: the two-seat profile rejects a nonzero ante (`ante_is_rejected_in_this_profile`), so no ante is ever posted here; and `GameDef` declares no folded seat, so at a root every seat is unfolded and `stack > 0` and `!folded && !all_in` denote exactly the same set. Any OTHER uncaught mutation is a coverage gap and must be closed."
+    "rationale": "Four mutants change no reachable state at two seats. The first two are measured over every node and PINNED as standing assertions in the oracle (see the non-vacuity pins at the end of the flop sweep), so a fixture change that reaches one of those states fails the oracle instead of letting the mutant start passing for a new reason. The last two are equivalent for structural reasons the suite also pins: the two-seat profile rejects a nonzero ante (`ante_is_rejected_in_this_profile`), so no ante is ever posted here; and `GameDef` declares no folded seat, so at a root every seat is unfolded and `stack > 0` and `!folded && !all_in` denote exactly the same set. Any OTHER uncaught mutation is a coverage gap and must be closed. The fifth is equivalent at the single call site rather than in general: the acting seat has already cleared its own `pending` by the time the question is asked, so the two predicates cannot differ there. It is recorded rather than removed because the named form states the rule instead of depending on a fact about its caller that a later edit could break; if a future call site asks the question before clearing the actor's flag, this mutant turning RED is the signal."
   },
   "build": {
     "command": "cmake",
@@ -152,6 +152,18 @@
       "file": "engine/src/poker/game_definition.cpp",
       "find": "      players_[p].all_in = players_[p].stack == 0;\n      players_[p].pending = players_[p].stack > 0;\n    }\n    refresh_live();",
       "replace": "      players_[p].all_in = players_[p].stack == 0;\n      players_[p].pending = !players_[p].folded;\n    }\n    refresh_live();"
+    },
+    {
+      "name": "refund_unmatched re-derives all_in from the stack, reviving a capped blind",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  players_[high].stack = add(players_[high].stack, excess);\n  players_[high].refunded = add(players_[high].refunded, excess);\n  players_[high].street_committed -= excess;",
+      "replace": "  players_[high].stack = add(players_[high].stack, excess);\n  players_[high].refunded = add(players_[high].refunded, excess);\n  players_[high].street_committed -= excess;\n  players_[high].all_in = players_[high].stack == 0;"
+    },
+    {
+      "name": "the street close asks whether two seats can act, not whether one owes an action",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  if (!next.others_pending(player)) {\n    next.close_street();\n    return next;\n  }\n  const std::optional<std::size_t> following = next.next_actor(player);",
+      "replace": "  if (next.actionable_count() < 2) {\n    next.close_street();\n    return next;\n  }\n  const std::optional<std::size_t> following = next.next_actor(player);"
     }
   ]
 }

@@ -144,17 +144,23 @@ theoretical: the first run of the oracle found a 2^64-1 unsigned underflow the
 author had missed, precisely because it checked a different implementation rather
 than a copy.
 
-**Measured coverage.** 24 preflop roots / 356,204 nodes, 150 flop roots /
-367,348 nodes, 137,560 showdown terminals, and the big-blind option exercised
-80 times in the preflop sweep. The option count is asserted positive rather than
+**Measured coverage.** 144 preflop roots / 1,026,792 nodes, 150 flop roots /
+367,348 nodes, and 137,560 showdown terminals. The preflop sweep varies BOTH
+seats independently, which is what makes it able to reach the capped-blind state;
+the earlier symmetric sweep could not, and an independent reviewer found a real
+divergence hiding in that blind spot. The big-blind option is exercised 336
+times, and 270,380 nodes hold the state that separates the two possible all-in
+rules (chips behind AND all in). Both counts are asserted positive rather than
+assumed, because a sweep that never reaches a branch proves nothing about it. The option count is asserted positive rather than
 assumed, because a sweep that never reaches the option proves nothing about it.
 
 **Mutation verification is machine-run**, not hand-run:
-`npm run mutation` applies eighteen semantic mutations across two targets,
+`npm run mutation` applies twenty semantic mutations across two targets,
 rebuilds only the affected target, classifies the result, and restores the file.
-Fourteen are caught and four are equivalent, so the battery currently reports no
-coverage gap. Twelve of the fourteen cover the new stage-1 code, and the other
-two cover `test_heads_up` itself, because its counts are what the rest of this
+Sixteen are caught and four are equivalent, so the battery currently reports no
+coverage gap. Fourteen of the sixteen cover the new stage-1 code -- including two
+that preserve, as regression mutants, the exact mistakes the review found and the
+one it did not -- and the other two cover `test_heads_up` itself, because its counts are what the rest of this
 section cites and a citation needs a check rather than a print. Three of the
 twelve were gaps the suite had before the battery ran:
 
@@ -226,6 +232,63 @@ not decoration.
 - `TerminalDepth::Flop` (RFC 0007) is declared so the identity surface does not
   grow a field later, but only `River` is accepted.
 - macOS/arm64 only; no Linux build was verified.
+
+### The defect the independent review found, and what it cost
+
+The rules-correctness reviewer found a real divergence from the shipped heads-up
+rules, and it is worth recording precisely because the evidence above did not
+have it.
+
+**The rule.** A blind capped at its poster's stack makes that seat all in for the
+REST OF THE HAND. `HeadsUpState` gets this from a flag that is set at the root
+and never cleared. My `GameState` re-derived `all_in` from the stack at every
+chip movement including `refund_unmatched`, so when the unmatched part of a
+capped blind came back at street close, the seat revived, the preflop round
+continued, and `after_card` opened a betting round the shipped rules never
+enter. `engine/tests/test_heads_up_preflop.cpp:229` pins the shipped behavior in
+words: "The board runs out with no action at any street."
+
+**Reproduced independently before being accepted.** A lockstep differential
+probe drove both implementations over every root both admit, and reported 12
+divergences over 40 preflop roots at four-chip stacks. Minimum reproduction:
+`stacks = {2, 2}`, `blind = 2`, `button = 0`. After the fix, 502 roots across
+both profiles report zero divergences.
+
+**Why the oracle could not see it, which is the part worth keeping.** Two
+reasons, and the second is the instructive one. The ledger's `refund_unmatched`
+shared the defect, so it agreed with the implementation by construction. But the
+deeper reason is fixture shape: the preflop sweep used ONE stack value for both
+seats, so no blind was ever capped and the state never arose. A symmetric-stack
+sweep cannot test a rule about what happens when one seat is short and the other
+is not. The sweep now varies both seats independently (144 roots, 1,026,792
+nodes) and asserts the reachability of the state that separates the two rules:
+270,380 nodes where a seat holds chips AND is all in. The comparison also changed
+from `all_in == (stack == 0)` to a comparison against the ledger, because that
+identity looked like the stronger check while holding in every reachable state
+except the one that mattered.
+
+**A claim in this stage's own header was wrong, and is corrected there.** The
+header said the two all-in representations were "observationally identical across
+1,990,808 reachable nodes". They are not. That measurement covered nodes reachable
+from roots whose blinds were never capped, which is exactly the gap above. The
+maintained representation was right, for the reason its own comment had given and
+which the measurement had not covered.
+
+**The reviewer's second finding did not hold up, and the difference matters.**
+It described a state where only one seat can act and claimed the shipped rules
+never enter it. They do: a bet that leaves its bettor all in keeps the street
+open because the opponent must still answer it, so `HeadsUpState` assigns the
+action to the opponent with `all_in_` set on the bettor. Both types agree there,
+and since heads-up is the reference, no change was warranted. What the finding
+DID expose is that my close rule asked the wrong question -- whether two seats
+can still act, rather than whether anyone still owes an action. The named form
+now states the rule directly, and preserving my original wrong rule as a mutant
+turns the oracle red, so the mistake is a regression test rather than a note.
+
+**Scope.** No production path constructs a `GameState`, so none of this could
+have changed a live decision. It is still a real defect: the stage's acceptance
+criterion is reproducing the shipped rules exactly, and this violated it for a
+root the shipped suite pins.
 
 ## Completed Checkpoint
 
