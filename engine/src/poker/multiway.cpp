@@ -82,11 +82,19 @@ MultiwayState::MultiwayState(const MultiwayRoot& root) : root_(root) {
   if (root.board.empty()) {
     // Antes are dead money from every player, including folded-out seats. They
     // are contributed but never street-committed.
+    //
+    // `all_in` is re-derived here exactly as the blind loop and `pay` do it. An
+    // ante that empties a stack must leave the seat unable to act: without this
+    // the seat stays pending, `next_actor` can select it, and `legal()` offers a
+    // zero-stack seat a free check. The omission was unreachable only because
+    // the v1 validator rejects every non-zero ante before a state is built, so
+    // it never appeared in production or in a test.
     if (root.ante > 0) {
       for (std::size_t p = 0; p < root.players; ++p) {
         const Chips posted = std::min(root.ante, players_[p].stack);
         players_[p].stack -= posted;
         players_[p].contributed = add(players_[p].contributed, posted);
+        players_[p].all_in = players_[p].stack == 0;
       }
     }
     struct Blind {

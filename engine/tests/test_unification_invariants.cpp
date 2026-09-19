@@ -151,6 +151,76 @@ bool mw_take_fold(int step) {
 //    the representation has to preserve, so it is asserted here rather than
 //    left implicit in either implementation.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// 0. An ANTE that empties a stack must leave the seat unable to act.
+//
+//    This is not hypothetical. The multiway constructor re-derived `all_in`
+//    after posting blinds but not after posting antes, so a seat emptied by an
+//    ante stayed `pending`, `next_actor` selected it, and `legal()` offered it a
+//    free check with nothing behind. The omission was invisible because the v1
+//    validator rejects every non-zero ante before any state is built, and no
+//    test used an ante at all. It is asserted here against the invariants the
+//    rest of this file already relies on, so the ante path stops being the one
+//    payment route that does not maintain all-in status.
+//
+//    Keep this the first case: it guards the constructor, before any walk.
+// ---------------------------------------------------------------------------
+int check_ante_that_empties_a_stack_disables_action() {
+  // Every seat is emptied by its own ante.
+  {
+    MultiwayRoot root;
+    root.players = 3;
+    root.button = 1;
+    root.big_blind = 2;
+    root.ante = 10;
+    root.stacks.assign(3, 10);
+    root.contributions.assign(3, 0);
+    const MultiwayState state(root);
+    Chips total_contributed = 0;
+    for (const MultiwayPlayer& player : state.players()) {
+      CHECK(player.stack == 0);
+      CHECK(player.all_in);
+      total_contributed += player.contributed;
+    }
+    // Antes are dead money: all of it is in the pot, and no seat can act.
+    CHECK(total_contributed == 30);
+    CHECK(state.pot() == 30);
+    CHECK(!state.actor().has_value());
+  }
+
+  // Mixed depths: seats that survive the ante can still act, seats emptied by it
+  // cannot, and the actor is never one of the emptied ones. This is the case a
+  // blanket "nobody acts" fix would wrongly satisfy.
+  for (Chips shallow : {Chips{5}, Chips{10}, Chips{25}}) {
+    MultiwayRoot root;
+    root.players = 4;
+    root.button = 0;
+    root.big_blind = 2;
+    root.ante = 10;
+    root.stacks = {shallow, 100, shallow, 100};
+    root.contributions.assign(4, 0);
+    const MultiwayState state(root);
+    for (const MultiwayPlayer& player : state.players()) {
+      CHECK((player.stack == 0) == player.all_in);
+      if (player.stack == 0)
+        CHECK(!player.pending);
+    }
+    if (const auto actor = state.actor()) {
+      // Whoever holds the action must have chips to wager.
+      CHECK(state.players()[*actor].stack > 0);
+      CHECK(!state.players()[*actor].all_in);
+    }
+    // And the action must be offered only to seats that can pay for it.
+    const MultiwayLegal legal = state.legal();
+    if (legal.call) {
+      const auto actor = state.actor();
+      CHECK(actor.has_value());
+      CHECK(legal.call_amount <= state.players()[*actor].stack);
+    }
+  }
+  return 0;
+}
+
 int check_no_empty_stack_ever_holds_the_action() {
   // Heads-up: walk a deterministic, legal branch from many small roots so the
   // all-in paths are actually reached.
@@ -532,7 +602,9 @@ int check_conservation_on_every_terminal_path() {
 
 int main() {
   using Case = std::pair<const char*, int (*)()>;
-  const std::array<Case, 6> cases = {{
+  const std::array<Case, 7> cases = {{
+      {"ante_that_empties_a_stack_disables_action",
+       check_ante_that_empties_a_stack_disables_action},
       {"no_empty_stack_ever_holds_the_action", check_no_empty_stack_ever_holds_the_action},
       {"refund_re_derives_all_in_status", check_refund_re_derives_all_in_status},
       {"fold_out_leaves_no_uncalled_wager", check_fold_out_leaves_no_uncalled_wager},
