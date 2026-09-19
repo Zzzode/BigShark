@@ -24,6 +24,7 @@
     "check:rfc:compiled": "node bin/check-rfcs.mjs",
     "check:source-policy": "npm run build:ts --silent && npm run check:source-policy:compiled",
     "check:source-policy:compiled": "node dist/tools/typescript/check-source-policy.js",
+    "mutation": "npm run build:ts --silent && node dist/tools/mutation/verify.js --config tools/mutation/game-definition.json",
     "clean:ts": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "proto:breaking": "buf breaking proto --against proto/baseline/v1.binpb --exclude-imports",
     "proto:check": "npm run proto:lint && npm run proto:format:check && npm run proto:breaking && npm run proto:generate && npm run proto:typecheck && npm run proto:test",

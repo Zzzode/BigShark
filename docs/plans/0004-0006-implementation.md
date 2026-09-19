@@ -95,6 +95,7 @@ artifact boundary, not separate services.
 
 | Stage | Roadmap IDs | Owner | Implementation | Required completion evidence |
 | --- | --- | --- | --- | --- |
+| 0008-1 | RFC 0008 §L1 | `engine` poker | One `GameDef` / `GameState` for 2..10 seats, constructing two seats only, with one legal-transition implementation behind the existing types. Additive: no existing behavior changes and nothing routes through it | Independent equivalence oracle with no dependency on the heads-up header; every semantic mutation of the new code shown red; pinned heads-up oracle counts unchanged |
 | 1 | B1 | `engine` poker | Checked chip state, real actor order, commitments, legal targets, raise rights, refunds, and showdown | Table-driven legal transitions, overflow and all-in tests; independent exact chip conservation |
 | 2 | B2 | `engine` solver | Public heads-up facade, exact information keys, joint chance, full traversal and independent BR oracle | Tiny-game reference agreement; full-range normalized policies; no hidden-information conditioning |
 | 3 | B2/B3 | `engine` solver/benchmarks | External sampling, specified PRNG, regret/average updates, iteration rollback, resource caps | Enumerated expected updates, repeatability, interruption/resume, fixed/sampled quality thresholds and existing benchmark parity |
@@ -115,6 +116,98 @@ preceding evidence gates. Stage 7 is separately approved under RFC 0002
 and can proceed independently of solver strategy changes. Stage 11
 depends on Stage 1; Stages 12 and 13 depend on settlement and relevant trainer
 work. Do not parallelize changes to the same poker or service-domain contract.
+
+## RFC 0008 Stage 1 Evidence (2026-09-19)
+
+RFC 0008 was accepted 2026-09-19 (`a927284`) after three independent review
+rounds. Its first rollout stage is the unified game definition for two seats,
+behind adapters, preserving `HeadsUpState` behavior exactly. This section is that
+stage's evidence. Scope is stage 1 only.
+
+**What landed.** `engine/include/bs/game_definition.hpp`,
+`engine/src/poker/game_definition.cpp`, and
+`engine/src/poker/game_definition_settlement.cpp`, registered under
+`bigshark_poker`, plus `engine/tests/test_game_definition.cpp` registered as
+`game_definition`. Additive: no existing file changed behavior, and no
+production path constructs a `GameState` yet.
+
+**The oracle does not include the heads-up header, and that is the point.** It
+drives `GameState` against a reference ledger written from the rules of no-limit
+hold'em and from `GameDef`'s structure. Comparing the unified state to
+`HeadsUpState` would only prove two implementations agree, never that either is
+right; a reviewer can check the claim by reading the include list. This was not
+theoretical: the first run of the oracle found a 2^64-1 unsigned underflow the
+author had missed, precisely because it checked a different implementation rather
+than a copy.
+
+**Measured coverage.** 24 preflop roots / 356,204 nodes, 150 flop roots /
+367,348 nodes, 137,560 showdown terminals, and the big-blind option exercised
+80 times in the preflop sweep. The option count is asserted positive rather than
+assumed, because a sweep that never reaches the option proves nothing about it.
+
+**Mutation verification is machine-run**, not hand-run:
+`npm run mutation` applies each of sixteen semantic mutations, rebuilds only
+this target, classifies the result, and restores the file. Twelve are caught and
+four are equivalent, so the battery currently reports no coverage gap. Three of
+the twelve caught were gaps the suite had before the battery ran:
+
+- a rooted flop with fewer than two actionable seats, reachable only from an
+  empty stack, which the settlement sweep never produced because its stack range
+  started at 4;
+- a settlement that awards the pot by seat order rather than by hand score,
+  invisible while both fixture hands tied on a board straight flush;
+- `after_card` opening action with a single actionable seat.
+
+Two mutants are EQUIVALENT at two seats, proven by measuring reachability over
+every node and not by argument: dropping the folded-skip guard in
+`refund_unmatched` (a folded seat cannot hold the strict maximum commitment at
+two seats, measured zero times), and dropping the `raise_rights` check from
+`legal()` (zero reachable states where it is the only guard blocking a raise,
+measured `rr_false=5820` states where it is genuinely exercised). Two further
+mutants are equivalent for structural reasons the config records: omitting the
+`all_in` derivation after an ANTE (the two-seat profile rejects a nonzero ante,
+pinned by `ante_is_rejected_in_this_profile`), and stating the rooted `pending`
+set as `stack > 0` rather than `!folded && !all_in` (`GameDef` declares no folded
+seat, so at a root every seat is unfolded; measured green). All four are recorded
+in the mutation config with their rationale, and the first two are pinned as
+standing assertions in the oracle so that a fixture change reaching one of those
+states turns the claim red instead of letting the mutant start passing for a new
+reason.
+
+**Two defects the oracle caught in the new code, both fixed.** The constructor
+never seated the declared stacks, so the blind subtraction underflowed to
+2^64-1. And the two-seat blind seats were derived as the three-handed rule with
+the count turned down, which puts the big blind back on the button; heads-up the
+BUTTON posts the small blind. Both are recorded in comments at the sites.
+
+**One defect the oracle caught in its own ledger.** The reference encoded the
+flop-deal rule as "neither seat is action-and-pending", but the shipped heads-up
+rule closes the street the moment EITHER seat is all in
+(`engine/src/poker/heads_up.cpp:271`). The two differ when one seat is all in:
+the ledger's version would open a round in which the sole remaining seat may bet
+into an opponent who cannot respond. The implementation was right and the ledger
+was wrong; the ledger now states the two-seat rule it is meant to check.
+
+**Gates.** Release ctest 38/38, ASan/UBSan 36/36, format clean, both benchmark
+families, `npm run check`, `npm run proto:check`, and 156 replay decisions with
+0 illegal and 0 JS fallbacks. The two gates that must not move did not:
+`test_heads_up` reports the pinned `nodes=12226 folds=2852 showdowns=3002
+refunds=3480 short-raises=120` unchanged, and `test_unification_invariants`
+passes with zero edits to the file.
+
+**Residual limitations, stated rather than implied.**
+
+- Two seats only. `validate` rejects any other seat count, and a rejection test
+  pins that boundary so stage 2 has to widen it deliberately.
+- Nothing routes through `GameState`. `HeadsUpState` remains the shipping rules
+  type; this stage is a prerequisite, not a replacement.
+- The ante field exists and is validated, but the two-seat profile rejects a
+  nonzero ante outright. Ante behavior is therefore implemented and unreachable,
+  which is why the ante mutation is equivalent here and why the mutation that
+  omits deriving `all_in` after BLINDS is the one that must be caught.
+- `TerminalDepth::Flop` (RFC 0007) is declared so the identity surface does not
+  grow a field later, but only `River` is accepted.
+- macOS/arm64 only; no Linux build was verified.
 
 ## Completed Checkpoint
 

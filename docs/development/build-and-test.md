@@ -339,6 +339,27 @@ cmake --build --preset debug --target rfc-check
 Replay is read-only, but it uses the currently published
 `bin/bigshark-engine`, so run a release build first.
 
+## Mutation Verification
+
+A test that cannot fail is worse than no test, and reading a test cannot tell
+you whether it can fail. Mutation verification breaks the implementation and
+checks that the suite notices:
+
+```bash
+npm run mutation
+```
+
+The runner (`tools/mutation/verify.ts`) applies each mutation from the config,
+rebuilds only the affected target, classifies the result, and restores the file
+from a pristine copy. Every mutation has one of four outcomes: caught, an
+equivalence recorded in the config as changing no reachable state, a coverage
+gap, or a compile failure. Only the first two keep the command green, and an
+uncaught mutation must be resolved by measuring reachability — never by
+asserting equivalence from the source alone. Where an equivalence could become
+reachable under a different fixture, pin it with an assertion in the suite so
+the claim expires loudly instead of letting the mutant start passing for a new
+reason.
+
 ## Documentation Checks
 
 Run the repository documentation check after changing documentation,

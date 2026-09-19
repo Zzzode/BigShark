@@ -209,6 +209,8 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 
 add_library(bigshark_poker STATIC
   src/poker/charts.cpp
+  src/poker/game_definition.cpp
+  src/poker/game_definition_settlement.cpp
   src/poker/heads_up.cpp
   src/poker/icm.cpp
   src/poker/multiway.cpp
@@ -422,6 +424,13 @@ if(BUILD_TESTING)
   add_executable(test_unification_invariants tests/test_unification_invariants.cpp)
   target_link_libraries(test_unification_invariants PRIVATE bigshark_poker)
   add_test(NAME unification_invariants COMMAND test_unification_invariants)
+
+  # RFC 0008 stage 1: the unified 2..10-seat game definition, driven against an
+  # independent reference ledger that is written from the rules and never
+  # includes bs/heads_up.hpp.
+  add_executable(test_game_definition tests/test_game_definition.cpp)
+  target_link_libraries(test_game_definition PRIVATE bigshark_poker)
+  add_test(NAME game_definition COMMAND test_game_definition)
 
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)

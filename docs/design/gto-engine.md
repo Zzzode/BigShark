@@ -52,6 +52,7 @@ flowchart TD
 | --- | --- |
 | `include/bs/eval.hpp` | Five-to-seven-card hand evaluation and comparable scores |
 | `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
+| `include/bs/game_definition.hpp`, `src/poker/game_definition.cpp`, `src/poker/game_definition_settlement.cpp` | RFC 0008 stage 1 unified game definition: one `GameDef` / `GameState` for 2..10 seats with a single legal-transition implementation. Constructs two seats only in this stage; `HeadsUpState` remains the shipping rules type and nothing routes through this yet. Guarded by `test_game_definition`, an independent oracle that does not include the heads-up header, and by a machine-run mutation battery (`npm run mutation`) that requires each of twelve semantic mutations to turn that oracle red |
 | `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response |
 | `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
 | `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 offline resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup; unwired and offline in this stage |
@@ -690,6 +691,12 @@ rather than untimed after the solver consumed the budget.
 `HeadsUpState`. It is deliberately a separate type rather than a generalization:
 the heads-up state keeps its exact contract and both of its profiles are
 untouched, and the multiway profile is the RFC 0006 experimental one.
+
+RFC 0008 stage 1 adds `bs::poker::GameState` as the eventual single replacement
+for both, constructing two seats only for now. It is additive and unowned by any
+production path: `HeadsUpState` stays the shipping rules type and this section's
+type is unchanged. The seat-count stage (RFC 0008 stage 2) is what retires them,
+and until then this section describes what actually runs.
 
 Ownership and boundaries: `bigshark_poker` owns these rules; they depend on the
 shared `Settlement` ledger and the shared evaluator and on nothing else. No

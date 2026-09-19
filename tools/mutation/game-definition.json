@@ -1,0 +1,124 @@
+{
+  "description": "RFC 0008 stage 1: the unified game-definition oracle must catch every semantic mutation of the constructors, transitions, refunds, and settlement.",
+  "expected": {
+    "equivalent": [
+      "refund_unmatched stops skipping folded seats",
+      "legal() ignores raise_rights",
+      "constructor does not derive all_in after an ante",
+      "roots a flop with `pending` keyed off the folded flag alone"
+    ],
+    "rationale": "Four mutants change no reachable state at two seats. The first two are measured over every node and PINNED as standing assertions in the oracle (see the non-vacuity pins at the end of the flop sweep), so a fixture change that reaches one of those states fails the oracle instead of letting the mutant start passing for a new reason. The last two are equivalent for structural reasons the suite also pins: the two-seat profile rejects a nonzero ante (`ante_is_rejected_in_this_profile`), so no ante is ever posted here; and `GameDef` declares no folded seat, so at a root every seat is unfolded and `stack > 0` and `!folded && !all_in` denote exactly the same set. Any OTHER uncaught mutation is a coverage gap and must be closed."
+  },
+  "build": {
+    "command": "cmake",
+    "args": [
+      "--build",
+      "--preset",
+      "release",
+      "--target",
+      "test_game_definition"
+    ]
+  },
+  "test": {
+    "command": "./build/release/engine/test_game_definition",
+    "args": []
+  },
+  "mutations": [
+    {
+      "name": "close_street stops refunding the unmatched excess",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "void GameState::close_street() {\n  refund_unmatched();",
+      "replace": "void GameState::close_street() {"
+    },
+    {
+      "name": "refund returns the whole excess instead of down to the other level",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "const Chips excess = high_amount - other_level;",
+      "replace": "const Chips excess = high_amount;"
+    },
+    {
+      "name": "refund_unmatched stops skipping folded seats",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "    if (players_[p].folded)\n      continue;\n    if (players_[p].street_committed > high_amount) {",
+      "replace": "    if (players_[p].street_committed > high_amount) {"
+    },
+    {
+      "name": "legal() ignores raise_rights",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "if (!hero.raise_rights || !opponent_can_respond",
+      "replace": "if (!opponent_can_respond"
+    },
+    {
+      "name": "legal() ignores whether an opponent can respond",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "if (!hero.raise_rights || !opponent_can_respond || hero.stack <= due)",
+      "replace": "if (!hero.raise_rights || hero.stack <= due)"
+    },
+    {
+      "name": "after_action drops the preflop big-blind option",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "      paid = std::min(high - hero.street_committed, hero.stack);\n      next.pay(player, paid);",
+      "replace": "      paid = std::min(high - hero.street_committed, hero.stack);\n      next.pay(player, paid);\n      for (std::size_t p = 0; p < def_.player_count; ++p)\n        next.players_[p].pending = false;"
+    },
+    {
+      "name": "after_action reopens on every raise, short or not",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "if (increment >= next.last_full_raise_) {\n        next.last_full_raise_ = increment;",
+      "replace": "if (increment > 0) {\n        next.last_full_raise_ = increment;"
+    },
+    {
+      "name": "after_card does not reset last_full_raise to the big blind",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "next.last_full_raise_ = def_.big_blind;",
+      "replace": "next.last_full_raise_ = 0;"
+    },
+    {
+      "name": "after_card does not zero street_committed",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "    next.players_[p].street_committed = 0;\n    next.players_[p].raise_rights = true;",
+      "replace": "    next.players_[p].raise_rights = true;"
+    },
+    {
+      "name": "after_card opens action with a single actionable seat",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  next.refresh_live();\n  if (next.actionable_count() < 2) {",
+      "replace": "  next.refresh_live();\n  if (next.actionable_count() < 1) {"
+    },
+    {
+      "name": "pay() does not update contributed",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  chips.contributed = add(chips.contributed, amount);\n",
+      "replace": ""
+    },
+    {
+      "name": "constructor does not derive all_in after posting blinds",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "      players_[p].all_in = players_[p].stack == 0;\n    }\n    street_ = Street::Preflop;",
+      "replace": "    }\n    street_ = Street::Preflop;"
+    },
+    {
+      "name": "roots a flop but never closes the street when nobody can act",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "    refresh_live();\n    if (actionable_count() < 2) {\n      close_street();\n      return;\n    }\n    // The postflop opener",
+      "replace": "    refresh_live();\n    // The postflop opener"
+    },
+    {
+      "name": "settlement awards the pot to the first live seat, not the best score",
+      "file": "engine/src/poker/game_definition_settlement.cpp",
+      "find": "    scores[live_[i]] = bs::evaluate(cards.data(), static_cast<int>(cards.size())).score;",
+      "replace": "    scores[live_[i]] = 1U;"
+    },
+    {
+      "name": "constructor does not derive all_in after an ante",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "        players_[p].contributed = add(players_[p].contributed, posted);\n        players_[p].all_in = players_[p].stack == 0;\n      }\n    }\n    for (std::size_t p = 0; p < def_.player_count; ++p) {\n      const Chips posted = def_.blinds_posted[p];",
+      "replace": "        players_[p].contributed = add(players_[p].contributed, posted);\n      }\n    }\n    for (std::size_t p = 0; p < def_.player_count; ++p) {\n      const Chips posted = def_.blinds_posted[p];"
+    },
+    {
+      "name": "roots a flop with `pending` keyed off the folded flag alone",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "      players_[p].all_in = players_[p].stack == 0;\n      players_[p].pending = players_[p].stack > 0;\n    }\n    refresh_live();",
+      "replace": "      players_[p].all_in = players_[p].stack == 0;\n      players_[p].pending = !players_[p].folded;\n    }\n    refresh_live();"
+    }
+  ]
+}
