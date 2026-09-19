@@ -25,7 +25,7 @@ integration, and development documentation.
 | RFC | [RFC 0005: Artifacts and resolving](rfcs/0005-strategy-artifacts-and-resolving.md) | Implementing | Durable strategies, bounded lookup, certified on-tree resolving, and minor-1 integration |
 | RFC | [RFC 0006: Extended poker utility](rfcs/0006-extended-poker-utility.md) | Implementing | Side pots, rake, ICM, experimental multiway evaluation, and production prerequisites |
 | RFC | [RFC 0007: Preflop profile abstraction](rfcs/0007-preflop-profile-abstraction.md) | Accepted | Bounded preflop training for a declared small profile, policy-derived continuation ranges, and coexistence with existing artifacts |
-| RFC | [RFC 0008: Unified N-player architecture](rfcs/0008-unified-n-player-architecture.md) | Proposed | One game definition for 2..10 seats, a versioned abstraction layer with measured error, one solver interface, explicit guarantee levels, and staged removal of superseded paths |
+| RFC | [RFC 0008: Unified N-player architecture](rfcs/0008-unified-n-player-architecture.md) | Accepted | One game definition for 2..10 seats, a versioned abstraction layer with measured error, one solver interface, explicit guarantee levels, and staged removal of superseded paths |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [GTO delivery roadmap](plans/gto-delivery-roadmap.md) | Proposed | Complete follow-up scope, dependencies, acceptance evidence, and outstanding decisions |

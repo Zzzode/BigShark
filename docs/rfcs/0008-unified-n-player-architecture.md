@@ -1,7 +1,7 @@
 ---
 rfc: "0008"
 subject: "Unified N-Player Engine Architecture"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark engine agent"
 created: "2026-09-19"
 updated: "2026-09-19"
@@ -626,7 +626,8 @@ conservation, oracle, or interface-conformance failure.
    lost to the pinned baseline" and stops there is complete; a stage that
    reports nothing, or that quietly swaps the baseline, is not.
 7. **Removal.** Delete the duplicated rule implementations (via the adapters),
-   the hard-coded chart tables (removed from the decision path, per L2), the
+   the hard-coded chart tables, replaced by the declared policy source (per L2 -
+   they stay consumed, they stop being an unnamed routing branch), the
    experimental solver paths subsumed by the interface, and v0. The default
    protocol flips to v1 in this stage, as stated in the Non-Goals. Gate: no
    remaining callers, a rollback release artifact, and the full gate green.
@@ -688,4 +689,17 @@ existing digest moves.
 
 ## Decision
 
-Pending independent approval-agent review.
+Author agent: BigShark engine agent
+Approved by: a2d8a9875a2f19702
+Decision date: 2026-09-19
+Review outcome: Approved
+Reviewed scope: Complete revised proposal - the L1 game definition for 2..10 seats and its adapter differences, the L2 action and card abstraction with its two-regime measured error, the L3 shared tree, the L4 solver interface, the L5 storage identity extension, the L6 closed guarantee-level set with its seven-source mapping table and wire disposition, the L7 protocol deferral, the dependency rules, compatibility and migration, the resource envelope, risks, the full verification plan, the seven-stage rollout with its stage-6 gate, rollback, open questions, and the acceptance criteria. Approval is for this RFC's stated scope and only for it.
+Review summary: Two independent review rounds. The first returned Changes Requested on the proposal as filed (two blocking, nine non-blocking). Both blockers were reproduced against the code before being accepted: the acceptance criteria did not pin the RFC's own headline deliverable, and the guarantee-level contract was unimplementable because `exact_solved` would have mislabeled the river LP, which solves over ranges truncated by a live cap. The revision added the stage-6 gate and the two-regime metric definition, and rebuilt L6 around a normative seven-source mapping with an explicit wire disposition and a request-side reconciliation against RFC 0005's "no eligibility bit" rule. A self-audit then corrected three factual errors the revision itself had introduced - the adapter-difference paragraph, the chart source's description, and the member counts - and closed a loophole in its own stage-6 gate that would have let an author declare a weak baseline and beat it. Re-review of the revised text returned two further blocking findings, both in the paragraph that does the pinning: the chart-source count was off by two, which is a reproducibility defect in the RFC's own falsification criterion, and the seed requirement did not constrain coverage, so a one-element seed list could satisfy it while carrying no statistical power. Both are resolved: the baseline is pinned by commit, source files, and a content digest, and the gate now requires a declared sampling space, intervals at a declared level, and interval separation before "beats" may be claimed. Final re-review confirmed both blocking findings genuinely resolved rather than nominally, verified every Proto, RFC 0005, and `river_gto` citation against source, and returned one non-blocking wording item, now fixed.
+
+**Prior review history.** Three review rounds by the same independent agent, each recorded with the finding it produced.
+
+- **Round 1 (as filed).** B1: stage 6 had no acceptance criterion, so the RFC could have been marked Implemented with no policy above six seats. B2: `exact_solved` would have mislabeled `SolveRiver`, whose ranges are truncated by `TrackedRangesOptions::cap`, and no source-to-level mapping, wire disposition, or request-side surface existed. N1-N9: member counts, the "thin adapters" understatement, the missing `TerminalDepth`, `AbstractionId` versus RFC 0007's frozen identity mechanism, charts classified as an abstraction, verification gaps, the unstated v0 default flip, a missing resource envelope, and an overbroad sentence.
+- **Round 2 (revision).** F1 (blocking): the pinned baseline was described with an off-by-two chart-source count, making the RFC's own reproducibility requirement unsatisfiable as written. F2 (blocking): the seed list's coverage was unconstrained and no statistical-strength requirement existed, so a positive result could come from noise. F3-F7: the metric did not declare which seats hold the abstract policy; L7 promised a v1 field while §L6 left v1-versus-v2 undecided; the migration table still contradicted L2 about the charts; `pot` was described by arity rather than summand type; the baseline's "existing tests" were unnamed.
+- **Round 3 (final).** Approved, with one non-blocking wording item in rollout stage 7, fixed above. The reviewer additionally verified that the digest the gate requires is implementable rather than aspirational.
+
+**What this approval does not cover.** The stages themselves are not authorized by this approval: each is gated on its own evidence, stage 7 is destructive and needs its rollback artifact, and live promotion of any profile remains a separate explicit gate.
