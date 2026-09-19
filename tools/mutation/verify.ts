@@ -106,6 +106,28 @@ process.on('SIGINT', () => {
   process.exit(130);
 });
 
+// Leaving the tree DIRTY is not enough on its own: a mutation that touched a
+// library source can leave a built artifact that still contains the mutation,
+// because restoring the source updates its mtime only after the build that
+// consumed the mutated copy. Ninja then considers the target up to date and the
+// NEXT ctest run executes the mutant. That happened, and it presented as a
+// failing release test on a clean tree -- a false alarm that costs an
+// investigation and, worse, would look identical to a real regression.
+//
+// So the restore is followed by a rebuild of every target the battery linked
+// against, which both recompiles the restored sources and re-links the test
+// binaries that had been built from them.
+const rebuildAfterRestore = (): void => {
+  const seen = new Set<string>();
+  for (const target of targets) {
+    const key = [target.build.command, ...target.build.args].join(' ');
+    if (seen.has(key))
+      continue;
+    seen.add(key);
+    run(target.build.command, target.build.args);
+  }
+};
+
 interface Result {
   name: string;
   verdict: Verdict;
@@ -161,6 +183,7 @@ try {
   }
 } finally {
   restore();
+  rebuildAfterRestore();
 }
 
 const width = Math.max(...results.map((r) => r.name.length));

@@ -357,7 +357,15 @@ Every mutation has one of four outcomes: caught, an equivalence recorded in the
 config as changing no reachable state, a coverage gap, or a compile failure.
 Only the first two keep the command green, and an uncaught mutation must be
 resolved by measuring reachability — never by asserting equivalence from the
-source alone. Where an equivalence could become reachable under a different
+source alone.
+
+After restoring the sources the runner rebuilds each target it linked against.
+That is not tidiness: a mutation touching a library source leaves a built
+artifact containing the mutation, because the restore updates the file's mtime
+only after the build that consumed the mutated copy. Ninja then considers the
+target up to date, and the next `ctest` executes the mutant. That failure mode
+is worth knowing about because it presents as a failing test on a clean tree and
+is indistinguishable from a real regression until it is investigated. Where an equivalence could become reachable under a different
 fixture, pin it with an assertion in the suite so the claim expires loudly
 instead of letting the mutant start passing for a new reason.
 
