@@ -30,12 +30,26 @@ constexpr std::size_t kKeyOwn1 = 2;
 constexpr std::size_t kKeyBoardSize = 3;
 constexpr std::size_t kKeyBoard = 4;
 
-// Canonical root identity, the same root notion as the solver's same_root and
-// the artifact reader's same_game root comparison: ordered flop, stacks,
-// matched contributions, pot, big blind, and button. Range weights and the
-// ordered rational sizing schedule are identical within one advertised
-// artifact and cannot be spoofed by a query; two artifacts sharing a root but
-// differing in those fields are both refused as ambiguous duplicates.
+// Canonical root identity: ordered flop, stacks, matched contributions, pot,
+// big blind, and button. Range weights and the ordered rational sizing schedule
+// are identical within one advertised artifact and cannot be spoofed by a
+// query; two artifacts sharing a root but differing in those fields are both
+// refused as ambiguous duplicates.
+//
+// Deliberately NOT the solver's root identity. The solver's `same_root`
+// additionally compares `preflop` and `blinds_posted`, and that is not merely a
+// stricter version of this one: the two disagree in BOTH directions on valid
+// roots. Measured over a search of every constructible root in a small profile,
+// the six-field comparison treats two flop roots as the same game when they
+// differ only in `blinds_posted` (which the root documents as ignored unless
+// `preflop` is set, and which this path cannot observe because no artifact
+// column stores it), while the eight-field comparison treats them as different.
+//
+// Neither definition is reachable from the other's caller set today, so the
+// divergence is documented rather than resolved. What decides it is a single
+// shared identity for the unified game definition, which is RFC 0008 stage 1's
+// job; until then the solver's version is the stricter of the two and the
+// artifact path's is the one that can actually be stored and read back.
 bool same_root(const poker::HeadsUpRoot& a, const poker::HeadsUpRoot& b) {
   return a.flop == b.flop && a.stacks == b.stacks && a.contributions == b.contributions &&
          a.pot == b.pot && a.big_blind == b.big_blind && a.button == b.button;
