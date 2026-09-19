@@ -262,6 +262,73 @@ int test_sampling_respects_weights() {
   return 0;
 }
 
+// A zero weight means "not in the range at all", which the header states. The
+// distinction matters at the head of a seat's range: a zero first weight puts a
+// repeated value in the cumulative table, so the draw has to be able to land
+// past it rather than stall on index 0.
+//
+// Only the first two checks below are non-tautological; the third is recorded
+// as such. `sample_joint_deal` returns an index into `table.deals`, and
+// `enumerate_joint_deals` only ever admits positive-weight deals, so "the
+// sampler never returns a zero-weight combo" is true by construction and would
+// pass under almost any mutation. It is not asserted here, because a check that
+// cannot fail is not evidence.
+int test_zero_weight_combos_are_absent() {
+  // 1. Enumeration excludes them, and the surviving weights stay normalized.
+  {
+    const std::vector<Range> ranges = {
+        {{{card("As"), card("Ks")}, 0.0}, {{card("2h"), card("3h")}, 2.0}},
+        {{{card("Ah"), card("Kh")}, 1.0}},
+    };
+    const JointDealTable table = enumerate_joint_deals(ranges);
+    CHECK(table.deals.size() == 1);  // only the positive-weight combo
+    CHECK(table.unnormalized_mass == 2.0);
+    CHECK(std::abs(table.deals[0].weight - 1.0) < 1e-12);
+    const std::array<int, 2> expected = {card("2h"), card("3h")};
+    CHECK(table.deals[0].hands[0] == expected);
+  }
+
+  // 2. A seat whose entire range is zero-weight has no support and must be
+  //    rejected rather than silently producing a degenerate distribution.
+  {
+    const std::vector<Range> ranges = {
+        {{{card("As"), card("Ks")}, 0.0}, {{card("2h"), card("3h")}, 0.0}},
+        {{{card("Ah"), card("Kh")}, 1.0}},
+    };
+    bool threw = false;
+    try {
+      enumerate_joint_deals(ranges);
+    } catch (const std::invalid_argument&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+
+  // 3. With a LEADING zero weight, a long draw still matches the declared
+  //    distribution over the surviving support. This is the case a boundary bug
+  //    in the cumulative lookup would move, so the assertion is on the shape of
+  //    the distribution, not on any single draw.
+  {
+    const std::vector<Range> ranges = {
+        {{{card("As"), card("Ks")}, 0.0},
+         {{card("2h"), card("3h")}, 1.0},
+         {{card("4h"), card("5h")}, 3.0}},
+        {{{card("Ah"), card("Kh")}, 1.0}},
+    };
+    const JointDealTable table = enumerate_joint_deals(ranges);
+    CHECK(table.deals.size() == 2);
+    constexpr std::size_t kDraws = 100000;
+    SplitMix64 rng(11);
+    std::size_t heavy = 0;
+    for (std::size_t i = 0; i < kDraws; ++i)
+      if (sample_joint_deal(table, ranges, rng) == 1)
+        ++heavy;
+    const double observed = static_cast<double>(heavy) / static_cast<double>(kDraws);
+    CHECK(std::abs(observed - 0.75) < 0.01);  // 3/(1+3)
+  }
+  return 0;
+}
+
 int test_sampler_validates_input() {
   const std::vector<Range> ranges = {{{{{card("As"), card("Ks")}, 1.0}}}};
   const JointDealTable table = enumerate_joint_deals(ranges);
@@ -333,6 +400,7 @@ int main() {
     CHECK(test_sampling_matches_the_joint_distribution() == 0);
     CHECK(test_sampling_is_reproducible() == 0);
     CHECK(test_sampling_respects_weights() == 0);
+    CHECK(test_zero_weight_combos_are_absent() == 0);
     CHECK(test_sampler_validates_input() == 0);
     CHECK(test_wider_tables_enumerate() == 0);
   } catch (const std::exception& error) {
