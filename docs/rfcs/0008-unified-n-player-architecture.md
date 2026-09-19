@@ -34,10 +34,11 @@ The engine cannot grow toward larger tables because the layer that would make
 larger tables tractable does not exist. Concretely, measured in this repository:
 
 - **The rules are implemented twice.** `HeadsUpState`
-  (`engine/src/poker/heads_up.cpp`, 12 member functions) and `MultiwayState`
-  (`engine/src/poker/multiway.cpp`, 13 member functions) duplicate `actor`,
-  `pot`, `can_raise`, `legal`, `pay`, `refund_unmatched`, `close_street`,
-  `after_action`, `after_card`, `award`, `settle_fold`, and `settle_showdown`.
+  (`engine/include/bs/heads_up.hpp`, 19 member functions) and `MultiwayState`
+  (`engine/include/bs/multiway.hpp`, 22 member functions) share twelve member
+  functions that each implements separately: `actor`, `pot`, `can_raise`,
+  `legal`, `pay`, `refund_unmatched`, `close_street`, `after_action`,
+  `after_card`, `award`, `settle_fold`, and `settle_showdown`.
   RFC 0004's design principle 2 requires "all strategies use the same legal
   transition function"; the repository currently violates it.
 - **There is no abstraction layer.** `grep` for a card or action abstraction
@@ -75,8 +76,9 @@ computation or a hand-written rule.
   and one settlement path, such that `HeadsUpState` and `MultiwayState` become
   configurations of it rather than separate types.
 - An abstraction layer (card and action) that is explicit, versioned, bounded,
-  and carries a **measured** error bound, and whose effect on decision quality
-  is reported rather than assumed.
+  and carries a **measured** error - a bound where an exact solve exists to
+  compare against, and a labeled estimate where none does - so its effect on
+  decision quality is reported rather than assumed.
 - One solver interface that takes an abstract tree and returns a policy, so a
   new solver is added without touching the rules, the abstraction, or the
   decision path.
@@ -92,9 +94,16 @@ computation or a hand-written rule.
   and RFC 0006 states plainly that the two-player zero-sum theorem does not
   extend. This RFC builds the structure that lets measured quality be reported
   at larger seat counts; it does not assert a quality result it has not measured.
-- Preserving v0 on the wire beyond the removal stage below.
-- Replacing the heuristic with a solver where no solver is applicable. The
-  heuristic remains, but becomes a labeled source rather than an unnamed default.
+- Preserving v0 on the wire beyond the removal stage below. v0 is what stage 7
+  deletes, so it cannot remain the default: that stage includes flipping the
+  default to v1, and says so rather than leaving it implied. It is the one
+  behavior change in this RFC that is not additive, which is why it is gated
+  with the removal rather than with the decision service.
+- Replacing the heuristic with a solver in states where no solver applies at all.
+  The heuristic remains available as a labeled source at every seat count; what
+  this RFC removes is its standing as an unnamed policy indistinguishable from an
+  equilibrium, not the fallback itself. Where a solver does apply, stage 6
+  measures it against the heuristic and reports which one wins.
 - Tournament ICM, rake, and utility-model changes; RFC 0006 owns those.
 - Live promotion of any new profile. That remains a separate gate.
 
@@ -172,7 +181,12 @@ flowchart TD
 ### L1: one game definition
 
 `bs::poker::GameDef` describes a hand: seat count (2..10), button, blinds, antes,
-stacks, and the rules variant. `bs::poker::GameState` is the transition machine
+stacks, and the rules variant. It also carries the terminal-depth rule RFC 0007
+introduced, `TerminalDepth::River | TerminalDepth::Flop`
+(`docs/rfcs/0007-preflop-profile-abstraction.md:197`), because a game that ends
+at a completed flop is a different game and not a different tree: the depth
+changes which settlement path runs, so it belongs to the definition, not to the
+abstraction above it. `bs::poker::GameState` is the transition machine
 over it, with the union of the two current types' behavior expressed once.
 
 The two existing profiles become configurations rather than types:
@@ -181,10 +195,25 @@ The two existing profiles become configurations rather than types:
 - the heads-up flop root is `GameDef` with 2 seats and a rooted board;
 - the current multiway root is `GameDef` with 3..6 seats.
 
-Compatibility is preserved by keeping `HeadsUpState` and `MultiwayState` as thin
+Compatibility is preserved by keeping `HeadsUpState` and `MultiwayState` as
 adapters over `GameState` during the transition, so every existing caller and
 every existing test keeps working while the implementation is unified. The
 adapters are deleted in the removal stage, not before.
+
+Calling them thin would understate the work, and the differences are where the
+real correctness risk sits. The shared names do not all share semantics today:
+`MultiwayState::can_raise` additionally requires `!all_in`
+(`engine/src/poker/multiway.cpp`) while `HeadsUpState::can_raise` returns
+`raise_rights_` alone, so a player who is all-in with raise rights still set is
+legal under one type and not the other. `actor` is a single index in the
+heads-up type and an index into a live-player vector in the multiway type.
+the `legal` query returns differently shaped structures (`LegalActions` versus
+`MultiwayLegal`), `pay` validates over a fixed `players_` array versus a dynamic
+seated vector, and the roots differ (`HeadsUpRoot` versus `MultiwayRoot`).
+Unifying therefore requires deciding each difference deliberately and proving the
+heads-up path is unaffected, not merely forwarding. Stage 1 carries those
+decisions; the exhaustive oracle in the Verification Plan is what makes
+"unaffected" a measured claim rather than an assertion.
 
 Settlement extends from 6 to 10 seats. The contribution-layer algorithm is
 already seat-count agnostic in structure; the change is a bound and its tests.
@@ -201,22 +230,57 @@ Two components, both versioned and both carrying their own identity:
   bucket over the existing range representation, with the bucketing function
   itself a declared, versioned parameter.
 
+The hard-coded preflop charts are NOT an abstraction and are not relocated into
+one. `engine/src/poker/charts.cpp` holds hand-class sets, which is a precomputed
+policy over hand classes, not a map from states to a smaller state space. They
+become a declared policy source with its own identity, recorded by the guarantee
+mapping below as `approximate`, and they leave the decision path rather than
+being re-expressed as an abstraction instance. Conflating the two would hide a
+policy inside the layer whose job is to make approximations visible.
+
 `AbstractionId` (name plus version plus parameters plus a digest) is part of a
 game's identity, so a policy trained under one abstraction can never be looked
 up under another. No abstraction is ever applied silently; a caller that
 requests the unabstracted game gets the exact game or an explicit refusal.
 
-**Measured error is part of the contract.** For a card abstraction the error is
-the exploitability difference between the exact and abstracted solve on
-enumerable validation games, reported as a number per validation fixture. RFC
-0004's principle that lossy buckets "require measured abstraction error" is
-satisfied by publishing that number, not by asserting smallness.
+**Sequencing, to avoid designing identity twice.** RFC 0007 already defines the
+mechanism this must reuse rather than reinvent: game identity is an explicit
+declaration carried on the artifact's versioned identity surfaces, compared by
+`same_game`, and versioned by a schema-major bump with the coexistence rules
+already in force (`docs/rfcs/0007-preflop-profile-abstraction.md:181`,
+`:328-341`). `AbstractionId` therefore joins that existing identity as a declared
+field in the stage that lands the first checkpoint requiring it, and it stores
+no claimed error number: the measured error is an evidence artifact keyed by the
+id, produced by the harness below and reported per decision, never a quantity the
+artifact asserts about itself.
+
+**Measured error is part of the contract, and it has two definitions because it
+has two regimes.** RFC 0004's principle that lossy buckets "require measured
+abstraction error" is satisfied by publishing a number, not by asserting
+smallness.
+
+- **On enumerable fixtures** (heads-up, small boards, restricted ranges) the
+  error is the exact difference in exploitability between the exact solve and
+  the abstracted solve, per fixture. This is a real bound and it is the primary
+  evidence.
+- **At 7..10 seats** no exact solve exists to subtract from, so the exact-versus-
+  abstracted definition cannot apply and pretending otherwise would be a fake
+  number. There the reported quantity is a **measured deviation estimate**: an
+  estimated NashConv against declared reference opponents, computed on a fixed
+  seed set, lower-is-better and explicitly not a bound. Every such number is
+  labeled as an estimate wherever it appears, including on the artifact and in
+  the decision report.
+
+Both definitions are reported on the same fixtures at every seat count where
+both are computable, which is what ties the two regimes together rather than
+leaving the 7..10 numbers unanchored.
 
 ### L3: abstract tree
 
 One builder produces an abstract tree from a `GameDef` and an `AbstractionId`.
-The tree node type is shared by every solver. Terminal values come from L1
-settlement, so multi-seat payout vectors (RFC 0006) flow through unchanged.
+The tree node type is shared by every solver. Terminal values come from the L1
+`GameDef` and its settlement, so multi-seat payout vectors (RFC 0006) flow
+through unchanged.
 
 ### L4: solver interface
 
@@ -238,20 +302,65 @@ identity gains the `AbstractionId`, and its schema-major coexistence rules (RFC
 
 ### L6: decision service and guarantee levels
 
-Every decision returns a `Guarantee` from a closed, ordered set:
+Every decision returns a `Guarantee` from a closed, ordered set. The level is
+computed from the policy source and the model that source solved, never from the
+caller's hopes, and it is reported on the wire.
 
-| Level | Meaning |
-| --- | --- |
-| `certified_bound` | The decision came from a policy with an independently certified bound (as RFC 0005 Stage 9 does) |
-| `exact_solved` | Solved exactly for the declared abstract game, no certified bound |
-| `abstract_solved` | Solved for an abstract game; the abstraction carries a measured error |
-| `approximate` | A declared heuristic or equity-based policy, with no solve |
-| `operational_fallback` | A legality-preserving fallback when no strategy source was available |
+| Level | Meaning | What it requires |
+| --- | --- | --- |
+| `certified_bound` | An independent bound was recomputed and passed for this decision | An RFC 0005 Stage 9-style certifier |
+| `exact_solved` | Solved exactly for a declared model that carries NO unmeasured approximation | Either no range cap, or a cap that is itself a declared, measured abstraction |
+| `abstract_solved` | Solved for a declared abstract model whose error is measured and published | An `AbstractionId` with a reported error number |
+| `approximate` | A non-solve policy, or a solve over a model carrying an unmeasured approximation | Nothing further; this is the honest default |
+| `operational_fallback` | A legality-preserving fallback because no strategy source was available | Nothing |
 
-The level is computed from the policy source, never from the caller's hopes, and
-it is reported on the wire. A response whose level is weaker than the caller
-requested is an explicit, typed outcome rather than a silent substitution. This
-replaces the current street-based routing with source-based routing plus an
+The `exact_solved` definition is deliberately strict, and it is the reason this
+table exists. A solve can be exact for its model while the model itself is
+unmeasured - a range-capped river solve is the live example - and calling that
+`exact_solved` would let a session-journal reader take it for an equilibrium of
+the declared game, which is exactly the misreading this section exists to
+prevent. Such a solve is `approximate` until its cap is either removed or
+elevated into a declared, measured abstraction.
+
+**Every source maps to a level, and the mapping is normative.** The wire
+sources are the seven values of `SolverSource`
+(`proto/bigshark/engine/v1/engine.proto:97-108`):
+
+| Wire source | Level today | To reach a stronger level |
+| --- | --- | --- |
+| `PREFLOP_CHART` | `approximate` | Becomes an abstract solve, or a declared policy source, per N5 |
+| `POSTFLOP_HEURISTIC` | `approximate` | Becomes an abstract solve for a declared model |
+| `RIVER_LP` | `approximate` | `abstract_solved` once the capped-range model is declared with a measured error; `exact_solved` only with the cap removed, which is the path the exact-versus-abstracted measurement runs on the enumerable fixtures. The cap is live and small (`TrackedRangesOptions::cap = 24`, `engine/include/bs/river_gto.hpp:101`), so the bounded-range solve is itself a measurable abstraction instance and the honest default is the weaker level |
+| `RIVER_DCFR` | `approximate` | `abstract_solved` once its model and error are declared; a bounded iterative solver has no certificate |
+| `MULTISTREET_CFR` | `approximate` | Experimental and offline; no path to a stronger level is claimed |
+| `BLUEPRINT` | `approximate` | `abstract_solved` once the blueprint's game carries a measured abstraction error; a benchmark quality metric is not a bound |
+| `RESOLVING` | `certified_bound` when certified; `approximate` on the deadline-blueprint fallback | Already the strongest level, as RFC 0005 Stage 9 defines it |
+
+A source that is not listed is a programming error and fails closed to
+`operational_fallback` rather than being assigned a level by default.
+
+**Wire disposition.** `SolverMetadata.guarantee` is a validated string enum
+constrained to `["modeled_exact_bound", "uncertified", "baseline"]`
+(`engine.proto:379-385`), and RFC 0005 fixes that contract for minor 1. The new
+levels are therefore ADDITIVE and land under a newly negotiated minor (the
+existing negotiation mechanism, RFC 0002 Stage 8) or in the `bigshark.engine.v2`
+package that RFC 0006 anticipates - decided at stage 5, with two constraints
+that do not move: minor-0 bytes stay frozen, and existing minor-1 clients keep
+receiving exactly `modeled_exact_bound | uncertified | baseline` with unchanged
+meaning. `certified_bound` maps onto the existing `modeled_exact_bound` string;
+`exact_solved` and `abstract_solved` are new values, not a reinterpretation of
+`uncertified`.
+
+**Request side.** A caller may declare a minimum acceptable level. This is NOT
+the eligibility bit RFC 0005 forbids: it carries no provenance claim and asserts
+nothing the stateless host could not already see. Absent, the caller accepts any
+level. When the best available level is below the declared floor, the host
+returns a typed `GUARANTEE_BELOW_REQUEST` rather than serving a silently weaker
+policy. Enforcement is response-side, and the RFC 0005 rule that the host
+"cannot reconstruct execution provenance" is unchanged: it reports what it did,
+it does not validate what the caller claimed.
+
+This replaces the current street-based routing with source-based routing plus an
 explicit preference order.
 
 ### L7: protocol
@@ -285,6 +394,32 @@ removed in the removal stage below, after the replacement is verified.
 
 No flag day. Each stage lands behind the existing opt-in mechanisms and is
 revertible on its own.
+
+## Resource Envelope
+
+A genuine risk, because abstraction buys tractability with memory and the
+current declarations are sized for heads-up. The envelope is declared here so
+that a stage cannot pass by quietly raising a limit:
+
+- **What may grow.** The abstract tree's node and information-set counts grow
+  with seat count, and the abstraction's bucket count grows with the card
+  model's granularity. These are bounded by `TrainingLimits` (`max_nodes`,
+  `max_information_sets`, `max_depth`, `max_bytes`) and by the tree builder's
+  own refusal, and every stage that raises one records the measured cost that
+  forced it.
+- **What may not grow silently.** The declared accounting constants - the
+  game-copy byte charge and the artifact footprint estimate - are identity
+  surfaces whose consumers include the frozen benchmark matrix and the
+  allocation exact-fit gate, so any change follows RFC 0007's documented-rebase
+  procedure with recorded evidence, not a convenience edit.
+- **What must be measured at stage 6.** Resident bytes, solve wall clock, and
+  per-decision latency at the largest seat count the stage reports, published
+  with the same table as the quality figures. A stage 6 table with no cost column
+  is incomplete even if its quality numbers are good.
+- **What this RFC does not do.** It does not commit to a training budget, does
+  not enable large-scale training (that keeps its own authorization), and does
+  not require a latency target it has not measured. Latency targets for live
+  service are the separate live-promotion gate's concern.
 
 ## Security and Operational Impact
 
@@ -333,6 +468,9 @@ or an unavailable solver is a typed refusal rather than a degradation.
 | Widening settlement to 10 seats breaks the verified 2..6 path | The Stage 11 exhaustive contribution grid is re-run unchanged and extended; 2..6 results must be bit-identical |
 | The abstraction becomes a place where quality silently degrades | `AbstractionId` is part of game identity, so no policy is ever looked up under a different abstraction, and the decision reports its level |
 | The refactor stalls with two rule implementations alive | Each stage is independently revertible and the adapters keep both alive deliberately; the removal stage is gated on the replacement's verification, not on a calendar |
+| The larger-table policy does not beat the current heuristic, which is this RFC's headline claim | Measured at stage 6 before any live path depends on it, reported as a table with the heuristic's own number on the same fixtures and seeds, and recorded as a negative result rather than smoothed over |
+| The card abstraction's error is measured only at 2 seats and assumed upward | Both definitions are reported at every seat count where both are computable, and the 7..10 figures are labeled estimates, so the gap is visible instead of implied |
+| Widening the rules type breaks a head-up semantic that the shared name hid, such as `can_raise` and `all_in` | Each difference is decided explicitly at stage 1 and the exhaustive oracle proves the head-up path unchanged before anything is deleted |
 
 ## Verification Plan
 
@@ -346,6 +484,12 @@ or an unavailable solver is a typed refusal rather than a degradation.
 - **Abstraction identity.** A policy trained under `AbstractionId` A cannot be
   looked up under B; the refusal is typed. Round-trip through storage preserves
   the identity.
+- **Native v1 suites, not only replay.** Replay exercises the v0 NDJSON path and
+  therefore cannot witness a v1 regression. The v1 suites are gates in their own
+  right at every stage: `test_v1_frame_stream`, `test_v1_request_mapper`,
+  `test_v1_response_mapper`, `test_v1_semantic_validator`, `test_v1_minor1`,
+  `test_v1_resolving`, `test_v1_resident_mapper`, and `fuzz_v1_proto`
+  (`engine/tests/`).
 - **Measured abstraction error.** Exact versus abstracted exploitability on
   enumerable validation games, reported per fixture as a number, including the
   case where the abstraction is the identity (error must be zero).
@@ -380,14 +524,39 @@ conservation, oracle, or interface-conformance failure.
 5. **Decision service and guarantee levels.** Source-based routing with the
    typed level on every response. Gate: the level-correctness tests and the
    replay suite with unchanged decisions.
-6. **Measured larger-table policy.** Apply the abstraction to produce and
-   measure a policy at larger seat counts, reporting measured quality and no
-   convergence claim. Gate: published per-fixture numbers.
+6. **Measured larger-table policy.** The headline deliverable: apply the
+   abstraction to produce and measure a policy at larger seat counts, reporting
+   measured quality and no convergence claim. The gate is a published table,
+   because it is the only thing that makes this RFC's central claim falsifiable:
+
+   - **Seat counts.** At least one seat count strictly greater than 6, and at
+     least one at 10. A policy that never exceeds 6 seats does not satisfy this
+     stage.
+   - **Metric.** Per-fixture deviation gain at each seat count: the measured
+     deviation estimate of the abstract policy against the declared reference
+     opponents, reported alongside the same estimate for the declared heuristic
+     on the identical fixtures and seeds. The abstract policy must beat the
+     declared heuristic on the aggregate of the declared fixture set, or the
+     result is recorded as a negative result and stage 6 is not complete.
+   - **Seeds and permutations.** A fixed, published seed list, with every
+     reported figure reproducible from the seeds alone. Seat positions are
+     permuted so a figure is not an artifact of one assignment of positions.
+   - **Reference opponents.** Declared and versioned: at minimum the current
+     heuristic, a fixed uniform-random policy, and the previous stage's policy at
+     the same seat count for a self-improvement comparison.
+   - **No convergence claim.** The report states the estimator, the seeds, and
+     the fixture set, and states in the same place that the number is an estimate
+     without a convergence guarantee (RFC 0006).
+
+   Gate: the published table, reproducible from its seeds, with the estimate
+   labeled as an estimate. Negative results are reported as results and do not
+   block the rest of the RFC; they block only the stronger claims the RFC's
+   Non-Goals already disclaim.
 7. **Removal.** Delete the duplicated rule implementations (via the adapters),
-   the hard-coded chart tables (re-expressed as an abstraction instance with
-   unchanged values), the experimental solver paths subsumed by the interface,
-   and v0. Gate: no remaining callers, a rollback release artifact, and the full
-   gate green.
+   the hard-coded chart tables (removed from the decision path, per L2), the
+   experimental solver paths subsumed by the interface, and v0. The default
+   protocol flips to v1 in this stage, as stated in the Non-Goals. Gate: no
+   remaining callers, a rollback release artifact, and the full gate green.
 
 ## Rollback Plan
 
@@ -404,8 +573,10 @@ existing digest moves.
   finer) gives an acceptable measured error at larger seat counts? Decided by
   stage 3's measured error, not by preference.
 - At what seat count does the abstracted solve stop producing a policy that beats
-  the declared heuristic, measured? Reported in stage 6; this is the honest
-  answer to "how far up the table sizes can this engine actually go".
+  the declared heuristic, measured? Reported in stage 6 against the declared
+  reference opponents and seeds; this is the honest answer to "how far up the
+  table sizes can this engine actually go", and it is expected to be a
+  seat-by-seat curve rather than a single threshold.
 - Does the guarantee level belong on the wire as a new v1 field or as a v2
   package? RFC 0006 anticipates a `bigshark.engine.v2` for coherent full-state
   support; decided when stage 5 lands.
@@ -423,6 +594,13 @@ existing digest moves.
   different abstraction, and the identity abstraction's measured error is zero.
 - A card abstraction publishes a measured error per validation fixture, and no
   decision is served from an abstraction whose error is unreported.
+- A reproducible stage 6 table reports the abstract policy's measured deviation
+  estimate at each tested seat count, including at least one seat count strictly
+  greater than 6 and one at 10, against the declared reference opponents on the
+  fixed seed list, next to the declared heuristic's estimate on the same fixtures
+  and seeds. The figure is labeled an estimate, states its estimator, and makes
+  no convergence claim. A stage 6 that produces no such table is not complete,
+  and this criterion is met by reporting the result, positive or negative.
 - Every solver is reachable through one interface, refuses unsupported shapes
   explicitly, and reproduces its previous results bit-for-bit under the identity
   abstraction.
