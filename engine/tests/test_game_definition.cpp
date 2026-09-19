@@ -344,6 +344,8 @@ struct Counts {
   long nodes = 0, folds = 0, showdowns = 0, refunds = 0, short_raises = 0, calls = 0;
   long option_held = 0, flops = 0, preflop_roots = 0;
   long refunded_all_in = 0;       // a seat holds chips AND is all in (refund on a capped blind)
+  long probe_skipped = 0;         // the M4 probe refused to index an actorless ledger
+  long probe_bad_actor = 0;       // the M4 probe was handed an action phase with no actor
   long folded_high = 0;           // M3: a folded seat holds the strict max commitment
   long rr_false = 0;              // M4: the actor holds no raise rights
   long rr_false_would_raise = 0;  // M4: ...and every other guard would allow a raise
@@ -374,7 +376,26 @@ int compare(const GameState& got, const Ref& want, Counts& counts) {
         counts.refunded_all_in += 1;
     // M4 probe: the mutation can only show up when the actor lacks raise rights
     // AND every OTHER guard in `legal()` would still let a raise through.
-    if (got.phase() == Phase::Action) {
+    //
+    // The guard below tests the LEDGER's phase and actor, not the state's, and
+    // it tests both. An earlier version tested `got.phase()` and then indexed
+    // `want` with `want.actor`, which is out of bounds whenever the two disagree
+    // about which seat holds the action -- `committed[-1]` and `stack[2]` on a
+    // two-element `std::array`. This probe runs BEFORE the phase comparison, so
+    // a divergence reached it. `std::array` is a plain aggregate, so the
+    // sanitizers do not annotate it and the reads went unreported; an
+    // independent reviewer found it by reading. Indexing a container with a
+    // value that is only valid in a state you have not yet checked is the whole
+    // defect, and the fix is to check the state first.
+    // Indexing `want` is only legal once `want` says a seat holds the action, so
+    // that is checked FIRST and the illegal case is COUNTED rather than skipped
+    // quietly. A silent skip would hide the very divergence this probe exists
+    // near: `committed[-1]` and `stack[2]` on a two-element `std::array` are
+    // undefined-but-unreported, because `std::array` is a plain aggregate that
+    // the sanitizers do not annotate.
+    if (want.phase == Phase::Action && want.actor < 0)
+      ++counts.probe_bad_actor;
+    if (want.phase == Phase::Action && want.actor >= 0) {
       const int h = want.actor;
       const int o = 1 - h;
       const Chips due = want.high() - want.committed[h];
@@ -745,7 +766,8 @@ int case_flop_rooted_sweep() {
       "rr_would_raise=%ld hash=%ld\n",
       counts.nodes, counts.folds, counts.showdowns, counts.folded_high, counts.rr_false,
       counts.rr_false_would_raise, counts.node_hash);
-  std::printf("  flop sweep refunded_all_in=%ld\n", counts.refunded_all_in);
+  std::printf("  flop sweep refunded_all_in=%ld probe_bad_actor=%ld\n", counts.refunded_all_in,
+              counts.probe_bad_actor);
   std::printf("  flop sweep nodes=%ld folds=%ld showdowns=%ld\n", counts.nodes, counts.folds,
               counts.showdowns);
   CHECK(counts.nodes > 1000);
@@ -776,6 +798,10 @@ int case_flop_rooted_sweep() {
   //     this from being a vacuous claim about an unreached branch.
   CHECK(counts.rr_false > 0);
   CHECK(counts.rr_false_would_raise == 0);
+  // The M4 probe indexes the ledger, so it must never be handed an action phase
+  // with no actor. Asserted rather than assumed because the alternative is an
+  // out-of-bounds read that `std::array` lets through unreported.
+  CHECK(counts.probe_bad_actor == 0);
   // The fingerprint is not decoration: it is what makes "this mutation changed no
   // reachable state" a measurement rather than an argument. It hashes every field
   // the walk can observe, including `all_in` itself.
