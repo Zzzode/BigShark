@@ -201,19 +201,33 @@ every existing test keeps working while the implementation is unified. The
 adapters are deleted in the removal stage, not before.
 
 Calling them thin would understate the work, and the differences are where the
-real correctness risk sits. The shared names do not all share semantics today:
-`MultiwayState::can_raise` additionally requires `!all_in`
-(`engine/src/poker/multiway.cpp`) while `HeadsUpState::can_raise` returns
-`raise_rights_` alone, so a player who is all-in with raise rights still set is
-legal under one type and not the other. `actor` is a single index in the
-heads-up type and an index into a live-player vector in the multiway type.
-the `legal` query returns differently shaped structures (`LegalActions` versus
-`MultiwayLegal`), `pay` validates over a fixed `players_` array versus a dynamic
-seated vector, and the roots differ (`HeadsUpRoot` versus `MultiwayRoot`).
-Unifying therefore requires deciding each difference deliberately and proving the
-heads-up path is unaffected, not merely forwarding. Stage 1 carries those
-decisions; the exhaustive oracle in the Verification Plan is what makes
-"unaffected" a measured claim rather than an assertion.
+real correctness risk sits. Of the twelve shared names, exactly one - `actor` -
+has a byte-identical body in both types; the rest differ, and several differ in
+poker semantics rather than in shape. Verified against both implementations:
+
+| Shared name | How the two differ today |
+| --- | --- |
+| `can_raise` | Multiway additionally requires `!all_in`, so a seat that is all-in with raise rights still set is legal under one type and not the other |
+| `pay` | Multiway sets `all_in = stack == 0` as a side effect; heads-up tracks all-in state in a separate `all_in_` array it maintains itself |
+| `refund_unmatched` | The substantive one. Heads-up compares two commitments and always refunds the excess. Multiway skips folded seats when locating the high commitment, returns without refunding unless exactly one seat holds it, and bounds the refund by the best level any other seat reached, because a folded player's chips stay in the pot as dead money |
+| `close_street` | Heads-up clears `pending_`, `raise_rights_`, and `big_blind_option_`; multiway clears pending state only, because it has no option rule to clear and re-establishes raise rights when the next street opens |
+| `after_card` | Both reset raise rights when action opens, but heads-up additionally maintains `big_blind_option_` and its own two-seat `all_in_` array, while multiway derives "no betting possible" from `next_actor` returning empty |
+| `after_action` | Heads-up threads `big_blind_option_` through a preflop option rule with no multiway analogue at all |
+| `Phase::Folded` | The same enum name means the same thing in both - the whole hand ended by folding - but the multiway path reaches it only when `live_players().size() <= 1`, while a seat that folds mid-hand merely sets its `folded` flag and the action continues. A unified state must not let a reader conflate "this seat folded" with "the hand is over", which is the reading the shared name invites |
+| `legal` | Different structures (`LegalActions` versus `MultiwayLegal`) |
+| `award`, `settle_fold`, `settle_showdown` | Different types (`Settlement` with fixed two-seat arrays versus `ContributionSettlement` with vectors), and the multiway showdown must rank every live hand rather than take a winner index |
+| `pot` | Same definition, different arity |
+| `actor` | Identical |
+
+Two consequences follow. First, unifying is not forwarding: each row above is a
+decision about which behavior is correct, and the multiway behaviors are the
+richer ones because they had to answer questions heads-up never faces.
+Second, `big_blind_option_` is a rule that exists in only one of the two types
+today, so the unified definition has to state whether the option rule is
+heads-up-only or general, and the oracle has to pin whichever answer is chosen.
+Stage 1 carries those decisions; the exhaustive oracle in the Verification Plan
+is what makes "the heads-up path is unaffected" a measured claim rather than an
+assertion.
 
 Settlement extends from 6 to 10 seats. The contribution-layer algorithm is
 already seat-count agnostic in structure; the change is a bound and its tests.
