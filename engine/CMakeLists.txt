@@ -416,6 +416,13 @@ if(BUILD_TESTING)
   target_include_directories(test_multiway_sampler PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME multiway_sampler COMMAND test_multiway_sampler)
 
+  # RFC 0008 cross-type invariants: the boundary between rules-differ and
+  # implementation-drift, asserted against both separate implementations before
+  # any unification. Guards the §L1 merge hazards.
+  add_executable(test_unification_invariants tests/test_unification_invariants.cpp)
+  target_link_libraries(test_unification_invariants PRIVATE bigshark_poker)
+  add_test(NAME unification_invariants COMMAND test_unification_invariants)
+
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)
   add_test(NAME icm COMMAND test_icm)
