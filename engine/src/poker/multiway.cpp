@@ -83,6 +83,13 @@ MultiwayState::MultiwayState(const MultiwayRoot& root) : root_(root) {
     // Preflop action starts LEFT OF THE BIG BLIND, i.e. the seat after the big
     // blind, which is the button when only three seats are dealt.
     const std::size_t opener = clockwise(root.players, root.button, 3);
+    // The ante and blind loops mark the seats that posted money. A NON-blind
+    // seat with zero stack posts neither ante nor blind, so neither loop marks
+    // it; derive its all-in here or it would keep the default and be handed a
+    // phantom check. This is the preflop analogue of the rooted-path
+    // derivation below.
+    for (MultiwayPlayer& player : players_)
+      player.all_in = player.all_in || player.stack == 0;
     // Everyone who can act still owes an action, including the blinds.
     for (MultiwayPlayer& player : players_)
       player.pending = !player.folded && !player.all_in;

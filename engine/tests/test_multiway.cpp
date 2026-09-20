@@ -275,6 +275,23 @@ int test_root_validation() {
   return 0;
 }
 
+// A NON-blind seat with zero stack and no ante must start the hand all in and be
+// skipped for the action, even though it posts neither ante nor blind. The
+// preflop constructor has to derive all-in for it independently of the two
+// blind-posting loops (RFC 0008 stage 2 differential review: the rooted path
+// derived it, the ante path derived it, the plain no-ante non-blind path did
+// not and handed the empty seat a phantom check).
+int test_preflop_zero_stack_nonblind_seat_is_skipped() {
+  MultiwayRoot root = seat_root(3, 0, 4);
+  root.stacks = {0, 4, 26};  // seat 0 is the opener, posts nothing
+  const MultiwayState state(root);
+  CHECK(state.players()[0].all_in);
+  CHECK(!state.players()[0].pending);
+  // Opener skipped; the small blind acts first.
+  CHECK(state.actor() == 1);
+  return 0;
+}
+
 // A zero-stack seat on a ROOTED board is all in from an earlier street and
 // must never hold the action. The rooted construction path derives all-in
 // exactly as the ante path does; pending alone cannot mark it, or the seat
@@ -335,6 +352,7 @@ int main() {
     CHECK(test_preflop_walk_takes_the_blinds() == 0);
     CHECK(test_root_validation() == 0);
     CHECK(test_rooted_zero_stack_seat_is_skipped() == 0);
+    CHECK(test_preflop_zero_stack_nonblind_seat_is_skipped() == 0);
     CHECK(test_short_call_is_capped() == 0);
   } catch (const std::exception& error) {
     std::printf("Unexpected multiway exception: %s\n", error.what());

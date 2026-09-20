@@ -1,5 +1,5 @@
 {
-  "description": "RFC 0008 stage 2: the unified GameState serves 3..10 seats and must reproduce MultiwayState at 3..6 and the independent N-seat ledger at 7..10. Every mutation below is a semantic change to a rule that is decided by SEAT COUNT in the unified machine (the 3+ profile rather than the heads-up one); the multiway oracle must catch each. Recorded as 8 caught / 0 equivalent -- the equivalents are deliberately absent: every mutant here targets behavior the exhaustive walk exercises at three or more seats (the 3..6 lockstep against the real MultiwayState is what makes the catches non-vacuous).",
+  "description": "RFC 0008 stage 2: the unified GameState serves 3..10 seats and must reproduce MultiwayState at 3..6 and the independent N-seat ledger at 7..10. Every mutation below is a semantic change to a rule that is decided by SEAT COUNT in the unified machine (the 3+ profile rather than the heads-up one); the multiway oracle must catch each. Recorded as 11 caught / 1 equivalent. The single equivalent (dropping the folded-seat check from any_pending) is unreachable by construction: a folded seat's pending flag is always false, so the predicate's folded guard is dead -- it is pinned by the measured structural invariant folded==true => pending==false, not by a test that goes green under the mutant, the way the stage-1 battery records its own equivalents. Two mutations guard defects the differential review surfaced in shipped code: a zero-stack non-blind opener missing its all-in derivation preflop (caught by test_multiway and by the lockstep sweep) and a rotated live-seat hole-card mapping at a contested showdown (caught by the differentiated three-way showdown case, since the fixed club board otherwise plays for every hand).",
   "expected": {
     "equivalent": [
       "any_pending keeps a mid-hand folded seat pending and never closes the street"
@@ -43,6 +43,12 @@
           "file": "engine/src/poker/multiway.cpp",
           "find": "    for (MultiwayPlayer& player : players_)\n      player.all_in = player.stack == 0;\n    for (MultiwayPlayer& player : players_)\n      player.pending = !player.folded && !player.all_in;\n    // `next_actor(from)` starts looking at the seat AFTER `from`, so passing",
           "replace": "    for (MultiwayPlayer& player : players_)\n      player.pending = !player.folded && !player.all_in;\n    // `next_actor(from)` starts looking at the seat AFTER `from`, so passing"
+        },
+        {
+          "name": "shipped multiway no longer derives all-in for a zero-stack NON-blind seat preflop",
+          "file": "engine/src/poker/multiway.cpp",
+          "find": "    for (MultiwayPlayer& player : players_)\n      player.all_in = player.all_in || player.stack == 0;\n    // Everyone who can act still owes an action, including the blinds.\n    for (MultiwayPlayer& player : players_)\n      player.pending = !player.folded && !player.all_in;",
+          "replace": "    // MUTANT: only the ante/blind loops derive all-in; a zero-stack\n    // non-blind opener keeps the default and is handed a phantom check.\n    // Everyone who can act still owes an action, including the blinds.\n    for (MultiwayPlayer& player : players_)\n      player.pending = !player.folded && !player.all_in;"
         }
       ]
     },
@@ -66,8 +72,8 @@
         {
           "name": "the contribution ledger still rejects seven players",
           "file": "engine/src/poker/settlement.cpp",
-          "find": "  require(count >= 2 && count <= kMaxContributionSeats,\n          \"settlement requires 2..10 players\");",
-          "replace": "  require(count >= 2 && count <= 6,\n          \"settlement requires 2..6 players\");"
+          "find": "  require(count >= 2 && count <= kMaxContributionSeats, \"settlement requires 2..10 players\");",
+          "replace": "  require(count >= 2 && count <= 6, \"settlement requires 2..6 players\");"
         }
       ]
     }
@@ -120,6 +126,12 @@
       "file": "engine/src/poker/game_definition.cpp",
       "find": "  const bool heads_up = def.player_count == 2;",
       "replace": "  const bool heads_up = def.player_count == 2;\n  if (def.ante != 0)\n    require(false, \"mutant: ante rejected in every profile\");"
+    },
+    {
+      "name": "showdown rotates each live seat's hole cards to the next live seat",
+      "file": "engine/src/poker/game_definition_settlement.cpp",
+      "find": "    for (int card : holes[i])\n      use_card(card, used);\n    std::array<int, 7> cards{};\n    std::copy(board_.begin(), board_.end(), cards.begin());\n    std::copy(holes[i].begin(), holes[i].end(), cards.begin() + 5);",
+      "replace": "    for (int card : holes[(i + 1) % live_size_])\n      use_card(card, used);\n    std::array<int, 7> cards{};\n    std::copy(board_.begin(), board_.end(), cards.begin());\n    std::copy(holes[(i + 1) % live_size_].begin(), holes[(i + 1) % live_size_].end(),\n              cards.begin() + 5);"
     }
   ]
 }

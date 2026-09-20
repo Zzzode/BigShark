@@ -1677,12 +1677,25 @@ profile and the seat-count branch picks each:
   closes only when there is no actionable seat at all. The two-seat rule closes
   the moment either seat is all in.
 
-A fifth rule was a real defect found while fixing the fourth: the shipped
-`MultiwayState` rooted-board constructor did not re-derive `all_in` for a seat
-already all in from an earlier street (it derived it on the ante path but
-not the rooted path), so a zero-stack seat could be handed the action with a
-free check. It is fixed in `multiway.cpp` and pinned by a new shipped-suite
-regression, `test_rooted_zero_stack_seat_is_skipped`.
+Two further shipped defects were found by the independent review lanes and
+fixed, both in `MultiwayState` construction (the new machine already handled
+both, so these are corrections to the 3..6 reference, not to the unified
+rules):
+
+- **Rooted-board all-in.** The rooted-board constructor did not re-derive
+  `all_in` for a seat already all in from an earlier street (it derived it on
+  the ante path but not the rooted path), so a zero-stack seat could be handed
+  the action with a free check. Pinned by
+  `test_rooted_zero_stack_seat_is_skipped`.
+- **Preflop non-blind all-in.** On a plain no-ante preflop root, a NON-blind
+  seat sitting on zero stack posts neither ante nor blind, so neither posting
+  loop derived its `all_in`; it kept the default and the opener search handed
+  it a phantom check. The rooted path (above) had the same shape and was fixed
+  first; this is the preflop analogue the review proved with a differential
+  `/tmp` driver (`MultiwayState` actor=0/all_in=0 vs `GameState`
+  actor=1/all_in=1). Pinned by
+  `test_preflop_zero_stack_nonblind_seat_is_skipped`; the lockstep ledger's
+  `ref_start` derives it the same way, so the 3..6 sweep also reaches it.
 
 **Validation shape.** `validate()` keeps one type across 2..10 with the two
 profiles written out: two seats retain the strict heads-up contract (full
@@ -1697,7 +1710,8 @@ be zero because those blinds are already in `contributions`.
 
 - `test_game_definition_multiway` (new) is the stage-2 gate. It writes an
   independent N-seat ledger from the rules and from `MultiwayState`'s contract
-  (the ledger TU does not include `multiway.hpp`); at 3..6 seats it drives the
+  (the LEDGER CODE itself never includes `multiway.hpp`; only the lockstep
+  harness below the ledger in the same TU does) at 3..6 seats it drives the
   real `MultiwayState` in lockstep with `GameState` at every node (fields,
   phase, actor, board, the full legal-action set, and both fold and showdown
   settlement), and at 7..10 it rides the same ledger. The walk enumerates
@@ -1710,39 +1724,123 @@ be zero because those blinds are already in `contributions`.
   ride two representative buttons. Non-vacuity counters pin mid-hand folds,
   hand-end folds, showdowns, ties, refunded-all-in revivals, short raises,
   capped blinds, antes, rooted roots, flop deals, and the 7..10 range itself.
-- The 2-seat Stage 1 oracle is unchanged and still green: the widening does
-  not move a single heads-up transition.
+- The 2-seat Stage 1 oracle's exhaustive walk is untouched and still green:
+  the stage-2 change to `test_game_definition.cpp` is confined to the
+  construction-rejection case (it now builds a valid 3-seat root and keeps the
+  11-seat rejection); no heads-up enumeration moved.
 - `test_settlement` keeps the bit-identical 2..6 exhaustive grid
   (435,000 accepted / 676,100 rejected) and adds a deterministic LCG
   extension over 7..10 seats (three fixed seeds, 400 trials each = 4,800):
-  1,903 accepted cases compared award/rake/layers/conservation against an
-  independent ledger; the remainder are structurally rejected inputs the
+  1,903 accepted cases compared per-seat award vector, rake, layer COUNT, and
+  chip conservation against an independent ledger (the 2..6 grid alone compares
+  full per-layer contents); the remainder are structurally rejected inputs the
   library also rejects. The ledger's seat constant lives in L0 as
   `kMaxContributionSeats` and is statically tied to `kMaxUnifiedSeats`.
 
-**One shipped defect fixed.** The rooted-board all-in omission above changed
-shipped `MultiwayState`; the shipped multiway rules that the new machine
-targets were therefore not already correct. The fix is in the old type itself
-and is covered both by its own new regression and by the 3..6 lockstep oracle
-reaching the same rooted all-in nodes.
+**Two shipped defects fixed.** The rooted-board and preflop non-blind all-in
+omissions above both changed shipped `MultiwayState`; the shipped multiway
+rules the new machine targets were therefore not already correct. Both fixes
+are in the old type itself, each has its own shipped-suite regression, and the
+rooted case is additionally reached by the 3..6 lockstep oracle while the
+preflop case is reached by the lockstep sweep and its ledger derivation.
+
+**Independent-review hardening (post-commit 0294d72).** Three adversarial
+review lanes (rules correctness, oracle/test rigor, evidence audit) drove four
+test-side and reference fixes, none changing the unified rules:
+
+- a **differentiated three-way river showdown** case
+  (`differentiated_three_way_showdown_matches_shipped`, A/K/Q on the rainbow
+  board 2c 3d 7h 9s Jd) sits BESIDE the bounded walk rather than changing its
+  fixed club runout: that board `5c6c7c8c9c` plays for every fixed hand, so
+  every contested showdown the walk reaches is an all-way tie and a mutant
+  rotating live seats' hole cards went uncaught. The new case drives all three
+  machines to a differentiated showdown; a rotate-holes mutant goes red on it
+  while the all-tie sweep stays green, which is the empirical proof it bites.
+- the legality sweep no longer compares the production
+  `LegalActions::contains` against itself; an independent ledger predicate
+  (`ref_accepts`) recomputes membership from the ledger fields, so a
+  lower-bound off-by-one in `contains` is visible at 3..10 (verified red with
+  a strict-`>` probe).
+- an **anti-bypass** `CHECK` asserts the real `MultiwayState` is present
+  exactly at 3..6 seats, so the lockstep cannot silently degrade to
+  ledger-only.
+- a **scripted five-seat preflop fold-down** reaches the unified
+  `GameState`'s `settle_fold` at n>=5, which the bounded three-active fixtures
+  structurally cannot (their extra seats are all in and stay live).
+- the real `MultiwayState::legal()` is now compared structurally against the
+  independent ledger at every lockstep node (fold/check/call, call amount, and
+  the bet/raise interval), inside `compare_shipped`. Previously the shipped
+  legality was observed only through the transitions it allowed, so a
+  reported-only field like `call_amount` (which `contains` and every
+  transition ignore) could drift silently; a `call_amount+1` probe is now red
+  at the first action node.
+- the one **equivalent** mutant is pinned by a structural `CHECK`
+  (`!(folded && pending)` at every walked node), not by a case that merely
+  stays green under it.
+
+A fresh, separate re-review pass (three new adversarial agents that did not
+author the change) re-derived every rule, re-ran the probes, and audited the
+numbers: F1-F3/N1 and G1-G6 all RESOLVED with no blocking issue. The rules
+lane additionally drove a differential the bounded walk cannot -- 6,000
+all-seats-active random walks (65,513 nodes) plus 200 refund-revival hands at
+3..6 -- with zero divergences. The audit lane caught one real reproducibility
+defect (a clang-format reflow had stale-anchored the settlement mutant in the
+mutation JSON); the anchor was re-synced and the battery re-run to 11/1.
+Two accepted non-behavioral divergences are recorded below (F2, F3).
 
 **Gate results (release).**
 
 - full release `ctest`: 39/39 pass.
-- new multiway oracle: 55,295,432 walked nodes over 3..10 (121,452 in the
-  7..10 range); every non-vacuity counter positive; ~80s.
+- new multiway oracle: 55,296,168 walked nodes over 3..10 (121,820 in the
+  7..10 range); every non-vacuity counter positive; ~82s.
 - settlement grid: 2..6 grid byte-identical; 7..10 extension 4,800 cases
   (1,903 accepted vs the independent ledger, rest structurally rejected).
-- ASan/UBSan full preset: pass.
-- mutation (`npm run mutation -- game-definition-stage2.json`, 10 mutants):
-  9 caught / 1 equivalent. The one equivalent drops the folded-seat check from
+- ASan/UBSan full preset: 37/37 pass. The exhaustive multiway oracle is too
+  slow fully sanitized (measured ~23x slower per node instrumented, i.e.
+  tens of minutes for the full walk), so under the sanitizer preset it
+  compiles to a SUBSET (`BS_MULTIWAY_SANITIZED`): the full three-seat
+  lockstep plus the ten-seat preflop-orbit, capped-blind, ante, zero-stack,
+  and rooted sub-fixtures (112,240 nodes together), which still exercises the
+  ten-element arrays and the new construction, action, and settlement paths
+  under sanitizers; the release sweep is the full 55M-node combinatorial gate.
+- mutation (`node dist/tools/mutation/verify.js --config tools/mutation/game-definition-stage2.json`
+  after `npm run build:ts`; note `npm run mutation` hardcodes the stage-1
+  config and does NOT take a config argument, 12 mutants): 11 caught / 1
+  equivalent. The one equivalent drops the folded-seat check from
   `any_pending`; it cannot change behavior because a folded seat's `pending`
   is always already false (the constructor and `after_card` set pending as
   `!folded && !all_in`, and `after_action` clears the acting seat's pending
-  before it marks the seat folded) -- pinned by the new
-  `fold_as_last_pending_action_closes_street` case. The caught set includes the
-  shipped rooted all-in regression, the 7-player settlement bound, ante
+  before it marks the seat folded). The pin is that structural invariant,
+  measured to hold at EVERY walked node (0 of 55,296,168 have folded==true and
+  pending==true); it is NOT `fold_as_last_pending_action_closes_street`, which
+  is green under the mutant precisely because its folding seat already has
+  pending false. The caught set adds the rotated live-seat hole-card mapping
+  (differentiated showdown) and the preflop non-blind all-in omission on top of
+  the rooted all-in regression, the 7-player settlement bound, ante
   acceptance, mid-hand folding, refund semantics, and the street-close rule.
+
+**Accepted non-behavioral divergences (rules review F2/F3/N1).**
+
+- **F2 numeric-bound shape.** The unified `validate()` bounds the WHOLE hand as
+  `pot + sum(all stacks) <= kMaxHeadsUpChips` (the heads-up form), while
+  shipped `MultiwayState` bounds `pot() + each seat's stack` PER SEAT without
+  accumulating. The two differ only for physically impossible chip totals
+  (around the 2^53-1 ≈ 9e15 per-value cap aggregated across seats); at every
+  reachable stack the per-seat bound is the looser one and the aggregate check
+  dominates. Settlement also rejects any pot that cannot be expressed in its
+  exact numeric profile, so no such root can reach a decision. Left as-is and
+  recorded; tightening to a per-seat bound would weaken the heads-up equality
+  the stage-1 oracle pins.
+- **F3 `can_raise` outside the Action phase.** On an all-in runout the unified
+  `after_card` resets raise rights before the close test, so a read-only
+  `can_raise()` query in a non-Action phase can report a value the shipped
+  heads-up type (whose `close_street` zeroes rights) does not. This is
+  observability only: no transition reads rights outside Action, the legal
+  action set is empty in those phases, and no settlement input changes. Inherited
+  from Stage 1; recorded for the Stage 7 type-removal rather than patched now.
+- **N1 fixed.** A rooted-path comment claimed a folded root seat was
+  constructible; `GameDef` has no folded field, so none is. The comment now
+  states that pending keys off the stack alone.
 
 **Scope boundary.** This stage changes no protocol, no strategy/solver surface,
 and no adapter. The old types remain the sole live callers of their own rules;

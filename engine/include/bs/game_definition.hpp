@@ -5,9 +5,10 @@
 // `MultiwayState` in bs/multiway.hpp); they remain as adapters during the
 // transition. Two seats are the heads-up rules profile and 3..10 seats are
 // the multiway profile, selected by seat count inside the machine, not by a
-// second type: three rules genuinely differ between the profiles (blind seats,
-// the all-in flag across a refund, and the big-blind preflop option) and each
-// branch is pinned by an exhaustive equivalence oracle.
+// second type: four rules genuinely differ between the profiles (the blind
+// seats, the all-in flag across a refund, the big-blind preflop option, and
+// when a street closes) and each branch is pinned by an exhaustive equivalence
+// oracle.
 //
 // Design constraints, each forced by something measured rather than chosen:
 //
@@ -24,17 +25,17 @@
 //    as it does today; the seat-count stage revisits this when the multiway
 //    type unifies. `board` stays here because transitions DO read it.
 //
-  //  * ONE ALL-IN FIELD PER SEAT, AND THE TWO PROFILES DISAGREE ON REFUNDS.
-  //    At two seats `all_in`, once set by a capped blind, STAYS set when the
-  //    unmatched part is refunded; at 3+ seats it is re-derived from the stack,
-  //    which is the `MultiwayState` rule. Both are correct for their own
-  //    profile and the seat-count branch in the transition code selects each.
-  //    The two-seat form was found the hard way: re-deriving after a refund
-  //    revived a short big blind and opened a betting round the shipped rules
-  //    never enter (`engine/tests/test_heads_up_preflop.cpp:229`: "The board
-  //    runs out with no action at any street"). The multiway form is the
-  //    inverse rule and RFC 0008 §L1 records it: a refunded all-in seat in a
-  //    3+ game gets its unmatched chips AND its ability to act back.
+//  * ONE ALL-IN FIELD PER SEAT, AND THE TWO PROFILES DISAGREE ON REFUNDS.
+//    At two seats `all_in`, once set by a capped blind, STAYS set when the
+//    unmatched part is refunded; at 3+ seats it is re-derived from the stack,
+//    which is the `MultiwayState` rule. Both are correct for their own
+//    profile and the seat-count branch in the transition code selects each.
+//    The two-seat form was found the hard way: re-deriving after a refund
+//    revived a short big blind and opened a betting round the shipped rules
+//    never enter (`engine/tests/test_heads_up_preflop.cpp:229`: "The board
+//    runs out with no action at any street"). The multiway form is the
+//    inverse rule and RFC 0008 §L1 records it: a refunded all-in seat in a
+//    3+ game gets its unmatched chips AND its ability to act back.
 #pragma once
 
 #include <array>
@@ -221,10 +222,14 @@ class GameState {
   // big blind's preflop option keeps the street open with nobody pending, so
   // `after_action` reconstructs the heads-up close from the option flag.
   bool any_pending() const;
-  // Seats that are neither folded nor all in. The 3+ profile needs at least
-  // two of them before opening a betting round; the two-seat profile closes
-  // instead when EITHER seat is all in, so the constructor and `after_card`
-  // branch on the profile rather than calling this alone.
+  // Seats that are neither folded nor all in. Retained as a query; the
+  // transition code does NOT gate the 3+ profile on this being at least two.
+  // At 3+ seats a betting round opens whenever ONE seat still owes a decision
+  // (the last live seat facing only all-in or folded opponents still owes its
+  // call/fold), and closes only when `any_pending()` is false; the two-seat
+  // profile instead closes the moment EITHER seat is all in. The battery pins
+  // the distinction with a mutant that wrongly closes here when this count is
+  // below two.
   std::size_t actionable_count() const;
   void refresh_live();
   ContributionSettlement award(std::span<const std::optional<std::uint32_t>> scores) const;

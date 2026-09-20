@@ -59,8 +59,7 @@ Quotient multiply_divide(Chips left, Chips right, Chips divisor) {
 
 ContributionSettlement settle_contributions(const SettlementInput& input) {
   const std::size_t count = input.players.size();
-  require(count >= 2 && count <= kMaxContributionSeats,
-          "settlement requires 2..10 players");
+  require(count >= 2 && count <= kMaxContributionSeats, "settlement requires 2..10 players");
   require(input.seat_count >= count, "invalid settlement seat count");
   require(input.button < input.seat_count, "button outside settlement seats");
   require(input.odd_chip_rule == OddChipRule::ClockwiseLeftOfButton, "unsupported odd-chip rule");

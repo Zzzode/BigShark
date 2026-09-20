@@ -262,8 +262,8 @@ int test_rake() {
 }
 
 int test_rejections_and_limits() {
-  for (const auto& contributions :
-       {std::vector<Chips>{}, std::vector<Chips>{1}, std::vector<Chips>(kMaxContributionSeats + 1, 1)}) {
+  for (const auto& contributions : {std::vector<Chips>{}, std::vector<Chips>{1},
+                                    std::vector<Chips>(kMaxContributionSeats + 1, 1)}) {
     const auto input = input_for(contributions);
     CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
   }
@@ -591,9 +591,9 @@ int test_seven_to_ten_seat_extension() {
   for (std::size_t count = 7; count <= kMaxContributionSeats; ++count) {
     if (stage_env && count < 7)
       continue;
-    for (std::uint64_t seed : {std::uint64_t{0x123456789abcdef0ULL},
-                                std::uint64_t{0x0fedcba987654321ULL},
-                                std::uint64_t{0x9e3779b97f4a7c15ULL}}) {
+    for (std::uint64_t seed :
+         {std::uint64_t{0x123456789abcdef0ULL}, std::uint64_t{0x0fedcba987654321ULL},
+          std::uint64_t{0x9e3779b97f4a7c15ULL}}) {
       Lcg rng{(seed ^ (count * 0x9e3779b97f4a7c15ULL)) + 1};
       for (unsigned trial = 0; trial < 400; ++trial) {
         std::vector<Chips> contributions(count);
@@ -609,8 +609,9 @@ int test_seven_to_ten_seat_extension() {
           input.players[p].seat = count - 1 - p;
           input.players[p].chips.folded = (folded & (1U << p)) != 0;
           input.players[p].showdown_score =
-              mode == 0 ? std::nullopt
-                         : std::make_optional(static_cast<std::uint32_t>((p + mode + rng.next(3)) % 4));
+              mode == 0
+                  ? std::nullopt
+                  : std::make_optional(static_cast<std::uint32_t>((p + mode + rng.next(3)) % 4));
           const Chips refund = rng.next(3);
           input.players[p].chips.refunded = refund;
           input.players[p].chips.contributed += refund;
@@ -647,13 +648,11 @@ int test_seven_to_ten_seat_extension() {
   // library's invalid_argument surfaces: no eligible winner, a sole gross
   // contributor, or a contested layer missing a score) is classified and
   // counted rather than compared.
-  std::printf("settlement 7..10 extension: sampled=%zu structurally_rejected=%zu\n",
-              sampled, logic_rejected);
+  std::printf("settlement 7..10 extension: sampled=%zu structurally_rejected=%zu\n", sampled,
+              logic_rejected);
   CHECK(sampled + logic_rejected == 4800);
   CHECK(sampled > 1000);
   CHECK(logic_rejected > 0);
-  std::printf("settlement 7..10 seat extension: sampled=%zu structurally_rejected=%zu\n",
-              sampled, logic_rejected);
   return 0;
 }
 

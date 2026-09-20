@@ -46,11 +46,11 @@
 using namespace bs::poker;
 
 #define CHECK(cond)                                                         \
-  do {                                                                     \
-    if (!(cond)) {                                                         \
+  do {                                                                      \
+    if (!(cond)) {                                                          \
       std::printf("CHECK failed: %s (%s:%d)\n", #cond, __FILE__, __LINE__); \
-      return 1;                                                            \
-    }                                                                      \
+      return 1;                                                             \
+    }                                                                       \
   } while (0)
 
 namespace {
@@ -64,8 +64,16 @@ const std::array<const char*, 5> kBoardNames = {"5c", "6c", "7c", "8c", "9c"};
 // runout plus ten live seats never collides. The low pairs can tie on the
 // board: a showdown with tied winners is exercised rather than avoided.
 const std::array<std::array<const char*, 2>, 10> kHoleNames = {{
-    {"Ah", "Ad"}, {"Kh", "Kd"}, {"Qh", "Qd"}, {"Jh", "Jd"}, {"Th", "Td"},
-    {"2h", "2d"}, {"3h", "3d"}, {"4h", "4s"}, {"6h", "6d"}, {"7h", "7d"},
+    {"Ah", "Ad"},
+    {"Kh", "Kd"},
+    {"Qh", "Qd"},
+    {"Jh", "Jd"},
+    {"Th", "Td"},
+    {"2h", "2d"},
+    {"3h", "3d"},
+    {"4h", "4s"},
+    {"6h", "6d"},
+    {"7h", "7d"},
 }};
 
 // ---------------------------------------------------------------------------
@@ -206,6 +214,10 @@ Ref ref_start(const GameDef& def) {
       s.all_in[seat] = s.stack[seat] == 0;
     }
     s.street = Street::Preflop;
+    // A non-blind zero-stack seat with no ante posts nothing, so derive its
+    // all-in here too (mirrors the shipped constructor), before pending.
+    for (std::size_t p = 0; p < s.players; ++p)
+      s.all_in[p] = s.all_in[p] || s.stack[p] == 0;
     for (std::size_t p = 0; p < s.players; ++p)
       s.pending[p] = !s.all_in[p];
     s.actor = static_cast<int>((def.button + 3) % s.players);
@@ -221,8 +233,8 @@ Ref ref_start(const GameDef& def) {
   } else {
     for (std::uint8_t i = 0; i < def.board_size; ++i)
       s.board.push_back(def.board[i]);
-    s.street = def.board_size == 3 ? Street::Flop
-                                    : (def.board_size == 4 ? Street::Turn : Street::River);
+    s.street =
+        def.board_size == 3 ? Street::Flop : (def.board_size == 4 ? Street::Turn : Street::River);
     for (std::size_t p = 0; p < s.players; ++p) {
       s.all_in[p] = s.stack[p] == 0;
       s.pending[p] = s.stack[p] > 0;
@@ -268,6 +280,52 @@ LegalActions ref_legal(const Ref& s) {
       maximum <= full_minimum,
   };
   return result;
+}
+
+// Independent legality ACCEPTANCE for one concrete action, derived straight
+// from the ledger state rather than from a `LegalActions` struct or the
+// production `LegalActions::contains`. The full target sweep below used to ask
+// `got_legal.contains(p) != want_legal.contains(p)`; both sides then ran the
+// SAME shipped membership code, so an off-by-one in `contains` cancelled out
+// and no 3..10 suite could see it. This recomputes the rule from scratch:
+// fold/check/call carry no target and are gated only on whether chips are due;
+// a bet/raise must carry the street-correct type and land in the closed
+// interval [min(full-raise minimum, all-in cap), all-in cap], and only when
+// the seat holds raise rights, has chips beyond the due amount, and has at
+// least one opponent who could still respond.
+bool ref_accepts(const Ref& s, Action action) {
+  if (s.phase != Phase::Action || s.actor < 0)
+    return false;
+  const std::size_t hero = static_cast<std::size_t>(s.actor);
+  Chips high = 0;
+  for (std::size_t p = 0; p < s.players; ++p)
+    high = std::max(high, s.committed[p]);
+  const Chips due = high - s.committed[hero];
+  switch (action.type) {
+    case ActionType::Fold:
+      return action.target_total == 0 && due > 0;
+    case ActionType::Check:
+      return action.target_total == 0 && due == 0;
+    case ActionType::Call:
+      return action.target_total == 0 && due > 0;
+    case ActionType::Bet:
+    case ActionType::Raise: {
+      if (action.type != (due == 0 ? ActionType::Bet : ActionType::Raise))
+        return false;
+      if (!s.raise_rights[hero] || s.stack[hero] <= due)
+        return false;
+      bool someone_responds = false;
+      for (std::size_t p = 0; p < s.players; ++p)
+        if (p != hero && s.can_act(p))
+          someone_responds = true;
+      if (!someone_responds)
+        return false;
+      const Chips cap = s.committed[hero] + s.stack[hero];
+      const Chips floor = std::min(high + s.last_full_raise, cap);
+      return action.target_total >= floor && action.target_total <= cap;
+    }
+  }
+  return false;
 }
 
 void ref_act(Ref& next, std::size_t player, Action action) {
@@ -455,14 +513,15 @@ int compare(const GameState& got, const Ref& want) {
                 static_cast<unsigned long long>(want.pot()), want.board.size());
     for (std::size_t p = 0; p < want.players; ++p) {
       const GamePlayer& g = got.players()[p];
-      std::printf("  seat %zu got(st=%llu sc=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d) "
-                  "want(st=%llu sc=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d)\n",
-                  p, (unsigned long long)g.stack, (unsigned long long)g.street_committed,
-                  (unsigned long long)g.contributed, (unsigned long long)g.refunded, g.folded,
-                  g.all_in, g.raise_rights, g.pending, (unsigned long long)want.stack[p],
-                  (unsigned long long)want.committed[p], (unsigned long long)want.contributed[p],
-                  (unsigned long long)want.returned[p], want.folded[p], want.all_in[p],
-                  want.raise_rights[p], want.pending[p]);
+      std::printf(
+          "  seat %zu got(st=%llu sc=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d) "
+          "want(st=%llu sc=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d)\n",
+          p, (unsigned long long)g.stack, (unsigned long long)g.street_committed,
+          (unsigned long long)g.contributed, (unsigned long long)g.refunded, g.folded, g.all_in,
+          g.raise_rights, g.pending, (unsigned long long)want.stack[p],
+          (unsigned long long)want.committed[p], (unsigned long long)want.contributed[p],
+          (unsigned long long)want.returned[p], want.folded[p], want.all_in[p],
+          want.raise_rights[p], want.pending[p]);
     }
   };
   if (got.phase() != want.phase || got.street() != want.street) {
@@ -526,21 +585,21 @@ int compare_legal(const GameState& got, const Ref& want) {
   const LegalActions got_legal = got.legal();
   const LegalActions want_legal = ref_legal(want);
   auto dump_legal = [&]() {
-    std::printf("  LEGAL got={f%d c%d k%d amt=%llu agg=%d[%llu..%llu,only=%d]} want={f%d c%d k%d "
-                "amt=%llu agg=%d[%llu..%llu,only=%d]} actor=%d stack=%llu committed=%llu rr=%d\n",
-                got_legal.fold, got_legal.check, got_legal.call,
-                (unsigned long long)got_legal.call_amount, got_legal.aggressive.has_value(),
-                got_legal.aggressive ? (unsigned long long)got_legal.aggressive->minimum : 0ULL,
-                got_legal.aggressive ? (unsigned long long)got_legal.aggressive->maximum : 0ULL,
-                got_legal.aggressive ? got_legal.aggressive->all_in_only : 0, want_legal.fold,
-                want_legal.check, want_legal.call, (unsigned long long)want_legal.call_amount,
-                want_legal.aggressive.has_value(),
-                want_legal.aggressive ? (unsigned long long)want_legal.aggressive->minimum : 0ULL,
-                want_legal.aggressive ? (unsigned long long)want_legal.aggressive->maximum : 0ULL,
-                want_legal.aggressive ? want_legal.aggressive->all_in_only : 0, want.actor,
-                (unsigned long long)want.stack[want.actor],
-                (unsigned long long)want.committed[want.actor],
-                want.raise_rights[want.actor]);
+    std::printf(
+        "  LEGAL got={f%d c%d k%d amt=%llu agg=%d[%llu..%llu,only=%d]} want={f%d c%d k%d "
+        "amt=%llu agg=%d[%llu..%llu,only=%d]} actor=%d stack=%llu committed=%llu rr=%d\n",
+        got_legal.fold, got_legal.check, got_legal.call, (unsigned long long)got_legal.call_amount,
+        got_legal.aggressive.has_value(),
+        got_legal.aggressive ? (unsigned long long)got_legal.aggressive->minimum : 0ULL,
+        got_legal.aggressive ? (unsigned long long)got_legal.aggressive->maximum : 0ULL,
+        got_legal.aggressive ? got_legal.aggressive->all_in_only : 0, want_legal.fold,
+        want_legal.check, want_legal.call, (unsigned long long)want_legal.call_amount,
+        want_legal.aggressive.has_value(),
+        want_legal.aggressive ? (unsigned long long)want_legal.aggressive->minimum : 0ULL,
+        want_legal.aggressive ? (unsigned long long)want_legal.aggressive->maximum : 0ULL,
+        want_legal.aggressive ? want_legal.aggressive->all_in_only : 0, want.actor,
+        (unsigned long long)want.stack[want.actor], (unsigned long long)want.committed[want.actor],
+        want.raise_rights[want.actor]);
   };
   if (got_legal.fold != want_legal.fold || got_legal.check != want_legal.check ||
       got_legal.call != want_legal.call || got_legal.call_amount != want_legal.call_amount ||
@@ -557,14 +616,19 @@ int compare_legal(const GameState& got, const Ref& want) {
       return 1;
     }
   }
-  // The full legality sweep: every action type against every target.
+  // The full legality sweep: every action type against every target. The
+  // ledger side is `ref_accepts`, which recomputes membership from the ledger
+  // instead of reusing `want_legal.contains`, so a defect in the shipped
+  // `LegalActions::contains` membership itself is visible here.
   const Chips ceiling = want.stack[static_cast<std::size_t>(want.actor)];
   for (int t = 0; t < 5; ++t) {
     const auto type = static_cast<ActionType>(t);
     for (Chips target = 0; target <= ceiling + 1; ++target) {
       const Action probe{type, target};
-      if (got_legal.contains(probe) != want_legal.contains(probe))
+      if (got_legal.contains(probe) != ref_accepts(want, probe)) {
+        dump_legal();
         return 1;
+      }
     }
   }
   if (want_legal.aggressive &&
@@ -606,13 +670,14 @@ int compare_shipped(const MultiwayState& mw, const Ref& want) {
                 static_cast<unsigned long long>(want.pot()), want.board.size());
     for (std::size_t p = 0; p < want.players; ++p) {
       const MultiwayPlayer& m = mw.players()[p];
-      std::printf("  seat %zu ship(st=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d) "
-                  "ledg(st=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d)\n",
-                  p, (unsigned long long)m.stack, (unsigned long long)m.street_committed,
-                  (unsigned long long)m.refunded, m.folded, m.all_in, m.raise_rights, m.pending,
-                  (unsigned long long)want.stack[p], (unsigned long long)want.committed[p],
-                  (unsigned long long)want.returned[p], want.folded[p], want.all_in[p],
-                  want.raise_rights[p], want.pending[p]);
+      std::printf(
+          "  seat %zu ship(st=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d) "
+          "ledg(st=%llu co=%llu re=%llu f=%d a=%d rr=%d pe=%d)\n",
+          p, (unsigned long long)m.stack, (unsigned long long)m.street_committed,
+          (unsigned long long)m.refunded, m.folded, m.all_in, m.raise_rights, m.pending,
+          (unsigned long long)want.stack[p], (unsigned long long)want.committed[p],
+          (unsigned long long)want.returned[p], want.folded[p], want.all_in[p],
+          want.raise_rights[p], want.pending[p]);
     }
   };
   if (mw.phase() != want.phase || mw.street() != want.street ||
@@ -644,6 +709,29 @@ int compare_shipped(const MultiwayState& mw, const Ref& want) {
         m.contributed != want.contributed[p] || m.refunded != want.returned[p] ||
         m.folded != (want.folded[p] != 0) || m.all_in != (want.all_in[p] != 0) ||
         m.raise_rights != (want.raise_rights[p] != 0) || m.pending != (want.pending[p] != 0)) {
+      dump();
+      return 1;
+    }
+  }
+  // The shipped legality SHAPE against the independent ledger, at every node.
+  // compare_legal already sweeps GameState's membership via ref_accepts; the
+  // shipped type's legal() was previously checked only indirectly through the
+  // transitions it allowed. MultiwayLegal is a LegalActions alias with a
+  // byte-identical contains, so once this interval matches ref_legal the
+  // shipped membership set is pinned too, without a second target sweep.
+  const MultiwayLegal ship_legal = mw.legal();
+  const LegalActions want_legal = ref_legal(want);
+  if (ship_legal.fold != want_legal.fold || ship_legal.check != want_legal.check ||
+      ship_legal.call != want_legal.call || ship_legal.call_amount != want_legal.call_amount ||
+      ship_legal.aggressive.has_value() != want_legal.aggressive.has_value()) {
+    dump();
+    return 1;
+  }
+  if (want_legal.aggressive) {
+    if (ship_legal.aggressive->type != want_legal.aggressive->type ||
+        ship_legal.aggressive->minimum != want_legal.aggressive->minimum ||
+        ship_legal.aggressive->maximum != want_legal.aggressive->maximum ||
+        ship_legal.aggressive->all_in_only != want_legal.aggressive->all_in_only) {
       dump();
       return 1;
     }
@@ -686,15 +774,15 @@ int compare_settlement(const GameState& state, const Ref& ref, bool showdown, Co
   Chips awarded = 0;
   for (std::size_t p = 0; p < ref.players; ++p) {
     if (got.awards[p] != want.awards[p] || got.refunds[p] != want.refunds[p]) {
-      std::printf("settle mismatch showdown=%d n=%zu seat=%zu got(award=%llu refund=%llu) "
-                  "want(award=%llu refund=%llu) pot got=%llu want=%llu\n",
-                  static_cast<int>(showdown), ref.players, p,
-                  static_cast<unsigned long long>(got.awards[p]),
-                  static_cast<unsigned long long>(got.refunds[p]),
-                  static_cast<unsigned long long>(want.awards[p]),
-                  static_cast<unsigned long long>(want.refunds[p]),
-                  static_cast<unsigned long long>(got.pot),
-                  static_cast<unsigned long long>(want.pot));
+      std::printf(
+          "settle mismatch showdown=%d n=%zu seat=%zu got(award=%llu refund=%llu) "
+          "want(award=%llu refund=%llu) pot got=%llu want=%llu\n",
+          static_cast<int>(showdown), ref.players, p,
+          static_cast<unsigned long long>(got.awards[p]),
+          static_cast<unsigned long long>(got.refunds[p]),
+          static_cast<unsigned long long>(want.awards[p]),
+          static_cast<unsigned long long>(want.refunds[p]),
+          static_cast<unsigned long long>(got.pot), static_cast<unsigned long long>(want.pot));
       return 1;
     }
     awarded += got.awards[p];
@@ -717,6 +805,20 @@ int compare_settlement(const GameState& state, const Ref& ref, bool showdown, Co
 int walk(GameState& state, Ref& ref, MultiwayState* mw, Counts& counts, int depth) {
   if (depth > 48)
     return 0;
+  // Anti-bypass guard: at 3..6 seats the REAL shipped type must be driving the
+  // lockstep, otherwise this walk silently degrades to ledger-only (the 7..10
+  // shape) with no comparison failing.
+  CHECK((ref.players <= kMaxMultiwayPlayers) == (mw != nullptr));
+  // Structural pin for the single EQUIV mutant (dropping the folded guard from
+  // any_pending). Every (re)initialization sets pending = !folded && !all_in,
+  // and after_action clears the acting seat's pending BEFORE it marks the seat
+  // folded, so folded && pending must co-occur at NO node. The field-by-field
+  // compare below propagates the same fact to the real machines. Holding at
+  // every node is exactly why that folded guard is dead code and the mutant is
+  // behavior-equivalent; asserting the invariant here is an honest pin that
+  // does not depend on a case that merely stays green under the mutant.
+  for (std::size_t p = 0; p < ref.players; ++p)
+    CHECK(!(ref.folded[p] && ref.pending[p]));
   ++counts.nodes;
   if (ref.players >= 7)
     ++counts.seven_plus_nodes;
@@ -984,10 +1086,26 @@ int sweep() {
       const std::size_t small_seat = (0 + 1) % players;
       const std::size_t big_seat = (0 + 2) % players;
       std::vector<Chips> stacks(players, ante);  // every inactive seat antes out
-      stacks[opener_seat] = ante;  // the opener also antes out and starts all in
+      stacks[opener_seat] = ante;                // the opener also antes out and starts all in
       stacks[small_seat] = 20;
       stacks[big_seat] = 20;
       GameDef def = make_preflop(players, 0, bb, stacks, ante);
+      if (drive(def, counts) != 0)
+        return 1;
+    }
+    // A NON-blind seat that starts with zero stack and NO ante: it posts neither
+    // ante nor blind, so the constructor must derive all-in for it independently
+    // of the ante/blind loops and the lockstep opener must skip it. This is the
+    // preflop twin of the rooted zero-stack fixture; the differential review
+    // found the shipped type missed this exact path. Every non-blind seat except
+    // the opener is also empty (and so skipped), leaving only the two small-stack
+    // blind seats to act, which keeps the walk bounded.
+    {
+      std::vector<Chips> stacks(players, 0);  // no ante: empty seats post nothing
+      stacks[(0 + 1) % players] = 4;          // small blind, live
+      stacks[(0 + 2) % players] = 4;          // big blind, live
+      // seat (button+3) is the opener and stays zero: skipped as all in.
+      GameDef def = make_preflop(players, 0, bb, stacks, 0);
       if (drive(def, counts) != 0)
         return 1;
     }
@@ -1009,8 +1127,8 @@ int sweep() {
       // repeating both board sizes at every count would cost minutes for no
       // new rule coverage. The flop still deals and closes streets; the river
       // showdown path is fully enumerated at three seats.
-      const std::array<std::uint8_t, 1> rooted_boards = {
-          players == 3 ? std::uint8_t{5} : std::uint8_t{3}};
+      const std::array<std::uint8_t, 1> rooted_boards = {players == 3 ? std::uint8_t{5}
+                                                                      : std::uint8_t{3}};
       for (std::uint8_t board_size : rooted_boards) {
         // Exactly three ACTIVE seats (0, 1, and the last seat); every other
         // seat committed earlier and is all in with zero behind, which is the
@@ -1019,8 +1137,8 @@ int sweep() {
         // the exhaustive walk stays bounded regardless of the seat count.
         std::vector<Chips> stacks(players, 0);
         std::vector<Chips> dead(players, 4);  // each inactive seat reached level 4
-        stacks[0] = 0;    // already all in from an earlier street
-        stacks[1] = 10;   // one deep active seat
+        stacks[0] = 0;                        // already all in from an earlier street
+        stacks[1] = 10;                       // one deep active seat
         stacks[2 % players] = 6;
         stacks[players - 1] = 6;
         if (players >= 7)
@@ -1052,6 +1170,119 @@ int sweep() {
   CHECK(g_antes > 0);
   CHECK(counts.rooted_roots > 0);
   CHECK(counts.flops_dealt > 0);
+  return 0;
+}
+
+// A DIFFERENTIATED three-way showdown driven through GameState, the real
+// MultiwayState, and the independent ledger. The exhaustive walk's fixed
+// club runout makes the board play for every fixed hand, so every contested
+// showdown it reaches is an all-way tie; this pins the seat->hand->score
+// mapping with hands of DIFFERENT strength. A mutant that rotates each live
+// seat's hole cards to the next seat must go red here.
+int differentiated_three_way_showdown_matches_shipped() {
+  GameDef def{};
+  def.player_count = 3;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {198, 198, 198, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {2, 2, 2, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 6;
+  def.board = {card("2c"), card("3d"), card("7h"), card("9s"), card("Jd")};
+  def.board_size = 5;
+  def.preflop = false;
+
+  GameState state(def);
+  MultiwayState shipped(shipped_root(def));
+  Ref ref = ref_start(def);
+  // Everyone checks the river down to the showdown in all three machines.
+  for (;;) {
+    if (state.phase() != Phase::Action)
+      break;
+    const std::size_t actor = state.actor().value();
+    const Action check{ActionType::Check, 0};
+    CHECK(state.legal().contains(check));
+    state = state.after_action(actor, check);
+    shipped = shipped.after_action(actor, check);
+    ref_act(ref, actor, check);
+  }
+  CHECK(state.phase() == Phase::Showdown);
+  CHECK(shipped.phase() == Phase::Showdown);
+
+  // Seat 0 aces, seat 1 kings, seat 2 queens: seat 0 is a clear winner.
+  const std::vector<std::array<int, 2>> holes{
+      {card("Ah"), card("Ad")}, {card("Kh"), card("Kd")}, {card("Qh"), card("Qd")}};
+  Counts counts;
+  if (compare_settlement(state, ref, true, counts) != 0)
+    return 1;
+  const ContributionSettlement mw = shipped.settle_showdown(holes);
+  const ContributionSettlement gs = state.settle_showdown(holes);
+  for (std::size_t p = 0; p < 3; ++p) {
+    CHECK(gs.awards[p] == mw.awards[p]);
+    CHECK(gs.refunds[p] == mw.refunds[p]);
+    CHECK(gs.final_stacks[p] == mw.final_stacks[p]);
+  }
+  // Seat 0 wins both opponents' dead 2; the other two lose their 2.
+  CHECK(gs.chip_utility[0] == 4);
+  CHECK(gs.chip_utility[1] == -2);
+  CHECK(gs.chip_utility[2] == -2);
+  return 0;
+}
+
+// A hand folded down to one live seat at FIVE seats. The bounded walk keeps
+// exactly three ACTIVE seats and posts every extra seat all in; an all-in seat
+// stays live, so those fixtures can never collapse to a single live seat at
+// n>=5 and the unified GameState's fold settlement is unreachable there. This
+// scripted preflop hand does the collapse: button 0 makes the opener order
+// 3,4,0,1(SB), and those four fold before the big blind ever acts, leaving
+// seat 2 the sole live seat. The hand is driven through GameState, the real
+// MultiwayState, and the ledger, then settled as a fold on all three.
+int preflop_fold_down_at_five_seats_settles() {
+  GameDef def = make_preflop(5, 0, 2, flat(5, 20), 0);
+  GameState state(def);
+  MultiwayState shipped(shipped_root(def));
+  Ref ref = ref_start(def);
+  CHECK(compare(state, ref) == 0);
+  CHECK(compare_shipped(shipped, ref) == 0);
+
+  constexpr std::array<std::size_t, 4> folders{{3, 4, 0, 1}};
+  for (const std::size_t seat : folders) {
+    CHECK(state.phase() == Phase::Action);
+    CHECK(shipped.phase() == Phase::Action);
+    CHECK(state.actor() == seat);
+    CHECK(shipped.actor() == seat);
+    CHECK(state.legal().fold);
+    const Action fold{ActionType::Fold, 0};
+    GameState next_state = state.after_action(seat, fold);
+    MultiwayState next_shipped = shipped.after_action(seat, fold);
+    Ref next_ref = ref;
+    ref_act(next_ref, seat, fold);
+    state = next_state;
+    shipped = next_shipped;
+    ref = next_ref;
+    CHECK(compare(state, ref) == 0);
+    CHECK(compare_shipped(shipped, ref) == 0);
+  }
+  CHECK(state.phase() == Phase::Folded);
+  CHECK(shipped.phase() == Phase::Folded);
+  CHECK(state.live_players().size() == 1);
+  CHECK(state.live_players()[0] == 2);
+
+  Counts counts;
+  if (compare_settlement(state, ref, false, counts) != 0)
+    return 1;
+  const ContributionSettlement shipped_settled = shipped.settle_fold();
+  const ContributionSettlement unified = state.settle_fold();
+  for (std::size_t p = 0; p < 5; ++p) {
+    CHECK(unified.awards[p] == shipped_settled.awards[p]);
+    CHECK(unified.refunds[p] == shipped_settled.refunds[p]);
+    CHECK(unified.final_stacks[p] == shipped_settled.final_stacks[p]);
+  }
+  // The big blind nets the small blind's 1; the small blind loses its posted 1;
+  // the three seats that folded before posting end at zero utility.
+  CHECK(unified.chip_utility[2] == 1);
+  CHECK(unified.chip_utility[1] == -1);
+  for (const std::size_t p : {std::size_t{0}, std::size_t{3}, std::size_t{4}})
+    CHECK(unified.chip_utility[p] == 0);
   return 0;
 }
 
@@ -1198,8 +1429,11 @@ int main() {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 4> cases{{
+  const std::array<Case, 6> cases{{
       {"sweep", sweep},
+      {"differentiated_three_way_showdown_matches_shipped",
+       differentiated_three_way_showdown_matches_shipped},
+      {"preflop_fold_down_at_five_seats_settles", preflop_fold_down_at_five_seats_settles},
       {"fold_as_last_pending_closes_street", fold_as_last_pending_action_closes_street},
       {"three_seats_now_construct", three_seats_now_construct},
       {"validation_rejections", validation_rejections},

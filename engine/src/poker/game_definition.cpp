@@ -2,14 +2,15 @@
 // identity, and the queries both rule profiles share.
 //
 // ONE type serves 2..10 seats. The two-seat profile is NOT the three-handed
-// profile with the seat count turned down: three rules differ at two seats
-// (the button posts the small blind, a refund preserves an all-in flag, and
-// the big blind holds a preflop option no multiway rule has). They are not
-// folded into one general formula; the seat-count branches below state each
-// decision, and the exhaustive oracles pin that the shared transition code
-// collapses onto `HeadsUpState` at two seats and onto `MultiwayState` at
-// 3..10. The heads-up rules supply the stricter two-seat forms; the
-// multiway rules supply the general clockwise forms.
+// profile with the seat count turned down: four rules differ at two seats
+// (the button posts the small blind, a refund preserves an all-in flag,
+// the big blind holds a preflop option no multiway rule has, and a street
+// closes the moment either seat is all in rather than when no seat can act).
+// They are not folded into one general formula; the seat-count branches
+// below state each decision, and the exhaustive oracles pin that the shared
+// transition code collapses onto `HeadsUpState` at two seats and onto
+// `MultiwayState` at 3..10. The heads-up rules supply the stricter two-seat
+// forms; the multiway rules supply the general clockwise forms.
 
 #include <algorithm>
 #include <array>
@@ -56,8 +57,7 @@ std::size_t preflop_first_actor(const GameDef& def) {
 
 void validate(const GameDef& def) {
   require(def.player_count >= kMinUnifiedSeats, "a game needs at least two seats");
-  require(def.player_count <= kMaxUnifiedSeats,
-          "the unified profile serves at most ten seats");
+  require(def.player_count <= kMaxUnifiedSeats, "the unified profile serves at most ten seats");
   require(def.button < def.player_count, "button outside the seated range");
   require(def.big_blind > 0 && def.big_blind <= kMaxHeadsUpChips, "invalid big blind");
   require(def.terminal == TerminalDepth::River,
@@ -279,10 +279,10 @@ GameState::GameState(const GameDef& def) : def_(def) {
     std::copy_n(def_.board.begin(), board_size_, board_.begin());
     street_ = board_size_ == 3 ? Street::Flop : (board_size_ == 4 ? Street::Turn : Street::River);
     last_full_raise_ = def_.big_blind;
-    // A rooted board carries chips behind, so an empty stack here is an all-in
-    // seat. Whether the seat is FOLDED is not a waffle: only `all_in` is. A
-    // root with a folded seat is constructible, and if `pending` keyed off the
-    // folded flag alone that seat would be handed the action.
+    // A rooted board carries chips behind, so an empty stack here marks an
+    // all-in seat from an earlier street. `GameDef` has no folded field, so no
+    // seat can start a rooted street folded; pending therefore keys off the
+    // stack alone.
     for (std::size_t p = 0; p < def_.player_count; ++p) {
       players_[p].all_in = players_[p].stack == 0;
       players_[p].pending = players_[p].stack > 0 && !players_[p].folded;
@@ -494,8 +494,7 @@ GameState GameState::after_action(std::size_t player, Action action) const {
   // spends its option, exactly as `HeadsUpState::big_blind_acting` clears it
   // before the switch. This is the missing side: a raise or fold clears it
   // in their branches; a check here is the common case that needs it too.
-  if (heads_up_profile_ && street_ == Street::Preflop &&
-      player == big_blind_seat(def_))
+  if (heads_up_profile_ && street_ == Street::Preflop && player == big_blind_seat(def_))
     next.big_blind_option_ = false;
   Chips paid = 0;
   switch (action.type) {
@@ -580,10 +579,9 @@ GameState GameState::after_action(std::size_t player, Action action) const {
     // The shipped heads-up close: with the big blind option the street stays
     // open exactly while the non-button seat's option holds.
     const std::size_t opponent = 1 - player;
-    const bool option_holds =
-        next.big_blind_option_ && street_ == Street::Preflop &&
-        !next.players_[opponent].folded && !next.players_[opponent].all_in &&
-        !next.players_[opponent].pending;
+    const bool option_holds = next.big_blind_option_ && street_ == Street::Preflop &&
+                              !next.players_[opponent].folded && !next.players_[opponent].all_in &&
+                              !next.players_[opponent].pending;
     if (!next.players_[opponent].pending && !option_holds) {
       next.close_street();
       return next;

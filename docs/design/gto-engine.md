@@ -52,12 +52,12 @@ flowchart TD
 | --- | --- |
 | `include/bs/eval.hpp` | Five-to-seven-card hand evaluation and comparable scores |
 | `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
-| `include/bs/game_definition.hpp`, `src/poker/game_definition.cpp`, `src/poker/game_definition_settlement.cpp` | RFC 0008 stage 1 unified game definition: one `GameDef` / `GameState` for 2..10 seats with a single legal-transition implementation. Constructs two seats only in this stage; `HeadsUpState` remains the shipping rules type and nothing routes through this yet. Guarded by `test_game_definition`, an independent oracle that does not include the heads-up header, and by a machine-run mutation battery (`npm run mutation`) that requires every semantic mutation of this code to turn that oracle red or be recorded as equivalent with a reachability measurement that proves it |
+| `include/bs/game_definition.hpp`, `src/poker/game_definition.cpp`, `src/poker/game_definition_settlement.cpp` | RFC 0008 unified game definition: one `GameDef` / `GameState` for 2..10 seats with a single legal-transition implementation. Stages 1-2 construct every seat count 2..10; the machine selects the heads-up rules at two seats and the `MultiwayState` rules at 3..10 by seat-count branch. `HeadsUpState`/`MultiwayState` remain the shipping rules types and nothing routes through this yet. Guarded by two independent oracles (`test_game_definition` for the two-seat profile, `test_game_definition_multiway` driving the real `MultiwayState` in lockstep at 3..6 and an independent ledger at 7..10) and by machine-run mutation batteries that require every semantic mutation to turn an oracle red or be recorded as equivalent with a reachability measurement that proves it |
 | `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response |
 | `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
 | `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 offline resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup; unwired and offline in this stage |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
-| `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..6-player ledger |
+| `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..10-player ledger (widened from 2..6 in RFC 0008 stage 2) |
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
 | `include/bs/equity.hpp` | Deterministic Monte Carlo equity against filtered opponent ranges |
 | `include/bs/range.hpp` | Concrete two-card combinations and range utilities |
@@ -692,12 +692,18 @@ rather than untimed after the solver consumed the budget.
 the heads-up state keeps its exact contract and both of its profiles are
 untouched, and the multiway profile is the RFC 0006 experimental one.
 
-RFC 0008 stage 1 adds `bs::poker::GameState` as the eventual single replacement
-for both, constructing two seats only for now. It is additive: `HeadsUpState`
-stays the shipping rules type, this section's type is unchanged, and nothing
-routes through the new type. Stage 2 widens `GameState` to 3..10 seats behind
-adapters; **stage 7 is where the duplicated implementations are actually
-deleted**, and until then this section describes what runs.
+RFC 0008 stages 1-2 landed `bs::poker::GameState` as the eventual single
+replacement for both old types: it now constructs every seat count 2..10,
+picking the heads-up rules by seat-count branch at two seats and the
+`MultiwayState` rules at 3..10. It is still additive: `HeadsUpState` and this
+section's type remain the shipping rules types, and nothing routes through the
+new machine. Stage 2 also widened the contribution ledger to ten seats and
+fixed two real defects in this shipped type where a zero-stack seat was not
+marked all in (one on a rooted board, one for a non-blind seat preflop with no
+ante); each regression lives in `test_multiway.cpp`. Stage 3
+introduces the abstraction layer, tree, and solver interface; **stage 7 is where
+the duplicated implementations are actually deleted**, and until then this
+section describes what runs.
 
 Ownership and boundaries: `bigshark_poker` owns these rules; they depend on the
 shared `Settlement` ledger and the shared evaluator and on nothing else. No
@@ -720,8 +726,8 @@ The contract the rules implement, all of it under test in
   returns to its owner, and folding does not create one.
 - A hand ends as soon as one live player remains, or at showdown once the board
   is complete. Settlement uses the general contribution-layer ledger, which
-  already supports 2..6 players, so multiway pots, side pots, and odd-chip
-  awards reuse the single settlement implementation.
+  supports all 2..10 players as of RFC 0008 stage 2, so multiway pots, side
+  pots, and odd-chip awards reuse the single settlement implementation.
 
 The profile is experimental, matching RFC 0006: the two-player zero-sum
 convergence theorem does not extend to it, and no equilibrium or coverage claim
