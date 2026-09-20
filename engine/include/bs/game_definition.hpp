@@ -1,10 +1,13 @@
 // Unified N-seat game definition (RFC 0008 §L1).
 //
-// One game definition for 2..10 seats with ONE legal-transition implementation,
+// One game definition for 2..10 seats with ONE legal-transition machine,
 // replacing the two parallel rule types (`HeadsUpState` in bs/heads_up.hpp and
-// `MultiwayState` in bs/multiway.hpp). This stage constructs two seats only;
-// the capacity, the field set, and the identity surface are fixed now so the
-// seat-count stage widens the same type instead of re-typing it.
+// `MultiwayState` in bs/multiway.hpp); they remain as adapters during the
+// transition. Two seats are the heads-up rules profile and 3..10 seats are
+// the multiway profile, selected by seat count inside the machine, not by a
+// second type: three rules genuinely differ between the profiles (blind seats,
+// the all-in flag across a refund, and the big-blind preflop option) and each
+// branch is pinned by an exhaustive equivalence oracle.
 //
 // Design constraints, each forced by something measured rather than chosen:
 //
@@ -21,26 +24,17 @@
 //    as it does today; the seat-count stage revisits this when the multiway
 //    type unifies. `board` stays here because transitions DO read it.
 //
-//  * ONE ALL-IN FIELD PER SEAT, PRESERVED ACROSS A REFUND. `all_in` is derived
-//    from the stack at every chip movement EXCEPT `refund_unmatched`, which
-//    leaves it alone. That exception is load-bearing and was found the hard way:
-//    an earlier version re-derived it after a refund, on the reasoning that a
-//    refunded seat holds chips so it cannot be all in. The shipped heads-up rule
-//    says the opposite. A big blind capped at its poster's stack is all in for
-//    the rest of the hand, and the part nobody matched returns to it at street
-//    close WITHOUT making it able to act again
-//    (`engine/tests/test_heads_up_preflop.cpp:229`: "The board runs out with no
-//    action at any street"). Re-deriving produced a real divergence: one extra
-//    chip of stack and an entire extra betting round.
-//
-//    This corrects a claim the previous revision of this comment made. It said
-//    the two all-in representations were "observationally identical across
-//    1,990,808 reachable nodes", so a single derived field lost nothing. That
-//    measurement was taken over nodes reachable from roots whose blinds were
-//    never capped, and the state it missed -- chips behind, still all in -- is
-//    reachable from a root the shipped suite pins. The representations differ;
-//    the maintained one was right, for a reason its own comment had given and
-//    that measurement had not covered.
+  //  * ONE ALL-IN FIELD PER SEAT, AND THE TWO PROFILES DISAGREE ON REFUNDS.
+  //    At two seats `all_in`, once set by a capped blind, STAYS set when the
+  //    unmatched part is refunded; at 3+ seats it is re-derived from the stack,
+  //    which is the `MultiwayState` rule. Both are correct for their own
+  //    profile and the seat-count branch in the transition code selects each.
+  //    The two-seat form was found the hard way: re-deriving after a refund
+  //    revived a short big blind and opened a betting round the shipped rules
+  //    never enter (`engine/tests/test_heads_up_preflop.cpp:229`: "The board
+  //    runs out with no action at any street"). The multiway form is the
+  //    inverse rule and RFC 0008 §L1 records it: a refunded all-in seat in a
+  //    3+ game gets its unmatched chips AND its ability to act back.
 #pragma once
 
 #include <array>
@@ -54,7 +48,8 @@
 namespace bs::poker {
 
 inline constexpr std::size_t kMinUnifiedSeats = 2;
-inline constexpr std::size_t kMaxUnifiedSeats = 10;
+inline constexpr std::size_t kMaxUnifiedSeats = kMaxContributionSeats;
+static_assert(kMaxUnifiedSeats == 10, "RFC 0008 serves 2..10 seats");
 
 // The declared rules variant. One value today; it is part of the definition
 // because RFC 0008 §L1 names it, and adding it later would move a frozen
@@ -91,34 +86,37 @@ struct GameDef {
   // Dead money already contributed at the root, excluding the posted blinds.
   std::array<Chips, kMaxUnifiedSeats> contributions{};
 
-  // The root pot the definition declares. Its exact contract depends on the
-  // root shape, and the constructor validates it rather than trusting it:
-  //   - preflop root:  contributions[0..n) must all be equal and their sum
-  //                    must be <= pot (the pot covers the posted blinds);
-  //   - rooted board:  contributions[0..n) must all be equal and their sum
-  //                    must EQUAL pot (the board implies the blinds completed).
+  // The root pot the definition declares. The constructor validates it rather
+  // than trusting it, and the exact contract is profile-specific:
+  //   - two-seat preflop root:   contributions equal and their sum <= pot;
+  //   - two-seat rooted board:   contributions equal and their sum == pot;
+  //   - 3..10 seats:             pot must equal the dead money, antes, and
+  //                              capped posted blinds exactly, and may be
+  //                              zero (the multiway profile admits an empty pot).
   // `GameState::pot()` never returns this value; it sums live contributions,
   // which is the formula both existing types already share.
   Chips pot = 0;
 
-  // Public cards at the root, as an ordered prefix. Empty starts preflop; three
-  // starts on the flop. The multiway type also admits four and five; the
-  // two-seat profile admits only zero or three, and the constructor rejects
-  // anything else.
+  // Public cards at the root, as an ordered prefix. In the two-seat profile
+  // an empty board means preflop and must be paired with `preflop == true`; a
+  // rooted board carries exactly the flop. In the 3..10 profile an empty board
+  // IS the preflop profile (there is no separate flag in `MultiwayRoot`), and
+  // a rooted board may carry three, four, or five cards.
   std::array<int, 5> board{};
   std::uint8_t board_size = 0;
 
   // Blinds actually posted, indexed by seat. Zero means "not posted", which is
   // unambiguous because `big_blind > 0` forces every posted blind above zero.
-  // Declared rather than derived: the two-seat profile posts the small blind
-  // from the BUTTON, which is the heads-up convention and not the "seat left of
-  // the button" rule that 3+ handed games use.
+  // Declared rather than derived: at TWO seats the blinds use the heads-up
+  // convention (the BUTTON posts the small blind) while 3+ seats post them
+  // clockwise of the button, and a two-seat big blind posts the full nominal
+  // amount while a 3+ blind may be capped by its poster's stack after the ante.
   std::array<Chips, kMaxUnifiedSeats> blinds_posted{};
 
-  // True when this definition is the preflop root: blinds posted, no board, and
-  // the seat left of the big blind acts first. False is the rooted-board
-  // profile, where the seat left of the button acts first and no blinds are
-  // posted. This mirrors `HeadsUpRoot::preflop` exactly.
+  // Selects the two-seat preflop shape explicitly: blinds posted, no board,
+  // the button acts first, and the big blind keeps its option after a limp.
+  // For 3..10 seats the profile is implied by board emptiness instead, matching
+  // `MultiwayRoot`, which has no such flag.
   bool preflop = false;
 
   RulesVariant variant = RulesVariant::NoLimitHoldem;
@@ -164,12 +162,12 @@ static_assert(sizeof(GamePlayer) == 40,
 
 class GameState {
  public:
-  // `validate(def)` first, then the game-specific construction rules: posts
-  // blinds and antes, derives the initial actor and pending set, and closes the
+  // `validate(def)` first, then the profile construction rules: posts blinds
+  // and antes, derives the initial actor and pending set, and closes the
   // street when nobody can act. Throws `std::invalid_argument` for a malformed
-  // definition, `std::overflow_error` for a chip sum that leaves the exact
-  // profile, and rejects a seat count outside [kMinUnifiedSeats, 2] until the
-  // seat-count stage widens the bound.
+  // definition and `std::overflow_error` for a checked chip sum that leaves the
+  // exact numeric profile. The two-seat rules follow `HeadsUpState` and the
+  // 3..10 rules follow `MultiwayState`; the seat count selects the profile.
   explicit GameState(const GameDef& def);
 
   const GameDef& def() const { return def_; }
@@ -211,36 +209,35 @@ class GameState {
   void pay(std::size_t player, Chips amount);
   // Returns an unmatched excess only down to the best level any OTHER seat
   // reached, counting folded seats' commitments as levels the pot already
-  // reached. Deliberately does NOT clear a standing `all_in`: a refund restores
-  // an amount nobody matched, and a seat that was all in had no such amount, so
-  // a refund can never make an all-in seat able to act again.
+  // reached. At two seats a standing `all_in` is deliberately preserved
+  // across the refund; at 3+ seats `all_in` is re-derived from the stack. The
+  // seat-count branch in this function is the only place that rule differs.
   void refund_unmatched();
   void close_street();
   // First seat clockwise from `from` (exclusive) that still owes an action.
   std::optional<std::size_t> next_actor(std::size_t from) const;
-  // Whether any seat OTHER than `player` still owes an action. This -- not "can
-  // two seats still act" -- is what closes a street on the action path, and the
-  // difference is real rather than academic:
-  //   - a bet that leaves its bettor all in does NOT close the street, because
-  //     the opponent must still answer it, even though only one seat can now act
-  //     (`engine/src/poker/heads_up.cpp` sets `pending_[opponent] = true` and
-  //     then assigns the action to it);
-  //   - a call that empties the caller's stack DOES close the street, because
-  //     everybody else has already acted and nobody can answer a raise from a
-  //     seat with nothing behind it.
-  // An earlier version asked whether TWO SEATS could still act, which is a
-  // different question and got both cases wrong. The mutation config preserves
-  // that mistake as a regression mutant, and it is one of the twelve the oracle
-  // catches.
-  bool others_pending(std::size_t player) const;
-  // Seats that are neither folded nor all in. Betting needs at least two of
-  // them; with fewer the board runs out instead of opening a round nobody can
-  // contest, which is the general form of the heads-up all-in rule.
+  // Whether any seat still owes an action. The 3..10 profile closes a street
+  // when this is false. The two-seat profile cannot use it alone, because the
+  // big blind's preflop option keeps the street open with nobody pending, so
+  // `after_action` reconstructs the heads-up close from the option flag.
+  bool any_pending() const;
+  // Seats that are neither folded nor all in. The 3+ profile needs at least
+  // two of them before opening a betting round; the two-seat profile closes
+  // instead when EITHER seat is all in, so the constructor and `after_card`
+  // branch on the profile rather than calling this alone.
   std::size_t actionable_count() const;
   void refresh_live();
   ContributionSettlement award(std::span<const std::optional<std::uint32_t>> scores) const;
 
   GameDef def_;
+  // Selects the rules profile: true reproduces `HeadsUpState` exactly; false
+  // reproduces `MultiwayState`. Fixed for the life of the state because seat
+  // count is root identity.
+  bool heads_up_profile_ = false;
+  // Two-seat preflop only: the big blind still holds its option to raise or
+  // check after a limp, exactly as `HeadsUpState::big_blind_option_` tracks
+  // it. No analogue exists in the 3..10 profile and it stays false there.
+  bool big_blind_option_ = false;
   std::array<GamePlayer, kMaxUnifiedSeats> players_{};
   std::array<int, 5> board_{};
   std::array<std::size_t, kMaxUnifiedSeats> live_{};

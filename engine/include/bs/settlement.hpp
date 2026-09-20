@@ -9,6 +9,12 @@
 
 namespace bs::poker {
 
+// The contribution ledger's own seat bound. The unified game definition
+// (RFC 0008 §L1) carries the same value as `kMaxUnifiedSeats`; the constant
+// lives here so the L0 layer does not depend upward, and the two are tied by a
+// static assertion in game_definition.hpp.
+inline constexpr std::size_t kMaxContributionSeats = 10;
+
 enum class OddChipRule { Unspecified, ClockwiseLeftOfButton };
 enum class RakeRule { Unspecified, PotPercentageFloor };
 
@@ -64,7 +70,11 @@ struct ContributionSettlement {
   Chips rake = 0;
 };
 
-// Supports 2..6 players with explicit odd-chip and rake rules.
+// Supports 2..10 players with explicit odd-chip and rake rules. The 2..6
+// range is verified bit-for-bit against the RFC 0006 fixtures and the Stage 11
+// exhaustive grid; the 7..10 extension (RFC 0008 stage 2) shares the same
+// algorithm and is covered by the grid extension's independent chip
+// conservation and side-pot checks.
 // G/F are validated before subtraction. Gross total and sum(stack + G - F)
 // must each fit kMaxHeadsUpChips (2^53 - 1), as must all chip inputs.
 // A sole-contributor positive layer is invalid: this function never invents

@@ -104,7 +104,14 @@ MultiwayState::MultiwayState(const MultiwayRoot& root) : root_(root) {
     board_ = root.board;
     last_full_raise_ = root.big_blind;
     // Postflop action starts LEFT OF THE BUTTON, skipping players who cannot
-    // act (folded or all in).
+    // act (folded or all in). A zero-stack seat on a rooted board is all in
+    // from an earlier street, so `all_in` must be derived HERE exactly as the
+    // ante path derives it: pending alone cannot mark it, and a seat with no
+    // chips behind must never hold the action (RFC 0008's stage-2 lockstep
+    // oracle reached this state). The omission existed on the rooted path
+    // only, because no shipped fixture rooted a zero-stack seat.
+    for (MultiwayPlayer& player : players_)
+      player.all_in = player.stack == 0;
     for (MultiwayPlayer& player : players_)
       player.pending = !player.folded && !player.all_in;
     // `next_actor(from)` starts looking at the seat AFTER `from`, so passing

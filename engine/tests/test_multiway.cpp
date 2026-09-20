@@ -275,6 +275,32 @@ int test_root_validation() {
   return 0;
 }
 
+// A zero-stack seat on a ROOTED board is all in from an earlier street and
+// must never hold the action. The rooted construction path derives all-in
+// exactly as the ante path does; pending alone cannot mark it, or the seat
+// would be handed a free check with no chips behind and the street would
+// never open. (RFC 0008 stage 2: the omission lived on the rooted path
+// because no shipped fixture rooted an already-all-in seat.)
+int test_rooted_zero_stack_seat_is_skipped() {
+  MultiwayRoot root = seat_root(3, 0);
+  root.board = {card("2c"), card("3d"), card("7h")};
+  // Seat 0 committed its whole stack on an earlier street; everyone else
+  // already matched that contribution, so the rooted pot is three-way.
+  root.stacks = {0, 200, 200};
+  root.contributions = {12, 12, 12};
+  const MultiwayState state(root);
+  CHECK(state.players()[0].all_in);
+  CHECK(!state.players()[0].pending);
+  // Postflop opens left of button 0: seat 0 is skipped for the all-in seat 1.
+  CHECK(state.phase() == Phase::Action);
+  CHECK(state.actor() == 1);
+  CHECK(state.players()[1].pending);
+  // Seat 0 cannot be handed the action even after seat 1 checks.
+  const MultiwayState checked = state.after_action(1, {ActionType::Check});
+  CHECK(checked.actor() == 2);
+  return 0;
+}
+
 // A short all-in call is capped by the stack and conserves chips.
 int test_short_call_is_capped() {
   // Seat 1 is the small blind with only 5 behind, so after posting 1 it holds 4.
@@ -308,6 +334,7 @@ int main() {
     CHECK(test_three_way_showdown_conserves() == 0);
     CHECK(test_preflop_walk_takes_the_blinds() == 0);
     CHECK(test_root_validation() == 0);
+    CHECK(test_rooted_zero_stack_seat_is_skipped() == 0);
     CHECK(test_short_call_is_capped() == 0);
   } catch (const std::exception& error) {
     std::printf("Unexpected multiway exception: %s\n", error.what());

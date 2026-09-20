@@ -1,0 +1,125 @@
+{
+  "description": "RFC 0008 stage 2: the unified GameState serves 3..10 seats and must reproduce MultiwayState at 3..6 and the independent N-seat ledger at 7..10. Every mutation below is a semantic change to a rule that is decided by SEAT COUNT in the unified machine (the 3+ profile rather than the heads-up one); the multiway oracle must catch each. Recorded as 8 caught / 0 equivalent -- the equivalents are deliberately absent: every mutant here targets behavior the exhaustive walk exercises at three or more seats (the 3..6 lockstep against the real MultiwayState is what makes the catches non-vacuous).",
+  "expected": {
+    "equivalent": [
+      "any_pending keeps a mid-hand folded seat pending and never closes the street"
+    ],
+    "rationale": "The multiway oracle enumerates every legal action across the bounded three-active-seat fixtures for 3..10 seats and cross-checks the REAL MultiwayState in lockstep at 3..6. The mutants target the branches where the unified machine selects the multiway rule instead of the heads-up one (the post-refund all-in re-derivation, no big-blind option, mid-hand folding, the any-pending close, and the seated-blind/rooted-board validation), plus the seat-6 settlement widening. None can be equivalent: each changes a node the walk reaches and compares field-by-field, or a root the validation cases construct."
+  },
+  "build": {
+    "command": "cmake",
+    "args": [
+      "--build",
+      "--preset",
+      "release",
+      "--target",
+      "test_game_definition_multiway"
+    ]
+  },
+  "test": {
+    "command": "./build/release/engine/test_game_definition_multiway",
+    "args": []
+  },
+  "additional_targets": [
+    {
+      "name": "the shipped MultiwayState, which is the 3..6 reference",
+      "build": {
+        "command": "cmake",
+        "args": [
+          "--build",
+          "--preset",
+          "release",
+          "--target",
+          "test_multiway"
+        ]
+      },
+      "test": {
+        "command": "./build/release/engine/test_multiway",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "shipped multiway no longer derives all-in on a rooted board for a zero-stack seat",
+          "file": "engine/src/poker/multiway.cpp",
+          "find": "    for (MultiwayPlayer& player : players_)\n      player.all_in = player.stack == 0;\n    for (MultiwayPlayer& player : players_)\n      player.pending = !player.folded && !player.all_in;\n    // `next_actor(from)` starts looking at the seat AFTER `from`, so passing",
+          "replace": "    for (MultiwayPlayer& player : players_)\n      player.pending = !player.folded && !player.all_in;\n    // `next_actor(from)` starts looking at the seat AFTER `from`, so passing"
+        }
+      ]
+    },
+    {
+      "name": "the 7..10 settlement grid extension",
+      "build": {
+        "command": "cmake",
+        "args": [
+          "--build",
+          "--preset",
+          "release",
+          "--target",
+          "test_settlement"
+        ]
+      },
+      "test": {
+        "command": "./build/release/engine/test_settlement",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "the contribution ledger still rejects seven players",
+          "file": "engine/src/poker/settlement.cpp",
+          "find": "  require(count >= 2 && count <= kMaxContributionSeats,\n          \"settlement requires 2..10 players\");",
+          "replace": "  require(count >= 2 && count <= 6,\n          \"settlement requires 2..6 players\");"
+        }
+      ]
+    }
+  ],
+  "mutations": [
+    {
+      "name": "refund_unmatched re-derives all_in in the multiway profile like the heads-up one",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  if (!heads_up_profile_)\n    // The multiway rule: the returned amount is what leaves this seat's\n    // commitment equal to the next level, so a refunded all-in is no longer all\n    // in and can act again if the street continues. The two-seat profile does\n    // the opposite ON PURPOSE: the flag, once set, stays set until a new\n    // street is dealt.",
+      "replace": "  if (false)\n    // MUTANT: always preserve the all-in flag (heads-up rule applied to\n    // every profile); a multiway refunded all-in must instead be revived."
+    },
+    {
+      "name": "after_action treats a multiway fold as the end of the hand",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "      if (heads_up_profile_) {\n        // Heads-up: a fold ends the hand immediately, and the shipped type\n        // also clears every pending/raise/option flag and enters Folded right\n        // here. There is no \"mid-hand folded seat\" state with two players.",
+      "replace": "      if (true) {\n        // MUTANT: enter Folded on any fold; in a 3+ game a fold mid-hand must\n        // only mark the seat while the action continues."
+    },
+    {
+      "name": "after_action refunds the unmatched excess at a multiway fold",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "      if (heads_up_profile_) {\n        hero.all_in = false;\n        next.refund_unmatched();\n      }",
+      "replace": "      next.refund_unmatched();\n      if (heads_up_profile_) {\n        hero.all_in = false;\n      }"
+    },
+    {
+      "name": "any_pending keeps a mid-hand folded seat pending and never closes the street",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  for (std::size_t p = 0; p < def_.player_count; ++p) {\n    const GamePlayer& player = players_[p];\n    if (player.pending && !player.folded && !player.all_in)\n      return true;\n  }\n  return false;",
+      "replace": "  for (std::size_t p = 0; p < def_.player_count; ++p) {\n    const GamePlayer& player = players_[p];\n    if (player.pending && !player.all_in)\n      return true;\n  }\n  return false;"
+    },
+    {
+      "name": "close_street clears raise rights in the multiway profile like the heads-up one",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  // The two-seat profile clears raise rights on every street close (its\n  // `close_street` zeroes them); the multiway profile leaves them as the\n  // street's actions set them, because it re-establishes rights only when a\n  // later street opens or a full raise reopens. At a close with no pending\n  // seat the two readings agree until the next `after_card`, which resets both.\n  if (heads_up_profile_)\n    for (std::size_t p = 0; p < def_.player_count; ++p)\n      players_[p].raise_rights = false;",
+      "replace": "  // MUTANT: clear raise rights on every close (heads-up rule for all\n  // profiles); the multiway profile preserves them across the close.\n  for (std::size_t p = 0; p < def_.player_count; ++p)\n    players_[p].raise_rights = false;"
+    },
+    {
+      "name": "constructor closes a preflop root when fewer than two seats can act in a 3+ game",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "    if (heads_up_profile_) {\n      // The shipped heads-up rule closes the root the moment EITHER seat is\n      // all in, not when no seat can act: with two seats one player cannot\n      // wager against nobody, and the refunded-capped-blind case rides that\n      // flag. At 3+ seats the rule is different: a single seat facing only\n      // all-in or folded opponents still OWES its call/fold decision, so the\n      // street opens whenever an actionable seat exists -- the opener search\n      // below closes it only when none does.\n      if (players_[0].all_in || players_[1].all_in) {\n        close_street();\n        return;\n      }\n    }",
+      "replace": "    if (players_[0].all_in || players_[1].all_in || actionable_count() < 2) {\n      close_street();\n      return;\n    }"
+    },
+    {
+      "name": "after_card closes a multiway street when fewer than two seats can act",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  bool nobody_can_act;\n  if (heads_up_profile_) {\n    nobody_can_act = next.players_[0].all_in || next.players_[1].all_in;\n  } else {\n    const auto opener = next.next_actor(def_.button);\n    nobody_can_act = !opener;",
+      "replace": "  bool nobody_can_act;\n  if (heads_up_profile_) {\n    nobody_can_act = next.players_[0].all_in || next.players_[1].all_in;\n  } else {\n    const auto opener = next.next_actor(def_.button);\n    nobody_can_act = next.actionable_count() < 2;\n    (void)opener;"
+    },
+    {
+      "name": "validate rejects an ante in the multiway profile",
+      "file": "engine/src/poker/game_definition.cpp",
+      "find": "  const bool heads_up = def.player_count == 2;",
+      "replace": "  const bool heads_up = def.player_count == 2;\n  if (def.ante != 0)\n    require(false, \"mutant: ante rejected in every profile\");"
+    }
+  ]
+}

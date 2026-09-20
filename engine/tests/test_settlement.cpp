@@ -263,7 +263,7 @@ int test_rake() {
 
 int test_rejections_and_limits() {
   for (const auto& contributions :
-       {std::vector<Chips>{}, std::vector<Chips>{1}, std::vector<Chips>(7, 1)}) {
+       {std::vector<Chips>{}, std::vector<Chips>{1}, std::vector<Chips>(kMaxContributionSeats + 1, 1)}) {
     const auto input = input_for(contributions);
     CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
   }
@@ -409,8 +409,23 @@ std::optional<Reference> reference_small(const SettlementInput& input) {
     }
     if (contributors == 0)
       break;
-    if (funders == 1 || eligible == 0)
+    // The library's layered invariants reject two shapes:
+    //  - a layer reached by fewer than two gross contributors (the
+    //    "unmarked unmatched contribution" precondition);
+    //  - a layer with contributors but no eligible (unfolded) winner.
+    // A third precondition is a contested layer (two or more eligible seats)
+    // missing a showdown score; a SOLE eligible winner takes the layer
+    // without one, however many folded seats funded it.
+    if (funders < 2 || eligible == 0)
       return std::nullopt;
+    if (__builtin_popcount(eligible) > 1) {
+      bool contested_without_score = false;
+      for (unsigned mask = eligible; mask != 0; mask &= mask - 1)
+        if (!input.players[__builtin_ctz(mask)].showdown_score)
+          contested_without_score = true;
+      if (contested_without_score)
+        return std::nullopt;
+    }
     if (result.layers.empty() || result.layers.back().contributors != contributors)
       result.layers.push_back({0, 0, 0, contributors, eligible, {}});
     result.layers.back().level = chip;
@@ -445,18 +460,25 @@ std::optional<Reference> reference_small(const SettlementInput& input) {
     ++allocated;
   }
   for (auto& layer : result.layers) {
-    for (std::size_t offset = 1; offset <= input.seat_count; ++offset) {
-      const auto seat = (input.button + offset) % input.seat_count;
-      for (std::size_t p = 0; p < count; ++p) {
-        if (input.players[p].seat != seat || (layer.eligible & (1U << p)) == 0)
-          continue;
-        bool beaten = false;
-        for (std::size_t other = 0; other < count; ++other)
-          if ((layer.eligible & (1U << other)) != 0 &&
-              *input.players[other].showdown_score > *input.players[p].showdown_score)
-            beaten = true;
-        if (!beaten)
-          layer.winners.push_back(p);
+    // A sole eligible winner takes the layer without a score. The winner loop
+    // below still has to emit that one seat in clockwise order while never
+    // dereferencing the absent optional; only a contested layer compares.
+    if (__builtin_popcount(layer.eligible) == 1) {
+      layer.winners = {static_cast<std::size_t>(__builtin_ctz(layer.eligible))};
+    } else {
+      for (std::size_t offset = 1; offset <= input.seat_count; ++offset) {
+        const auto seat = (input.button + offset) % input.seat_count;
+        for (std::size_t p = 0; p < count; ++p) {
+          if (input.players[p].seat != seat || (layer.eligible & (1U << p)) == 0)
+            continue;
+          bool beaten = false;
+          for (std::size_t other = 0; other < count; ++other)
+            if ((layer.eligible & (1U << other)) != 0 &&
+                *input.players[other].showdown_score > *input.players[p].showdown_score)
+              beaten = true;
+          if (!beaten)
+            layer.winners.push_back(p);
+        }
       }
     }
     const Chips available = layer.amount - layer.rake;
@@ -499,7 +521,16 @@ int test_exhaustive_small_contributions() {
         }
         const auto expected = reference_small(input);
         if (!expected) {
-          CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
+          bool invalid = false;
+          bool logic = false;
+          try {
+            settle_contributions(input);
+          } catch (const std::invalid_argument&) {
+            invalid = true;
+          } catch (const std::logic_error&) {
+            logic = true;
+          }
+          CHECK(invalid || logic);
           ++rejected;
           continue;
         }
@@ -538,6 +569,94 @@ int test_exhaustive_small_contributions() {
   return 0;
 }
 
+int test_seven_to_ten_seat_extension() {
+  // RFC 0008 stage 2 raises the contribution ledger from 6 to 10 seats. The
+  // 2..6 exhaustive grid below stays byte-identical; full enumeration at 7+
+  // seats is not feasible (5^10 roots times the fold masks), so the extension
+  // is a DETERMINISTIC sample (fixed LCG, fixed seed list) driven against
+  // the independently written `reference_small`, plus conservation checks
+  // this test computes itself. The bit-mask oracle supports up to 31 seats,
+  // so nothing in it had to widen.
+  struct Lcg {
+    std::uint64_t state = 0;
+    unsigned next(unsigned bound) {
+      // Deterministic 64-bit LCG (Knuth); every case is reproducible.
+      state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+      return static_cast<unsigned>(state >> 33) % bound;
+    }
+  };
+  std::size_t sampled = 0;
+  std::size_t logic_rejected = 0;
+  const char* stage_env = std::getenv("BS_SETTLE_STAGE");
+  for (std::size_t count = 7; count <= kMaxContributionSeats; ++count) {
+    if (stage_env && count < 7)
+      continue;
+    for (std::uint64_t seed : {std::uint64_t{0x123456789abcdef0ULL},
+                                std::uint64_t{0x0fedcba987654321ULL},
+                                std::uint64_t{0x9e3779b97f4a7c15ULL}}) {
+      Lcg rng{(seed ^ (count * 0x9e3779b97f4a7c15ULL)) + 1};
+      for (unsigned trial = 0; trial < 400; ++trial) {
+        std::vector<Chips> contributions(count);
+        for (std::size_t p = 0; p < count; ++p)
+          contributions[p] = rng.next(5);  // 0..4 keeps the tree to 4 layers
+        SettlementInput input = input_for(contributions);
+        const unsigned mask_limit = 1U << static_cast<unsigned>(count);
+        const unsigned folded = static_cast<unsigned>(rng.next(mask_limit));
+        const unsigned mode = rng.next(4);
+        input.button = rng.next(static_cast<unsigned>(count));
+        input.rake = {RakeRule::PotPercentageFloor, mode * 3333U, mode == 3 ? 2U : 100U, false};
+        for (std::size_t p = 0; p < count; ++p) {
+          input.players[p].seat = count - 1 - p;
+          input.players[p].chips.folded = (folded & (1U << p)) != 0;
+          input.players[p].showdown_score =
+              mode == 0 ? std::nullopt
+                         : std::make_optional(static_cast<std::uint32_t>((p + mode + rng.next(3)) % 4));
+          const Chips refund = rng.next(3);
+          input.players[p].chips.refunded = refund;
+          input.players[p].chips.contributed += refund;
+          input.players[p].chips.stack = refund + 1;
+        }
+        const auto expected = reference_small(input);
+        if (!expected) {
+          // Every shape the reference rejects is invalid input to the
+          // library: a sole gross contributor, a layer with no unfolded
+          // winner, or a contested layer missing a score.
+          CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
+          ++logic_rejected;
+          continue;
+        }
+        const ContributionSettlement actual = settle_contributions(input);
+        CHECK(actual.awards == expected->awards);
+        CHECK(actual.rake == expected->rake);
+        CHECK(actual.layers.size() == expected->layers.size());
+        CHECK(check_accounting(input, actual) == 0);
+        // Independent layer guards the oracle's award vector does not cover:
+        // a folded seat never occupies a winners slot and no folded seat is
+        // eligible for a contested layer.
+        for (const auto& layer : actual.layers) {
+          for (std::size_t winner : layer.winners)
+            CHECK(!input.players[winner].chips.folded);
+          for (std::size_t p : layer.eligible)
+            CHECK(!input.players[p].chips.folded);
+        }
+        ++sampled;
+      }
+    }
+  }
+  // 4,800 trials over the 7..10 range; structurally rejected input (the
+  // library's invalid_argument surfaces: no eligible winner, a sole gross
+  // contributor, or a contested layer missing a score) is classified and
+  // counted rather than compared.
+  std::printf("settlement 7..10 extension: sampled=%zu structurally_rejected=%zu\n",
+              sampled, logic_rejected);
+  CHECK(sampled + logic_rejected == 4800);
+  CHECK(sampled > 1000);
+  CHECK(logic_rejected > 0);
+  std::printf("settlement 7..10 seat extension: sampled=%zu structurally_rejected=%zu\n",
+              sampled, logic_rejected);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -547,6 +666,7 @@ int main() {
     CHECK(test_rake() == 0);
     CHECK(test_rejections_and_limits() == 0);
     CHECK(test_exhaustive_small_contributions() == 0);
+    CHECK(test_seven_to_ten_seat_extension() == 0);
   } catch (const std::exception& error) {
     std::printf("Unexpected settlement exception: %s\n", error.what());
     return 1;

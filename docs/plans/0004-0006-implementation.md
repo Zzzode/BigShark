@@ -1646,3 +1646,104 @@ needs the v2 protocol RFC and a provider-data audit. Larger training needs
 an explicit resource budget; live validation needs operating authorization.
 A real second platform remains unselected. These gates do not block Stage 1,
 and none is considered complete by approving this plan.
+
+## RFC 0008 Stage 2 Evidence (2026-09-21)
+
+Stage 2 widens the one unified `GameState` from two seats to the full 2..10
+range the RFC names: 3..6 seats now reproduce the shipped `MultiwayState`
+exactly, and 7..10 seats ride the same rules with no shipped type to compare
+against. The contribution ledger (`settle_contributions`) widens from 6 to 10
+seats. No adapter forwards anything to either old type, so the widening is
+verified by equivalence rather than by production calls -- the RFC's own gate
+wording: "multiway test suite plus the settlement grid."
+
+**Rules decisions made explicit.** The Stage 1 machine branched only for
+heads-up; this stage states the multiway forms. Four rules genuinely differ by
+profile and the seat-count branch picks each:
+
+- **Refunded all-in.** At 3+ seats a refund RE-DERIVES `all_in` from the stack,
+  so a seat whose all-in excess comes back is live again on the next street;
+  only the two-seat profile preserves the flag (the capped-blind rule). The
+  shipped `MultiwayState` already does this.
+- **Mid-hand fold.** A fold in a 3+ game only marks the seat; the hand
+  continues and the unmatched excess returns at the street close. Only the
+  two-seat fold ends the hand and refunds immediately.
+- **No big-blind option, no raise-rights clear at close.** A 3+ street closes
+  when no seat owes an action (`any_pending`), not from a big-blind option
+  (which does not exist), and `close_street` leaves raise rights as the street
+  set them; the next street's `after_card` is what resets them.
+- **Street close with one live seat.** At 3+ seats the last actionable seat,
+  facing only all-in or folded opponents, still OWES its call/fold: the round
+  closes only when there is no actionable seat at all. The two-seat rule closes
+  the moment either seat is all in.
+
+A fifth rule was a real defect found while fixing the fourth: the shipped
+`MultiwayState` rooted-board constructor did not re-derive `all_in` for a seat
+already all in from an earlier street (it derived it on the ante path but
+not the rooted path), so a zero-stack seat could be handed the action with a
+free check. It is fixed in `multiway.cpp` and pinned by a new shipped-suite
+regression, `test_rooted_zero_stack_seat_is_skipped`.
+
+**Validation shape.** `validate()` keeps one type across 2..10 with the two
+profiles written out: two seats retain the strict heads-up contract (full
+nominal blinds, no ante, equal closed-street contributions, flop-only rooted
+board); 3..10 accept antes (capped to the stack), capped small AND big blinds
+by post-ante stack, arbitrary per-seat rooted dead money, and 3/4/5-card
+boards. Multiway roots select preflop from board emptiness (no separate flag
+is declared -- the ledger never had one); blind fields on a rooted board must
+be zero because those blinds are already in `contributions`.
+
+**Equivalence oracles.**
+
+- `test_game_definition_multiway` (new) is the stage-2 gate. It writes an
+  independent N-seat ledger from the rules and from `MultiwayState`'s contract
+  (the ledger TU does not include `multiway.hpp`); at 3..6 seats it drives the
+  real `MultiwayState` in lockstep with `GameState` at every node (fields,
+  phase, actor, board, the full legal-action set, and both fold and showdown
+  settlement), and at 7..10 it rides the same ledger. The walk enumerates
+  every legal action at every node; to keep it bounded it holds exactly three
+  ACTIVE seats per fixture (the width the shipped suite stays inside) -- extra
+  seats post all in (a preflop ante shape) or carry a prior-street all-in (a
+  rooted board), so they still traverse the ten-element arrays, the clockwise
+  actor skip, and the multi-way pot layers without branching the action tree.
+  Three seats rotate the cheapest fixture through every button position; 4..10
+  ride two representative buttons. Non-vacuity counters pin mid-hand folds,
+  hand-end folds, showdowns, ties, refunded-all-in revivals, short raises,
+  capped blinds, antes, rooted roots, flop deals, and the 7..10 range itself.
+- The 2-seat Stage 1 oracle is unchanged and still green: the widening does
+  not move a single heads-up transition.
+- `test_settlement` keeps the bit-identical 2..6 exhaustive grid
+  (435,000 accepted / 676,100 rejected) and adds a deterministic LCG
+  extension over 7..10 seats (three fixed seeds, 400 trials each = 4,800):
+  1,903 accepted cases compared award/rake/layers/conservation against an
+  independent ledger; the remainder are structurally rejected inputs the
+  library also rejects. The ledger's seat constant lives in L0 as
+  `kMaxContributionSeats` and is statically tied to `kMaxUnifiedSeats`.
+
+**One shipped defect fixed.** The rooted-board all-in omission above changed
+shipped `MultiwayState`; the shipped multiway rules that the new machine
+targets were therefore not already correct. The fix is in the old type itself
+and is covered both by its own new regression and by the 3..6 lockstep oracle
+reaching the same rooted all-in nodes.
+
+**Gate results (release).**
+
+- full release `ctest`: 39/39 pass.
+- new multiway oracle: 55,295,432 walked nodes over 3..10 (121,452 in the
+  7..10 range); every non-vacuity counter positive; ~80s.
+- settlement grid: 2..6 grid byte-identical; 7..10 extension 4,800 cases
+  (1,903 accepted vs the independent ledger, rest structurally rejected).
+- ASan/UBSan full preset: pass.
+- mutation (`npm run mutation -- game-definition-stage2.json`, 10 mutants):
+  9 caught / 1 equivalent. The one equivalent drops the folded-seat check from
+  `any_pending`; it cannot change behavior because a folded seat's `pending`
+  is always already false (the constructor and `after_card` set pending as
+  `!folded && !all_in`, and `after_action` clears the acting seat's pending
+  before it marks the seat folded) -- pinned by the new
+  `fold_as_last_pending_action_closes_street` case. The caught set includes the
+  shipped rooted all-in regression, the 7-player settlement bound, ante
+  acceptance, mid-hand folding, refund semantics, and the street-close rule.
+
+**Scope boundary.** This stage changes no protocol, no strategy/solver surface,
+and no adapter. The old types remain the sole live callers of their own rules;
+Stage 3 (abstraction) and Stage 7 (removal) are untouched.

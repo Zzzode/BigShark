@@ -1037,9 +1037,22 @@ int case_construction_rejections() {
     CHECK(ok.phase() != Phase::Folded);
   }
   {
+    // Three seats construct under the multiway profile as of RFC 0008
+    // stage 2; a rooted board carries dead money at every seat.
     GameDef def = base;
     def.player_count = 3;
-    CHECK(rejects(def));  // the seat-count gate
+    def.stacks = {20, 20, 20, 0, 0, 0, 0, 0, 0, 0};
+    def.contributions = {2, 2, 2, 0, 0, 0, 0, 0, 0, 0};
+    def.pot = 6;
+    const GameState widened(def);
+    CHECK(widened.player_count() == 3);
+    CHECK(widened.actor() == 2);
+  }
+  {
+    // Eleven seats remain past the 10-seat bound.
+    GameDef def = base;
+    def.player_count = 11;
+    CHECK(rejects(def));
   }
   {
     GameDef def = base;

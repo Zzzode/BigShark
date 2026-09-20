@@ -432,6 +432,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_game_definition PRIVATE bigshark_poker)
   add_test(NAME game_definition COMMAND test_game_definition)
 
+  # RFC 0008 stage 2: the same machine widened to 3..10 seats. At 3..6 it
+  # drives the real MultiwayState in lockstep; 7..10 rides an independently
+  # written N-seat ledger and an independent settlement implementation.
+  add_executable(test_game_definition_multiway tests/test_game_definition_multiway.cpp)
+  target_link_libraries(test_game_definition_multiway PRIVATE bigshark_poker)
+  add_test(NAME game_definition_multiway COMMAND test_game_definition_multiway)
+
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)
   add_test(NAME icm COMMAND test_icm)
