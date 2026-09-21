@@ -53,7 +53,8 @@ flowchart TD
 | `include/bs/eval.hpp` | Five-to-seven-card hand evaluation and comparable scores |
 | `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
 | `include/bs/game_definition.hpp`, `src/poker/game_definition.cpp`, `src/poker/game_definition_settlement.cpp` | RFC 0008 unified game definition: one `GameDef` / `GameState` for 2..10 seats with a single legal-transition implementation. Stages 1-2 construct every seat count 2..10; the machine selects the heads-up rules at two seats and the `MultiwayState` rules at 3..10 by seat-count branch. `HeadsUpState`/`MultiwayState` remain the shipping rules types and nothing routes through this yet. Guarded by two independent oracles (`test_game_definition` for the two-seat profile, `test_game_definition_multiway` driving the real `MultiwayState` in lockstep at 3..6 and an independent ledger at 7..10) and by machine-run mutation batteries that require every semantic mutation to turn an oracle red or be recorded as equivalent with a reachability measurement that proves it |
-| `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response |
+| `include/bs/abstraction.hpp`, `src/abstraction/abstraction.cpp` | RFC 0008 stage 3 L2 abstraction (a separate `bigshark_abstraction` target linking ONLY `bigshark_poker`): the declared ordered action menu (the RFC 0007 per-street pot-fraction schedule with its `AbstractionId`), identity and lossy card bucketing, deterministic abstraction identity, and a typed `abstraction_mismatch` refusal. The rules never depend on it and it never knows a solver; the solver menu is a thin adapter over it. The identity menu reproduces the shipped menu element-for-element, pinned by `test_abstraction_equivalence`; decision behavior is unchanged (replay 156/0/0). Persistence of the id is a later stage and the frozen artifact schema is untouched |
+| `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response. The fractional size schedule types and the ordered action menu now live in `bigshark_abstraction`; this target re-exports the types unchanged and delegates `abstract_actions` to the lifted builder |
 | `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
 | `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 offline resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup; unwired and offline in this stage |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
@@ -83,7 +84,9 @@ flowchart LR
   Service --> Policy[bigshark_policy]
   Policy --> Solver[bigshark_solver]
   Policy --> Poker[bigshark_poker]
+  Solver --> Abstraction[bigshark_abstraction]
   Solver --> Poker
+  Abstraction --> Poker
 ```
 
 `bigshark_v0_protocol` is the only first-party C++ target that compiles
@@ -701,7 +704,9 @@ new machine. Stage 2 also widened the contribution ledger to ten seats and
 fixed two real defects in this shipped type where a zero-stack seat was not
 marked all in (one on a rooted board, one for a non-blind seat preflop with no
 ante); each regression lives in `test_multiway.cpp`. Stage 3
-introduces the abstraction layer, tree, and solver interface; **stage 7 is where
+introduces only the L2 abstraction component (the declared action menu lifted
+out of the solver, card bucketing, and abstraction identity); the abstract
+game tree and the unified solver interface are stage 4. **Stage 7 is where
 the duplicated implementations are actually deleted**, and until then this
 section describes what runs.
 

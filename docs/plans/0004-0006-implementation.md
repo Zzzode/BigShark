@@ -1845,3 +1845,148 @@ Two accepted non-behavioral divergences are recorded below (F2, F3).
 **Scope boundary.** This stage changes no protocol, no strategy/solver surface,
 and no adapter. The old types remain the sole live callers of their own rules;
 Stage 3 (abstraction) and Stage 7 (removal) are untouched.
+
+## RFC 0008 Stage 3 Evidence (2026-09-21)
+
+Stage 3 lands the L2 abstraction layer (§L2, rollout step 3): a new
+`bigshark_abstraction` component that depends ONLY on `bigshark_poker`, holding
+the declared ordered action menu and card bucketing, each behind an
+`AbstractionId`. Nothing routes the live decision path through a new map; the
+existing solver menu is lifted into the component and called through a thin
+adapter, so decisions are unchanged (the gate: identity error zero and the
+existing schedules reproduce their current decisions).
+
+**What landed.**
+
+- `engine/include/bs/abstraction.hpp`, `engine/src/abstraction/abstraction.cpp`
+  (new CMake static target `bigshark_abstraction`, linked only to
+  `bigshark_poker`; `bigshark_solver` gains a PUBLIC link to it).
+  - **Action abstraction.** `Fraction`/`StreetSizes`/`SizeSchedule`/
+    `default_size_schedule()` move here as the explicit identity action
+    abstraction (`rfc0007-pot-fractions:v1`); the state-neutral ordered-menu
+    rule is `build_action_menu(legal, street_sizes, MenuContext)`, which takes
+    only `LegalActions`/`Street` plus chip scalars (no rules state type), so L2
+    stays independent of both profiles. Fold/check/call, the legal-minimum and
+    effective opponent-matching cap seeds, ceil pot fractions, clamp,
+    sort/unique, and the 32-action cap are the exact shipped computation.
+    `heads_up_solver.hpp` re-exports the types and `abstract_actions` is now an
+    adapter that fills `MenuContext` from a `HeadsUpState`; `Fraction` layout is
+    unchanged, so the persisted size rows, `same_size_schedule`, and the frozen
+    `kGameCopyAccountingBytes=368` do not move.
+  - **Card abstraction.** `Identity` buckets a holding by its seven-card
+    evaluator score (strictly strength-order-preserving: zero merge of distinct
+    strengths); `CategoryTiersV1` is the first declared lossy family (hand
+    category 1..9). Bucketing takes the two hole cards contiguously after the
+    3/4/5 public cards.
+  - **Identity.** `AbstractionId{name,version,parameters,digest}` with a
+    deterministic FNV-1a digest of the canonical parameters; it stores NO
+    claimed error. `require_same_abstraction` throws a typed
+    `abstraction_mismatch` on a policy trained under a different id -- the RFC
+    0008 typed refusal. The id is in-memory only: RFC 0007 schema v2 (preflop
+    persistence) has not landed, so this stage does NOT touch the frozen v1
+    artifact DDL, digests, the 368-byte charge, or resident keys.
+- Hard-coded preflop charts are deliberately NOT relocated: they remain a
+  declared policy source, not an abstraction (§L2).
+
+**Measured coverage.**
+
+- `test_abstraction` links `bigshark_abstraction` (which brings only the rules
+  layer; no solver/storage/IO symbol), so the dependency rule is a link error
+  if violated: menu math incl. the short-opponent effective cap and a preflop
+  opener whose declared fractions produce interior targets (8/10/14 between the
+  minimum 4 and all-in 20), fraction validation and overflow (rejection of an
+  unreduced or non-positive fraction at BOTH menu-build and id declaration),
+  deterministic identity with reduced-form normalization (2/4 mints the same id
+  as 1/2), a **golden identity digest** `0x422c245239c7a527` and exact pinned
+  shipped preflop fractions `{{3,2},{2,1},{3,1}}`, the typed refusal, the
+  3/4/5-card board fail-closed guard, the identity card bucket against the
+  evaluator over the non-blocked combos of a board (1176 holdings -> 91
+  identity buckets), and a nine-category CategoryTiersV1 witness (one hand per
+  evaluator category 1..9) plus a published tier merge statistic (one flop:
+  1176 holdings -> 91 identity vs 4 reachable tier buckets).
+- `test_abstraction_equivalence` links the solver and walks every reachable
+  state of bounded heads-up games comparing the lifted menu to shipped
+  `abstract_actions` element-for-element, with **pinned** node counts (asserted,
+  not printed). The flop-rooted trees (stacks 2/4/12) cover 2720 states under
+  the identity schedule and 1384 under a non-default schedule (together the
+  pre-stage-3 4104). A DEEP-stack (10 chips = 5 BB at 1/2) preflop root adds
+  1156/908 states, 20 of them on `Street::Preflop` and, critically, 2 INTERIOR
+  nodes whose fraction-derived target lands strictly inside the legal interval
+  (8, with minimum 4 < 8 < cap 10). The interior count is the load-bearing pin:
+  a shallow stack-4 preflop root used initially made every preflop interval
+  all-in-only (minimum == cap == 4), so every fraction clamped to one seed and
+  the Preflop=3 lists never influenced a compared menu -- that vacuous coverage
+  was found by the second independent review and replaced. Zero menu
+  differences. Equal menus mean the solver builds the identical abstract game,
+  so the identity abstraction's exact exploitability error is zero on these
+  enumerable fixtures by construction; the pinned `test_heads_up_solver`
+  sizing vectors and the replay suite cover the end-to-end decisions.
+- The same-schedule equivalence harness structurally cannot detect a wrong
+  shipped DEFAULT (both sides receive the same schedule), so a golden identity
+  digest plus the exact preflop fraction assertion in `test_abstraction` pin
+  the default independently: changing `preflop.bets 3/2 -> 1/1` was confirmed to
+  fail BOTH gates (digest mismatch, and the preflop tree shifting 1156 -> 1192).
+- The 7..10-seat estimated-NashConv regime (labeled estimate vs declared
+  reference opponents) is NOT built here: no multi-seat best-response
+  evaluator exists yet and it belongs to the stage-6 measured-policy gate. The
+  lossy card family's large-table error is therefore not yet measured; it ships
+  only as a declared, currently-unwired bucket. The Identity card bucket's
+  zero-error claim is scoped to river-terminal fixtures: on the flop/turn two
+  holdings can share a current made-hand score while differing in runout equity
+  (draws), and the parameters string records `lossless=river-terminal`.
+
+**Independent review and hardening.** Two adversarial review passes were run by
+agents that did not author the change. The first confirmed the menu lift is
+element-identical (an independent 849,692-state harness plus 3,000,000 fuzz
+vectors, zero mismatches) and the frozen layout (Fraction 16 B, StreetSizes
+48 B, SizeSchedule 192 B, HeadsUpGame 352 B; the 368-byte charge intact); its
+findings drove: exact per-root CHECKs in place of a printed node total; a
+preflop root and a preflop-safe Deal index; removal of a dead
+`MenuContext.call_amount`; fail-closed `invalid_argument` for the >32 and
+board-size guards; reduced-form id normalization; river-terminal lossless
+scoping; and a nine-category lossy-tier witness. The second pass (read-only,
+no mutation run) confirmed three defects, all fixed: (1) **major** -- the
+initial shallow preflop root made the Preflop=3 fraction coverage vacuous,
+fixed with a deep-stack root, the interior-node pin, the state-neutral preflop
+opener case, and a golden identity digest; (2)/(3) **minor** --
+`canonical_schedule` reduced `std::gcd(0,0)==0` and so dividing by it was
+integer UB at ActionAbstraction declaration (ahead of menu-build validation),
+fixed by validating positivity in a new `canonical_fraction` helper so a
+`{0,0}`/`{n,0}` fraction throws `invalid_argument` at declaration. A
+card-id-range note and an ephemeral-harness citation were independently
+refuted (the former is the evaluator's existing trusted-input precondition; the
+latter is correctly attributed to the review pass) and left unchanged.
+
+**Mutation verification.** `node dist/tools/mutation/verify.js --config
+tools/mutation/abstraction-stage3.json` (15 mutants, 2 targets): **15 caught / 0
+equivalent**. The first battery run was 8/9: the effective-cap mutant survived
+because no fixture made the opponent unable to match the legal maximum; a
+short-opponent case was added and the mutant now goes red. The battery now also
+pins the canonical gcd normalization, the declaration-time zero guard (a
+deterministic invalid_argument mutant, not a UB crash), and the shipped
+preflop default (3/2 -> 1/1, the reviewer's exact attack), alongside the
+cap/minimum/base/clamp/ceil menu semantics, the contiguous-hole-card bucket
+layout (a real bug the unit test caught -- fixed slots 5/6 read zero padding
+on the flop), constant-digest identity, the typed refusal, the board guard,
+the tier mask, and the shipped solver sizing vector through the adapter.
+
+**Gate results (release).**
+
+- full release `ctest`: 41/41 (two new tests; all solver/resident/artifact/v1
+  suites unchanged).
+- replay: 156 decisions / 0 illegal / 0 JS fallbacks, action mix identical.
+- npm run check 94/94; proto:check 16/16; check-docs and check-rfcs green.
+- ASan/UBSan affected targets: `abstraction`, `abstraction_equivalence`,
+  `heads_up_solver`, `heads_up_solver_sampled`, `heads_up_allocations` pass
+  (the zero-fraction declaration test runs clean under UBSan); the menu is
+  heap-light and the id is declaration-time, so no rules hot-path allocation
+  changed.
+- mutation 15/15.
+
+**Residual limitations / scope boundary.** No protocol, storage, live routing,
+or strategy change; the lifted menu executes on the live solver path but
+produces byte-for-byte identical decisions, and the card buckets/id are not yet
+consumed outside tests. Persisting `AbstractionId` waits for the RFC 0007
+schema-major v2 work; the abstract tree (L3), unified solver interface (L4),
+guarantee levels/decision service (L5/L6), and the measured >6/=10 policy
+(stage 6) are untouched.

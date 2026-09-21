@@ -46,7 +46,8 @@ flowchart LR
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `engine/` | Poker, solver, policy, service, v0 protocol libraries, and solver-owned benchmarks | Authentication, HTTP, room discovery, platform tokens |
+| `engine/` | Poker, solver, abstraction, policy, service, v0 protocol libraries, and solver-owned benchmarks | Authentication, HTTP, room discovery, platform tokens |
+| `bigshark_abstraction` (RFC 0008 stage 3) | Card bucketing, declared ordered action menus, abstraction identity (`AbstractionId`), and the typed mismatch refusal; depends only on the rules layer | Knowledge of solvers, storage, or IO, and any modification of the rules. The solver's live menu is a thin adapter over the lifted builder (bit-for-bit identical decisions, replay 156/0/0); card buckets and `AbstractionId` are not yet consumed anywhere outside tests |
 | `apps/engine-host` | C++ process composition and v0 NDJSON host lifecycle | Platform mapping or strategy rules |
 | `clients/node` | Generic engine process lifecycle, NDJSON framing, timeouts, and FIFO correlation | River fields or poker strategy |
 | `platforms/river-club` | River API, state parsing, normalization, legality checks, action submission, and journaling | Independent poker strategy |

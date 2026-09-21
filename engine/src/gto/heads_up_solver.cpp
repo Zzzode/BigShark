@@ -20,7 +20,6 @@
 namespace bs::solver {
 namespace {
 using poker::Action;
-using poker::ActionType;
 using poker::Chips;
 using poker::HeadsUpState;
 using poker::Phase;
@@ -29,12 +28,6 @@ using Clock = std::chrono::steady_clock;
 void require(bool ok, const char* message) {
   if (!ok)
     throw std::invalid_argument(message);
-}
-
-Chips add(Chips a, Chips b) {
-  if (b > std::numeric_limits<Chips>::max() - a)
-    throw std::overflow_error("size sum overflow");
-  return a + b;
 }
 
 Chips ceil_fraction(Chips amount, Fraction f) {
@@ -554,45 +547,21 @@ double response(const HeadsUpGame& game, const HeadsUpPolicy& policy, const Head
 }  // namespace
 
 std::vector<Action> abstract_actions(const HeadsUpState& state, const SizeSchedule& sizes) {
-  const auto legal = state.legal();
-  std::vector<Action> result;
-  if (legal.fold)
-    result.push_back({ActionType::Fold});
-  if (legal.check)
-    result.push_back({ActionType::Check});
-  if (legal.call)
-    result.push_back({ActionType::Call});
-  if (!legal.aggressive)
-    return result;
+  // Adapter over the L2 abstraction component: fill the state-neutral menu
+  // context from this HeadsUpState and delegate the ordered-menu rule. The
+  // computation is bit-for-bit the former in-solver function (RFC 0008
+  // stage 3 moves the rule, it does not change it).
   const auto actor = *state.actor();
   const auto& hero = state.players()[actor];
   const auto& other = state.players()[1 - actor];
-  const auto bounds = *legal.aggressive;
-  const auto effective = std::min(bounds.maximum, add(other.street_committed, other.stack));
-  // If the opponent cannot match a minimum full raise, the rules still require
-  // that minimum (unless the actor itself is short); excess is refunded later.
-  const auto cap = std::max(bounds.minimum, effective);
-  const Chips base = add(hero.street_committed, legal.call_amount);
-  const Chips pot_after_call = add(state.pot(), legal.call_amount);
-  std::vector<Chips> targets{bounds.minimum, cap};
-  // One schedule entry per street, including preflop (RFC 0007). A preflop root
-  // therefore gets its own declared menu rather than borrowing the flop's
-  // pot-fraction sizes, and a flop root is unaffected because it never reads
-  // the preflop entry.
-  static_assert(static_cast<std::size_t>(poker::Street::Preflop) < SizeSchedule{}.size(),
-                "SizeSchedule must cover every Street value");
-  const auto& schedule = sizes[static_cast<std::size_t>(state.street())];
-  const auto& fractions = bounds.type == ActionType::Bet ? schedule.bets : schedule.raises;
-  for (auto f : fractions) {
-    const auto target = add(base, ceil_fraction(pot_after_call, f));
-    targets.push_back(std::clamp(target, bounds.minimum, cap));
-  }
-  std::sort(targets.begin(), targets.end());
-  targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
-  for (auto target : targets)
-    result.push_back({bounds.type, target});
-  require(result.size() <= 32, "abstract action count exceeds 32");
-  return result;
+  abstraction::MenuContext context;
+  context.street = state.street();
+  context.pot = state.pot();
+  context.actor_committed = hero.street_committed;
+  context.opponent_committed = other.street_committed;
+  context.opponent_stack = other.stack;
+  return abstraction::build_action_menu(state.legal(),
+                                        sizes[static_cast<std::size_t>(state.street())], context);
 }
 
 InformationKey information_key(const HeadsUpState& state, std::array<int, 2> own) {

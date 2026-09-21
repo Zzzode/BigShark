@@ -1,0 +1,189 @@
+// Action and card abstraction for RFC 0008 stage 3 (the L2 layer).
+//
+// This component sits ABOVE the rules: it depends only on `bigshark_poker`'s
+// public types and the rules never know how they are abstracted (RFC 0008
+// Dependency Rules -- L2 depends only on L1). A solver/resident asks this
+// component for an ordered action menu or a card bucket; nothing here calls a
+// solver or performs IO.
+//
+// Two abstractions, each with its own declared identity:
+//
+//   * Action abstraction. A declared, ordered menu derived from a legal set.
+//     The first (identity) implementation is the RFC 0007 per-street pot
+//     fraction schedule made explicit. For the unabstracted legal game it
+//     reproduces the shipped menu element-for-element, which is the stage-3
+//     "identity abstraction has zero measured error" gate.
+//
+//   * Card abstraction. A concrete two-card holding plus board mapped to a
+//     bucket. The identity implementation is the seven-card evaluator score
+//     itself (a strictly order-preserving map, so it merges no two hands of
+//     different strength); a declared, versioned strength-TIER bucketing is the
+//     first deliberately lossy one and carries a measured (never asserted)
+//     merge rate.
+//
+// `AbstractionId` is a declaration-time value carried by the game/menu, not a
+// per-state field, so it never allocates on a rules hot path. It stores NO
+// claimed error: measured error is an evidence artifact keyed by the id, never
+// a quantity the id asserts about itself (RFC 0008 L2). Persistence is a later
+// stage; this type is in-memory and deliberately does not widen the frozen
+// RFC 0007 artifact schema.
+#pragma once
+
+#include <array>
+#include <bs/heads_up.hpp>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace bs::abstraction {
+
+// A positive, reduced pot fraction. Reduced form is part of the declared
+// identity so 2/4 and 1/2 are the same fraction.
+struct Fraction {
+  std::uint64_t numerator = 1;
+  std::uint64_t denominator = 1;
+  bool operator==(const Fraction&) const = default;
+};
+
+// One street's declared aggressive menu. Bets and raises are separate ordered
+// lists, exactly as RFC 0007's schedule already expresses them.
+struct StreetSizes {
+  std::vector<Fraction> bets{{1, 3}, {3, 4}, {3, 2}};
+  std::vector<Fraction> raises{{1, 2}, {1, 1}};
+  bool operator==(const StreetSizes&) const = default;
+};
+
+// Indexed by bs::poker::Street (Flop=0, Turn=1, River=2, Preflop=3).
+using SizeSchedule = std::array<StreetSizes, 4>;
+static_assert(SizeSchedule{}.size() == static_cast<std::size_t>(poker::Street::Preflop) + 1,
+              "SizeSchedule must index every poker::Street");
+
+// The schedule a new game starts from: default pot fractions on the postflop
+// streets and the preflop menu. This is the explicit identity action
+// abstraction; the values are unchanged from the shipped RFC 0007 schedule.
+SizeSchedule default_size_schedule();
+
+// Thrown when a policy/training id is looked up under a different abstraction.
+// Distinct type so a host can map it to the RFC 0008 typed refusal rather than
+// a generic invalid-argument path.
+class abstraction_mismatch : public std::invalid_argument {
+ public:
+  abstraction_mismatch(const std::string& requested, const std::string& trained)
+      : std::invalid_argument("abstraction id mismatch"),
+        requested_(requested),
+        trained_(trained) {}
+  const std::string& requested() const noexcept { return requested_; }
+  const std::string& trained() const noexcept { return trained_; }
+
+ private:
+  std::string requested_;
+  std::string trained_;
+};
+
+// A declared abstraction: human name, schema version within that name, the
+// canonical parameters that fully determine the map, and a deterministic
+// digest of the three. Two ids are the same abstraction iff every field is
+// equal; the digest makes accidental parameter drift visible. The digest is a
+// reproducible FNV-1a hash, never random, so an id round-tps byte-for-byte.
+struct AbstractionId {
+  std::string name;
+  std::uint32_t version = 0;
+  std::string parameters;
+  std::uint64_t digest = 0;
+
+  bool operator==(const AbstractionId& other) const {
+    return name == other.name && version == other.version && parameters == other.parameters &&
+           digest == other.digest;
+  }
+  bool operator!=(const AbstractionId& other) const { return !(*this == other); }
+
+  std::string to_string() const;
+};
+
+// Deterministic 64-bit FNV-1a over the canonical form; exposed so tests and
+// later persistence can recompute the same digest without an instance.
+std::uint64_t abstraction_digest(const std::string& name, std::uint32_t version,
+                                 const std::string& parameters);
+
+// Typed cross-check used wherever a policy trained under `trained` is requested
+// under `requested`: equal ids pass, anything else throws abstraction_mismatch.
+// A caller that requests the unabstracted game must ask for the identity id
+// explicitly; abstraction is never applied silently.
+void require_same_abstraction(const AbstractionId& requested, const AbstractionId& trained);
+
+// The declared identity action abstraction: the RFC 0007 per-street pot
+// fraction schedule. Its id parameters are the canonical serialization of
+// `default_size_schedule()`, so changing a fraction changes the digest.
+AbstractionId identity_action_id();
+
+// Card abstraction families. `Identity` maps a holding to its current
+// made-hand evaluator score (strictly strength-order-preserving: it never
+// merges two DISTINCT made strengths). That is a zero-error representation of
+// current made-hand strength, and on the river (the terminal street) that IS
+// showdown value; on the flop/turn two holdings can share a made-hand score
+// while having different runout equity (draws), so it is not lossless with
+// respect to game value there and the zero-error claim is scoped to
+// river-terminal fixtures. `CategoryTiersV1` maps it to the hand category
+// 1..9, which deliberately merges every hand within a category and is the
+// first declared lossy bucketing, carried only with a measured merge rate.
+enum class CardBucketKind { Identity, CategoryTiersV1 };
+
+AbstractionId card_abstraction_id(CardBucketKind kind);
+
+// The chips the menu builder needs from a concrete state, passed as plain
+// scalars so the abstraction stays independent of either rules state type. The
+// solver adapter fills these from a HeadsUpState; a future multiway adapter
+// fills them from a GameState.
+struct MenuContext {
+  poker::Street street = poker::Street::Flop;
+  poker::Chips pot = 0;
+  poker::Chips actor_committed = 0;
+  poker::Chips opponent_committed = 0;
+  poker::Chips opponent_stack = 0;
+};
+
+// The state-neutral ordered-menu rule shared by every profile. Fold/check/call
+// are emitted when legal; bets/raises seed the legal minimum and effective
+// all-in cap, add each declared pot fraction of the pot after the call (rounded
+// up, clamped to [minimum, cap]), then sort and de-duplicate. This is the exact
+// shipped RFC 0007 computation, lifted out of the solver. At most 32 actions.
+std::vector<poker::Action> build_action_menu(const poker::LegalActions& legal,
+                                             const StreetSizes& street_sizes,
+                                             const MenuContext& context);
+
+// A declared action abstraction: identity schedule plus its id. `menu` selects
+// the street entry and delegates to build_action_menu.
+class ActionAbstraction {
+ public:
+  explicit ActionAbstraction(SizeSchedule schedule)
+      : schedule_(std::move(schedule)), id_(make_id(schedule_)) {}
+
+  static ActionAbstraction identity() { return ActionAbstraction(default_size_schedule()); }
+
+  const AbstractionId& id() const noexcept { return id_; }
+  const SizeSchedule& schedule() const noexcept { return schedule_; }
+
+  std::vector<poker::Action> menu(const poker::LegalActions& legal,
+                                  const MenuContext& context) const {
+    return build_action_menu(legal, schedule_[static_cast<std::size_t>(context.street)], context);
+  }
+
+ private:
+  static AbstractionId make_id(const SizeSchedule& schedule);
+  SizeSchedule schedule_;
+  AbstractionId id_;
+};
+
+// Seven-card score (the identity card bucket). `hole` is two card ids and
+// `board` is 3/4/5 card ids; the result is the evaluator score, whose order is
+// hand strength.
+std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<int>& board);
+
+// The declared bucket for a holding under a card abstraction family.
+std::uint32_t card_bucket(CardBucketKind kind, const std::array<int, 2>& hole,
+                          const std::vector<int>& board);
+
+}  // namespace bs::abstraction

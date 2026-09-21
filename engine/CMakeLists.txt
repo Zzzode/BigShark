@@ -220,6 +220,19 @@ target_include_directories(bigshark_poker
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
+# RFC 0008 stage 3 L2: action and card abstraction. Depends ONLY on the rules
+# layer; the rules never learn how they are abstracted, and this target never
+# links a solver, storage, or transport (RFC 0008 Dependency Rules).
+add_library(bigshark_abstraction STATIC
+  src/abstraction/abstraction.cpp
+)
+target_include_directories(bigshark_abstraction
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_abstraction
+  PUBLIC bigshark_poker
+)
+
 add_library(bigshark_solver STATIC
   src/gto/river_gto.cpp
   src/gto/cfr_solver.cpp
@@ -238,6 +251,7 @@ target_include_directories(bigshark_solver
 )
 target_link_libraries(bigshark_solver
   PUBLIC  bigshark_poker
+  PUBLIC  bigshark_abstraction
   PRIVATE open_spiel_min
 )
 
@@ -439,6 +453,20 @@ if(BUILD_TESTING)
   target_link_libraries(test_game_definition_multiway PRIVATE bigshark_poker)
   add_test(NAME game_definition_multiway COMMAND test_game_definition_multiway)
 
+  # RFC 0008 stage 3: the L2 component tests link the abstraction library (which
+  # itself brings only the rules layer) and no solver, storage, or transport, so
+  # a stray dependency out of L2 is a link error.
+  add_executable(test_abstraction tests/test_abstraction.cpp)
+  target_link_libraries(test_abstraction PRIVATE bigshark_abstraction)
+  add_test(NAME abstraction COMMAND test_abstraction)
+
+  # RFC 0008 stage 3: the lifted ordered-menu rule must reproduce the shipped
+  # solver abstract_actions element-for-element, and the identity abstraction
+  # must add zero exploitability on an enumerable heads-up fixture.
+  add_executable(test_abstraction_equivalence tests/test_abstraction_equivalence.cpp)
+  target_link_libraries(test_abstraction_equivalence PRIVATE bigshark_solver)
+  add_test(NAME abstraction_equivalence COMMAND test_abstraction_equivalence)
+
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)
   add_test(NAME icm COMMAND test_icm)
@@ -463,6 +491,7 @@ if(BUILD_TESTING)
   add_executable(test_heads_up_allocations
     tests/test_heads_up_allocations.cpp
     src/gto/heads_up_solver.cpp
+    src/abstraction/abstraction.cpp
   )
   # The debug raw-row export fault branch is exercised through the private
   # passkey header; the compiled subject itself remains unchanged.

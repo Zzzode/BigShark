@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <bs/abstraction.hpp>
 #include <bs/heads_up.hpp>
 #include <chrono>
 #include <cstddef>
@@ -26,44 +27,16 @@ namespace detail {
 class HeadsUpDebugKey;
 }  // namespace detail
 
-struct Fraction {
-  std::uint64_t numerator;
-  std::uint64_t denominator;
-};
-
-struct StreetSizes {
-  std::vector<Fraction> bets{{1, 3}, {3, 4}, {3, 2}};
-  std::vector<Fraction> raises{{1, 2}, {1, 1}};
-};
-
-// One entry per street, indexed by the Street enum value (Flop = 0, Turn = 1,
-// River = 2, Preflop = 3). A flop-rooted game never reads the preflop entry,
-// so its behavior is unchanged; a preflop-rooted game gets the opening menu it
-// needs instead of the flop's pot-fraction sizes. The entry is part of a
-// game's declared size identity and is persisted with it under RFC 0007's
-// schema-major coexistence rules.
-//
-// The preflop defaults are expressed as pot fractions like every other street,
-// but the preflop "pot" at the root is only the posted blinds (3 at 1/2), so
-// the same fractions produce the larger blind-relative opens a preflop game
-// needs: 3/2 of 3 is a ~2.5x open, 2/1 is a ~3x open, and the all-in target
-// covers the rest. A schedule set explicitly by a caller still wins.
-struct SizeScheduleDefaults {
-  // Bets and raises are separate vectors, exactly as on every other street.
-  static StreetSizes preflop() {
-    StreetSizes sizes;
-    sizes.bets = {{3, 2}, {2, 1}, {3, 1}};
-    sizes.raises = {{3, 2}, {2, 1}, {3, 1}};
-    return sizes;
-  }
-};
-using SizeSchedule = std::array<StreetSizes, 4>;
-
-// The schedule a new game starts from: the default pot fractions for the
-// postflop streets and the preflop menu above for the preflop entry.
-inline SizeSchedule default_size_schedule() {
-  return SizeSchedule{StreetSizes{}, StreetSizes{}, StreetSizes{}, SizeScheduleDefaults::preflop()};
-}
+// The fractional size schedule now lives in the L2 abstraction component
+// (bs/abstraction.hpp). It is re-exported in this namespace so every existing
+// `solver::Fraction` / `solver::StreetSizes` / `solver::SizeSchedule` reference,
+// the artifact's persisted size rows, and the declared game-copy byte charge
+// keep their exact type and layout; only the menu's home moved (RFC 0008
+// stage 3). The per-street fractions and their order are unchanged.
+using abstraction::default_size_schedule;
+using abstraction::Fraction;
+using abstraction::SizeSchedule;
+using abstraction::StreetSizes;
 
 struct WeightedHand {
   std::array<int, 2> cards;

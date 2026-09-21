@@ -1,0 +1,122 @@
+{
+  "description": "RFC 0008 stage 3: the L2 abstraction component (bigshark_abstraction) lifts the ordered action menu out of the solver behind a declared AbstractionId, and adds identity/lossy card bucketing. The component links only bigshark_poker (which itself brings no solver/IO dependency), and the lifted menu must reproduce the shipped solver abstract_actions element-for-element (test_abstraction_equivalence walks every reachable state of bounded heads-up games, including a DEEP-stack preflop root whose fractions produce interior targets, and compares the two with pinned node counts), so the end-to-end decisions are unchanged (replay 156/0/0). A golden identity digest pins the shipped default schedule so a wrong default fraction (including the preflop opener) cannot slip past the same-schedule equivalence harness. Every mutation below changes a menu/identity/bucketing semantic and must turn an abstraction test red. Recorded as 15 caught / 0 equivalent.",
+  "expected": {
+    "equivalent": [],
+    "rationale": "test_abstraction (links the abstraction library) pins the state-neutral menu math (including a preflop opener with interior fraction targets), fraction validation (unreduced/non-positive rejection at both menu-build and declaration), the golden identity digest and exact shipped preflop fractions, deterministic identity with reduced-form normalization, typed refusal, the board-size fail-closed guard, and card-bucket layout with a witness for every hand category 1..9; test_abstraction_equivalence (links the solver) pins that the lifted menu equals solver abstract_actions on every reachable state with exact per-root node counts and a strictly-positive count of preflop INTERIOR nodes. Each mutation alters either the ordered-menu result the equivalence walk compares, the card-bucket layout/category the unit test enumerates, the golden digest/default, or the AbstractionId distinction/typed-refusal/declaration-guard the identity test asserts, so each changes a compared value or removes a required throw."
+  },
+  "build": {
+    "command": "cmake",
+    "args": ["--build", "--preset", "release", "--target", "test_abstraction", "test_abstraction_equivalence"]
+  },
+  "test": {
+    "command": "sh",
+    "args": ["-c", "./build/release/engine/test_abstraction && ./build/release/engine/test_abstraction_equivalence"]
+  },
+  "additional_targets": [
+    {
+      "name": "the shipped solver sizing vectors stay bit-for-bit identical through the adapter",
+      "build": {
+        "command": "cmake",
+        "args": ["--build", "--preset", "release", "--target", "test_heads_up_solver"]
+      },
+      "test": {
+        "command": "./build/release/engine/test_heads_up_solver",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "lifted menu rounds a pot fraction DOWN instead of up",
+          "file": "engine/src/abstraction/abstraction.cpp",
+          "find": "  return product / f.denominator + (product % f.denominator != 0);",
+          "replace": "  return product / f.denominator;"
+        }
+      ]
+    }
+  ],
+  "mutations": [
+    {
+      "name": "lifted menu drops the legal minimum seed, shifting every bet menu",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  std::vector<Chips> targets{bounds.minimum, cap};",
+      "replace": "  std::vector<Chips> targets{cap};"
+    },
+    {
+      "name": "lifted menu uses the maximum instead of the effective opponent-matching cap",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  const Chips effective =\n      std::min(bounds.maximum, checked_add(context.opponent_committed, context.opponent_stack));",
+      "replace": "  const Chips effective = bounds.maximum;"
+    },
+    {
+      "name": "lifted menu computes fractions off the pot before the call rather than after",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "    const Chips target = checked_add(base, ceil_fraction(pot_after_call, f));",
+      "replace": "    const Chips target = checked_add(base, ceil_fraction(context.pot, f));"
+    },
+    {
+      "name": "lifted menu forgets to add what the actor already committed to a raise target",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  const Chips base = checked_add(context.actor_committed, legal.call_amount);",
+      "replace": "  const Chips base = legal.call_amount;"
+    },
+    {
+      "name": "lifted menu fails to clamp a fraction target into the legal interval",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "    targets.push_back(std::clamp(target, bounds.minimum, cap));",
+      "replace": "    targets.push_back(target);"
+    },
+    {
+      "name": "card bucket reads fixed slots 5/6 instead of contiguous hole cards (the flop layout bug)",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  cards[board.size()] = hole[0];\n  cards[board.size() + 1] = hole[1];",
+      "replace": "  cards[5] = hole[0];\n  cards[6] = hole[1];"
+    },
+    {
+      "name": "AbstractionId digest is constant, so a changed schedule keeps the same id and is served silently",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  id.parameters = canonical_schedule(schedule);\n  id.digest = abstraction_digest(id.name, id.version, id.parameters);\n  return id;",
+      "replace": "  id.parameters = canonical_schedule(schedule);\n  id.digest = 0x1234;\n  return id;"
+    },
+    {
+      "name": "typed cross-check accepts a mismatched abstraction instead of refusing",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "void require_same_abstraction(const AbstractionId& requested, const AbstractionId& trained) {\n  if (requested != trained)\n    throw abstraction_mismatch(requested.to_string(), trained.to_string());\n}",
+      "replace": "void require_same_abstraction(const AbstractionId& requested, const AbstractionId& trained) {\n  (void)requested;\n  (void)trained;\n}"
+    },
+    {
+      "name": "menu builder silently accepts an unreduced fraction instead of failing closed",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  if (f.numerator == 0 || f.denominator == 0 || std::gcd(f.numerator, f.denominator) != 1)\n    throw std::invalid_argument(\"sizes must be positive reduced fractions\");",
+      "replace": "  if (f.numerator == 0 || f.denominator == 0)\n    throw std::invalid_argument(\"sizes must be positive reduced fractions\");"
+    },
+    {
+      "name": "canonical id serializes 2/4 verbatim instead of reducing it, so equal schedules mint different ids",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  const auto g = std::gcd(f.numerator, f.denominator);\n  f.numerator /= g;\n  f.denominator /= g;\n  return std::to_string(f.numerator) + '/' + std::to_string(f.denominator);",
+      "replace": "  return std::to_string(f.numerator) + '/' + std::to_string(f.denominator);"
+    },
+    {
+      "name": "declaring an abstraction with a 0/0 fraction hits integer division by zero in the id instead of throwing",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "std::string canonical_fraction(Fraction f) {\n  if (f.numerator == 0 || f.denominator == 0)\n    throw std::invalid_argument(\"sizes must be positive reduced fractions\");\n  const auto g = std::gcd(f.numerator, f.denominator);",
+      "replace": "std::string canonical_fraction(Fraction f) {\n  const auto g = std::gcd(f.numerator, f.denominator);"
+    },
+    {
+      "name": "shipped preflop opener default fraction drifts (3/2 -> 1/1) but the id/menu stay green",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  preflop.bets = {{3, 2}, {2, 1}, {3, 1}};",
+      "replace": "  preflop.bets = {{1, 1}, {2, 1}, {3, 1}};"
+    },
+    {
+      "name": "card bucket hashes a preflop (empty) board instead of failing closed on the 3/4/5 guard",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "  if (board.size() < 3 || board.size() > 5)\n    throw std::invalid_argument(\"card bucket requires a 3/4/5-card board\");",
+      "replace": "  if (board.size() > 5)\n    throw std::invalid_argument(\"card bucket requires a 3/4/5-card board\");"
+    },
+    {
+      "name": "lossy tier bucket uses a wrong mask (drops the straight-flush category 9)",
+      "file": "engine/src/abstraction/abstraction.cpp",
+      "find": "      return (score >> 20) & 0xF;",
+      "replace": "      return (score >> 20) & 0x7;"
+    }
+  ]
+}
