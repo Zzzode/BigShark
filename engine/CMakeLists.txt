@@ -233,6 +233,45 @@ target_link_libraries(bigshark_abstraction
   PUBLIC bigshark_poker
 )
 
+# RFC 0008 stage 4 L3: the abstract public betting tree. Depends ONLY on the
+# rules (L1) and abstraction (L2); it never links a solver, storage, or
+# transport, and its sources never name the transitional HeadsUpState/
+# HeadsUpRoot adapters or evaluate private holdings (RFC 0008 Dependency Rules).
+add_library(bigshark_tree STATIC
+  src/tree/abstract_tree.cpp
+)
+target_include_directories(bigshark_tree
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_tree
+  PUBLIC bigshark_poker bigshark_abstraction
+)
+
+# RFC 0008 stage 4 L3 boundary guard (build time, NOT gated on BUILD_TESTING).
+# A stamp custom command runs the real compiler in dependency mode (-MMD) on
+# each L3 source and enforces that every RESOLVED engine header in its include
+# closure is on the L1/L2 allowlist. Checking the post-preprocessor closure
+# (rather than regex-scanning include directives) closes macro-pasted,
+# line-spliced, digraph, no-space, #import, and shadow-header spellings that
+# all compile but defeat a text scan -- notably the header-only inline
+# evaluators eval.hpp/equity.hpp, which emit a weak symbol and so cannot be
+# caught by the link-negative target. bigshark_tree cannot build until the
+# stamp is fresh.
+set(_l3_sources
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/bs/abstract_tree.hpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/tree/abstract_tree.cpp")
+set(_l3_guard_stamp "${CMAKE_CURRENT_BINARY_DIR}/l3_boundary_guard.stamp")
+add_custom_command(
+  OUTPUT "${_l3_guard_stamp}"
+  COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/cmake/l3_boundary_guard.sh"
+          "${CMAKE_CXX_COMPILER}" "-std=c++23"
+          "${CMAKE_CURRENT_SOURCE_DIR}/include"
+          "${_l3_guard_stamp}" ${_l3_sources}
+  DEPENDS ${_l3_sources} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/l3_boundary_guard.sh"
+  COMMENT "Verifying the RFC 0008 L3 -> L1+L2 resolved-include boundary")
+add_custom_target(bigshark_l3_boundary_guard ALL DEPENDS "${_l3_guard_stamp}")
+add_dependencies(bigshark_tree bigshark_l3_boundary_guard)
+
 add_library(bigshark_solver STATIC
   src/gto/river_gto.cpp
   src/gto/cfr_solver.cpp
@@ -241,6 +280,8 @@ add_library(bigshark_solver STATIC
   src/gto/range_tracker.cpp
   src/gto/multistreet_cfr.cpp
   src/gto/heads_up_solver.cpp
+  src/gto/solve.cpp
+  src/gto/solve_projection.cpp
   src/gto/multiway_sampler.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
@@ -252,6 +293,7 @@ target_include_directories(bigshark_solver
 target_link_libraries(bigshark_solver
   PUBLIC  bigshark_poker
   PUBLIC  bigshark_abstraction
+  PUBLIC  bigshark_tree
   PRIVATE open_spiel_min
 )
 
@@ -466,6 +508,28 @@ if(BUILD_TESTING)
   add_executable(test_abstraction_equivalence tests/test_abstraction_equivalence.cpp)
   target_link_libraries(test_abstraction_equivalence PRIVATE bigshark_solver)
   add_test(NAME abstraction_equivalence COMMAND test_abstraction_equivalence)
+
+  # RFC 0008 stage 4 L3 fidelity oracle: an independently coded GameState
+  # enumerator walks the materialized AbstractTree in lockstep at 2 and 3
+  # seats, pinning node kinds, menus, chance sets, and terminal ledgers.
+  add_executable(test_abstract_tree_fidelity tests/test_abstract_tree_fidelity.cpp)
+  target_link_libraries(test_abstract_tree_fidelity PRIVATE bigshark_solver)
+  add_test(NAME abstract_tree_fidelity COMMAND test_abstract_tree_fidelity)
+
+  # RFC 0008 stage 4 L4 conformance: solve() reproduces the heads-up CFR's
+  # golden results bit-for-bit (full + sampled, all runout variants) and
+  # refuses unsupported shapes with the typed exception.
+  add_executable(test_solve_conformance tests/test_solve_conformance.cpp)
+  target_link_libraries(test_solve_conformance PRIVATE bigshark_solver)
+  add_test(NAME solve_conformance COMMAND test_solve_conformance)
+
+  # RFC 0008 stage 4 link-negative guard: links bigshark_tree WITHOUT the
+  # solver. The solver LIBRARY is not reachable from L3 by construction (the
+  # tree target links only poker+abstraction); the source-token half of the
+  # boundary is the build-time bigshark_l3_boundary_guard target above.
+  add_executable(test_tree_link_negative tests/test_tree_link_negative.cpp)
+  target_link_libraries(test_tree_link_negative PRIVATE bigshark_tree)
+  add_test(NAME tree_link_negative COMMAND test_tree_link_negative)
 
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)

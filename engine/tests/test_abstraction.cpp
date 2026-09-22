@@ -9,6 +9,7 @@
 #include <bs/range.hpp>
 #include <cstdint>
 #include <cstdio>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -439,6 +440,83 @@ int test_lossy_tier_bucket_merges() {
   return 0;
 }
 
+// The 3..10-seat menu caps to the DEEPEST cover over all other live, non-folded
+// seats, not the next actor's. A short seat B (cover 10) and a deep seat C
+// (cover 100) both face actor A's raise: clamping to B would silently delete the
+// legal targets that C can call (11, 15); the multiway rule keeps them.
+int test_multiway_cover_cap() {
+  // Actor A faces a raise: owes 3 to call, legal raise interval [6, 100],
+  // pot 6. The NEXT seat B is short (committed 6 + 4 behind = cover 10); a
+  // third seat C is deep (committed 6 + 94 behind = cover 100). Default flop
+  // raises 1/2, 1/1 of the pot after the call (9) ceil to 5, 9, added to base
+  // 6 -> targets 11, 15. Cover must be 100, so both survive alongside the
+  // all-in seed.
+  poker::LegalActions legal = aggressive_menu(poker::ActionType::Raise, 6, 100);
+  legal.call_amount = 3;
+  MultiwayMenuContext ctx;
+  ctx.street = poker::Street::Flop;
+  ctx.pot = 6;
+  ctx.actor_committed = 3;
+  ctx.cover = 100;  // max over live opponents {B:10, C:100}
+  const auto deep = build_multiway_action_menu(legal, default_size_schedule()[0], ctx);
+  const std::vector<poker::Action> want_deep{
+      {poker::ActionType::Fold},      {poker::ActionType::Call},
+      {poker::ActionType::Raise, 6},  {poker::ActionType::Raise, 11},
+      {poker::ActionType::Raise, 15}, {poker::ActionType::Raise, 100}};
+  CHECK(deep == want_deep);
+
+  // If the deepest opponent were actually the short seat (cover 10), the same
+  // fractions clamp to 10 and the deep targets are gone -- proving the builder
+  // honors the supplied cover rather than always taking the legal maximum.
+  ctx.cover = 10;
+  const auto short_cover = build_multiway_action_menu(legal, default_size_schedule()[0], ctx);
+  const std::vector<poker::Action> want_short{{poker::ActionType::Fold},
+                                              {poker::ActionType::Call},
+                                              {poker::ActionType::Raise, 6},
+                                              {poker::ActionType::Raise, 10}};
+  CHECK(short_cover == want_short);
+
+  // The single-opponent heads-up menu and the multiway menu agree when the
+  // multiway cover equals that one opponent's total (the identity path is
+  // unchanged at two seats).
+  MenuContext hu_ctx;
+  hu_ctx.street = poker::Street::Flop;
+  hu_ctx.pot = 6;
+  hu_ctx.actor_committed = 3;
+  hu_ctx.opponent_committed = 6;
+  hu_ctx.opponent_stack = 94;
+  CHECK(build_action_menu(legal, default_size_schedule()[0], hu_ctx) == want_deep);
+  return 0;
+}
+
+// Reduced form is part of declared identity: a schedule constructed with an
+// unreduced fraction (2/6 for the flop 1/3 opener) is normalized at declaration
+// so the stored schedule is reduced AND mints the identity id. A zero
+// component is rejected at construction (not later, inside the trainer).
+int test_declared_schedule_is_reduced() {
+  SizeSchedule unreduced = default_size_schedule();
+  unreduced[0].bets = {{2, 6}, {3, 4}, {3, 2}};  // 2/6 == 1/3
+  ActionAbstraction a(unreduced);
+  CHECK(a.id() == identity_action_id());
+  CHECK((a.schedule()[0].bets == default_size_schedule()[0].bets));
+  for (const StreetSizes& street : a.schedule())
+    for (const std::vector<Fraction>* group : {&street.bets, &street.raises})
+      for (const Fraction& f : *group)
+        CHECK(std::gcd(f.numerator, f.denominator) == 1);
+
+  SizeSchedule zero = default_size_schedule();
+  zero[1].raises = {{0, 1}, {1, 1}};
+  bool invalid = false;
+  try {
+    ActionAbstraction bad(zero);
+    (void)bad;
+  } catch (const std::invalid_argument&) {
+    invalid = true;
+  }
+  CHECK(invalid);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -446,12 +524,14 @@ int main() {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 5> cases{{
+  const std::array<Case, 7> cases{{
       {"action_menu_math", test_action_menu_math},
       {"fraction_validation", test_fraction_validation},
       {"identity_and_typed_refusal", test_identity_and_typed_refusal},
       {"identity_card_bucket", test_identity_card_bucket},
       {"lossy_tier_bucket_merges", test_lossy_tier_bucket_merges},
+      {"multiway_cover_cap", test_multiway_cover_cap},
+      {"declared_schedule_is_reduced", test_declared_schedule_is_reduced},
   }};
   int failures = 0;
   for (const Case& item : cases) {

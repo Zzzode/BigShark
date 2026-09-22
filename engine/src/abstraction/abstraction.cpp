@@ -116,6 +116,23 @@ AbstractionId ActionAbstraction::make_id(const SizeSchedule& schedule) {
   return id;
 }
 
+SizeSchedule ActionAbstraction::reduced(SizeSchedule schedule) {
+  auto reduce = [](std::vector<Fraction>& fracs) {
+    for (Fraction& frac : fracs) {
+      if (frac.numerator == 0 || frac.denominator == 0)
+        throw std::invalid_argument("sizes must be positive reduced fractions");
+      const auto g = std::gcd(frac.numerator, frac.denominator);
+      frac.numerator /= g;
+      frac.denominator /= g;
+    }
+  };
+  for (StreetSizes& street : schedule) {
+    reduce(street.bets);
+    reduce(street.raises);
+  }
+  return schedule;
+}
+
 AbstractionId identity_action_id() {
   return ActionAbstraction::identity().id();
 }
@@ -138,8 +155,15 @@ AbstractionId card_abstraction_id(CardBucketKind kind) {
   return id;
 }
 
-std::vector<Action> build_action_menu(const poker::LegalActions& legal,
-                                      const StreetSizes& street_sizes, const MenuContext& context) {
+// Shared ordered-menu core. `cover_total` is the deepest street total a wager
+// can be matched to (the one opponent for heads-up; the max over all other live
+// non-folded seats for the 3+ profile). Everything after the cap is the exact
+// shipped RFC 0007 rule.
+static std::vector<Action> build_menu_with_cover(const poker::LegalActions& legal,
+                                                 const StreetSizes& street_sizes,
+                                                 poker::Street street, poker::Chips pot,
+                                                 poker::Chips actor_committed,
+                                                 poker::Chips cover_total) {
   std::vector<Action> result;
   if (legal.fold)
     result.push_back({ActionType::Fold});
@@ -151,13 +175,12 @@ std::vector<Action> build_action_menu(const poker::LegalActions& legal,
     return result;
 
   const poker::TargetRange& bounds = *legal.aggressive;
-  // If the opponent cannot match a minimum full raise, the rules still require
-  // that minimum (unless the actor itself is short); excess is refunded later.
-  const Chips effective =
-      std::min(bounds.maximum, checked_add(context.opponent_committed, context.opponent_stack));
-  const Chips cap = std::max(bounds.minimum, effective);
-  const Chips base = checked_add(context.actor_committed, legal.call_amount);
-  const Chips pot_after_call = checked_add(context.pot, legal.call_amount);
+  // If the deepest cover cannot reach a minimum full raise, the rules still
+  // require that minimum (unless the actor itself is short); excess is refunded
+  // later via side pots.
+  const Chips cap = std::max(bounds.minimum, std::min(bounds.maximum, cover_total));
+  const Chips base = checked_add(actor_committed, legal.call_amount);
+  const Chips pot_after_call = checked_add(pot, legal.call_amount);
 
   std::vector<Chips> targets{bounds.minimum, cap};
   const std::vector<Fraction>& fractions =
@@ -176,6 +199,20 @@ std::vector<Action> build_action_menu(const poker::LegalActions& legal,
     // the pre-move contract. Unreachable through a validated trainer game.
     throw std::invalid_argument("abstract action count exceeds 32");
   return result;
+}
+
+std::vector<Action> build_action_menu(const poker::LegalActions& legal,
+                                      const StreetSizes& street_sizes, const MenuContext& context) {
+  const Chips cover_total = checked_add(context.opponent_committed, context.opponent_stack);
+  return build_menu_with_cover(legal, street_sizes, context.street, context.pot,
+                               context.actor_committed, cover_total);
+}
+
+std::vector<Action> build_multiway_action_menu(const poker::LegalActions& legal,
+                                               const StreetSizes& street_sizes,
+                                               const MultiwayMenuContext& context) {
+  return build_menu_with_cover(legal, street_sizes, context.street, context.pot,
+                               context.actor_committed, context.cover);
 }
 
 std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<int>& board) {

@@ -1990,3 +1990,320 @@ consumed outside tests. Persisting `AbstractionId` waits for the RFC 0007
 schema-major v2 work; the abstract tree (L3), unified solver interface (L4),
 guarantee levels/decision service (L5/L6), and the measured >6/=10 policy
 (stage 6) are untouched.
+
+## RFC 0008 Stage 4 Design Brief (2026-09-21, revised after independent review 2026-09-22)
+
+Goal (RFC rollout step 4): introduce the shared L3 abstract tree and the L4
+unified `solve`, and bring the existing solvers behind it. Gate (verification
+plan, RFC 0008:525-527): every existing solver is **reachable through `solve`**,
+**refuses unsupported tree shapes explicitly rather than approximating**, and a
+solver whose model IS the identity tree **reproduces its previous results
+bit-for-bit under the identity abstraction**.
+
+### What the read-only maps and the adversarial review established
+
+- The heads-up multistreet CFR has no materialized tree: it re-walks
+  `HeadsUpState` by value and its pins are FP-exact (`==` policies, SplitMix64
+  golden vectors, hand-derived regret literals, 24 infosets). Rerouting its
+  numerics through a newly allocated graph would change FP summation order and
+  break bit-for-bit even when mathematically equivalent.
+- Every FP-exact pinned fixture is a CONDITIONED game (`HeadsUpGame.fixed_runout`,
+  e.g. `{Js,9c}`); there is no fully free-runout golden fixture. GameDef has no
+  runout field (runout is documented as non-root identity "composed by its
+  owner", game_definition.hpp:133-139). So the request, not the tree, must
+  carry conditioning, or `solve()` cannot express the games whose numbers are
+  pinned.
+- The river LP/DCFR game CANNOT be an identity L3 tree: a 2-seat GameDef root
+  must be a 3-card flop (`game_definition.cpp:98` rejects a river root at two
+  seats), and the six-node toy uses fractional float geometry (`a=pot/2`,
+  `B=0.75*pot`, one bet/one raise, analytic double payoffs) with none of the
+  identity schedule's integer min/all-in seeds. Claiming it "maps onto an
+  identity tree" (v1 of this brief) was wrong.
+- L2's menu context is single-opponent; multiway `legal()` is existential over
+  all opponents with the actor's own all-in as maximum (multiway.cpp:210-231)
+  and has no pot-fraction cover rule. A 3-seat cover cap must be declared, not
+  silently chosen as "the next actor".
+
+### Decision
+
+**1. L3 `bigshark_tree` (new static lib; depends ONLY on bigshark_poker +
+bigshark_abstraction; never on a solver).** `AbstractTree` OWNS a copy of its
+source `GameDef` and `ActionAbstraction` (values, not references) and exposes
+their identities: `const GameDef& def()`, `const AbstractionId& action_id()`,
+digest. Nodes live in one `std::vector<Node>` built with capacity reserved up
+front and addressed ONLY by stable integer index (parent/children are indices;
+no pointer/Node& retained across a push_back). Each node carries a stable
+**public-path id**: the FULL ordered public prefix from the root (not
+street-scoped — a per-street id would collide across streets) of `{actor seat,
+action type, target total}` on action edges and the dealt card id on chance
+edges — exactly the public-history prefix the current `InformationKey`
+generalizes (it already spans the whole hand, heads_up_solver.cpp:567-584).
+Node kinds:
+
+- `Action` — actor seat, street, legal actions, children = the L2 menu in order,
+  each edge labeled with its concrete `Action` (type + target total).
+- `Chance` — the flop is THREE sequential single-card Chance nodes (board sizes
+  0->1->2->3 asserted), then one per turn/river. Chance edges are CONCRETE card
+  ids over the UNCONDITIONED public set `{c in 0..51 not on the board}` and
+  carry NO probability: per-deal conditioning (subtracting that deal's four hole
+  cards and runout reservations) and uniform `1/k` mass stay in L4, exactly as
+  `heads_up_solver.cpp:140-162` does today. Concrete ids now; a future public
+  card abstraction wraps on the L4 side, so L3 does not bake in a bucket scheme.
+- `TerminalFold` — carries the settled `chip_utility` VECTOR (one per seat) plus
+  the live-seat set; the fold payoff needs no holdings and is checkable now.
+- `Showdown` — carries the terminal ledger snapshot for ALL N seats: per-seat
+  contributed/refunded/stack with a folded flag (folded seats' gross
+  contributions are required to build N-way side pots, not only the live
+  prefix), the live seats in ASCENDING order (the order `settle_showdown`
+  packs holdings), and the five-card board; the payout vector is evaluated
+  L4-side only once concrete holdings are supplied.
+
+L3 is hole-card-free by construction: no range data, no private-chance nodes,
+no holdings evaluator (a link-negative test asserts L3 never references the
+transitional state/root types or range/holdings-eval symbols). The guard must
+be TOKEN/SYMBOL based, not a raw `#include` ban: `game_definition.hpp` itself
+transitively includes `bs/heads_up.hpp` for the shared `Action`/`LegalActions`
+types, so L3 sources may receive those headers indirectly but must not NAME
+`HeadsUpState`/`HeadsUpRoot` or solve via a two-seat state — only
+`GameDef`/`GameState`. Runtime N, no `[2]`, no `1-actor`.
+
+**2. Multiway cover cap — a declared L2 extension, done before 3-seat menus are
+pinned.** L2 gains a neutral menu entry for the existential multiway rule: the
+caller supplies an explicit `cover = min(legal.maximum, max over every other
+LIVE, non-folded seat of street_committed + stack)` computed from GameState;
+fractions clamp to `[minimum, max(bounds.minimum, cover)]`, otherwise identical
+to the heads-up rule. The 2-seat path is unchanged (its single opponent IS the
+max). A unit test pins a fixture where the next seat is short but a third seat
+can cover, so picking "the next actor" would clamp wrongly. This is additive L2
+work inside stage 4; the identity schedule and digest for the 2-seat path do not
+move.
+
+**3. Independent fidelity oracle (the load-bearing, non-circular gate).** A
+test-local reference enumerator that includes NEITHER the L3 builder header NOR
+`ActionAbstraction::menu` (the stage-1 independent-oracle pattern). From raw
+`GameState::legal()` it independently codes the fold/check/call prefix, the
+fraction/ceil/clamp math, min/cap seeds, sort/unique, and (for 3 seats) the
+max-cover cap; classifies node kind/actor/street itself; computes chance sets
+independently as `0..51 minus board`; and evaluates terminal payout vectors
+through GameState settlement. It drives the reference and the built tree in
+lockstep over bounded fixtures at BOTH 2 and 3 seats (preflop + rooted flop;
+shallow and deep stacks; mid-hand folds; an all-in runout; asymmetric stacks)
+and asserts, as exact CHECKs with pinned counts: node id/kind/actor/street,
+every menu element-for-element, every chance set, terminal classification, AND
+fold `chip_utility` vectors element-for-element plus showdown ledgers against
+holdings the oracle deals independently. At 2 seats it additionally asserts
+menus equal shipped `abstract_actions`. Chance-set coverage includes the
+partial-flop board sizes 0/1/2. A separate L4-side check asserts the trainer's
+per-deal conditioned chance set equals the L3 public set minus that deal's
+holdings and runout reservations.
+
+**4. L4 `solve` surface (in bigshark_solver, which links bigshark_tree).**
+
+- `SolveRequest{ const AbstractTree& tree; Ranges ranges; SolveMode mode;
+  SolveLimits limits; std::uint64_t seed; RunoutConditioning runout; }`.
+  - `Ranges`: one weighted-holding vector PER SEAT over runtime N (reuse the
+    WeightedHand family), explicitly validated; joint mutually-compatible deal
+    enumeration and normalization are L4-owned (the lifted `joint_deals`), not
+    L3.
+  - `SolveMode { FullTraversal, ExternalSampling }` selects `train()` vs
+    `train_sampled()`; both are conformance-gated. `SolveLimits` maps the
+    trainer's five caps (nodes/infosets/depth/bytes/time) so ResourceLimit is
+    part of the reproduced behavior.
+  - `RunoutConditioning`: declared optional per-street fixed turn/river (the
+    `fixed_runout` owner slot), with its own composed identity. `nullopt` is the
+    free runout. This is what makes the shipped golden games requestable.
+- `SolveResult` returns a MOVE-ONLY concrete result wrapping the existing
+  `HeadsUpTrainingResult` (status, completed iterations, node/infoset/byte
+  counters, seed/prng_state, and `HeadsUpPolicy` moved with zero per-row
+  copies) plus the tree's `AbstractionId` and composed runout identity. No
+  polymorphic base is added to `HeadsUpPolicy`; its map is never copied at the
+  boundary; a conformance test scopes the `test_heads_up_allocations`
+  operator-new fault window to the TRAIN phase only (request pieces and the
+  tree are built outside the window, exactly as the existing test constructs
+  the trainer before opening the window), so the train-time allocation ordinal
+  is unchanged while tree-build and range-copy allocations sit outside it. No closed `Guarantee` enum is defined in L4 — the
+  normative source->level mapping is L6 and lands in stage 5; stage 4 reports
+  only solver status/cost.
+- Typed refusals are NEW exception types that do NOT derive from
+  `std::invalid_argument` (so host invalid-argument handlers cannot misclassify
+  an expected solver-selection refusal): `unsupported_tree_shape` and
+  `tree_resource_exhausted`.
+
+**5. Heads-up adapter = zero-numeric-change dispatch, proven against the
+existing golden fixtures, not a same-call-twice comparison.** The adapter
+accepts only `player_count == 2` with the tree's identity action schedule
+(compared by `AbstractionId`, never by re-calling `default_size_schedule()`),
+projects the validated GameDef to a `HeadsUpRoot` by field copy (including the
+three `-1` flop sentinels, both blinds, stacks-before-blinds), and calls the
+UNCHANGED `HeadsUpTrainer`. Conformance:
+
+- the direct-call side builds its `HeadsUpGame` from an INDEPENDENT root literal
+  and ranges asserted `same_game_def`-equal (never pointer-identical) to the
+  tree's def;
+- it re-runs the EXISTING pinned fixtures through `solve()` — the 24-infoset
+  one-iteration policy, all three runout variants `{Js,9c}/{Js,null}/{null,9c}`,
+  and BOTH modes — and asserts the committed golden literals, raw `==` policy
+  doubles, and the SplitMix64/prng_state streams; plus negative tests (n==3, a
+  lossy/non-identity action id, a malformed projection) each throw the typed
+  refusal.
+- the existing `{20,20}`/`{100,100}` DEEP-STACK shapes are menu/projection-only
+  (test_heads_up_solver.cpp:367-385 pins menus, not a trained policy), and
+  materializing the full unconditioned deep tree is out of budget; they are
+  asserted via the L3 oracle's menu equality and the projection round-trip, NOT
+  counted as trained bit-for-bit goldens. Every TRAINED golden uses 1-2 chips
+  behind, whose full unconditioned trees are small enough to build.
+- the short-big-blind deal-out (`{2,10}`, nominal blinds, see below) is added
+  to the solve()-route conformance set as a zero-action rules/payout fixture
+  (no trained policy is pinned on it): the projected game reaches the same
+  refunded-but-still-all-in state and deal-out showdown.
+
+Representability was checked empirically, not assumed (an earlier draft of this
+brief got it WRONG and an independent reviewer caught it): at two seats BOTH
+`GameDef` and the legacy `HeadsUpState` require the big blind to post its full
+NOMINAL amount (`game_definition.cpp:89-90`, `heads_up.cpp:60-61`); there is no
+under-nominal shape accepted by one and rejected by the other. The shipped
+"short big blind" fixture (`test_heads_up_preflop.cpp:207-240`, stacks
+`{2,10}`, pot 2, nominal blinds `{1,2}`, the BB seat posting its whole stack
+exactly equal to nominal) DOES construct a valid `GameDef` — verified: it opens
+directly in `Deal`, seat 0 is all-in with one chip of uncalled blind refunded,
+commitments level at 1 — and the stage-1 sweep already pins it through
+`GameState` (`test_game_definition.cpp:819-825,858-861`). An under-nominal
+post (BB posts 1 when nominal is 2) is rejected by BOTH profiles. So the full
+two-seat representable set — full-nominal preflop (including a zero-action
+all-in blind deal-out) and complete-flop roots — is in scope for the route; no
+two-seat shape is carved out to stage 7 on representability grounds.
+
+**6. Every other existing solver is reachable as a registered REFUSE-ONLY
+adapter (never "not routed").** River LP, river DCFR, and the experimental
+multistreet trainer each have an adapter that `solve()` dispatches to and that
+throws `unsupported_tree_shape` for every L3 tree (their models are not L1
+games / not identity trees this stage); a conformance test asserts each typed
+refusal, and their bit-for-bit numbers remain gated on their UNCHANGED direct
+entry points. The resolver is documented as the deliberately separate RFC 0005
+subgame/blueprint interface with a different request shape (it is not a policy
+producer over an L3 tree) and likewise refuses the L4 request; `multiway_sampler`
+is documented as a sampling utility, not a policy solver. This satisfies
+"reachable + explicitly refuses rather than approximating"; their actual numeric
+ports are later stages that declare a dedicated abstraction/river model.
+
+**7. Build boundaries and a time-boxed transition exception.** `bigshark_tree`
+links only poker+abstraction and has a link-negative test (linking without the
+solver; an include guard forbidding solver/state-root/range-eval headers). The
+`HeadsUpTrainer` still calls L2 `build_action_menu` directly from stage 3; fully
+moving L4 off L2 requires the stage-7 trainer rewrite (which would perturb FP),
+so the L4->L2 edge is recorded as a deliberate transition exception EXPIRING at
+stage 7, with an architecture test that fails once the replacement trainer can
+source menus from the tree. No L3 edge is added.
+
+**8. `TreeLimits`.** Node/depth/byte caps (no time cap on deterministic
+construction), each checked BEFORE the corresponding allocation using the
+overflow-safe budget pattern; a bound throws `tree_resource_exhausted`
+(distinct from unsupported shape and from `std::bad_alloc`) with strong
+exception safety (a failed build yields no tree). A refusal test hits each cap;
+the measured full-expansion node count of the smallest representable game is
+published.
+
+### Scope boundary
+
+L5 storage identity, L6 normative guarantee levels/wire disposition, the
+public-card lossy abstraction, and the measured >6/=10 policy (stage 6) are not
+touched. The resolver internals, river LP/DCFR numerics, and the experimental
+multistreet trainer are unchanged. Stage 4 produces the seat-count-agnostic
+public game tree, the typed solver seam, and the bit-for-bit heads-up route,
+and makes every other solver a reachable, explicitly-refusing adapter.
+
+
+### Stage 4 implementation status (complete, gate evidence pre-commit)
+
+All six TODOs above are done on disk; the stage awaits the single clean commit
+after independent re-review.
+
+- L2 additive multiway cover cap: `MultiwayMenuContext{cover}` +
+  `build_multiway_action_menu`; the 2-seat `build_action_menu` is unchanged
+  (shared core, cap math identical). Unit test `multiway_cover_cap` pins
+  deep-vs-short cover and heads-up/multiway agreement. Identity digest unmoved.
+- L3 `bigshark_tree` static lib (links only poker+abstraction):
+  `engine/include/bs/abstract_tree.hpp`, `engine/src/tree/abstract_tree.cpp`.
+  Index-only nodes, explicit-stack DFS, per-leaf TerminalPayload (fold carries
+  the exact settle_fold vector; showdown carries the ledger incl. folded
+  seats), probability-free chance edges, deterministic TreeLimits checked
+  before allocation, `tree_resource_exhausted` distinct from invalid_argument.
+- L4 `engine/include/bs/solve.hpp`, `engine/src/gto/solve.cpp`: move-only
+  SolveResult, SolveMode full/sampled, RunoutConditioning on the request,
+  field-copy GameDef->HeadsUpRoot (incl. -1 preflop sentinels and the {2,10}
+  nominal-BB deal-out), typed unsupported_tree_shape. River LP/DCFR and the
+  experimental multistreet CFR are reachable and refuse-only; Auto routes only
+  the 2-seat identity tree.
+- Gates: independent fidelity oracle `test_abstract_tree_fidelity` (own
+  enumerator, never calls the builder or L2 menu) pins at 2 seats
+  {1,1}: 31124 nodes (A9608/C248/F4804/S16464) and 3 seats
+  {1,1,1}: 102827, {1,1,2}: 162316, and the deepest-cover fixture
+  {2,3,3}: 547535 (A216752/C3309/F35826/S291648, depth 15). The {2,3,3}
+  shape was chosen after a reachability probe proved shallower asymmetric
+  shapes do not distinguish first-cover from max-cover (the minimum-raise
+  floor masks it). `test_solve_conformance` bit-for-bit pins both drivers over
+  all three fixed-runout variants incl. the SplitMix64 PRNG state, plus every
+  typed refusal and the short-blind projection. `test_tree_link_negative`
+  links the tree without the solver; an unconditional build-time include-
+  allowlist + forbidden-identifier guard covers both L3 files.
+- Mutation battery `tools/mutation/abstract-tree-stage4.json`: 20 mutants /
+  3 targets, 20 caught, 0 equivalent, 0 gap.
+
+#### Independent adversarial review (two rounds) and fixes
+
+Three fresh reviewers (L3/L2, L4 seam, boundary+rigor) returned
+CHANGES-REQUESTED. Confirmed findings fixed and re-verified:
+
+- BLOCKER byte cap did not bound retained memory (children/actions/payout
+  slabs and vector-growth slack uncharged; preflop build ran ~1.8x the cap).
+  Reworked accounting so every retained slab is grown through a budgeted
+  `grow_to_fit` that charges the whole doubled capacity before `reserve`;
+  `accounted_bytes()` now equals requested retained capacity exactly (pinned on
+  the 3-seat fixture) and the preflop build aborts at ~0.92 GiB peak RSS under
+  the 1 GiB cap. Allocator rounding (~1-2% physical overshoot) documented as
+  out of portable scope.
+- MAJOR boundary guard gaps: the first attempt (configure-time single-file
+  regex) and its build-time successor were both shown by two independent
+  adversarial reviewers to be beatable by the preprocessor (dotted
+  bs/./eval.hpp, `evaluate (` spacing, char-literal flanking, then
+  macro-##-pasted includes/identifiers, backslash-newline splice, digraph
+  %:include, no-space #include<...>, #import, all compiling and emitting the
+  inline weak evaluator symbol past the link-negative test). Final control:
+  `engine/cmake/l3_boundary_guard.sh` runs the real compiler in dependency mode
+  (-MMD -MF) on each L3 source and allowlists the RESOLVED post-preprocessor
+  engine-header closure (only L1 game_definition/heads_up/settlement, L2
+  abstraction, and its own header). Every demonstrated spelling now fails while
+  the real pair and standard/L1/L2 includes pass; unconditional, not BUILD_TESTING
+  gated. A repo-local shadow header can only enter the non-globbed target via
+  the reviewed CMakeLists source list (accepted residual).
+- MAJOR runout collisions leaked the trainer's invalid_argument: L4 now
+  validates fixed cards (range, distinct, off board, off both seats' hole
+  cards) with unsupported_tree_shape, distinguishing a PRESENT negative id from
+  nullopt via has_value() (a present -1 was the one residual the second review
+  caught). Preflop conditioning is refused with the typed error (defense in
+  depth; a preflop public tree is unmaterializable).
+- MAJOR preflop projection arm untested and unreachable end-to-end: extracted
+  the pure GameDef->HeadsUpRoot projection to
+  `include/bs/detail/solve_projection.hpp` + `src/gto/solve_projection.cpp` and
+  unit-tested BOTH arms directly against the legacy HeadsUpState (the {2,10}
+  deal-out: Deal phase, no actor, all-in, refund 1, street_committed 1).
+- MAJOR byte/depth caps and preflop exhaustion claimed but untested: added
+  fidelity cases for depth (cap 4 vs depth-15 tree), byte (1024 B), and
+  preflop (pinned 52*51*50*49*48 = 311,875,200 river leaves vs the 2,000,000
+  default node cap; small cap exercises the typed throw).
+- MINOR: unreduced schedule fractions (2/4) minted the identity id yet reached
+  the trainer and threw; ActionAbstraction now reduces to lowest terms at
+  declaration (`reduced()`), identity digest unchanged. Showdown ledger test
+  now asserts refunded and the folded flag. Sampled conformance covers all
+  three runout variants, every result field incl. information_sets/
+  accounted_bytes/prng_state, and a repeatability re-solve. Wrong range count
+  (1 and 3), explicit-HeadsUpCfr-3-seat, and present-negative fixed-card
+  refusals added. Removed the default SolveResult ctor (self-reported identity)
+  and dead includes; removed the tautological same_game_def(def,def).
+
+Final matrix after the fixes: release ctest 44/44 (incl. benchmarks);
+ASan/UBSan clean on all new and touched targets and the non-benchmark ASan
+preset (42/42); mutation battery 20/20; replay 156/0/0; npm check 94/94,
+proto:check 16/16, check-docs 250, check-rfcs 8 green.
+
+

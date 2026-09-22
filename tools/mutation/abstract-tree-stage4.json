@@ -1,0 +1,183 @@
+{
+  "description": "RFC 0008 stage 4 mutation battery (post-review): L3 builder kinds/chance/payload/live-count, all three resource caps, deepest-cover; L2 cover and declared-schedule reduction; L4 button/preflop projection/runout validation and conditioning/mode/identity refusals. Every mutation must turn its suite red. 19 caught / 0 equivalent.",
+  "expected": {
+    "equivalent": [],
+    "rationale": "Each mutation changes a node kind, chance set, terminal payout/live count, a resource bound, the deepest cover, schedule reduction, a projected field, or a runout/mode/identity guard that an independent oracle, the projection unit test, or a bit-for-bit/typed-refusal conformance observes. None is behavior-preserving on the bounded fixtures."
+  },
+  "build": {
+    "command": "cmake",
+    "args": [
+      "--build",
+      "--preset",
+      "release",
+      "--target",
+      "test_abstract_tree_fidelity"
+    ]
+  },
+  "test": {
+    "command": "./build/release/engine/test_abstract_tree_fidelity",
+    "args": []
+  },
+  "mutations": [
+    {
+      "name": "tree classifies a folded terminal as a showdown",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "        node.kind = NodeKind::TerminalFold;",
+      "replace": "        node.kind = NodeKind::TerminalShowdown;"
+    },
+    {
+      "name": "tree classifies a showdown terminal as a fold",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "        node.kind = NodeKind::TerminalShowdown;",
+      "replace": "        node.kind = NodeKind::TerminalFold;"
+    },
+    {
+      "name": "tree drops the highest public card from every chance set",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "  for (int c = 0; c < 52; ++c)\n    if (!used[c])",
+      "replace": "  for (int c = 0; c < 51; ++c)\n    if (!used[c])"
+    },
+    {
+      "name": "tree marks an action node as a chance node",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "        node.kind = NodeKind::Action;\n        node.actor = *frame.state.actor();",
+      "replace": "        node.kind = NodeKind::Chance;\n        node.actor = *frame.state.actor();"
+    },
+    {
+      "name": "fold payload records an empty utility instead of the settled vector",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "    payload.chip_utility = std::move(settled.chip_utility);",
+      "replace": "    (void)settled;"
+    },
+    {
+      "name": "showdown ledger reports the wrong live count",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "  payload.live_count = state.live_players().size();",
+      "replace": "  payload.live_count = state.player_count();"
+    },
+    {
+      "name": "node cap is silently ignored so an oversized build succeeds",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "    if (nodes == limits_.max_nodes)\n      throw tree_resource_exhausted(\"abstract tree exceeded the node cap\");",
+      "replace": "    if (false && nodes == limits_.max_nodes)\n      throw tree_resource_exhausted(\"abstract tree exceeded the node cap\");"
+    },
+    {
+      "name": "byte cap is silently ignored so an oversized build retains the slab",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "    if (bytes_ > limits_.max_bytes)\n      throw tree_resource_exhausted(\"abstract tree exceeded the byte cap\");",
+      "replace": "    if (false && bytes_ > limits_.max_bytes)\n      throw tree_resource_exhausted(\"abstract tree exceeded the byte cap\");"
+    },
+    {
+      "name": "depth cap is silently ignored so an over-deep build succeeds",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "    if (path_depth > limits_.max_depth)\n      throw tree_resource_exhausted(\"abstract tree exceeded the depth cap\");",
+      "replace": "    if (false && path_depth > limits_.max_depth)\n      throw tree_resource_exhausted(\"abstract tree exceeded the depth cap\");"
+    },
+    {
+      "name": "tree multiway cover takes only the first other seat, not the deepest",
+      "file": "engine/src/tree/abstract_tree.cpp",
+      "find": "    cover = std::max(cover, total);",
+      "replace": "    cover = (cover == 0 ? total : cover);"
+    }
+  ],
+  "additional_targets": [
+    {
+      "name": "l2 cover and reduction",
+      "build": {
+        "command": "cmake",
+        "args": [
+          "--build",
+          "--preset",
+          "release",
+          "--target",
+          "test_abstraction"
+        ]
+      },
+      "test": {
+        "command": "./build/release/engine/test_abstraction",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "L2 menu ignores cover entirely and caps at the legal maximum",
+          "file": "engine/src/abstraction/abstraction.cpp",
+          "find": "  const Chips cap = std::max(bounds.minimum, std::min(bounds.maximum, cover_total));",
+          "replace": "  const Chips cap = bounds.maximum;"
+        },
+        {
+          "name": "schedule constructor skips reduction, leaving an unreduced fraction stored",
+          "file": "engine/src/abstraction/abstraction.cpp",
+          "find": "      frac.numerator /= g;",
+          "replace": "      frac.numerator /= 1;"
+        }
+      ]
+    },
+    {
+      "name": "l4 solve conformance",
+      "build": {
+        "command": "cmake",
+        "args": [
+          "--build",
+          "--preset",
+          "release",
+          "--target",
+          "test_solve_conformance"
+        ]
+      },
+      "test": {
+        "command": "./build/release/engine/test_solve_conformance",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "solve projects the wrong button, changing actor order and the golden policy",
+          "file": "engine/src/gto/solve_projection.cpp",
+          "find": "  root.button = def.button;",
+          "replace": "  root.button = def.button == 0 ? 1 : 0;"
+        },
+        {
+          "name": "preflop projection swaps the posted blinds between seats",
+          "file": "engine/src/gto/solve_projection.cpp",
+          "find": "    root.blinds_posted = {def.blinds_posted[0], def.blinds_posted[1]};",
+          "replace": "    root.blinds_posted = {def.blinds_posted[1], def.blinds_posted[0]};"
+        },
+        {
+          "name": "preflop projection emits a non-sentinel flop card",
+          "file": "engine/src/gto/solve_projection.cpp",
+          "find": "    root.flop = {-1, -1, -1};",
+          "replace": "    root.flop = {-2, -2, -2};"
+        },
+        {
+          "name": "solve drops request runout conditioning (always free runout)",
+          "file": "engine/src/gto/solve.cpp",
+          "find": "  game.fixed_runout = {request.runout.fixed_turn, request.runout.fixed_river};",
+          "replace": "  game.fixed_runout = {};"
+        },
+        {
+          "name": "solve stops rejecting a fixed card that is already on the board",
+          "file": "engine/src/gto/solve.cpp",
+          "find": "    for (std::size_t b = 0; b < def.board_size; ++b)\n      if (card == def.board[b])\n        throw unsupported_tree_shape(\"fixed runout card is already on the board\");",
+          "replace": "    (void)def;"
+        },
+        {
+          "name": "solve always runs full traversal, ignoring the sampled-mode golden stream",
+          "file": "engine/src/gto/solve.cpp",
+          "find": "  TrainingResult result = request.mode == SolveMode::ExternalSampling\n                              ? trainer.train_sampled(request.iterations, request.seed,\n                                                      request.limits.training_limits())\n                              : trainer.train(request.iterations, request.limits.training_limits());",
+          "replace": "  TrainingResult result = trainer.train(request.iterations, request.limits.training_limits());"
+        },
+        {
+          "name": "solve accepts a non-identity action abstraction instead of refusing it",
+          "file": "engine/src/gto/solve.cpp",
+          "find": "  if (tree.action_id() != abstraction::identity_action_id())\n    throw unsupported_tree_shape(\"heads-up CFR solves only the identity action abstraction\");",
+          "replace": "  if (false && tree.action_id() != abstraction::identity_action_id())\n    throw unsupported_tree_shape(\"heads-up CFR solves only the identity action abstraction\");"
+        },
+        {
+          "name": "solve treats a present negative fixed card as absent (leaks invalid_argument)",
+          "file": "engine/src/gto/solve.cpp",
+          "find": "    const int card = *fixed[i];\n    if (card < 0 || card > 51)",
+          "replace": "    const int card = *fixed[i];\n    if (card > 51)"
+        }
+      ]
+    }
+  ]
+}

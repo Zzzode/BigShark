@@ -39,7 +39,12 @@ flowchart LR
   Service --> Policy[bigshark_policy]
   Policy --> Solver[bigshark_solver]
   Policy --> Poker[bigshark_poker]
+  Solver --> Tree[bigshark_tree]
+  Solver --> Abstraction[bigshark_abstraction]
   Solver --> Poker
+  Tree --> Abstraction
+  Tree --> Poker
+  Abstraction --> Poker
 ```
 
 ## Component Boundaries
@@ -48,6 +53,8 @@ flowchart LR
 | --- | --- | --- |
 | `engine/` | Poker, solver, abstraction, policy, service, v0 protocol libraries, and solver-owned benchmarks | Authentication, HTTP, room discovery, platform tokens |
 | `bigshark_abstraction` (RFC 0008 stage 3) | Card bucketing, declared ordered action menus, abstraction identity (`AbstractionId`), and the typed mismatch refusal; depends only on the rules layer | Knowledge of solvers, storage, or IO, and any modification of the rules. The solver's live menu is a thin adapter over the lifted builder (bit-for-bit identical decisions, replay 156/0/0); card buckets and `AbstractionId` are not yet consumed anywhere outside tests |
+| `bigshark_tree` (RFC 0008 stage 4 L3) | The seat-count-agnostic abstract public betting tree (`AbstractTree`): abstracted action nodes, probability-free public-card chance nodes, and fold/showdown terminal ledgers built from an L1 `GameDef` and an L2 menu; links only `bigshark_poker` and `bigshark_abstraction` | Regrets, ranges, hole cards, policy, probabilities on chance edges, per-deal conditioning, and any solver, transitional rules adapter (heads-up or multiway), storage/transport, or private-holding evaluator (enforced unconditionally at build time by allowlisting the compiler-resolved include closure — which macro-paste, line-splice, digraph, no-space, and `#import` spellings cannot evade — and at link time by the link-negative test). A build that crosses a deterministic node/depth/byte bound throws the typed `tree_resource_exhausted`, never a truncated tree; the byte bound covers requested retained capacity |
+| `bigshark_solver::solve` (RFC 0008 stage 4 L4) | The single unified solver seam: routes a two-seat identity tree to heads-up CFR with the numeric core unchanged (bit-for-bit under both drivers and every runout variant), and explicitly refuses unsupported shapes with the typed `unsupported_tree_shape` | Silent approximation of a model it does not solve, conflating a shape refusal with a malformed request (the exception is not `invalid_argument`), and a self-assigned guarantee level on the result (the source-to-guarantee map is L6). The river LP/DCFR and experimental multistreet solvers are reachable but refuse-only this stage |
 | `apps/engine-host` | C++ process composition and v0 NDJSON host lifecycle | Platform mapping or strategy rules |
 | `clients/node` | Generic engine process lifecycle, NDJSON framing, timeouts, and FIFO correlation | River fields or poker strategy |
 | `platforms/river-club` | River API, state parsing, normalization, legality checks, action submission, and journaling | Independent poker strategy |

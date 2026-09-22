@@ -154,12 +154,35 @@ std::vector<poker::Action> build_action_menu(const poker::LegalActions& legal,
                                              const StreetSizes& street_sizes,
                                              const MenuContext& context);
 
+// The multi-seat (3..10) menu context. There is no single opponent: a raise is
+// legal if ANY other live, non-folded seat can respond (the existential rule in
+// the 3+ profile), so the cap is the DEEPEST cover across every such seat, not
+// the cover of whichever seat happens to act next. The caller computes that
+// cover from a GameState as max over other live, non-folded seats of
+// (street_committed + stack) and supplies it; L2 stays free of any rules-state
+// type. The fractions then clamp to [minimum, cover] under the same rule as the
+// heads-up menu. At two seats the max has one term and the result is identical
+// to build_action_menu, so the identity path and digest do not move.
+struct MultiwayMenuContext {
+  poker::Street street = poker::Street::Flop;
+  poker::Chips pot = 0;
+  poker::Chips actor_committed = 0;
+  // Deepest total a wager can be matched to: the maximum street total any other
+  // live, non-folded seat can reach. The caller computes it with checked
+  // arithmetic; it is min-ed against the legal maximum inside the builder.
+  poker::Chips cover = 0;
+};
+
+std::vector<poker::Action> build_multiway_action_menu(const poker::LegalActions& legal,
+                                                      const StreetSizes& street_sizes,
+                                                      const MultiwayMenuContext& context);
+
 // A declared action abstraction: identity schedule plus its id. `menu` selects
 // the street entry and delegates to build_action_menu.
 class ActionAbstraction {
  public:
   explicit ActionAbstraction(SizeSchedule schedule)
-      : schedule_(std::move(schedule)), id_(make_id(schedule_)) {}
+      : schedule_(reduced(std::move(schedule))), id_(make_id(schedule_)) {}
 
   static ActionAbstraction identity() { return ActionAbstraction(default_size_schedule()); }
 
@@ -173,6 +196,10 @@ class ActionAbstraction {
 
  private:
   static AbstractionId make_id(const SizeSchedule& schedule);
+  // Reduced form is part of declared identity: an unreduced fraction such as
+  // 2/4 is normalized to 1/2 at declaration so the stored schedule and its
+  // canonical id always agree (a zero component is rejected here).
+  static SizeSchedule reduced(SizeSchedule schedule);
   SizeSchedule schedule_;
   AbstractionId id_;
 };
