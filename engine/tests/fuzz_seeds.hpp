@@ -207,6 +207,7 @@ inline std::vector<std::string> structuredSeeds() {
   seeds.push_back(frame(capabilitiesFor(0, "cap0")));
   seeds.push_back(frame(capabilitiesFor(1, "cap1")));
   seeds.push_back(frame(capabilitiesFor(2, "cap2")));
+  seeds.push_back(frame(capabilitiesFor(3, "cap3")));
   seeds.push_back(frame(capabilitiesFor(0xffffffffu, "caphuge")));
   {
     // Minor 1 with the new BLUEPRINT mode: no resident services, so it must
@@ -286,6 +287,89 @@ inline std::vector<std::string> structuredSeeds() {
     expanded->mutable_solver()->set_artifact_sha256(
         "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
     expanded->mutable_solver()->set_guarantee("uncertified");
+    seeds.push_back(frame(envelope));
+  }
+
+  // ---- RFC 0008 stage 5 minor-2 guarantee frames. -------------------------
+  {
+    // Minor-2 AUTOMATIC heuristic answer: expanded strategy carrying field 11
+    // and never field 10 (symmetric presence oracle in the harness).
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_state()->mutable_legal_actions(0)->set_type(pv::ACTION_TYPE_CHECK);
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_AUTOMATIC);
+    seeds.push_back(frame(envelopeForMinor(request, "automatic2", 2)));
+  }
+  {
+    // Minor-2 HEURISTIC with an approximate floor: served.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_HEURISTIC);
+    request.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_APPROXIMATE);
+    seeds.push_back(frame(envelopeForMinor(request, "floorapprox2", 2)));
+  }
+  {
+    // An exact_solved floor cannot be met by any stage-5 source: code 9.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_state()->mutable_legal_actions(0)->set_type(pv::ACTION_TYPE_CHECK);
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_AUTOMATIC);
+    request.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_EXACT_SOLVED);
+    seeds.push_back(frame(envelopeForMinor(request, "floorexact2", 2)));
+  }
+  {
+    // Field 8 on minor 1 is a feature negotiation failure, even in-range.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_APPROXIMATE);
+    seeds.push_back(frame(envelopeForMinor(request, "floor1", 1)));
+  }
+  {
+    // Field 8 on minor 0 is the same feature failure on the frozen path.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_APPROXIMATE);
+    seeds.push_back(frame(envelopeFor(request, "floor0")));
+  }
+  {
+    // Present UNSPECIFIED floor at minor 2 is INVALID_REQUEST.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_UNSPECIFIED);
+    seeds.push_back(frame(envelopeForMinor(request, "floorzero2", 2)));
+  }
+  {
+    // Out-of-range open-enum floor at minor 2 is INVALID_REQUEST.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_minimum_guarantee(static_cast<pv::GuaranteeLevel>(6));
+    seeds.push_back(frame(envelopeForMinor(request, "floor6-2", 2)));
+  }
+  {
+    // Forced experimental backends stay rejected at minor 2.
+    for (const pv::SolverMode forced :
+         {pv::SOLVER_MODE_RIVER_LP, pv::SOLVER_MODE_RIVER_DCFR, pv::SOLVER_MODE_MULTISTREET_CFR}) {
+      pv::DecisionRequest request = baseRequest();
+      request.mutable_options()->set_solver_mode(forced);
+      seeds.push_back(frame(envelopeForMinor(request, "forced2", 2)));
+    }
+  }
+  {
+    // BLUEPRINT at minor 2 with no resident services is a coverage miss.
+    pv::DecisionRequest request = baseRequest();
+    request.mutable_options()->set_solver_mode(pv::SOLVER_MODE_BLUEPRINT);
+    seeds.push_back(frame(envelopeForMinor(request, "blueprint2", 2)));
+  }
+  {
+    // A manually constructed minor-2 guaranteed RESPONSE frame. The host
+    // rejects response payloads ("decision responses are not accepted by the
+    // host"), so this seed only pins re-parse tolerance for a field-11 frame;
+    // it never reaches the disjoint-vocabulary oracle. Host-output seeds
+    // (automatic2, floorapprox2) are what exercise that oracle.
+    pv::Envelope envelope;
+    envelope.set_protocol_minor(2);
+    envelope.set_request_id("guaranteed-response-seed");
+    pv::ExpandedStrategy* expanded =
+        envelope.mutable_decision_response()->mutable_expanded_strategy();
+    pv::ActionPolicy* check = expanded->add_actions();
+    check->set_type(pv::ACTION_TYPE_CHECK);
+    check->set_probability(1.0);
+    expanded->mutable_selected_action()->set_type(pv::ACTION_TYPE_CHECK);
+    expanded->mutable_solver()->set_source(pv::SOLVER_SOURCE_POSTFLOP_HEURISTIC);
+    expanded->mutable_solver()->set_guarantee_level("approximate");
     seeds.push_back(frame(envelope));
   }
   return seeds;

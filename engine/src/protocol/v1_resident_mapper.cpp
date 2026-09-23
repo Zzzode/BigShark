@@ -26,6 +26,11 @@ int pokerCard(const pv::Card& card) {
 
 pv::Street wireStreet(poker::Street street) {
   switch (street) {
+    // Resident reconstruction is postflop-only; preflop was already handled by
+    // the trailing return, but the arm is explicit so the switch is total
+    // under the target-wide -Werror=switch.
+    case poker::Street::Preflop:
+      return pv::STREET_UNSPECIFIED;
     case poker::Street::Flop:
       return pv::STREET_FLOP;
     case poker::Street::Turn:

@@ -42,6 +42,14 @@ export interface ProtoEngineClientOptions {
    * restart.
    */
   negotiateMinor1?: boolean;
+  /**
+   * RFC 0008 stage 5 negotiated minor 2 opt-in (typed guarantee levels). When
+   * true the handshake probes minor 2 first, then minor 1 (only when
+   * negotiateMinor1 is also set), then minor 0. Independent opt-in flags
+   * match the minor-1 rollout: a minor-2 probe against an older host is a
+   * harmless single UNSUPPORTED_PROTOCOL response.
+   */
+  negotiateMinor2?: boolean;
 }
 
 // RFC 0002 transport limit. Declared lengths above this are rejected before
@@ -118,14 +126,15 @@ export class ProtoEngineProcessClient {
   readonly warmupEnvelope: Envelope;
   readonly warmupTimeoutMs: number;
   readonly negotiateMinor1Option: boolean;
+  readonly negotiateMinor2Option: boolean;
 
   private process: EngineChild | null = null;
   private pending = new Map<string, PendingRequest>();
   private chunks: Buffer[] = [];
   private startPromise: Promise<void> | null = null;
   private requestCounter = 0;
-  // Negotiated result for the current process: 0 by default, 1 only after the
-  // explicit minor-1 capability handshake succeeds.
+  // Negotiated result for the current process: 0 by default, 1 or 2 only
+  // after the corresponding capability handshake succeeds.
   private negotiatedMinor = 0;
 
   constructor({
@@ -135,6 +144,7 @@ export class ProtoEngineProcessClient {
     warmupEnvelope,
     warmupTimeoutMs = 600,
     negotiateMinor1 = false,
+    negotiateMinor2 = false,
   }: ProtoEngineClientOptions) {
     if (!command) throw new Error('Engine process command is required');
     this.command = command;
@@ -143,19 +153,26 @@ export class ProtoEngineProcessClient {
     this.warmupEnvelope = warmupEnvelope;
     this.warmupTimeoutMs = warmupTimeoutMs;
     this.negotiateMinor1Option = negotiateMinor1;
+    this.negotiateMinor2Option = negotiateMinor2;
   }
 
   /**
-   * Negotiated protocol minor for the current process (0 or 1). Available once
-   * start() resolves; reset and re-negotiated after a hard restart.
+   * Negotiated protocol minor for the current process (0, 1, or 2). Available
+   * once start() resolves; reset and re-negotiated after a hard restart.
    */
-  get negotiatedProtocolMinor(): 0 | 1 {
+  get negotiatedProtocolMinor(): 0 | 1 | 2 {
+    if (this.negotiatedMinor === 2) return 2;
     return this.negotiatedMinor === 1 ? 1 : 0;
   }
 
-  /** True only when the current process successfully negotiated minor 1. */
+  /** True when the current process negotiated minor 1 or higher. */
   get minor1Capable(): boolean {
-    return this.negotiatedProtocolMinor === 1;
+    return this.negotiatedProtocolMinor >= 1;
+  }
+
+  /** True only when the current process successfully negotiated minor 2. */
+  get minor2Capable(): boolean {
+    return this.negotiatedProtocolMinor === 2;
   }
 
   async request(envelope: Envelope, timeoutMs = 2000): Promise<Envelope> {
@@ -163,28 +180,47 @@ export class ProtoEngineProcessClient {
     return this.enqueue(envelope, timeoutMs);
   }
 
-  // RFC 0005 353: capabilities are queried at minor 0 first, then re-queried
-  // advertising minor 1 before any minor-1 feature is used. The host must
-  // echo minor 1 and list 1 in supported_protocol_minors; anything else keeps
-  // the client safely on minor 0.
+  // RFC 0005/0008 capability handshakes. Probe order is strict: minor 2 when
+  // opted in, then minor 1 when IT was opted in (a minor-2-only caller never
+  // silently uses minor 1), then stay on minor 0. The host must echo the
+  // probed minor and list it in supported_protocol_minors; an old host simply
+  // answers the probe with an error/echo 0 and the client stays below.
+  //
+  // A probe that fails IN BAND (echo mismatch, error payload, missing minor)
+  // falls through to the next candidate. A probe that fails OUT OF BAND
+  // (timeout, exit, broken pipe) kills the child via failProcess; there is no
+  // live process left to probe, so the cascade ends at minor 0 and start()
+  // still resolves. The child is restarted lazily on the next request (start()
+  // respawns whenever this.process is null), so a failed probe never wedges
+  // the client permanently.
   private async negotiate(): Promise<void> {
     this.negotiatedMinor = 0;
-    if (!this.negotiateMinor1Option)
-      return;
-    const probe = create(EnvelopeSchema, {
-      protocolMinor: 1,
-      requestId: `negotiate-minor1-${process.pid}-${++this.requestCounter}`,
-    });
-    probe.payload = {
-      case: 'getCapabilitiesRequest',
-      value: create(GetCapabilitiesRequestSchema),
-    };
-    const response = await this.enqueue(probe, this.warmupTimeoutMs);
-    if (response.protocolMinor !== 1
-      || response.payload.case !== 'getCapabilitiesResponse')
-      return;
-    if (response.payload.value.supportedProtocolMinors.includes(1))
-      this.negotiatedMinor = 1;
+    for (const candidate of (this.negotiateMinor2Option ? [2] : [])
+      .concat(this.negotiateMinor1Option ? [1] : [])) {
+      const probe = create(EnvelopeSchema, {
+        protocolMinor: candidate,
+        requestId: `negotiate-minor${candidate}-${process.pid}-${++this.requestCounter}`,
+      });
+      probe.payload = {
+        case: 'getCapabilitiesRequest',
+        value: create(GetCapabilitiesRequestSchema),
+      };
+      let response: Envelope;
+      try {
+        response = await this.enqueue(probe, this.warmupTimeoutMs);
+      } catch {
+        // Out-of-band probe failure: stop probing and accept minor 0. When
+        // the child is gone, the later request path respawns it.
+        return;
+      }
+      if (response.protocolMinor !== candidate
+        || response.payload.case !== 'getCapabilitiesResponse')
+        continue;
+      if (response.payload.value.supportedProtocolMinors.includes(candidate)) {
+        this.negotiatedMinor = candidate;
+        return;
+      }
+    }
   }
 
   start(): Promise<void> {

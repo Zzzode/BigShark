@@ -1,0 +1,10 @@
+{
+  "protocolMinor": 2,
+  "requestId": "guarantee-below-vector",
+  "decisionResponse": {
+    "error": {
+      "code": "ERROR_CODE_GUARANTEE_BELOW_REQUEST",
+      "message": "achieved guarantee level is below the requested minimum"
+    }
+  }
+}

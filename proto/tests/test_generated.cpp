@@ -25,9 +25,12 @@ int fail(const char* message) {
 
 int main() {
   const std::string fixture_dir = BIGSHARK_PROTO_FIXTURE_DIR;
-  constexpr std::array<const char*, 5> fixture_names = {"capabilities-request",
-                                                        "capabilities-response", "decision-request",
-                                                        "envelope", "error-response"};
+  constexpr std::array<const char*, 9> fixture_names = {
+      "capabilities-request", "capabilities-response", "decision-request", "envelope",
+      "error-response",
+      // RFC 0008 stage 5 golden vectors (ProtoJSON <-> binary).
+      "capabilities-minor2", "decision-request-floor", "guaranteed-strategy",
+      "guarantee-below-request"};
   for (const char* name : fixture_names) {
     const std::string binary = readFile(fixture_dir + "/" + name + ".binpb");
     const std::string json = readFile(fixture_dir + "/" + name + ".json");
@@ -96,6 +99,64 @@ int main() {
       unknown_enum.suit() != bigshark::engine::v1::SUIT_SPADES ||
       unknown_enum.SerializeAsString() != card_binary)
     return fail("UNKNOWN ENUM PRESERVATION FAILED");
+
+  // RFC 0008 stage 5 golden payload checks.
+  bigshark::engine::v1::Envelope minor2_caps;
+  if (!minor2_caps.ParseFromString(readFile(fixture_dir + "/capabilities-minor2.binpb")) ||
+      minor2_caps.protocol_minor() != 2 || !minor2_caps.has_get_capabilities_response())
+    return fail("MINOR-2 CAPABILITIES GOLDEN PAYLOAD FAILED");
+  {
+    const auto& caps = minor2_caps.get_capabilities_response();
+    if (caps.supported_protocol_minors_size() != 3 || caps.supported_protocol_minors(0) != 0 ||
+        caps.supported_protocol_minors(1) != 1 || caps.supported_protocol_minors(2) != 2 ||
+        caps.engine_build_version() != "bigshark-engine-v1.2.0")
+      return fail("MINOR-2 CAPABILITIES CONTENT FAILED");
+  }
+
+  bigshark::engine::v1::Envelope floor_request;
+  if (!floor_request.ParseFromString(readFile(fixture_dir + "/decision-request-floor.binpb")) ||
+      floor_request.protocol_minor() != 2 || !floor_request.has_decision_request())
+    return fail("FLOOR REQUEST GOLDEN PAYLOAD FAILED");
+  {
+    const auto& options = floor_request.decision_request().options();
+    if (!options.has_minimum_guarantee() ||
+        options.minimum_guarantee() != bigshark::engine::v1::GUARANTEE_LEVEL_EXACT_SOLVED)
+      return fail("FLOOR REQUEST FIELD 8 CONTENT FAILED");
+  }
+
+  bigshark::engine::v1::Envelope guaranteed;
+  if (!guaranteed.ParseFromString(readFile(fixture_dir + "/guaranteed-strategy.binpb")) ||
+      !guaranteed.has_decision_response() ||
+      !guaranteed.decision_response().has_expanded_strategy())
+    return fail("GUARANTEED STRATEGY GOLDEN PAYLOAD FAILED");
+  {
+    const auto& solver = guaranteed.decision_response().expanded_strategy().solver();
+    if (solver.guarantee_level() != "approximate" || solver.has_guarantee() ||
+        solver.source() != bigshark::engine::v1::SOLVER_SOURCE_POSTFLOP_HEURISTIC)
+      return fail("GUARANTEED STRATEGY FIELD DISCIPLINE FAILED");
+  }
+
+  bigshark::engine::v1::Envelope code9;
+  if (!code9.ParseFromString(readFile(fixture_dir + "/guarantee-below-request.binpb")) ||
+      !code9.has_decision_response() || !code9.decision_response().has_error())
+    return fail("CODE-9 GOLDEN PAYLOAD FAILED");
+  if (code9.decision_response().error().code() !=
+          bigshark::engine::v1::ERROR_CODE_GUARANTEE_BELOW_REQUEST ||
+      code9.decision_response().error().retryable())
+    return fail("CODE-9 GOLDEN CONTENT FAILED");
+
+  // GuaranteeLevel ordinals 0..5 presence vectors. Every vector encodes the
+  // field as PRESENT, including explicit ordinal 0 (proto3 optional presence is
+  // distinct from the default); the C++ reader must observe that distinction.
+  for (int ordinal = 0; ordinal <= 5; ++ordinal) {
+    bigshark::engine::v1::Envelope level;
+    const std::string level_binary =
+        readFile(fixture_dir + "/guarantee-enum-presence-" + std::to_string(ordinal) + ".binpb");
+    if (!level.ParseFromString(level_binary) || !level.has_decision_request() ||
+        !level.decision_request().options().has_minimum_guarantee() ||
+        static_cast<int>(level.decision_request().options().minimum_guarantee()) != ordinal)
+      return fail("GUARANTEE ENUM PRESENCE VECTOR FAILED");
+  }
 
   std::puts("PROTOBUF GENERATED ROUND-TRIP TESTS PASSED");
   return 0;

@@ -29,9 +29,20 @@ namespace {
 
 namespace pv = bs::v1::pv;
 
-bool requestIsValid(const pv::DecisionRequest& request) {
+bool requestIsValid(const pv::DecisionRequest& request, unsigned minor) {
   bs::v1::ValidationReport report;
-  return bs::v1::validateDecisionRequest(request, report) == pv::ERROR_CODE_UNSPECIFIED;
+  return bs::v1::validateDecisionRequest(request, report, minor) == pv::ERROR_CODE_UNSPECIFIED;
+}
+
+// RFC 0008 stage 5 symmetric presence oracles: the per-minor guarantee
+// vocabularies are disjoint on every successful strategy response.
+void checkGuaranteeVocabulary(unsigned minor, const pv::SolverMetadata& solver) {
+  if (minor == 2) {
+    if (!solver.has_guarantee_level() || solver.has_guarantee())
+      __builtin_trap();
+  } else if (solver.has_guarantee_level()) {
+    __builtin_trap();
+  }
 }
 
 void exerciseEnvelopeBytes(const std::string& frame) {
@@ -52,16 +63,30 @@ void exerciseEnvelopeBytes(const std::string& frame) {
     pv::Envelope requestEnvelope;
     if (!requestEnvelope.ParseFromString(frame))
       __builtin_trap();
-    if (requestEnvelope.payload_case() != pv::Envelope::kDecisionRequest ||
-        !requestIsValid(requestEnvelope.decision_request()))
+    if (requestEnvelope.payload_case() != pv::Envelope::kDecisionRequest)
+      __builtin_trap();
+    const unsigned requestMinor =
+        requestEnvelope.protocol_minor() <= 2 ? requestEnvelope.protocol_minor() : 0;
+    if (!requestIsValid(requestEnvelope.decision_request(), requestMinor))
       __builtin_trap();
     // Minor 0 may only return the v1.0 Strategy; the expanded oneof and the
-    // new enums are minor-1-only.
+    // new enums are minor-1+.
     if (requestEnvelope.protocol_minor() == 0 && decision.has_expanded_strategy())
       __builtin_trap();
+    // Minor 2 always returns expanded_strategy, never the 5-capped Strategy.
+    if (requestEnvelope.protocol_minor() == 2 && decision.has_strategy())
+      __builtin_trap();
+    if (decision.has_strategy())
+      checkGuaranteeVocabulary(requestMinor, decision.strategy().solver());
     if (decision.has_expanded_strategy()) {
       const pv::ExpandedStrategy& expanded = decision.expanded_strategy();
       if (expanded.actions_size() < 1 || expanded.actions_size() > 32 || !expanded.has_solver())
+        __builtin_trap();
+      checkGuaranteeVocabulary(requestMinor, expanded.solver());
+      // A minor-2 engine answer is never labeled operational_fallback: a
+      // validated request always has a real source.
+      if (requestEnvelope.protocol_minor() == 2 &&
+          expanded.solver().guarantee_level() == "operational_fallback")
         __builtin_trap();
       double sum = 0.0;
       for (const pv::ActionPolicy& policy : expanded.actions()) {
@@ -107,7 +132,8 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
       if (envelope.has_decision_request()) {
         bs::Ctx context;
         bs::v1::ValidationReport report;
-        (void)bs::v1::validateAndMap(envelope.decision_request(), report, context);
+        const unsigned minor = envelope.protocol_minor() <= 2 ? envelope.protocol_minor() : 0;
+        (void)bs::v1::validateAndMap(envelope.decision_request(), report, context, minor);
       }
       exerciseEnvelopeBytes(input);
     }

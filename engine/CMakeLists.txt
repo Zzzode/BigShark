@@ -413,10 +413,15 @@ add_custom_target(benchmark-resolver
 
 add_library(bigshark_policy STATIC
   src/policy/decision.cpp
+  src/policy/guarantee.cpp
 )
 target_include_directories(bigshark_policy
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+# RFC 0008 stage 5: the guaranteeFor source->level switch must fail the build
+# if a new DecisionSource is added without a level (the repo builds -Wall
+# -Wextra without -Werror; this elevates only -Wswitch).
+target_compile_options(bigshark_policy PRIVATE -Werror=switch)
 target_link_libraries(bigshark_policy
   PUBLIC  bigshark_poker
   PRIVATE bigshark_solver
@@ -612,6 +617,18 @@ if(BUILD_TESTING)
   add_executable(test_v0_protocol tests/test_v0_protocol.cpp)
   target_link_libraries(test_v0_protocol PRIVATE bigshark_v0_protocol)
   add_test(NAME v0_protocol COMMAND test_v0_protocol)
+
+  # RFC 0008 stage 5: the guarantee ladder/single normative table, and the
+  # structural decision-source provenance oracle (river backend seam lives in
+  # the solver facade, which bigshark_policy links privately).
+  add_executable(test_guarantee tests/test_guarantee.cpp)
+  target_link_libraries(test_guarantee PRIVATE bigshark_policy)
+  add_test(NAME guarantee COMMAND test_guarantee)
+
+  add_executable(test_decision_provenance tests/test_decision_provenance.cpp)
+  target_link_libraries(test_decision_provenance PRIVATE bigshark_policy bigshark_solver)
+  target_include_directories(test_decision_provenance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  add_test(NAME decision_provenance COMMAND test_decision_provenance)
 
   foreach(test_name gto multistreet_ref)
     add_executable(test_${test_name} tests/test_${test_name}.cpp)

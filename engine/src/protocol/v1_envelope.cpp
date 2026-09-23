@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <bs/guarantee.hpp>
 #include <bs/service.hpp>
 #include <bs/v1_protocol.hpp>
 #include <cstdint>
@@ -68,6 +69,8 @@ const char* messageFor(pv::ErrorCode code) {
       return "decision deadline exceeded";
     case pv::ERROR_CODE_RESOURCE_EXHAUSTED:
       return "engine resources exhausted";
+    case pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST:
+      return "achieved guarantee level is below the requested minimum";
     case pv::ERROR_CODE_INTERNAL:
       return "internal engine error";
     default:
@@ -75,8 +78,12 @@ const char* messageFor(pv::ErrorCode code) {
   }
 }
 
-// Shared decision-error envelope for the coverage misses unique to minor 1.
-EnvelopeResult blueprintMissResponse(const std::string& requestId, const std::string& detail) {
+// Shared decision-error envelope for a resident coverage miss. RFC 0008 stage
+// 5 (R16): the echo minor is the negotiated minor; minor 1 passes literal 1
+// (byte-identical behavior), minor 2 passes 2. Code and detail are unchanged
+// across minors.
+EnvelopeResult blueprintMissResponse(const std::string& requestId, const std::string& detail,
+                                     std::uint32_t negotiated_minor) {
   std::string message = "blueprint coverage unavailable";
   if (!detail.empty()) {
     message += ": ";
@@ -84,81 +91,111 @@ EnvelopeResult blueprintMissResponse(const std::string& requestId, const std::st
   }
   return respondWithDecision(
       requestId, errorResponse(pv::ERROR_CODE_UNSUPPORTED_FEATURE, message, /*retryable=*/false),
-      1);
+      negotiated_minor);
 }
 
-// Runs one resident lookup end to end. Returns true only when the
-// reconstructed state has a legal, fully mappable blueprint row.
-bool tryBlueprint(const V1HostServices& services, const pv::DecisionRequest& request,
-                  pv::DecisionResponse& response, std::string& miss_detail) {
+// RFC 0008 stage 5 (R9): protobuf-free lookup core. Returns the reconstructed
+// blueprint row plus the verbatim miss detail WITHOUT serializing it; each
+// per-minor dispatcher applies its own vocabulary mapper. Exactly one host
+// service invocation happens per decision; the returned row is reused by the
+// floor check and the serializer, never re-looked-up.
+struct BlueprintLookup {
+  bool hit = false;
+  std::string miss_detail;
+  V1BlueprintRow row;
+};
+
+BlueprintLookup lookupBlueprint(const V1HostServices& services,
+                                const pv::DecisionRequest& request) {
+  BlueprintLookup result;
   if (!services.blueprintAdvertised()) {
-    miss_detail = "no resident blueprint root advertised";
-    return false;
+    result.miss_detail = "no resident blueprint root advertised";
+    return result;
   }
   ReconstructedPostflop reconstructed;
   V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
   if (!reconstructPostflop(request, reconstructed, reconstruct_miss)) {
-    miss_detail = to_string(reconstruct_miss);
-    return false;
+    result.miss_detail = to_string(reconstruct_miss);
+    return result;
   }
   const V1BlueprintResult answer = services.blueprintHeroDecision(
       *reconstructed.state, reconstructed.hero_cards, std::string_view{});
   if (!answer.hit) {
-    miss_detail = to_string(answer.miss);
-    return false;
+    result.miss_detail = to_string(answer.miss);
+    return result;
   }
   // An abstract row action outside the client legal window is a coverage
   // miss, never a clamp.
   if (!blueprintRowIsLegal(request, answer.row)) {
-    miss_detail = "off-tree-amount";
-    return false;
+    result.miss_detail = "off-tree-amount";
+    return result;
   }
-  response = mapBlueprintExpandedResponse(request, answer.row);
-  return true;
+  result.hit = true;
+  result.row = answer.row;
+  return result;
 }
 
-// Runs one RFC 0005 Stage 9 terminal-only resolve end to end. Returns the
-// response classification; the caller maps it to an expanded strategy or an
-// error. Reconstruction admits a facing-all-in node; the BLUEPRINT gate is
-// untouched.
-bool tryResolving(const V1HostServices& services, const pv::DecisionRequest& request,
-                  const std::uint32_t deadline_ms, pv::DecisionResponse& response,
-                  V1ResolveOutcome& outcome, std::string& miss_detail) {
+// Protobuf-free RFC 0005 Stage 9 terminal-only resolve lookup. Returns the
+// outcome class and selected row; the DeadlineExceeded early return stays
+// BEFORE the row legality check and the off-tree outcome overwrite is
+// preserved verbatim from the former shared helper.
+struct ResolvingLookup {
+  bool answered = false;
+  V1ResolveOutcome outcome = V1ResolveOutcome::Unsupported;
+  std::string miss_detail;
+  V1BlueprintRow row;
+};
+
+ResolvingLookup lookupResolving(const V1HostServices& services, const pv::DecisionRequest& request,
+                                std::uint32_t deadline_ms) {
+  ResolvingLookup result;
   if (!services.resolvingAdvertised()) {
-    miss_detail = "no resolving root advertised";
-    outcome = V1ResolveOutcome::Unsupported;
-    return false;
+    result.miss_detail = "no resolving root advertised";
+    return result;
   }
   ReconstructedPostflop reconstructed;
   V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
   if (!reconstructPostflopForResolve(request, reconstructed, reconstruct_miss)) {
-    miss_detail = to_string(reconstruct_miss);
-    outcome = V1ResolveOutcome::Unsupported;
-    return false;
+    result.miss_detail = to_string(reconstruct_miss);
+    return result;
   }
-  const V1ResolveResult result = services.resolvingDecision(
+  const V1ResolveResult resolved = services.resolvingDecision(
       *reconstructed.state, reconstructed.hero_cards, std::string_view{}, deadline_ms);
-  outcome = result.outcome;
-  if (result.outcome == V1ResolveOutcome::Unsupported) {
-    miss_detail =
-        to_string(result.miss == V1BlueprintMiss::None ? V1BlueprintMiss::OffTree : result.miss);
-    return false;
+  result.outcome = resolved.outcome;
+  if (resolved.outcome == V1ResolveOutcome::Unsupported) {
+    result.miss_detail = to_string(resolved.miss == V1BlueprintMiss::None ? V1BlueprintMiss::OffTree
+                                                                          : resolved.miss);
+    return result;
   }
-  if (result.outcome == V1ResolveOutcome::DeadlineExceeded)
-    return false;
-  if (result.row.size == 0 || !blueprintRowIsLegal(request, result.row)) {
-    miss_detail = "off-tree-amount";
-    outcome = V1ResolveOutcome::Unsupported;
-    return false;
+  if (resolved.outcome == V1ResolveOutcome::DeadlineExceeded)
+    return result;
+  if (resolved.row.size == 0 || !blueprintRowIsLegal(request, resolved.row)) {
+    result.miss_detail = "off-tree-amount";
+    result.outcome = V1ResolveOutcome::Unsupported;
+    return result;
   }
-  if (result.outcome == V1ResolveOutcome::Certified) {
-    response = mapResolvedExpandedResponse(request, result.row, pv::SOLVER_SOURCE_RESOLVING,
-                                           "modeled_exact_bound");
-  } else {
-    response =
-        mapResolvedExpandedResponse(request, result.row, pv::SOLVER_SOURCE_BLUEPRINT, "baseline");
+  result.answered = true;
+  result.row = resolved.row;
+  return result;
+}
+
+// Maps the request floor enum to the domain guarantee. The validator already
+// rejected an absent or unknown value at minor 2.
+bs::Guarantee requestedFloor(const pv::DecisionOptions& options) {
+  switch (options.minimum_guarantee()) {
+    case pv::GUARANTEE_LEVEL_OPERATIONAL_FALLBACK:
+      return bs::Guarantee::OperationalFallback;
+    case pv::GUARANTEE_LEVEL_APPROXIMATE:
+      return bs::Guarantee::Approximate;
+    case pv::GUARANTEE_LEVEL_ABSTRACT_SOLVED:
+      return bs::Guarantee::AbstractSolved;
+    case pv::GUARANTEE_LEVEL_EXACT_SOLVED:
+      return bs::Guarantee::ExactSolved;
+    case pv::GUARANTEE_LEVEL_CERTIFIED_BOUND:
+      return bs::Guarantee::CertifiedBound;
+    default:
+      return bs::Guarantee::CertifiedBound;  // unreachable after validation
   }
-  return true;
 }
 
 // Negotiated minor 1 decision dispatch.
@@ -178,11 +215,10 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
 
   const pv::SolverMode mode = request.options().solver_mode();
   if (mode == pv::SOLVER_MODE_BLUEPRINT) {
-    pv::DecisionResponse response;
-    std::string miss_detail;
-    if (!tryBlueprint(services, request, response, miss_detail))
-      return blueprintMissResponse(requestId, miss_detail);
-    return respondWithDecision(requestId, response, 1);
+    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    if (!lookup.hit)
+      return blueprintMissResponse(requestId, lookup.miss_detail, 1);
+    return respondWithDecision(requestId, mapBlueprintExpandedResponse(request, lookup.row), 1);
   }
 
   // RFC 0005 Stage 9: forced resolving on minor 1 only. AUTOMATIC never
@@ -191,30 +227,37 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
   // otherwise the forced request fails DEADLINE_EXCEEDED, and any unsupported
   // node/coverage/digest case fails UNSUPPORTED_FEATURE.
   if (mode == pv::SOLVER_MODE_RESOLVING) {
-    pv::DecisionResponse response;
-    V1ResolveOutcome outcome = V1ResolveOutcome::Unsupported;
-    std::string miss_detail;
     const std::uint32_t deadline_ms = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(request.options().solve_time_budget_ms(), 120000));
-    if (tryResolving(services, request, deadline_ms, response, outcome, miss_detail))
-      return respondWithDecision(requestId, response, 1);
-    if (outcome == V1ResolveOutcome::DeadlineExceeded)
+    const ResolvingLookup lookup = lookupResolving(services, request, deadline_ms);
+    if (lookup.answered) {
+      if (lookup.outcome == V1ResolveOutcome::Certified)
+        return respondWithDecision(
+            requestId,
+            mapResolvedExpandedResponse(request, lookup.row, pv::SOLVER_SOURCE_RESOLVING,
+                                        "modeled_exact_bound"),
+            1);
+      return respondWithDecision(
+          requestId,
+          mapResolvedExpandedResponse(request, lookup.row, pv::SOLVER_SOURCE_BLUEPRINT, "baseline"),
+          1);
+    }
+    if (lookup.outcome == V1ResolveOutcome::DeadlineExceeded)
       return respondWithDecision(requestId,
                                  errorResponse(pv::ERROR_CODE_DEADLINE_EXCEEDED,
                                                messageFor(pv::ERROR_CODE_DEADLINE_EXCEEDED),
                                                retryableFor(pv::ERROR_CODE_DEADLINE_EXCEEDED)),
                                  1);
-    return blueprintMissResponse(requestId, miss_detail);
+    return blueprintMissResponse(requestId, lookup.miss_detail, 1);
   }
 
   // AUTOMATIC may use a resident hit; an explicit HEURISTIC request always
   // runs the heuristic. Any automatic-mode miss falls through to the existing
   // heuristic engine, which reports its real source.
   if (mode == pv::SOLVER_MODE_AUTOMATIC) {
-    pv::DecisionResponse response;
-    std::string miss_detail;
-    if (tryBlueprint(services, request, response, miss_detail))
-      return respondWithDecision(requestId, response, 1);
+    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    if (lookup.hit)
+      return respondWithDecision(requestId, mapBlueprintExpandedResponse(request, lookup.row), 1);
   }
 
   const bs::Decision decision = bs::decide(context);
@@ -226,6 +269,107 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
         1);
   }
   return respondWithDecision(requestId, mapHeuristicExpandedResponse(request, decision), 1);
+}
+
+// Negotiated minor 2 decision dispatch (RFC 0008 stage 5). Same mode routing
+// as minor 1; differences are: every success is an expanded_strategy carrying
+// field 11 (never field 10), the heuristic wire source is the source the
+// policy declared at the routing branch, and a present minimum_guarantee is
+// compared against the achieved level only AFTER validation, lookup, and the
+// mapper's completeness preconditions established a complete answer.
+EnvelopeResult handleMinor2Decision(const std::string& requestId,
+                                    const pv::DecisionRequest& request,
+                                    const V1HostServices& services) {
+  ValidationReport report;
+  bs::Ctx context;
+  const pv::ErrorCode validationCode = validateAndMap(request, report, context, 2);
+  if (validationCode != pv::ERROR_CODE_UNSPECIFIED) {
+    return respondWithDecision(
+        requestId,
+        errorResponse(validationCode, messageFor(validationCode), retryableFor(validationCode),
+                      std::move(report.violations)),
+        2);
+  }
+
+  const pv::SolverMode mode = request.options().solver_mode();
+
+  // The one complete answer plus the level it achieved. Coverage/deadline and
+  // completeness errors take precedence over the floor (R9/R15): code 9 exists
+  // only when a complete, serializable, weaker answer is real.
+  pv::DecisionResponse complete;
+  bs::Guarantee achieved = bs::Guarantee::OperationalFallback;
+
+  if (mode == pv::SOLVER_MODE_BLUEPRINT) {
+    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    if (!lookup.hit)
+      return blueprintMissResponse(requestId, lookup.miss_detail, 2);
+    verifyStorageRowComplete(request, lookup.row);
+    achieved = bs::Guarantee::Approximate;
+    complete = mapGuaranteedBlueprintResponse(request, lookup.row);
+  } else if (mode == pv::SOLVER_MODE_RESOLVING) {
+    const std::uint32_t deadline_ms = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(request.options().solve_time_budget_ms(), 120000));
+    const ResolvingLookup lookup = lookupResolving(services, request, deadline_ms);
+    if (lookup.answered) {
+      verifyStorageRowComplete(request, lookup.row);
+      if (lookup.outcome == V1ResolveOutcome::Certified) {
+        achieved = bs::Guarantee::CertifiedBound;
+        complete = mapGuaranteedCertifiedResponse(request, lookup.row);
+      } else {
+        // DeadlineBlueprint: a complete validated baseline row tagged with
+        // the BLUEPRINT source, exactly like minor 1's baseline.
+        achieved = bs::Guarantee::Approximate;
+        complete = mapGuaranteedDeadlineResponse(request, lookup.row);
+      }
+    } else if (lookup.outcome == V1ResolveOutcome::DeadlineExceeded) {
+      return respondWithDecision(requestId,
+                                 errorResponse(pv::ERROR_CODE_DEADLINE_EXCEEDED,
+                                               messageFor(pv::ERROR_CODE_DEADLINE_EXCEEDED),
+                                               retryableFor(pv::ERROR_CODE_DEADLINE_EXCEEDED)),
+                                 2);
+    } else {
+      return blueprintMissResponse(requestId, lookup.miss_detail, 2);
+    }
+  } else {
+    // AUTOMATIC may use a resident hit but never a resolve; a miss, or an
+    // explicit HEURISTIC request, runs the sourced policy cascade.
+    if (mode == pv::SOLVER_MODE_AUTOMATIC) {
+      const BlueprintLookup lookup = lookupBlueprint(services, request);
+      if (lookup.hit) {
+        verifyStorageRowComplete(request, lookup.row);
+        achieved = bs::Guarantee::Approximate;
+        complete = mapGuaranteedBlueprintResponse(request, lookup.row);
+      }
+    }
+    if (!complete.has_expanded_strategy()) {
+      const bs::SourcedDecision answer = bs::decideSourced(context);
+      if (answer.decision.action.empty()) {
+        return respondWithDecision(
+            requestId,
+            errorResponse(pv::ERROR_CODE_NO_DECISION, messageFor(pv::ERROR_CODE_NO_DECISION),
+                          retryableFor(pv::ERROR_CODE_NO_DECISION)),
+            2);
+      }
+      verifyHeuristicAnswerComplete(request, answer);
+      achieved = guaranteeFor(answer.source);
+      complete = mapGuaranteedHeuristicResponse(request, answer);
+    }
+  }
+
+  // Response-side floor enforcement that never alters the action: a weaker
+  // complete answer is refused (code 9, no strategy payload) instead of being
+  // served silently. Static text and non-retryable for an unchanged state.
+  if (request.options().has_minimum_guarantee()) {
+    const bs::Guarantee floor = requestedFloor(request.options());
+    if (!guaranteeMeets(achieved, floor)) {
+      return respondWithDecision(requestId,
+                                 errorResponse(pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST,
+                                               messageFor(pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST),
+                                               /*retryable=*/false),
+                                 2);
+    }
+  }
+  return respondWithDecision(requestId, complete, 2);
 }
 
 }  // namespace
@@ -304,21 +448,22 @@ EnvelopeResult handleEnvelope(const std::string& frame, const V1HostServices& se
     return respondWithDecision("",
                                errorResponse(pv::ERROR_CODE_INVALID_REQUEST,
                                              "request_id must be 1..128 characters", false),
-                               envelope.protocol_minor() <= 1 ? envelope.protocol_minor() : 0);
+                               envelope.protocol_minor() <= 2 ? envelope.protocol_minor() : 0);
   }
   if (!isValidUtf8(requestId)) {
     return respondWithDecision(
         "", errorResponse(pv::ERROR_CODE_INVALID_REQUEST, "request_id must be valid UTF-8", false),
-        envelope.protocol_minor() <= 1 ? envelope.protocol_minor() : 0);
+        envelope.protocol_minor() <= 2 ? envelope.protocol_minor() : 0);
   }
 
   const std::uint32_t minor = envelope.protocol_minor();
-  const std::uint32_t echo_minor = minor <= 1 ? minor : 0;
-  if (minor > 1) {
-    return respondWithDecision(requestId,
-                               errorResponse(pv::ERROR_CODE_UNSUPPORTED_PROTOCOL,
-                                             "only protocol minors 0 and 1 are supported", false),
-                               echo_minor);
+  const std::uint32_t echo_minor = minor <= 2 ? minor : 0;
+  if (minor > 2) {
+    return respondWithDecision(
+        requestId,
+        errorResponse(pv::ERROR_CODE_UNSUPPORTED_PROTOCOL,
+                      "only protocol minors 0, 1 and 2 are supported", false),
+        echo_minor);
   }
 
   switch (envelope.payload_case()) {
@@ -327,7 +472,8 @@ EnvelopeResult handleEnvelope(const std::string& frame, const V1HostServices& se
         return respondWithCapabilities(requestId, buildCapabilities(), 0);
       return respondWithCapabilities(
           requestId,
-          buildCapabilities(1, services.blueprintAdvertised(), services.resolvingAdvertised()), 1);
+          buildCapabilities(minor, services.blueprintAdvertised(), services.resolvingAdvertised()),
+          minor);
 
     case pv::Envelope::kGetCapabilitiesResponse:
       return respondWithDecision(
@@ -381,7 +527,8 @@ EnvelopeResult handleEnvelope(const std::string& frame, const V1HostServices& se
       return respondWithDecision(requestId, response, 0);
     }
 
-    return handleMinor1Decision(requestId, request, services);
+    return minor == 2 ? handleMinor2Decision(requestId, request, services)
+                      : handleMinor1Decision(requestId, request, services);
   } catch (const MappingError& error) {
     return respondWithDecision(
         requestId, errorResponse(error.code(), error.what(), error.retryable(), error.violations()),

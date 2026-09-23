@@ -124,6 +124,10 @@ target_compile_features(bigshark_v1_protocol PUBLIC cxx_std_23)
 target_compile_options(bigshark_v1_protocol PRIVATE
   -Wall -Wextra -Wno-unused-parameter
 )
+# RFC 0008 stage 5: enum-conversion switches (toWireSource and the minor
+# vocabulary mappers) must be exhaustive. The repo builds without -Werror;
+# this elevates only -Wswitch, matching bigshark_policy.
+target_compile_options(bigshark_v1_protocol PRIVATE -Werror=switch)
 target_include_directories(bigshark_v1_protocol
   PUBLIC  "${BIGSHARK_ENGINE_DIR}/include"
   PRIVATE "${BIGSHARK_ENGINE_DIR}/src"
@@ -310,7 +314,7 @@ if(BUILD_TESTING)
   # matrix/full-distribution mapping/exact-seed sampling/membership/coverage
   # misses (seam fakes, no artifacts), and the HandState -> HeadsUpState
   # reconstruction oracle.
-  foreach(v1_test v1_resident_mapper v1_minor1 v1_resolving)
+  foreach(v1_test v1_resident_mapper v1_minor1 v1_resolving v1_minor2)
     add_executable(test_${v1_test}
       "${BIGSHARK_ENGINE_DIR}/tests/test_${v1_test}.cpp"
     )

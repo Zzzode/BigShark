@@ -48,6 +48,7 @@ import {
 import {
   engineBudgetMs,
   overrideWindowMs,
+  resultsLogEntry,
   selectCliFailureStep,
   selectPausedStep,
   selectRunnerStep,
@@ -521,7 +522,9 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
     raw = (res.stdout || res.stderr || '').slice(0, 200);
   }
   const ok = responseSucceeded(res.status, raw);
-  log(RESULTS, { kind: 'action', hand: room.handId, street: room.street, source, decision, ok, raw: ok ? undefined : raw });
+  log(RESULTS, resultsLogEntry(
+    { kind: 'action', hand: room.handId, street: room.street, source, decision, ok,
+      raw: ok ? undefined : raw }));
   note({ event: 'acted', source, action: decision.action, amount: decision.amount ?? null, reason: decision.reason, ok });
 
   // Stale snapshot (network stall + server deadline): ONE immediate engine
@@ -545,7 +548,9 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
       let raw2: unknown = null;
       try { raw2 = parseJson(r2.stdout); } catch { raw2 = r2.stdout?.slice(0, 160); }
       const ok2 = responseSucceeded(r2.status, raw2);
-      log(RESULTS, { kind: 'action-retry', hand: retryRoom.handId, street: retryRoom.street, source: 'engine-recovery', decision: d2, ok: ok2, raw: ok2 ? undefined : raw2 });
+      log(RESULTS, resultsLogEntry(
+        { kind: 'action-retry', hand: retryRoom.handId, street: retryRoom.street,
+          source: 'engine-recovery', decision: d2, ok: ok2, raw: ok2 ? undefined : raw2 }));
       note({ event: 'acted', source: 'engine-recovery', action: d2.action, amount: d2.amount ?? null, reason: d2.reason, ok: ok2 });
       if (ok2) { acted++; continue; }
     }

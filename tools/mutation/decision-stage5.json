@@ -1,0 +1,207 @@
+{
+  "description": "RFC 0008 stage 5 mutation battery: the guarantee ladder order and single normative table, the policy source declaration at every routing branch (including the forced bounded backend), the minor-2 floor enforcement and its precedence ordering, the field 8 request gate and closed enum, the field 10/11 vocabulary split, the cache-hit-vs-certified labeling, the declared (non-inferred) wire source, and the minor negotiation gate. Every mutation must turn its suite red; 0 equivalent.",
+  "expected": {
+    "equivalent": [],
+    "rationale": "Each mutation weakens the ladder, relabels a source, skips/inverts the floor or one of its precedence checks, crosses the minor-2 field vocabulary, widens the request gate, or downgrades the negotiation. The structural provenance oracle, the ladder table test, and the end-to-end minor-2 wire suite each observe the change directly."
+  },
+  "build": {
+    "command": "cmake",
+    "args": ["--build", "--preset", "release", "--target", "test_guarantee"]
+  },
+  "test": {
+    "command": "./build/release/engine/test_guarantee",
+    "args": []
+  },
+  "mutations": [
+    {
+      "name": "rank comparison flips the ladder to descending strength",
+      "file": "engine/src/policy/guarantee.cpp",
+      "find": "  return guaranteeRank(achieved) >= guaranteeRank(required);",
+      "replace": "  return guaranteeRank(achieved) <= guaranteeRank(required);"
+    },
+    {
+      "name": "a policy source (chart) wrongly earns certified_bound",
+      "file": "engine/src/policy/guarantee.cpp",
+      "find": "    case DecisionSource::PreflopChart:\n    case DecisionSource::PostflopHeuristic:\n    case DecisionSource::RiverLp:",
+      "replace": "    case DecisionSource::PreflopChart:\n      return Guarantee::CertifiedBound;\n    case DecisionSource::PostflopHeuristic:\n    case DecisionSource::RiverLp:"
+    },
+    {
+      "name": "river LP wrongly earns certified_bound via a stray return",
+      "file": "engine/src/policy/guarantee.cpp",
+      "find": "Guarantee guaranteeFor(DecisionSource source) {\n  switch (source) {\n    case DecisionSource::PreflopChart:",
+      "replace": "Guarantee guaranteeFor(DecisionSource source) {\n  if (source == DecisionSource::RiverLp)\n    return Guarantee::CertifiedBound;\n  switch (source) {\n    case DecisionSource::PreflopChart:"
+    }
+  ],
+  "additional_targets": [
+    {
+      "name": "decision_provenance",
+      "build": {
+        "command": "cmake",
+        "args": ["--build", "--preset", "release", "--target", "test_decision_provenance"]
+      },
+      "test": {
+        "command": "./build/release/engine/test_decision_provenance",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "preflop chart answers are tagged heuristic",
+          "file": "engine/src/policy/decision.cpp",
+          "find": "    return {preflop(c, k), DecisionSource::PreflopChart};",
+          "replace": "    return {preflop(c, k), DecisionSource::PostflopHeuristic};"
+        },
+        {
+          "name": "the v1-unreachable no-hole fold is tagged chart",
+          "file": "engine/src/policy/decision.cpp",
+          "find": "    return {{\"fold\", 0, \"no hole cards\", -1, -1}, DecisionSource::PostflopHeuristic};",
+          "replace": "    return {{\"fold\", 0, \"no hole cards\", -1, -1}, DecisionSource::PreflopChart};"
+        },
+        {
+          "name": "the policy postflop catch-all is tagged chart",
+          "file": "engine/src/policy/decision.cpp",
+          "find": "  return {postflop(c), DecisionSource::PostflopHeuristic};",
+          "replace": "  return {postflop(c), DecisionSource::PreflopChart};"
+        },
+        {
+          "name": "the forced bounded backend is ignored (hint no longer wired to options)",
+          "file": "engine/src/policy/decision.cpp",
+          "find": "  opt.allow_exact = backend.allow_exact;",
+          "replace": "  (void)backend;"
+        },
+        {
+          "name": "a solver answer is always tagged LP regardless of result().exact",
+          "file": "engine/src/policy/decision.cpp",
+          "find": "                         sol->result().exact ? DecisionSource::RiverLp : DecisionSource::RiverDcfr};",
+          "replace": "                         DecisionSource::RiverLp};"
+        }
+      ]
+    },
+    {
+      "name": "v1_minor2",
+      "build": {
+        "command": "cmake",
+        "args": ["--build", "--preset", "release", "--target", "test_v1_minor2"]
+      },
+      "test": {
+        "command": "./build/release/proto/test_v1_minor2",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "the floor comparison is removed (below-floor answers served)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "    if (!guaranteeMeets(achieved, floor)) {",
+          "replace": "    if (false && !guaranteeMeets(achieved, floor)) {"
+        },
+        {
+          "name": "the floor runs before completeness (bad row becomes code 9 instead of INTERNAL)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "    if (!lookup.hit)\n      return blueprintMissResponse(requestId, lookup.miss_detail, 2);\n    verifyStorageRowComplete(request, lookup.row);\n    achieved = bs::Guarantee::Approximate;\n    complete = mapGuaranteedBlueprintResponse(request, lookup.row);",
+          "replace": "    if (!lookup.hit)\n      return blueprintMissResponse(requestId, lookup.miss_detail, 2);\n    if (request.options().has_minimum_guarantee() &&\n        !guaranteeMeets(bs::Guarantee::Approximate, requestedFloor(request.options())))\n      return respondWithDecision(requestId,\n                                 errorResponse(pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST,\n                                               messageFor(pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST),\n                                               /*retryable=*/false),\n                                 2);\n    verifyStorageRowComplete(request, lookup.row);\n    achieved = bs::Guarantee::Approximate;\n    complete = mapGuaranteedBlueprintResponse(request, lookup.row);"
+        },
+        {
+          "name": "a certified resolve is labeled approximate (certified floor would code-9)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "        achieved = bs::Guarantee::CertifiedBound;\n        complete = mapGuaranteedCertifiedResponse(request, lookup.row);",
+          "replace": "        achieved = bs::Guarantee::Approximate;\n        complete = mapGuaranteedCertifiedResponse(request, lookup.row);"
+        },
+        {
+          "name": "AUTOMATIC enters the resolve branch instead of the cache",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "  } else if (mode == pv::SOLVER_MODE_RESOLVING) {\n    const std::uint32_t deadline_ms",
+          "replace": "  } else if (mode == pv::SOLVER_MODE_AUTOMATIC) {\n    const std::uint32_t deadline_ms"
+        },
+        {
+          "name": "the minor-2 floor field is accepted on minor 0/1",
+          "file": "engine/src/protocol/v1_semantic_validator.cpp",
+          "find": "      if (minor_ < 2) {",
+          "replace": "      if (false && minor_ < 2) {"
+        },
+        {
+          "name": "an explicit UNSPECIFIED floor is accepted at minor 2",
+          "file": "engine/src/protocol/v1_semantic_validator.cpp",
+          "find": "  return value == pv::GUARANTEE_LEVEL_OPERATIONAL_FALLBACK ||",
+          "replace": "  return value == pv::GUARANTEE_LEVEL_UNSPECIFIED ||\n         value == pv::GUARANTEE_LEVEL_OPERATIONAL_FALLBACK ||"
+        },
+        {
+          "name": "minor-2 heuristic response writes field 10 instead of field 11",
+          "file": "engine/src/protocol/v1_response_mapper.cpp",
+          "find": "  metadata->set_guarantee_level(guaranteeToken(guaranteeFor(answer.source)));",
+          "replace": "  metadata->set_guarantee(\"uncertified\");"
+        },
+        {
+          "name": "the storage builder writes the minor-1 field even on minor 2",
+          "file": "engine/src/protocol/v1_response_mapper.cpp",
+          "find": "  if (use_field_11)\n    metadata->set_guarantee_level(guaranteeToken(minor2_level));\n  else\n    metadata->set_guarantee(std::string(minor1_guarantee));",
+          "replace": "  metadata->set_guarantee_level(guaranteeToken(minor2_level));\n  metadata->set_guarantee(std::string(minor1_guarantee));"
+        },
+        {
+          "name": "minor-2 heuristic wire source falls back to reason inference",
+          "file": "engine/src/protocol/v1_response_mapper.cpp",
+          "find": "  fillHeuristicMetadata(metadata, decision, source);\n  metadata->set_guarantee_level(",
+          "replace": "  fillHeuristicMetadata(metadata, decision, solverSource(decision.reason));\n  metadata->set_guarantee_level("
+        },
+        {
+          "name": "UNSPECIFIED wire source is silently treated as approximate",
+          "file": "engine/src/protocol/v1_response_mapper.cpp",
+          "find": "    default:\n      return bs::Guarantee::OperationalFallback;\n  }\n}",
+          "replace": "    default:\n      return bs::Guarantee::Approximate;\n  }\n}"
+        },
+        {
+          "name": "certified wire source fails closed instead of certifying",
+          "file": "engine/src/protocol/v1_response_mapper.cpp",
+          "find": "    case pv::SOLVER_SOURCE_RESOLVING:\n      return bs::Guarantee::CertifiedBound;",
+          "replace": "    case pv::SOLVER_SOURCE_RESOLVING:\n      return bs::Guarantee::Approximate;"
+        },
+        {
+          "name": "a certified resolve is serialized with cache_hit=true",
+          "file": "engine/src/protocol/v1_response_mapper.cpp",
+          "find": "  metadata->set_cache_hit(source == pv::SOLVER_SOURCE_BLUEPRINT);",
+          "replace": "  metadata->set_cache_hit(true);"
+        },
+        {
+          "name": "minor 3 is accepted (negotiation gate widened)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "  const std::uint32_t echo_minor = minor <= 2 ? minor : 0;\n  if (minor > 2) {",
+          "replace": "  const std::uint32_t echo_minor = minor <= 3 ? minor : 0;\n  if (minor > 3) {"
+        },
+        {
+          "name": "minor-2 capabilities advertise v1.1.0",
+          "file": "engine/src/protocol/v1_response_mapper.cpp",
+          "find": "\"bigshark-engine-v1.2.0\"",
+          "replace": "\"bigshark-engine-v1.1.0\""
+        },
+        {
+          "name": "code 9 is reported retryable",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "                                               messageFor(pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST),\n                                               /*retryable=*/false),",
+          "replace": "                                               messageFor(pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST),\n                                               /*retryable=*/true),"
+        },
+        {
+          "name": "the forced BLUEPRINT coverage miss echoes minor 1 (R16)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "    const BlueprintLookup lookup = lookupBlueprint(services, request);\n    if (!lookup.hit)\n      return blueprintMissResponse(requestId, lookup.miss_detail, 2);",
+          "replace": "    const BlueprintLookup lookup = lookupBlueprint(services, request);\n    if (!lookup.hit)\n      return blueprintMissResponse(requestId, lookup.miss_detail, 1);"
+        },
+        {
+          "name": "the forced RESOLVING coverage miss echoes minor 1 (R16)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "    } else {\n      return blueprintMissResponse(requestId, lookup.miss_detail, 2);\n    }",
+          "replace": "    } else {\n      return blueprintMissResponse(requestId, lookup.miss_detail, 1);\n    }"
+        },
+        {
+          "name": "minor-2 validation errors echo minor 1 (R16)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "        errorResponse(validationCode, messageFor(validationCode), retryableFor(validationCode),\n                      std::move(report.violations)),\n        2);",
+          "replace": "        errorResponse(validationCode, messageFor(validationCode), retryableFor(validationCode),\n                      std::move(report.violations)),\n        1);"
+        },
+        {
+          "name": "the minor-2 DEADLINE_EXCEEDED arm echoes minor 1 (R16)",
+          "file": "engine/src/protocol/v1_envelope.cpp",
+          "find": "    } else if (lookup.outcome == V1ResolveOutcome::DeadlineExceeded) {\n      return respondWithDecision(requestId,\n                                 errorResponse(pv::ERROR_CODE_DEADLINE_EXCEEDED,\n                                               messageFor(pv::ERROR_CODE_DEADLINE_EXCEEDED),\n                                               retryableFor(pv::ERROR_CODE_DEADLINE_EXCEEDED)),\n                                 2);",
+          "replace": "    } else if (lookup.outcome == V1ResolveOutcome::DeadlineExceeded) {\n      return respondWithDecision(requestId,\n                                 errorResponse(pv::ERROR_CODE_DEADLINE_EXCEEDED,\n                                               messageFor(pv::ERROR_CODE_DEADLINE_EXCEEDED),\n                                               retryableFor(pv::ERROR_CODE_DEADLINE_EXCEEDED)),\n                                 1);"
+        }
+      ]
+    }
+  ]
+}

@@ -64,9 +64,10 @@ flowchart TD
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
 | `include/bs/equity.hpp` | Deterministic Monte Carlo equity against filtered opponent ranges |
 | `include/bs/range.hpp` | Concrete two-card combinations and range utilities |
-| `include/bs/policy.hpp`, `src/policy/decision.cpp` | Street routing, heuristic policy, and solver action translation |
-| `include/bs/service.hpp`, `src/service/decision_service.cpp` | Protocol-neutral decision service entry point |
-| `include/bs/v0_protocol.hpp`, `src/protocol/v0_json.cpp` | Legacy JSON request and response mapping |
+| `include/bs/policy.hpp`, `include/bs/guarantee.hpp`, `src/policy/decision.cpp`, `src/policy/guarantee.cpp` | Street routing, heuristic policy, solver action translation, and (RFC 0008 stage 5) the declared `DecisionSource` ladder. `evaluatePolicySourced(Ctx, RiverBackendHint)` names the source that selected each decision at the routing branch; `guaranteeFor` is the single normative source-to-level table (all policy-producible sources are `approximate` today), owned here under a narrow `-Werror=switch` |
+| `include/bs/service.hpp`, `src/service/decision_service.cpp` | Protocol-neutral decision service entry point; stage 5 adds `decideSourced(Ctx)` returning the decision plus its declared source |
+| `include/bs/v0_protocol.hpp`, `src/protocol/v0_json.cpp` | Legacy JSON request and response mapping (frozen; no guarantee surface) |
+| `src/protocol/v1_*.{hpp,cpp}` | RFC 0002/0005 framed Protobuf host: minor 0 (frozen), minor 1 (`ExpandedStrategy`, resident blueprint/resolve, field 10 vocabulary), and (RFC 0008 stage 5) minor 2 with the typed five-level ladder — `SolverMetadata.guarantee_level` (field 11) on every successful response, the `minimum_guarantee` request floor (field 8), and non-retryable error code 9 for a complete below-floor answer |
 | `src/gto/range_tracker.*` | Action-line-based weighted range narrowing |
 | `src/gto/range_equity.*` | Combo equity against a weighted opposing range |
 | `src/gto/river_game.*` | OpenSpiel-compatible heads-up river game |

@@ -1,5 +1,6 @@
 import {
   isRiverRoom,
+  type ExecutableDecision,
   type RiverApiError,
   type RiverRoom,
   type RiverState,
@@ -97,4 +98,39 @@ export function overrideWindowMs(
   if (mode === 'auto') return Math.min(autoWindowMs, availableMs);
   if (availableMs < minimumWindowMs) return 0;
   return Math.min(20_000, availableMs);
+}
+
+// RFC 0008 stage 5 (R10/R13): pure builder for the .runtime/results.log entry.
+// Extracted verbatim from main.ts's two log sites so the journal schema is
+// unit-testable without spawning the runner: the failure `raw` payload is
+// attached exactly when ok is false, and the decision (including its
+// guaranteeLevel, the L6 journal-visibility payoff) is embedded as-is.
+export interface ResultsLogEntryInput {
+  kind: 'action' | 'action-retry';
+  hand: string | undefined;
+  street: string | undefined;
+  source: string;
+  decision: ExecutableDecision;
+  ok: boolean;
+  raw?: unknown;
+}
+
+export function resultsLogEntry(input: ResultsLogEntryInput): {
+  kind: 'action' | 'action-retry';
+  hand: string | undefined;
+  street: string | undefined;
+  source: string;
+  decision: ExecutableDecision;
+  ok: boolean;
+  raw?: unknown;
+} {
+  return {
+    kind: input.kind,
+    hand: input.hand,
+    street: input.street,
+    source: input.source,
+    decision: input.decision,
+    ok: input.ok,
+    ...(input.ok ? {} : { raw: input.raw }),
+  };
 }

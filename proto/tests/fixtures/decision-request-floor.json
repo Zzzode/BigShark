@@ -1,0 +1,215 @@
+{
+  "requestId": "decision-request-floor-vector",
+  "decisionRequest": {
+    "state": {
+      "game": {
+        "variant": "GAME_VARIANT_NLHE",
+        "bettingStructure": "BETTING_STRUCTURE_NO_LIMIT",
+        "gameType": "GAME_TYPE_CASH",
+        "tableCapacity": 6,
+        "amountUnit": {
+          "name": "chip",
+          "decimalPlaces": 2
+        },
+        "smallBlind": "10",
+        "bigBlind": "20",
+        "ante": "2",
+        "buttonAnte": "12",
+        "rake": {
+          "basisPoints": 500,
+          "cap": "100",
+          "noFlopNoDrop": true
+        },
+        "straddle": {
+          "enabled": true,
+          "amount": "40",
+          "seat": 2
+        }
+      },
+      "handId": "hand-vector",
+      "decisionIndex": "3",
+      "street": "STREET_TURN",
+      "buttonSeat": 5,
+      "heroPlayerId": "hero",
+      "players": [
+        {
+          "playerId": "hero",
+          "seat": 3,
+          "stack": "9007199254740993",
+          "streetCommitted": "100",
+          "status": "PLAYER_STATUS_ACTIVE"
+        },
+        {
+          "playerId": "villain",
+          "seat": 1,
+          "stack": "1800",
+          "streetCommitted": "300",
+          "status": "PLAYER_STATUS_ALL_IN"
+        },
+        {
+          "playerId": "folded",
+          "seat": 2,
+          "stack": "1700",
+          "streetCommitted": "1",
+          "status": "PLAYER_STATUS_FOLDED"
+        }
+      ],
+      "heroHoleCards": [
+        {
+          "rank": "RANK_ACE",
+          "suit": "SUIT_SPADES"
+        },
+        {
+          "rank": "RANK_KING",
+          "suit": "SUIT_HEARTS"
+        }
+      ],
+      "board": [
+        {
+          "rank": "RANK_QUEEN",
+          "suit": "SUIT_SPADES"
+        },
+        {
+          "rank": "RANK_JACK",
+          "suit": "SUIT_HEARTS"
+        },
+        {
+          "rank": "RANK_TWO",
+          "suit": "SUIT_CLUBS"
+        },
+        {
+          "rank": "RANK_SEVEN",
+          "suit": "SUIT_DIAMONDS"
+        }
+      ],
+      "pot": {
+        "potTotal": "1200",
+        "mainPot": "800",
+        "sidePots": [
+          {
+            "amount": "400",
+            "eligiblePlayerIds": [
+              "hero",
+              "villain"
+            ]
+          }
+        ]
+      },
+      "forcedContributions": [
+        {
+          "playerId": "hero",
+          "type": "FORCED_CONTRIBUTION_TYPE_SMALL_BLIND",
+          "amount": "10"
+        },
+        {
+          "playerId": "villain",
+          "type": "FORCED_CONTRIBUTION_TYPE_BIG_BLIND",
+          "amount": "20"
+        },
+        {
+          "playerId": "folded",
+          "type": "FORCED_CONTRIBUTION_TYPE_ANTE",
+          "amount": "2"
+        },
+        {
+          "playerId": "hero",
+          "type": "FORCED_CONTRIBUTION_TYPE_BUTTON_ANTE",
+          "amount": "12"
+        },
+        {
+          "playerId": "villain",
+          "type": "FORCED_CONTRIBUTION_TYPE_DEAD_BLIND",
+          "amount": "10"
+        },
+        {
+          "playerId": "folded",
+          "type": "FORCED_CONTRIBUTION_TYPE_STRADDLE",
+          "amount": "40"
+        }
+      ],
+      "actionHistory": [
+        {
+          "sequence": "1",
+          "street": "STREET_PREFLOP",
+          "actorPlayerId": "hero",
+          "action": "ACTION_TYPE_CALL",
+          "incrementalAmount": "10",
+          "targetTotal": "20",
+          "potBefore": "30",
+          "stackAfter": "9980"
+        },
+        {
+          "sequence": "2",
+          "street": "STREET_PREFLOP",
+          "actorPlayerId": "villain",
+          "action": "ACTION_TYPE_CHECK",
+          "potBefore": "40",
+          "stackAfter": "1980"
+        },
+        {
+          "sequence": "3",
+          "street": "STREET_FLOP",
+          "actorPlayerId": "villain",
+          "action": "ACTION_TYPE_BET",
+          "incrementalAmount": "100",
+          "targetTotal": "100",
+          "potBefore": "40",
+          "stackAfter": "1880"
+        },
+        {
+          "sequence": "4",
+          "street": "STREET_FLOP",
+          "actorPlayerId": "hero",
+          "action": "ACTION_TYPE_RAISE",
+          "incrementalAmount": "300",
+          "targetTotal": "300",
+          "potBefore": "140",
+          "stackAfter": "9680"
+        },
+        {
+          "sequence": "5",
+          "street": "STREET_FLOP",
+          "actorPlayerId": "folded",
+          "action": "ACTION_TYPE_FOLD",
+          "potBefore": "440",
+          "stackAfter": "1700"
+        },
+        {
+          "sequence": "6",
+          "street": "STREET_TURN",
+          "actorPlayerId": "villain",
+          "action": "ACTION_TYPE_RAISE",
+          "incrementalAmount": "1800",
+          "targetTotal": "1800",
+          "potBefore": "440",
+          "allIn": true
+        }
+      ],
+      "legalActions": [
+        {
+          "type": "ACTION_TYPE_FOLD"
+        },
+        {
+          "type": "ACTION_TYPE_CALL"
+        },
+        {
+          "type": "ACTION_TYPE_RAISE",
+          "minTargetTotal": "600",
+          "maxTargetTotal": "9007199254740993",
+          "allInOnly": true
+        }
+      ],
+      "toCall": "200"
+    },
+    "options": {
+      "strategyProfile": "tag",
+      "solveTimeBudgetMs": 2000,
+      "seed": "18446744073709551615",
+      "includeSampledAction": true,
+      "includeFullStrategy": true,
+      "solverMode": "SOLVER_MODE_AUTOMATIC",
+      "minimumGuarantee": "GUARANTEE_LEVEL_EXACT_SOLVED"
+    }
+  },
+  "protocolMinor": 2
+}

@@ -4,7 +4,7 @@ subject: "Unified N-Player Engine Architecture"
 status: "Implementing"
 authors: "BigShark engine agent"
 created: "2026-09-19"
-updated: "2026-09-21"
+updated: "2026-09-23"
 owners: "Poker, solver, policy, service, protocol, artifact boundary"
 supersedes: ""
 superseded-by: ""
@@ -653,9 +653,22 @@ existing digest moves.
   seat-by-seat curve rather than a single threshold.
 - Does the guarantee level belong on the wire as a new v1 field or as a v2
   package? RFC 0006 anticipates a `bigshark.engine.v2` for coherent full-state
-  support; decided when stage 5 lands.
+  support; decided when stage 5 lands. **Resolved in stage 5 (2026-09-23):**
+  a new negotiated minor 2 of the existing v1 package, not v2. v2 stays
+  reserved for coherent full-state support; the change is one additive enum
+  plus two additive fields in the shape minor 1 established, with minor-0
+  bytes frozen and the minor-1 vocabulary (`modeled_exact_bound` /
+  `uncertified` / `baseline`) untouched. Field 11
+  (`SolverMetadata.guarantee_level`) carries the five-token ladder, field 8
+  (`DecisionOptions.minimum_guarantee`) is the typed floor, and error code 9
+  (`GUARANTEE_BELOW_REQUEST`) reports a complete but below-floor answer.
 - Should the heuristic move into its own target with its own tests rather than
-  staying in the decision service? Decided in stage 5.
+  staying in the decision service? Decided in stage 5. **Resolved in stage 5
+  (2026-09-23):** it stays in `bigshark_policy`, which already is the
+  heuristic+chart target; stage 5 moved only the routing/source machinery
+  (the declared `DecisionSource`, the single normative `guaranteeFor` table
+  in `guarantee.{hpp,cpp}`, and the sourced policy entry point). Extracting
+  a standalone heuristic target, if ever wanted, is a later cleanup.
 
 ## Acceptance Criteria
 

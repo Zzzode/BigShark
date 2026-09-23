@@ -12,10 +12,15 @@ differential parity. RFC 0002 Stage 8 adds the negotiated minor-1 RPC
 integration (`ExpandedStrategy`, full resident blueprint distributions up to
 32 actions, `SOLVER_MODE_BLUEPRINT`/`SOLVER_SOURCE_BLUEPRINT`, artifact
 digest and guarantee metadata) behind an explicit capability handshake and
-the offline `--resident-root` host flag. The v0 NDJSON host, the Node JSON
-client, and live River Club traffic remain the default; the framed path and
-minor 1 are selected only explicitly (see [Framed host](#framed-host) and
-[Negotiated minor 1](#negotiated-minor-1)).
+the offline `--resident-root` host flag. RFC 0008 stage 5 adds the
+negotiated minor-2 guarantee ladder: every decision carries its typed level
+(`SolverMetadata.guarantee_level`, field 11), callers may demand a minimum
+level (`DecisionOptions.minimum_guarantee`, field 8), and an answer below
+the floor is refused with error code 9 rather than served. The v0 NDJSON
+host, the Node JSON client, and live River Club traffic remain the default;
+the framed path and minors 1/2 are selected only explicitly (see [Framed
+host](#framed-host), [Negotiated minor 1](#negotiated-minor-1), and
+[Negotiated minor 2](#negotiated-minor-2-rfc-0008-stage-5)).
 
 ## Toolchain
 
@@ -129,10 +134,11 @@ handshake before using any minor-1 feature:
 3. use minor 1 only when the response echoes minor 1 and lists 1 in
    `supported_protocol_minors`; otherwise stay on minor 0.
 
-The host accepts exactly minors 0 and 1: an envelope advertising minor 2 or
+The host accepts minors 0, 1, and 2: an envelope advertising minor 3 or
 higher is answered `UNSUPPORTED_PROTOCOL` echoing minor 0. Minor 0 and minor
 1 use the same request schema; only the selectable solver modes and the
-decision response oneof differ.
+decision response oneof differ. RFC 0008 stage 5 adds minor 2 with the typed
+guarantee level; see [Negotiated minor 2](#negotiated-minor-2-rfc-0008-stage-5).
 
 ### Capability filtering
 
@@ -235,6 +241,105 @@ not replay exactly, the node/runout is off the trained tree, the row action
 is outside the client window, the hero combo is untrained/board-blocked/zero
 reach, or joint belief is empty. The host never returns a fold strategy on a
 miss and never invents or clamps a root.
+
+## Negotiated minor 2 (RFC 0008 stage 5)
+
+Minor 2 is the negotiated home of the typed five-level guarantee ladder and
+is opted into exactly like minor 1 (the probe cascade is minor 2, then
+optionally minor 1, then 0; an old host answering an unsupported probe with
+an error leaves the client safely below). It is not a new package version:
+`bigshark.engine.v2` remains reserved for coherent full-state support, while
+this change is additive enum plus two additive fields in the shape minor 1
+established.
+
+### Levels and vocabulary
+
+The ascending ladder is `operational_fallback < approximate <
+abstract_solved < exact_solved < certified_bound`. Today:
+
+| Source | Level |
+| --- | --- |
+| preflop chart, postflop heuristic, river LP (capped live ranges, cap 36), bounded river DCFR, offline multistreet CFR, resident blueprint, resolve-deadline baseline | `approximate` |
+| certified whole-range resolve | `certified_bound` |
+| (none yet) | `abstract_solved`, `exact_solved` |
+
+Promoting a source to abstract/exact is a later stage's measured job; no
+stage-5 source earns those levels, and a request demanding them today is a
+typed refusal rather than a downgraded answer.
+
+The level is written to `SolverMetadata.guarantee_level` (field 11) on every
+successful minor-2 response — heuristic answers included. The per-minor
+vocabularies are disjoint and enforced by construction:
+
+- minor 0 sets neither field;
+- minor 1 sets `guarantee` (field 10) to exactly `modeled_exact_bound` /
+  `uncertified` / `baseline` and never field 11;
+- minor 2 sets `guarantee_level` (field 11) to one of the five tokens and
+  never field 10.
+
+`certified_bound` is the minor-2 spelling of minor 1's
+`modeled_exact_bound`: the same certified resolver outcome and meaning under
+the ladder name. Minor 1's `uncertified` and `baseline` both map to
+`approximate`.
+
+Every minor-2 decision returns the `expanded_strategy` oneof. A
+consequence of truthful source declaration is that the four preflop chart
+folds (`fold pre`, `fold vs open`, `fold vs 3bet`, `fold vs 4bet`) are
+reported `SOLVER_SOURCE_PREFLOP_CHART` on minor 2, whereas minor 0/1's
+frozen reason-text inference labels them postflop heuristic. The level is
+identical (`approximate`) on both minors; only the source tag differs.
+
+The wire source is declared at the policy routing branch, never inferred
+from the reason text at minor 2. A future or unrecognized `SolverSource`
+fails closed to `operational_fallback` at the boundary; the host decision
+path derives its level from the declared source and no host-produced
+successful minor-2 response ever carries `operational_fallback`. The live
+operational-fallback surface is the River adapter's local decision when the
+engine binary/transport is unavailable.
+
+### Request floor and error code 9
+
+`DecisionOptions.minimum_guarantee` (field 8, optional enum) is the
+caller-declared floor:
+
+- absent — accept any level;
+- present on minor 0/1 (including an explicit `UNSPECIFIED`, ordinal 0) —
+  `UNSUPPORTED_FEATURE`;
+- present as `UNSPECIFIED` or an out-of-range open-enum value at minor 2 —
+  `INVALID_REQUEST`;
+- present as one of the five real levels — the host serves the decision only
+  when the achieved level meets the floor.
+
+When a complete, serializable answer exists below the floor the host returns
+`ERROR_CODE_GUARANTEE_BELOW_REQUEST` (9) with no strategy payload,
+non-retryable for an unchanged state. The floor is compared only after
+validation, mode lookup, and the answer's completeness checks, so coverage
+misses, deadlines, and malformed rows keep their real error codes — a
+bad-digest row with a high floor is `INTERNAL`, never code 9. The floor
+never alters the served action.
+
+The forced solver-mode matrix is unchanged at minor 2: `RIVER_LP`,
+`RIVER_DCFR`, and `MULTISTREET_CFR` remain `UNSUPPORTED_FEATURE`; minor 2
+widens nothing about mode selection.
+
+### Capabilities
+
+A minor-2 capabilities query echoes minor 2, lists `supported_protocol_minors
+= [0, 1, 2]`, reports engine build version `bigshark-engine-v1.2.0`, and
+otherwise has the same solver-mode set and feature bits as the minor-1
+advertisement. The minor-0 and minor-1 capability bytes are unchanged.
+
+### River adapter
+
+The TypeScript client learns `0|1|2` negotiation behind
+`BIGSHARK_ENGINE_PROTO_MINOR2=1` with the strict probe order 2 → (when minor
+1 is also opted in) 1 → 0. The decoded field-11 token is exposed as
+`ExecutableDecision.guaranteeLevel`; every local fallback (`safeFallback`
+and the pre-legal `no-legal` fold) labels it `operational_fallback`, and the
+runner journals it through `.runtime/results.log`. A code-9 refusal is a
+typed `V1EngineError` that propagates — it is never replaced by a safe
+fallback. The shipped runner never sets a floor itself; request floors are
+owned by explicit callers via `EngineConfig.minimumGuaranteeLevel`.
 
 ### Resident provisioning
 
@@ -494,17 +599,20 @@ for the chosen action, with an exact target total for bets/raises. The
 `SelectedAction` is present only when requested and equals the policy action;
 the mapper independently verifies it against the requested legal set by kind
 and exact target. `-1` equity/MDF sentinels stay unset. Solver provenance is
-derived from the heuristic reason prefix (`gto-cfr` -> river DCFR, `gto` ->
-exact river LP, preflop chart reasons -> preflop chart, otherwise postflop
-heuristic).
+derived from the heuristic reason prefix on minors 0 and 1 (`gto-cfr` ->
+river DCFR, `gto` -> exact river LP, preflop chart reasons -> preflop chart,
+otherwise postflop heuristic); at minor 2 the source is the policy-declared
+routing branch and the level is read from field 11 instead.
 
 | Condition | ErrorCode | Retryable |
 | --- | --- | --- |
 | malformed envelope, missing/unspecified fields, poker-semantic violation | `INVALID_REQUEST` | no |
-| `protocol_minor > 1` | `UNSUPPORTED_PROTOCOL` | no |
+| `protocol_minor > 2` | `UNSUPPORTED_PROTOCOL` | no |
 | non-NLHE, limit structure, tournament/ICM | `UNSUPPORTED_GAME` | no |
-| fractional units, antes, rake, straddle, side pots, forced multistreet/resolving mode | `UNSUPPORTED_FEATURE` | no |
+| fractional units, antes, rake, straddle, side pots, forced multistreet mode, forced resolving mode on minor 0 or without an advertised resolver | `UNSUPPORTED_FEATURE` | no |
+| `minimum_guarantee` present on minor 0/1 | `UNSUPPORTED_FEATURE` | no |
 | minor-1 forced BLUEPRINT coverage miss (unsupported hand state, no matching root, off-tree history/runout/amount, blocked/untrained/zero-reach combo) | `UNSUPPORTED_FEATURE` | no |
+| minor-2 achieved level below the requested minimum (complete answer exists) | `GUARANTEE_BELOW_REQUEST` (9) | no |
 | empty engine action | `NO_DECISION` | yes |
 | solve budget exhausted | `DEADLINE_EXCEEDED` | yes |
 | allocation failure | `RESOURCE_EXHAUSTED` | yes |
@@ -556,15 +664,23 @@ The framed path is selected only by `BIGSHARK_ENGINE_PROTO=1` or an explicit
 client and behavior are unchanged. Minor 1 is an additional explicit opt-in:
 the client is constructed with `negotiateMinor1: true` (the built-in River
 client does this when `BIGSHARK_ENGINE_PROTO_MINOR1=1`) and exposes the
-negotiated result as `negotiatedProtocolMinor` / `minor1Capable`. A caller
-that does not opt in never sends minor 1, and the River adapter forces
-BLUEPRINT only with `EngineConfig.protoBlueprint` against a minor-1 client;
-minor-1 AUTOMATIC otherwise tries the resident and transparently falls back
-to the heuristic. The River mapper reads whichever decision oneof is
-returned (`Strategy` or `ExpandedStrategy`), validating the sampled action
-against the FULL reported list (up to 32 entries) before execution, so an
-expanded distribution with a non-member sampled action is an operational
-error routed to `safeFallback`, never a fold.
+negotiated result as `negotiatedProtocolMinor` / `minor1Capable`. Minor 2
+follows the same pattern with `negotiateMinor2: true` /
+`BIGSHARK_ENGINE_PROTO_MINOR2=1`; when both flags are set the probe order is
+2 → 1 → 0 and the client settles on the highest minor the host advertises.
+A caller that does not opt in never sends above minor 0. The River adapter
+forces BLUEPRINT only with `EngineConfig.protoBlueprint` against a minor-1+
+client; minor-1/2 AUTOMATIC otherwise tries the resident and transparently
+falls back to the heuristic. At minor 2 the adapter additionally exposes
+`ExecutableDecision.guaranteeLevel`, attaches `operational_fallback` to
+every locally produced fallback, journals the level to
+`.runtime/results.log`, and maps an explicit
+`EngineConfig.minimumGuaranteeLevel` to field 8 — a code-9 refusal is a typed
+process error, never a played fallback. The River mapper reads whichever
+decision oneof is returned (`Strategy` or `ExpandedStrategy`), validating the
+sampled action against the FULL reported list (up to 32 entries) before
+execution, so an expanded distribution with a non-member sampled action is
+an operational error routed to `safeFallback`, never a fold.
 
 ## Golden Differential
 

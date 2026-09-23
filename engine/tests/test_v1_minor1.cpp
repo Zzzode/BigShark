@@ -311,12 +311,24 @@ int main() {
   }
   {
     FakeServices services;
-    pv::Envelope response = respond(capabilitiesEnvelope(2, "cap-bad"), services);
+    pv::Envelope response = respond(capabilitiesEnvelope(3, "cap-bad"), services);
     check(response.protocol_minor() == 0, "rejected minor echoes 0");
     check(response.payload_case() == pv::Envelope::kDecisionResponse &&
               response.decision_response().has_error() &&
               response.decision_response().error().code() == pv::ERROR_CODE_UNSUPPORTED_PROTOCOL,
-          "minor 2 is UNSUPPORTED_PROTOCOL");
+          "minor 3 is UNSUPPORTED_PROTOCOL");
+  }
+  {
+    // RFC 0008 stage 5: minor 2 is now negotiated (covered fully in
+    // test_v1_minor2); the old "minor 2 rejected" pin moved to minor 3 above.
+    // minimum_guarantee remains a minor-2-only request field on this minor.
+    FakeServices services;
+    pv::DecisionRequest request = flopRequest(pv::SOLVER_MODE_HEURISTIC);
+    request.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_APPROXIMATE);
+    pv::Envelope response = respond(envelopeFor(1, "m1floor", request), services);
+    check(response.decision_response().has_error() &&
+              response.decision_response().error().code() == pv::ERROR_CODE_UNSUPPORTED_FEATURE,
+          "minimum_guarantee on minor 1 is UNSUPPORTED_FEATURE");
   }
 
   // --- Forced BLUEPRINT: full distribution + exact-seed sampling ------------

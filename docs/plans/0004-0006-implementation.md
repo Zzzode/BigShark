@@ -2307,3 +2307,750 @@ preset (42/42); mutation battery 20/20; replay 156/0/0; npm check 94/94,
 proto:check 16/16, check-docs 250, check-rfcs 8 green.
 
 
+
+## RFC 0008 Stage 5 Design Brief (2026-09-22)
+
+Goal (RFC rollout step 5): source-based routing with the typed guarantee level
+on every decision. Gates (RFC verification plan): "every decision path reports
+the level its source warrants; a test asserts a weaker level is never reported
+as a stronger one, and that a request for a stronger level than available is
+typed", plus the replay suite with UNCHANGED decisions (156 / 0 illegal /
+0 JS fallbacks).
+
+### What the read-only maps established (facts that constrain the design)
+
+- Domain routing is `bs::evaluatePolicy(Ctx)` (engine/src/policy/decision.cpp:
+  461-473): no-hole-cards fold, `preflop()` on street, `riverGto()` on a
+  river+GTO-enabled spot (LP exact / DCFR bounded), else `postflop()`. It
+  returns a bare `Decision{action,amount,reason,equity,mdf}` with NO source.
+  `bs::decide` (bigshark_service, src/service/decision_service.cpp) is a
+  pass-through.
+- The wire source is INFERRED FROM TEXT afterward:
+  `solverSource(reason)` (v1_response_mapper.cpp:30-42) prefix-matches
+  "gto-cfr"/"gto"/12 chart prefixes, default POSTFLOP_HEURISTIC. Source is
+  otherwise set only for blueprint/resolved rows in the minor-1 path.
+- `SolverMetadata.guarantee` (field 10) is a closed string
+  {modeled_exact_bound, uncertified, baseline}, present ONLY on minor-1
+  ExpandedStrategy rows (blueprint/resolved), pair-discipline enforced in
+  mapResolvedExpandedResponse. Minor-0 and minor-1 heuristic responses never
+  set it (test pins `!has_guarantee()`).
+- Minor negotiation is per-frame `Envelope.protocol_minor`; host accepts
+  <=1, rejects >1 with UNSUPPORTED_PROTOCOL; the validator receives the
+  negotiated minor and gates the minor-1-only solver modes; the write side is
+  gated structurally (separate dispatch/mappers per minor). TS negotiates 1
+  only behind BIGSHARK_ENGINE_PROTO_MINOR1=1 and probes gracefully.
+- Live reachability of sources: PREFLOP_CHART, RIVER_LP (HiGHS build),
+  RIVER_DCFR (non-HiGHS / bounded path), POSTFLOP_HEURISTIC, BLUEPRINT,
+  RESOLVING (certified / deadline-blueprint). MULTISTREET_CFR is offline-only
+  and never produced on the decision path. On a validated v1 request the
+  heuristic ALWAYS answers, so no engine v1 response today is a no-source
+  fallback; the genuine operational fallback is the TS `safeFallback` when the
+  engine is unreachable and the engine-host JSON-mode parse-error fold.
+- Freeze surface: minor-0 v1 bytes are hex-pinned (kStage7Hex); minor-1
+  behavior is pinned by test_v1_minor1/test_v1_resolving and TS golden/walk
+  suites; proto/baseline/v1.binpb is the Buf FILE baseline (minor 1 already
+  added enum values 6/7 against it, so additive enum values are an established
+  non-breaking change).
+
+### Decision 1: the L6 core is protocol-free and lives in bigshark_service
+
+New header `engine/include/bs/guarantee.hpp` (+ src/service/guarantee.cpp):
+
+- `enum class Guarantee { OperationalFallback, Approximate, AbstractSolved,
+  ExactSolved, CertifiedBound }` declared in ASCENDING strength;
+  `int guaranteeRank(Guarantee)` (0..4) and
+  `bool guaranteeMeets(Guarantee achieved, Guarantee floor)`.
+- `enum class DecisionSource` is added to `engine/include/bs/decision.hpp`
+  (the policy layer must be able to NAME the source it selected):
+  PreflopChart, PostflopHeuristic, RiverLp, RiverDcfr, MultistreetCfr,
+  Blueprint, Resolving.
+- Normative mapping in guarantee.cpp, one place, an EXHAUSTIVE switch
+  (-Wswitch, no default label so a new enumerator fails the build):
+  Resolving+certified -> CertifiedBound; Blueprint -> Approximate;
+  PreflopChart/PostflopHeuristic/RiverLp/RiverDcfr/MultistreetCfr ->
+  Approximate; Resolving without certification -> Approximate (total mapping;
+  today the deadline answer is emitted under the Blueprint source, so this arm
+  exists for completeness). ExactSolved and AbstractSolved have NO source
+  today - a test pins that no mapping arm returns them, so promoting a source
+  is a deliberate, reviewed change (stage 6 is what can earn
+  AbstractSolved).
+- `const char* guarantee_token(Guarantee)` returns the five canonical L6
+  spellings ("operational_fallback", "approximate", "abstract_solved",
+  "exact_solved", "certified_bound"). The boundary fail-closed rule is a
+  real function: `Guarantee guaranteeForWireSource(int wire_source, bool
+  certified)` maps the seven known pv values via the core table and maps
+  UNSPECIFIED / any out-of-range value to OperationalFallback (the RFC: "a
+  source that is not listed ... fails closed to operational_fallback rather
+  than being assigned a level by default"). It lives in guarantee.cpp as an
+  int-taking function so the rule itself is protobuf-free and unit-testable;
+  the mapper forwards the pv enum's integer.
+
+### Decision 2: source is DECLARED at the routing branch, never inferred
+
+- decision.cpp gains an internal `PolicyAnswer { Decision decision;
+  DecisionSource source; }`; each branch tags itself (preflop chart, river
+  exact LP, river bounded DCFR, postflop heuristic including the no-hole-cards
+  fold, which the text inference today classifies as POSTFLOP_HEURISTIC).
+- New public `evaluatePolicySourced(Ctx)` in policy.hpp and
+  `decideSourced(Ctx)` in service.hpp returning
+  `SourcedDecision { Decision decision; DecisionSource source; }`. The
+  cascade is written as one explicit ordered preference sequence for
+  AUTOMATIC (the RFC's "explicit preference order"): resident storage
+  sources are attempted first by the envelope (unchanged), then within the
+  domain policy: river LP/DCFR (river, eligible) > preflop chart (preflop)
+  > postflop heuristic catch-all. Behavior is identical; the chosen step now
+  EMITS the source.
+- `evaluatePolicy`/`decide` remain thin wrappers returning `.decision`; the
+  v0 path and minor-0 path are untouched byte-for-byte.
+- An INDEPENDENT provenance test re-codes the old reason-prefix inference
+  (its own prefix table, never calling the mapper) and asserts the declared
+  source agrees for fixtures exercising every branch; this is the
+  non-circular guard that the refactor cannot silently relabel a decision.
+
+### Decision 3: wire disposition = negotiated MINOR 2 on the v1 package
+
+Recorded resolution of the RFC open question: a new minor, not
+bigshark.engine.v2. Rationale: RFC 0006 reserves v2 for coherent full-state
+support, which does not exist yet; the change is one additive enum + two
+additive fields, the exact shape minor 1 established; and the RFC's two
+immovable constraints (minor-0 bytes frozen; minor-1 peers keep exactly
+modeled_exact_bound | uncertified | baseline with unchanged meaning) are
+satisfied structurally.
+
+Proto changes (all additive; proto/baseline FILE check stays green):
+
+- New enum
+  `enum GuaranteeLevel { GUARANTEE_LEVEL_UNSPECIFIED=0;
+  GUARANTEE_LEVEL_OPERATIONAL_FALLBACK=1; GUARANTEE_LEVEL_APPROXIMATE=2;
+  GUARANTEE_LEVEL_ABSTRACT_SOLVED=3; GUARANTEE_LEVEL_EXACT_SOLVED=4;
+  GUARANTEE_LEVEL_CERTIFIED_BOUND=5; }` numeric order = strength.
+- `DecisionOptions.minimum_guarantee = 8` (optional GuaranteeLevel),
+  negotiated-minor-2 only; the validator rejects it on minor 0/1 exactly like
+  the minor-1 mode gate. UNSPECIFIED/absent = accept any level.
+- `SolverMetadata.guarantee_level = 11` (optional string, buf in: the five
+  canonical tokens), negotiated-minor-2 only. It is a string (not the enum)
+  to match the field-10 vocabulary style and journal-friendliness; the enum
+  is the request-side vocabulary.
+- `ErrorCode.ERROR_CODE_GUARANTEE_BELOW_REQUEST = 9` (next free),
+  non-retryable (retrying an unchanged state cannot help), with a
+  messageFor entry.
+- Field 10 is NOT widened. Per-minor vocabulary is disjoint and enforced by
+  separate mappers as today: minor 0 sets neither field; minor 1 sets field
+  10 with exactly the legacy three tokens and never field 11; minor 2 sets
+  field 11 on EVERY decision (heuristic included) and never field 10. The
+  semantic bridge certified_bound <-> modeled_exact_bound (same meaning,
+  different token per minor) is documented in the proto comment and pinned by
+  a test; minor-1 "uncertified"/"baseline" both correspond to core
+  Approximate.
+- Host accepts minors 0..2; >2 stays UNSUPPORTED_PROTOCOL. Capabilities at
+  minor 2 advertise [0,1,2] and build version "bigshark-engine-v1.2.0"; the
+  minor-0 and minor-1 capability bytes are unchanged (kStage7Hex plus the
+  existing minor-1 golden).
+
+### Decision 4: floor enforcement is response-side and never alters the action
+
+handleMinor1Decision is left exactly as is; a parallel
+handleMinor2Decision shares its low-level tryBlueprint/tryResolving helpers
+but:
+
+1. obtains the best available answer via the SAME mode routing
+   (AUTOMATIC: storage first, heuristic cascade; forced BLUEPRINT/RESOLVING:
+   unchanged coverage-miss/deadline errors);
+2. computes the core Guarantee of the answer (declared source for heuristic;
+   certified flag for resolving; Approximate for blueprint/deadline);
+3. if `minimum_guarantee` is present and guaranteeMeets(level, floor) is
+   false, responds ERROR_CODE_GUARANTEE_BELOW_REQUEST INSTEAD of serving the
+   weaker decision (the RFC: report, do not silently downgrade; the host does
+   not validate what the caller claimed and provenance rules are unchanged);
+4. maps the response through new minor-2 mapper entry points that always set
+   field 11, keep artifact_sha256 (field 9), and never set field 10.
+
+With all live sources at Approximate (or CertifiedBound via a certified
+resolve), floors at exact_solved/abstract_solved are typed refusals today;
+that is the honest current state and the mechanism precedes promotion.
+
+### Decision 5: operational_fallback surface
+
+- Engine core defines and tests the level and the unknown-source fail-closed
+  mapping (UNSPECIFIED and an out-of-range cast both -> OperationalFallback).
+- The TS `safeFallback` (platforms/river-club/src/engine.ts), which is the
+  live "no strategy source available" path when the engine binary/transport
+  is unavailable, labels its local decision guarantee `operational_fallback`
+  in the platform metadata surface.
+- Evidence states plainly that no engine v1 response carries
+  operational_fallback: a validated v1 request always has the heuristic
+  source, and an empty heuristic action remains NO_DECISION (an error, not a
+  downgraded fallback). This is asserted rather than implied.
+
+### Decision 6: TS adapter changes (same stage as the protocol, per RFC L7)
+
+- Regenerated protobuf only; clients/node ProtoEngineProcessClient learns
+  0|1|2 negotiation (new opt-in BIGSHARK_ENGINE_PROTO_MINOR2=1; probe 2,
+  graceful stay-below against an older engine), leaving the minor-1 opt-in
+  and all minor-1 tests exactly as they are.
+- v1-mapper: decode solver.guaranteeLevel on minor 2 (prefer it over field
+  10 by negotiated minor), expose it in the platform decision metadata, and
+  map error code 9 to a typed result; classifyResolveResponse on field 10 is
+  unchanged for minor 1.
+- New real-binary TS test (gated on bin presence like the existing walks):
+  minor-2 capabilities; a heuristic decision carrying
+  guaranteeLevel="approximate"; floor exact_solved -> code 9; floor
+  approximate -> decision; a published blueprint row -> field 11
+  "approximate", field 10 absent; minor-1 walk suite and goldens unchanged.
+
+### Verification and gates
+
+- New C++ tests: `test_guarantee` (full normative table, rank/order, every
+  known source + unknown fail-closed, no arm today returns exact/abstract,
+  token set); `test_decision_provenance` (declared source per routing branch
+  vs an independent re-coded prefix inference; sourced == legacy decision on
+  every fixture); `test_v1_minor2` (negotiation/capabilities, field 11 on
+  every decision, field 10 never at minor 2, floor matrix incl. forced
+  blueprint/resolve via injected V1HostServices fakes, request field
+  rejected at minor 0/1, minor 3 rejected, certified<->modeled bridge).
+- Freeze proofs: kStage7Hex minor-0 bytes, test_v1_minor1,
+  test_v1_resolving, test_v0_protocol, TS v0/v1 goldens unchanged.
+- Mutation battery `tools/mutation/decision-stage5.json`: every source->level
+  arm, the rank/order comparison, floor short-circuit, minor gating of fields
+  8/11, and the field-11-vs-10 selection must go red; equivalent mutants
+  recorded with pins, per standing practice.
+- Full matrix: release ctest, ASan/UBSan, format BEFORE the final mutation
+  battery, benchmark-multistreet, npm run check, proto:check (baseline stays
+  green with additive fields/enum values), replay 156/0/0, check-docs,
+  check-rfcs. Format is applied before the final battery so mutation anchors
+  cannot rot.
+- Then INDEPENDENT adversarial review (fresh read-only agents,
+  implementer != reviewer), fix confirmed findings with mutation-red
+  regressions, re-review, and only then the single clean stage commit.
+
+### Decision 7: the heuristic stays in bigshark_policy (open question resolved)
+
+The RFC asked whether the heuristic should move into its own target. It stays:
+bigshark_policy already IS the heuristic+chart target with its own fixture
+coverage through the replay/v1 suites, and moving files now would couple the
+L6 guarantee work to an unrelated build-graph change. What DOES move is the
+routing/source machinery: guarantee.cpp and the sourced entry point live in
+bigshark_service (L6), which links bigshark_policy privately exactly as
+today. The heuristic remains a DECLARED source (POSTFLOP_HEURISTIC), not an
+unnamed catch-all; extracting a standalone heuristic test target, if ever
+wanted, is a post-removal cleanup, not stage 5.
+
+### Independent design review round 1 (2026-09-23): findings
+
+Three fresh read-only reviewers (RFC conformance, wire/protocol freeze,
+architecture/testability) all returned CHANGES-REQUESTED. The wire schema
+itself was cleared: field numbers verified free, Buf FILE breaking
+empirically passes against the unchanged baseline, minor-2 probe is harmless
+to an old persistent host, enum strength order matches the RFC ladder, the
+seven-source table is complete (MULTISTREET_CFR's offline-only arm is
+normative, not an evidence gap), RIVER_LP=approximate is correct under the
+RFC's strict exact_solved definition (live cap 36, decision.cpp:353-355),
+and minor-2 opt-in is RFC-sanctioned given the frozen minor-0/minor-1
+constraints. Confirmed defects, all fixed in Revision 1 below:
+
+- BLOCKER (both protocol and architecture reviewers independently): the
+  current tryBlueprint/tryResolving do not return answers - they build
+  minor-1 protobuf responses through mappers that unconditionally set field
+  10 and throw for any other token. Sharing them as written forces minor 2
+  to infer provenance back out of a field-10 response and clear/rewrite it.
+- MAJOR: DecisionSource in decision.hpp pollutes the v0/frozen include
+  surface; the int-taking wire mapping is a type-safety hole with two
+  driftable tables.
+- MAJOR: no -Werror, so a default-less exhaustive switch is not enforced.
+- MAJOR: the "re-code old reason inference" provenance oracle is circular
+  and provably wrong on four live branches: preflop chart FOLDS ("fold pre",
+  "fold vs open", "fold vs 3bet", "fold vs 4bet", decision.cpp:104,122,133,
+  138) are inferred POSTFLOP_HEURISTIC today although preflop() selected
+  them. The brief only noticed the v1-unreachable "no hole cards" arm.
+- MAJOR: the RIVER_DCFR tag arm has no deterministic fixture in HiGHS
+  builds; and cache_hit (true on every blueprint row) is a certification
+  mutant no test kills.
+- MAJOR: the platform "metadata surface" does not exist
+  (ExecutableDecision is action/amount/reason only), so the RFC's
+  journal-visibility payoff and the operational_fallback label have no
+  carrier; and the TS decide() blanket catch would convert a code-9 floor
+  refusal into a silent fallback.
+- MAJOR/wire: no closed-set predicate for the request enum (proto3 open
+  enums), "field 11 on every decision" scope unresolved for error
+  envelopes, shared TS/C++ golden vectors unenumerated, TS negotiation
+  cascade/types underspecified, real-binary test gated on binary presence
+  instead of negotiated minor, fuzz oracle not extended.
+- Plus minors: floor precedence, minor-2 success oneof, documentation
+  change list, test_v1_minor1's existing "minor 2 rejected" pin (it must
+  move to minor 3 - it cannot stay unchanged), forced experimental backends
+  must stay rejected at minor 2, probe order 2->1->0.
+
+### Revision 1 (2026-09-23): superseded decisions
+
+**R1. Types and the single normative table (supersedes Decision 1).**
+- `Guarantee` stays in a NEW `engine/include/bs/guarantee.hpp` but is OWNED
+  BY bigshark_policy (not the service): policy already names every routable
+  source and links the solver; the enum is routing vocabulary, and the v0
+  target never includes the new header. `decision.hpp` gains NOTHING (it
+  stays the frozen platform-neutral leaf included by v0_json.cpp).
+- `DecisionSource` and `SourcedDecision` live in `engine/include/bs/policy.hpp`
+  (policy's own public surface): four policy-producible values
+  PreflopChart/PostflopHeuristic/RiverLp/RiverDcfr, plus MultistreetCfr for
+  switch totality. Storage sources Blueprint/Resolving do NOT enter the
+  policy enum; the boundary has its own small label type (R3).
+- The normative mapping exists EXACTLY ONCE, typed and protobuf-free, in
+  guarantee.{hpp,cpp} (bigshark_policy):
+  `Guarantee guaranteeFor(DecisionSource)` with a default-less exhaustive
+  switch (MultistreetCfr/PreflopChart/PostflopHeuristic/RiverLp/RiverDcfr
+  -> Approximate). Certification is NOT a parameter of this table:
+  CertifiedBound is reachable only from the storage/resolve boundary (R3).
+  `int guaranteeRank`, `bool guaranteeMeets`, `const char* guaranteeToken`.
+- Exhaustiveness is enforced for real with
+  `target_compile_options(bigshark_policy PRIVATE -Werror=switch)` (narrow;
+  the repo builds -Wall -Wextra without -Werror), plus a constexpr
+  visitor-instantiated check over every enumerator.
+- A test pins that no `guaranteeFor` arm returns AbstractSolved or
+  ExactSolved (promotion is stage 6's measured job).
+
+**R2. Declared sources and the structural provenance oracle (supersedes
+Decision 2).**
+- decision.cpp internals return `PolicyAnswer{Decision, DecisionSource}`.
+  Tagging rule pinned now: EVERY return reached THROUGH `preflop()` is
+  PreflopChart, including the four fold exits and "BB option" (a chart fold
+  is a chart decision: the branch that selected it is the chart). The
+  river answer carries RiverLp vs RiverDcfr from ONE read of
+  `sol->result().exact` at the single answer-construction site (:385), with
+  a deterministic bounded-CFR fixture forced through the existing
+  `allow_exact=false` seam; every riverGto nullopt fall-through
+  (ineligible, unknown line, !ok, combo absent, illegal translation) is
+  tagged PostflopHeuristic AT THE CALL SITE. The pre-dispatch no-hole-cards
+  fold stays PostflopHeuristic; it is v1-unreachable (validator requires
+  two hole cards, v1_semantic_validator.cpp:486) and is covered at the core
+  evaluatePolicySourced unit level only.
+- Public API: `evaluatePolicySourced(Ctx)->SourcedDecision` (policy.hpp)
+  and `decideSourced(Ctx)->SourcedDecision` (service.hpp). Legacy
+  evaluatePolicy/decide remain one-line `.decision` wrappers; v0/JSON and
+  minor 0 do not change at all.
+- The provenance oracle is STRUCTURAL, not textual: an independent test
+  reconstructs the expected source from the Ctx shape and routing
+  conditions (street, riverGtoOn, forced solver seam for LP vs DCFR,
+  chart-vs-heuristic street dispatch) and drives fixtures that cover every
+  preflop() exit INCLUDING THE FOUR FOLDS, river eligible/ineligible,
+  forced-bounded DCFR, and the postflop catch-all. The old 12-prefix reason
+  inference survives only as a JOURNAL-COMPATIBILITY cross-check with an
+  explicitly pinned discrepancy set {fold pre, fold vs open, fold vs 3bet,
+  fold vs 4bet}: minor 0/1 freeze keeps emitting POSTFLOP_HEURISTIC for
+  them; minor 2 truthfully emits PREFLOP_CHART. test_v1_minor2 pins BOTH
+  sides of that divergence (levels are identical: approximate), and the
+  proto comment on field 11 records it.
+- Minor 2 always populates SolverMetadata.source (field 1) from the
+  declared source; reason-text inference (solverSource) remains wired ONLY
+  into the minor-0/minor-1 mappers.
+
+**R3. Lookup/mapping split (fixes the BLOCKER; supersedes Decision 4's
+sharing model).** In v1_envelope.cpp the lookup core becomes protobuf-free:
+- `lookupBlueprint(services, request) -> {hit, row, miss}` (reconstruction
+  + service call + blueprintRowIsLegal; NO mapper).
+- `lookupResolving(services, request, deadline_ms) ->
+  {outcome, row, miss}` reusing V1ResolveOutcome (Certified vs
+  DeadlineBlueprint already distinguished at the boundary).
+- handleMinor1Decision keeps its EXACT current behavior by calling the
+  existing minor-1 mappers (mapBlueprintExpandedResponse /
+  mapResolvedExpandedResponse with pair discipline) on those results.
+- handleMinor2Decision calls NEW minor-2 mapper entry points
+  (mapGuaranteedHeuristicResponse, mapGuaranteedBlueprintResponse,
+  mapGuaranteedCertifiedResponse, mapGuaranteedDeadlineResponse) that set
+  field 11 from typed boundary labels, keep field 9, and never touch field
+  10. The certified label is constructible ONLY with source RESOLVING +
+  outcome Certified; deadline/blueprint rows -> approximate (mirrored
+  boundary guard, not a minor parameter). No clear_guarantee() erasure
+  exists anywhere; the field-10/11 split is a construction invariant, and
+  a mutation deleting the discipline goes red on test_v1_minor2.
+- Boundary label helper lives in the protocol TU:
+  explicit pv::SolverSource -> storage label table; UNSPECIFIED/out-of-range
+  -> OperationalFallback fail-closed there (the only place unknown wire
+  values can actually arrive). L6 stays free of pv names and magic ints.
+
+**R4. Wire contract precision (supersedes Decisions 3-4 details).**
+- Enum `GuaranteeLevel { UNSPECIFIED=0; OPERATIONAL_FALLBACK=1;
+  APPROXIMATE=2; ABSTRACT_SOLVED=3; EXACT_SOLVED=4; CERTIFIED_BOUND=5 }`,
+  numeric order = strength. `DecisionOptions.minimum_guarantee = 8`
+  (optional enum), `SolverMetadata.guarantee_level = 11` (optional string,
+  buf `in` five tokens), `ErrorCode = 9`. Buf schema empirically verified
+  FILE-green against proto/baseline/v1.binpb; baseline is NOT regenerated.
+- Validator: `isKnownGuaranteeLevel` closed-set predicate (proto3 open
+  enums: values 6+/int-max are parseable and must be rejected
+  INVALID_REQUEST). Semantics: ABSENT field = accept any level; PRESENT
+  value 0 or out-of-range = INVALID_REQUEST; presence at minor 0/1 =
+  UNSUPPORTED_FEATURE ("requires negotiated protocol minor 2"), including
+  an explicit 0. Forced RIVER_LP/RIVER_DCFR/MULTISTREET_CFR stay rejected
+  at minor 2 (pinned; the new minor widens nothing).
+- Scope of "every decision": EVERY SUCCESSFUL strategy/expanded oneof at
+  minor 2 carries field 11; minor 2 always returns the expanded_strategy
+  oneof (never the 5-capped Strategy). Error envelopes structurally carry
+  no metadata - code 9 IS the report; it carries no strategy payload,
+  retryable=false (pinned), static message text (no coverage detail, no
+  achieved-level leak beyond what the served approximate decision would
+  itself reveal).
+- Floor precedence PINNED: validation/coverage/deadline errors first
+  (forced BLUEPRINT miss = UNSUPPORTED_FEATURE, forced resolve no baseline
+  = DEADLINE_EXCEEDED, unchanged); code 9 only when a complete weaker
+  answer exists. AUTOMATIC blueprint hit + floor certified_bound -> 9
+  (AUTOMATIC never resolves): the cache_hit-vs-certified mutant.
+- Host accepts minors 0..2; echo formula and malformed-id paths become
+  <=2; the >2 rejection gets new wording, the old message stays byte-fixed
+  for existing cases. Capabilities: minor-2 query advertises [0,1,2],
+  build "bigshark-engine-v1.2.0", identical solver-mode set to minor 1;
+  minor-0 (kStage7Hex) and minor-1 capability bytes are untouched. The
+  existing test_v1_minor1 "minor 2 rejected" assertion MOVES to minor 3
+  (this is the one deliberate test edit; minor-1 decision/response pins
+  otherwise stay).
+
+**R5. Platform adapter and journal surface (supersedes Decisions 5-6).**
+- `ExecutableDecision` gains an OPTIONAL `guaranteeLevel?: string`
+  (additive; reason strings are never repurposed, so replay's
+  safe-fallback counting is unaffected). v1-mapper populates it from
+  field 11 at negotiated minor 2 (at minor 2 the mapper READS field 11
+  exclusively, never falling back to field 10); every LOCAL fallback
+  producer sets it to "operational_fallback": safeFallback (single
+  function covers engine.ts call sites), and the separate
+  `{action:'fold',reason:'no-legal'}` site. The engine-host JSON parse-
+  error fold stays unlabeled: frozen v0, removed at stage 7 (stated in
+  evidence, not silently omitted).
+- The runner (apps/river-club-agent/main.ts) threads the field into the
+  .runtime/results.log entries (the RFC's journal-visibility payoff);
+  behavior/action selection is unchanged.
+- Floor refusals: code 9 is a typed V1EngineError at the clients/node
+  boundary (with code-name/retryable), and platform decide() does NOT
+  substitute safeFallback for it - a caller-declared floor refusal is a
+  contract response, not an operational outage; it propagates. The shipped
+  adapter itself never SENDS a floor (no production floor policy), so live
+  behavior is unchanged; request encoding exists for explicit callers.
+- Negotiation: type widening to 0|1|2 everywhere (client getter,
+  V1EnvelopeClient, decisionEnvelope, engine.ts); opt-in
+  BIGSHARK_ENGINE_PROTO_MINOR2=1 with explicit probe cascade 2 -> (if
+  MINOR1 enabled) 1 -> 0, restart re-negotiation rule kept; mode
+  selection changes `minor1Capable ? ...` to `minor >= 1`.
+- Tests: real-binary minor-2 walk GATED ON negotiated minor === 2 (skip
+  message otherwise, so a stale published binary cannot fail npm check);
+  PLUS a new fake-proto-engine minor-2 fixture giving non-gated coverage of
+  negotiation fallback, field-11 decode, and code 9; plus a runner-level
+  test that an engine decision logs its level and a fallback line logs
+  operational_fallback.
+
+**R6. Goldens, fuzz, docs.**
+- proto/tests/fixtures: add a minor-2 decision-response JSON/binpb
+  (guarantee_level present, field 10 absent), a field-8 request vector
+  (separate from the minor-0 request golden), and an error-code-9 vector;
+  extend BOTH the TS golden round trip and the hardcoded C++ list in
+  test_generated.cpp. Add a test asserting the C++ five-token set equals
+  the proto `in` list.
+- fuzz_v1_proto.cpp: minor-2 expanded strategies must carry field 11 and
+  not field 10; requestIsValid gains the minor argument so the
+  strategy=>valid-request implication holds for minor-2 frames.
+- Docs same change: docs/reference/protobuf-engine-protocol.md (minor 2,
+  fields 8/11, code 9, v1.2.0, certified_bound<->modeled_exact_bound
+  bridge, chart-fold source divergence), docs/integrations/river-club.md,
+  docs/README.md status, docs/design/gto-engine.md module notes, and mark
+  BOTH RFC 0008 open questions (v2-vs-minor; heuristic target) resolved in
+  the RFC itself and docs/rfcs/README.md as required by the doc rules.
+- CMake: guarantee.cpp joins bigshark_policy; new test_guarantee is
+  registered against bigshark_policy (engine/CMakeLists.txt);
+  test_v1_minor2 joins the v1 test group in proto/CMakeLists.txt.
+
+Everything else in the original brief (mutation battery targets, full gate
+matrix, independent re-review before the single commit) stands.
+
+### Independent design review round 2 (2026-09-23): findings
+
+Two fresh reviewers (RFC/layering and wire/TS) verified Revision 1 against
+the code. They cleared the schema, the R1 placement (-Werror=switch,
+v0 include freeze, link graph), R2's fold enumeration (all 16 preflop
+returns; four folds at decision.cpp:104,122,133,138; five nullopt sites at
+:321,:344,:368,:371,:456), the cross-minor divergence, R4 precedence, and
+the TS cascade/old-engine probe. Remaining defects, fixed in Revision 2:
+
+- BLOCKER (both reviewers independently): R2's deterministic DCFR fixture
+  cites river_gto.hpp:47 allow_exact, but no POLICY path can set it
+  (decision.cpp:361-366 builds literal options; Ctx is frozen; SolveRiver is
+  a non-virtual free function). At live settings the LP estimate is
+  <=~268ms vs the 825ms gate (river_gto.cpp:222-227), so HiGHS release
+  builds always take LP; the RIVER_DCFR tag arm is unfalsifiable.
+- MAJOR: R3's boundary table, read literally, re-creates a second seven-row
+  normative table; field 11 must provably DERIVE from guaranteeFor; the
+  DecisionSource->pv::SolverSource conversion is unnamed; arm flips must
+  go red at the wire, not just in test_guarantee.
+- MAJOR: R5's runner-level results.log test has no seam (main.ts exports
+  nothing).
+- MAJOR: floor-vs-mapper-throw precedence (malformed row + high floor must
+  stay INTERNAL, never become code 9) with an exact ordering and fixture.
+- Minors: exactly-once service invocation; pin cache_hit/reason_code per
+  outcome; mapper signatures (fromV1DecisionResponse negotiated-minor arg;
+  named floor option in EngineConfig); fuzz symmetric oracles + structured
+  seeds; v0 deepEqual field-absence pin; runner crash-path acknowledgment;
+  lookup legality predicate reuse (no domain/pv duplicate); enum-conversion
+  exhaustiveness on the v1 target as well; old-minor message wording and
+  the full echo-site list; golden generator's THIRD fixture list
+  (generate-golden.ts envelopeFixtures); GuaranteeLevel ordinal-presence
+  vector; classifyResolveResponse minor-1-only doc.
+
+### Revision 2 (2026-09-23): final design decisions
+
+**R7. Policy-level solver seam (fixes the BLOCKER).** decision.cpp
+gains an internal answer builder used by BOTH public entry points:
+`SourcedDecision evaluatePolicySourced(const Ctx&,
+const RiverBackendHint&)` where a NEW policy-owned
+`struct RiverBackendHint { bool allow_exact = true; }` is DECLARED IN
+policy.hpp (NOT decision.hpp; the frozen Ctx/Decision leaf gains nothing).
+It is threaded to exactly one place: the `opt.allow_exact` assignment at
+decision.cpp:361-366; every other RiverSolveOptions field stays exactly as
+today. The production overloads are hard-wired to the default
+(`evaluatePolicy(Ctx)`, `evaluatePolicySourced(Ctx)`, `decide(Ctx)` all
+pass `{}`), so live/v0/minor-0 behavior is unchanged and the LP schedule is
+untouched. Deterministic provenance fixtures: hint{false} -> RiverDcfr in
+EVERY build (including HiGHS); a small eligible live fixture with the
+default hint -> RiverLp iff gto::hasExactRiverLp(), else RiverDcfr
+(conditional on the compile flag, pinned either way). The structural oracle
+predicts LP/DCFR from the hint + hasExactRiverLp() ONLY, never from
+result().exact, killing the same-origin trap. The five nullopt fall-through
+expectations (:321,:344,:368,:371,:456) are covered; one representative per
+class plus the :456 illegal-translation arm are oracle fixtures.
+
+**R8. One normative table, consumed at the boundary (fixes the MAJOR).**
+- Field 11 for heuristic/river answers is computed in the minor-2 mapper by
+  CALLING the policy core: `guaranteeToken(guaranteeFor(declared))`. The
+  protocol TU has NO table mapping the five policy sources to levels; a
+  flipped guaranteeFor arm therefore changes wire bytes and goes red in
+  test_v1_minor2 (mutation battery explicitly asserts the wire-level red).
+- Storage labeling is a TWO-ARM function of the lookup OUTCOME, in the
+  envelope: Certified (only from V1ResolveOutcome::Certified on a forced
+  resolve) -> certified_bound; blueprint hit / DeadlineBlueprint ->
+  approximate. There is no pv::SolverSource-keyed seven-row table.
+- One typed conversion `toWireSource(DecisionSource) ->
+  pv::SolverSource` (exhaustive, no default) lives in the protocol TU and
+  is the ONLY writer of field 1 at minor 2; bigshark_v1_protocol gets the
+  same narrow -Werror=switch on its enum-conversion switches (the fail-
+  closed unknown-source arm keeps an explicit default by design and is
+  table-tested directly with UNSPECIFIED and an out-of-range cast).
+- The fail-closed function is a table-tested defense only; evidence and
+  test assert no host-produced minor-2 response is operational_fallback.
+
+**R9. Lookup split precision and the floor ordering (fixes MAJOR/MINORS).**
+- lookupBlueprint/lookupResolving are PURE MOVES out of
+  v1_envelope.cpp:92-162: same advertised checks, same reconstruction
+  calls, exactly one service invocation (the returned row is reused by the
+  floor check and BOTH per-minor mappers - never called twice), same
+  blueprintRowIsLegal pv predicate (it is NOT reimplemented against the
+  domain state; the mapper and lookup share the one existing request-keyed
+  predicate), and the miss struct carries the verbatim miss code/detail so
+  blueprintMissResponse and the DEADLINE path serialize identically. The
+  DeadlineExceeded early return at :147-149 stays BEFORE the row legality
+  check; the :149-153 off-tree outcome overwrite is preserved verbatim.
+  Minor-1 byte preservation is guaranteed by the existing pins; the move
+  is reviewable line-by-line against the cited ranges.
+- Minor-2 exact order: (1) validate (minor-2 rules); (2) mode dispatch +
+  lookup exactly like minor 1; (3) mapper-independent COMPLETENESS
+  preconditions on the returned row (legality + 64-hex digest + sampler
+  liveness), factored from mapExpandedResponseImpl and shared by both
+  minors; (4) ONLY THEN the floor comparison -> code 9 with no strategy
+  payload; (5) serialize through the minor-2 mapper. Fixture: malformed
+  row (bad digest) + floor exact_solved -> INTERNAL, never code 9.
+- The four mapGuaranteed* responses share the mapExpandedResponseImpl
+  construction body parameterized ONLY by (label, field 10 vs 11); they
+  re-derive nothing. Pinned per outcome: cache_hit = source==BLUEPRINT
+  (true for blueprint and deadline rows, false for certified resolve and
+  heuristic), reason_code resolving/blueprint, solve_time_us=0, field 9
+  present on storage rows, sampler/all_in/hero-capacity derivation
+  unchanged, heuristic fields 3/4/8 via fillHeuristicMetadata.
+
+**R10. Platform test seam and floor contract (fixes the remaining
+MAJORS/MINORS).**
+- apps/river-club-agent: extract a pure exported
+  `resultsLogEntry({kind, hand, street, source, decision, ok})` (and the
+  decision->guaranteeLevel projection, which is just the optional field)
+  into runner-state.ts; main.ts's two log sites call it. runner-state.test
+  asserts an engine decision carries its decoded level and a fallback entry
+  carries operational_fallback. main.ts keeps ZERO exports otherwise.
+- TS floor surface is NAMED: EngineConfig gains an optional
+  `minimumGuaranteeLevel?: GuaranteeLevel`; toV1DecisionRequest encodes it
+  ONLY when negotiated minor === 2; fromV1DecisionResponse gains a
+  negotiated-minor parameter and at minor 2 reads field 11 exclusively
+  (field 10 is never consulted; classifyResolveResponse is documented
+  minor-1-only). engine.ts rethrows code 9 out of the blanket catch; the
+  shipped runner never sets the option, and the option is documented as
+  explicit-caller-owned: decideWithinBudget has no handler, so a floor
+  refusal surfaces as a typed process error by contract rather than a
+  played fallback.
+- v0 freeze detail: validateEngineDecision keeps building a fresh object
+  WITHOUT guaranteeLevel (v0-golden deepEqual stays green); only the shared
+  safeFallback gains the field, and replay counts by reason prefix so
+  156/0/0 is unaffected (asserted, not assumed).
+
+**R11. Goldens, fuzz, negotiation final details.**
+- THREE golden lists get the new vectors (generate-golden.ts
+  envelopeFixtures, generated-roundtrip.test.ts list, test_generated.cpp):
+  minor-2 decision response (field 11 set, field 10 absent), field-8
+  request, code-9 error, capabilities-minor2, and a
+  guarantee-level-enum-presence vector pinning ordinals 0..5 (analogous to
+  solver-enum-presence). Existing vectors stay byte-identical.
+- fuzz_v1_proto: requestIsValid takes the frame minor; symmetric presence
+  oracles (minor 2 => field 11 and NOT field 10; minors 0/1 => never field
+  11); structured fuzz_seeds.hpp cases for cap2, field-8 at minor 1
+  (UNSUPPORTED_FEATURE), present 0 and out-of-range at minor 2
+  (INVALID_REQUEST), floor approximate served, floor exact -> code 9,
+  malformed row precedence; response-size and FrameReader oversize traps
+  re-pinned unchanged.
+- Negotiation: env BIGSHARK_ENGINE_PROTO_MINOR2=1; probe order strictly
+  2 -> 1 (only if MINOR1 enabled) -> 0; restart re-negotiation retained;
+  the mode expression becomes minor >= 1; types widen to 0|1|2 on the
+  client getter, V1EnvelopeClient, and decisionEnvelope. A fake-proto-engine
+  minor-2 host (extension of clients/node/tests/fixtures/fake-proto-engine.ts)
+  covers cascade fallback, field-11 decode, and code 9 without a binary;
+  the real-binary walk skips unless negotiated minor === 2.
+- Echo formula changes at every existing <=1 site
+  (v1_envelope.cpp:307,312,316 and the catch echo paths) to <=2; the >2
+  rejection message is replaced outright (the old "0 and 1" wording has no
+  surviving case and is not byte-pinned), and test_v1_minor1's rejection
+  assertion moves from minor 2 to minor 3.
+
+R1-R6 stand as revised. The design is now ready for the final independent
+re-review before implementation begins.
+
+### Revision 3 (2026-09-23): final amendments after round 3
+
+The third reviewer empirically compiled every v1 protocol TU with the
+planned flag and found the single remaining build defect plus two nits;
+verdict was that no further substantive review is needed after these:
+
+- R12. -Werror=switch placement (fixes the MAJOR). The flag is applied to
+  bigshark_v1_protocol target-wide AND the one pre-existing non-exhaustive
+  switch is made explicit: v1_resident_mapper.cpp:27-37 wireStreet gains
+  `case poker::Street::Preflop: return pv::STREET_UNSPECIFIED;` (runtime-
+  identical: the trailing return already yields UNSPECIFIED, and
+  reconstruction is postflop-only). A pin asserts the preflop
+  reconstruction path is unchanged (existing test_v1_resident_mapper
+  coverage). The reviewer confirmed this is the ONLY -Wswitch break in the
+  whole tree and the other protocol TUs compile clean.
+- R13. resultsLogEntry keeps the FULL current journal schema: its parameter
+  set includes the optional failure `raw` payload (main.ts:524,548 append
+  raw only when !ok); the extraction is byte-preserving for results.log.
+- R14. Token single-sourcing: even the storage "approximate" outcome arm
+  emits via guaranteeToken(Guarantee::Approximate), never a literal; only
+  certified_bound has its own token.
+- R15. Completeness ordering covers the heuristic arm too: before the floor
+  comparison, the chosen answer - row OR heuristic - passes all preconditions
+  its own mapper enforces (heuristic legality via actionType/actionIsLegal;
+  storage rows via the factored row checks). An un-mappable heuristic action
+  + high floor yields INTERNAL, never code 9.
+- R16. Minor-2 error responses carry echo minor 2: the factored miss
+  serializer takes the negotiated minor (the minor-1 call site keeps literal
+  1; minor 2 passes 2); forced BLUEPRINT miss stays UNSUPPORTED_FEATURE with
+  the same code/detail, only the echo differs.
+- R17. The five riverGto nullopt arms are covered where deterministically
+  reachable (ineligible :321, unknown line :344, combo absent :371, illegal
+  translation :456); the !ok arm (:368) is a solver-failure outcome that is
+  not forceable through a deterministic fixture, so it is pinned at the
+  sourced-builder unit level structurally (tag assigned at the call site),
+  like the v1-unreachable no-hole fold.
+
+DESIGN APPROVED for implementation subject to R12-R17 (all prescriptive).
+
+### Stage 5 implementation notes (2026-09-23)
+
+- C++ L6: `engine/include/bs/guarantee.{hpp}` plus `src/policy/guarantee.cpp`
+  in bigshark_policy (`-Werror=switch`): five-level ladder, one normative
+  `guaranteeFor(DecisionSource)` (all five policy sources -> approximate),
+  and `evaluatePolicySourced(Ctx, RiverBackendHint)` with every routing
+  branch declaring its source (the four preflop chart folds included).
+- Wire: minor 2 accepted; field 8 floor, field 11 level token, error code 9;
+  lookup/mapping split in v1_envelope.cpp with the five-step floor ordering
+  (validate -> lookup -> mapper completeness -> floor -> serialize).
+- L7 TS: 0|1|2 negotiation behind BIGSHARK_ENGINE_PROTO_MINOR2=1, strict
+  2->1->0 probe cascade, ExecutableDecision.guaranteeLevel, code-9 typed
+  propagation, operational_fallback labels, pure resultsLogEntry extraction.
+- Tests: test_guarantee, test_decision_provenance (structural oracle plus
+  the legacy-inference discrepancy set), test_v1_minor2, extended fuzz
+  oracles/seeds, five new golden vector classes across all three golden
+  lists, fake minor-2 host and platform/runner-level TS tests.
+
+### Stage 5 gate evidence (2026-09-23)
+
+Design: three rounds of fresh independent review before implementation
+(six agents total); the approved brief is the "Revision 3 (R12-R17)"
+section above.
+
+Implementation gate results (all measured on this date):
+- `cmake --preset release` + full `ctest --preset release`: 47/47 passed.
+- `cmake --preset asan` + full `ctest --preset asan`: 45/45 passed.
+- `npm run check` (typecheck, TS build, source policy, proto lint/breaking
+  FILE against the unchanged v1.binpb baseline, proto generate/typecheck,
+  docs, RFCs, node tests): green; node tests 107/107 (the probe-failure
+  respawn test was the 107th; the original matrix was 106/106).
+- `benchmark-multistreet`: PASS.
+- `node bin/replay.mjs`: 156 decisions, 0 illegal, 0 JS fallbacks.
+- Mutation battery `tools/mutation/decision-stage5.json` via
+  `tools/mutation/verify.ts`: 23/23 caught, 0 equivalent, 0 gaps across
+  three suites (test_guarantee, test_decision_provenance, test_v1_minor2).
+  Key mutants: floor comparison removal, completeness/floor reordering,
+  certified/approximate resolve mislabel, AUTOMATIC-resolves mutation,
+  field 8 gate, field 10/11 vocabulary split, declared-source inference
+  regression, fail-closed arm, negotiation gate widening, retryable code 9.
+  Hardened after independent review to 27/27 (four R16 echo mutants, see
+  the review subsection below).
+- Fuzz: structured seeds extended to 45 (field-8 gates at each minor,
+  present-0/out-of-range floor, forced-backend rejection, code-9,
+  minor-2/3 caps); a 30k-input ASan mutation campaign passed clean.
+- Goldens: five new vector classes (minor-2 capabilities, field-8 request,
+  guaranteed strategy, code-9 error, GuaranteeLevel ordinals 0..5) added to
+  all THREE golden lists (generate-golden envelopeFixtures, TS roundtrip,
+  C++ test_generated); existing vectors unchanged.
+- The real-binary minor-2 walk
+  (platforms/river-club/tests/v1-minor2-walk.test.ts) ran and passed
+  against the freshly published bin/bigshark-engine.
+
+Open/known: no stage-5 host-produced response is operational_fallback by
+construction (asserted in C++ and fuzz oracles); the operational_fallback
+surface is the TS local fallback and is labeled. The `!ok` solver arm
+(decision.cpp:368) is structural and pinned at the sourced-builder unit
+level rather than via a deterministic fixture (R17).
+
+#### Independent implementation review (2026-09-23): outcomes and fixes
+
+Three fresh read-only reviewers (C++ implementation, wire/golden/fuzz
+contract, TS/L7) reviewed the finished implementation. Verdict: no
+blocker, no remaining major. The TS/L7 reviewer's MINOR (an out-of-band
+negotiation-probe failure aborted start() instead of settling at minor 0)
+was fixed with a try/catch cascade plus a custom-spawn respawn test before
+this evidence was first written. Two further findings were closed after
+the final reports:
+
+- F1 (contract reviewer, MAJOR-grade, empirically proven): R16 prescribed
+  that minor-2 error responses echo minor 2, but only success and code-9
+  paths asserted the echo; mutating both `blueprintMissResponse(..., 2)`
+  sites to 1 left test_v1_minor2, test_v1_minor1, and the fuzz campaign
+  green. Fix: test_v1_minor2 now pins echo 2 on every minor-2 error arm
+  (forced BLUEPRINT coverage miss, forced RESOLVING with the resolver
+  unadvertised, DEADLINE_EXCEEDED, INTERNAL completeness, INVALID_REQUEST
+  floors, forced-backend rejections, AUTOMATIC/deadline code 9), and the
+  mutation battery gained four echo mutants (forced BLUEPRINT miss, forced
+  RESOLVING miss, validation errors, DEADLINE_EXCEEDED). The reviewer
+  re-ran its exact mutant against the hardened suite (2 FAILs) and the
+  battery now reports 27/27 RED.
+- M1 (C++ reviewer, MINOR; R6): the promised test that the C++ five-token
+  set equals the proto `in` list was only a hardcoded comparison.
+  test_v1_minor2 now reads the compiled buf.validate FieldRules extension
+  off the SolverMetadata.guarantee_level descriptor and asserts each
+  guaranteeToken is a member of the descriptor's string `in` list, so a
+  .proto/C++ vocabulary drift goes red.
+
+Additional contract-reviewer MINORs: the response-shaped fuzz seed's
+comment falsely claimed oracle coverage (comment corrected; the oracle is
+exercised by host-output seeds automatic2/floorapprox2), and the C++
+presence-vector loop did not assert has_minimum_guarantee on ordinal 0
+(now asserted; the TS side and byte vectors already pinned presence).
+NO_DECISION-vs-floor precedence stays structurally pinned (the empty
+heuristic action is not deterministically forceable), matching the R17
+treatment; the minor-1-era golden list subset and the root-less vs
+resident capabilities shapes were accepted as pre-existing.
+
+Final gate re-run after the hardening: release 45/45 functional tests plus
+benchmark-multistreet PASS (standalone, 5.2 s), ASan 45/45 clean,
+npm run check green (node 107/107), npm run proto:check green,
+replay 156 decisions / 0 illegal / 0 JS fallbacks, mutation battery
+27/27 RED post-format, and the real-binary minor-2 walk passing
+non-skipped against the republished bin/bigshark-engine.

@@ -24,12 +24,16 @@ const envelopeFixtures = [
   'capabilities-request',
   'capabilities-response',
   'capabilities-minor1',
+  'capabilities-minor2',
   'decision-request',
+  'decision-request-floor',
   'envelope',
   'error-response',
   'expanded-strategy',
   'expanded-strategy-bound',
   'expanded-strategy-baseline',
+  'guaranteed-strategy',
+  'guarantee-below-request',
 ];
 
 for (const name of envelopeFixtures) {
@@ -170,4 +174,74 @@ test('TypeScript preserves unknown fields and additive enum values', () => {
   assert.equal(card.rank, 99);
   assert.equal(card.suit, Suit.SPADES);
   assert.deepEqual(Buffer.from(toBinary(CardSchema, card)), cardBinary);
+});
+
+// RFC 0008 stage 5 golden assertions ------------------------------------------
+
+test('minor-2 capabilities vector advertises 0,1,2 at v1.2.0', () => {
+  const binary = readFileSync(join(fixtureDirectory, 'capabilities-minor2.binpb'));
+  const envelope = fromBinary(EnvelopeSchema, binary);
+  assert.equal(envelope.protocolMinor, 2);
+  if (envelope.payload.case !== 'getCapabilitiesResponse')
+    throw new Error('bad payload');
+  assert.deepEqual(
+    [...envelope.payload.value.supportedProtocolMinors],
+    [0, 1, 2],
+  );
+  assert.equal(envelope.payload.value.engineBuildVersion, 'bigshark-engine-v1.2.0');
+});
+
+test('minor-2 guaranteed strategy carries field 11, never field 10', () => {
+  const binary = readFileSync(join(fixtureDirectory, 'guaranteed-strategy.binpb'));
+  const envelope = fromBinary(EnvelopeSchema, binary);
+  if (envelope.payload.case !== 'decisionResponse')
+    throw new Error('bad payload');
+  const result = envelope.payload.value.result;
+  assert.equal(result.case, 'expandedStrategy');
+  if (result.case !== 'expandedStrategy') return;
+  assert.equal(result.value.solver?.source, SolverSource.POSTFLOP_HEURISTIC);
+  assert.equal(result.value.solver?.guaranteeLevel, 'approximate');
+  assert.equal(result.value.solver?.guarantee, undefined,
+    'field 10 is absent on a minor-2 response');
+});
+
+test('code 9 vector is a non-retryable guarantee refusal', () => {
+  const binary = readFileSync(join(fixtureDirectory, 'guarantee-below-request.binpb'));
+  const envelope = fromBinary(EnvelopeSchema, binary);
+  if (envelope.payload.case !== 'decisionResponse')
+    throw new Error('bad payload');
+  const result = envelope.payload.value.result;
+  assert.equal(result.case, 'error');
+  if (result.case !== 'error') return;
+  assert.equal(result.value.code, 9 /* GUARANTEE_BELOW_REQUEST */);
+  assert.equal(result.value.retryable, false);
+});
+
+test('field-8 request golden carries the EXACT_SOLVED floor at minor 2', () => {
+  const binary = readFileSync(join(fixtureDirectory, 'decision-request-floor.binpb'));
+  const envelope = fromBinary(EnvelopeSchema, binary);
+  assert.equal(envelope.protocolMinor, 2);
+  if (envelope.payload.case !== 'decisionRequest')
+    throw new Error('bad payload');
+  assert.equal(
+    envelope.payload.value.options?.minimumGuarantee,
+    4 /* GUARANTEE_LEVEL_EXACT_SOLVED */,
+  );
+});
+
+test('GuaranteeLevel ordinals 0..5 are pinned on the wire', () => {
+  for (let ordinal = 0; ordinal <= 5; ordinal += 1) {
+    const binary = readFileSync(
+      join(fixtureDirectory, `guarantee-enum-presence-${ordinal}.binpb`),
+    );
+    const envelope = fromBinary(EnvelopeSchema, binary);
+    if (envelope.payload.case !== 'decisionRequest')
+      throw new Error('bad payload');
+    assert.equal(envelope.payload.value.options?.minimumGuarantee, ordinal,
+      `ordinal ${ordinal} round-trips`);
+    assert.deepEqual(
+      Buffer.from(toBinary(EnvelopeSchema, envelope)),
+      binary,
+    );
+  }
 });

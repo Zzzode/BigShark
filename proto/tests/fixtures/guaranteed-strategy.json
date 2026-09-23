@@ -1,0 +1,22 @@
+{
+  "protocolMinor": 2,
+  "requestId": "guaranteed-strategy-vector",
+  "decisionResponse": {
+    "expandedStrategy": {
+      "actions": [
+        {
+          "type": "ACTION_TYPE_CHECK",
+          "probability": 1
+        }
+      ],
+      "selectedAction": {
+        "type": "ACTION_TYPE_CHECK"
+      },
+      "solver": {
+        "source": "SOLVER_SOURCE_POSTFLOP_HEURISTIC",
+        "reasonCode": "postflop-heuristic",
+        "guaranteeLevel": "approximate"
+      }
+    }
+  }
+}

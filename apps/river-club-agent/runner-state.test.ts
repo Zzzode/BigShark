@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   engineBudgetMs,
   overrideWindowMs,
+  resultsLogEntry,
   selectCliFailureStep,
   selectPausedStep,
   selectRunnerStep,
@@ -137,4 +138,47 @@ test('never allocates more decision time than the remaining clock', () => {
   assert.equal(overrideWindowMs('adaptive', 10_000, 2_500, 6_000, 1_200, 1_500), 1_500);
   assert.equal(overrideWindowMs('adaptive', 7_000, 500, 6_000, 1_200, 1_500), 0);
   assert.equal(overrideWindowMs('auto', 7_000, 500, 6_000, 1_200, 1_500), 500);
+});
+
+test('resultsLogEntry embeds the engine guarantee level and attaches raw only on failure', () => {
+  const ok = resultsLogEntry({
+    kind: 'action',
+    hand: 'h1',
+    street: 'river',
+    source: 'engine',
+    decision: { action: 'call', reason: 'cpp:gto c', guaranteeLevel: 'exact_solved' },
+    ok: true,
+    raw: { should: 'be dropped on success' },
+  });
+  assert.deepEqual(ok, {
+    kind: 'action',
+    hand: 'h1',
+    street: 'river',
+    source: 'engine',
+    decision: { action: 'call', reason: 'cpp:gto c', guaranteeLevel: 'exact_solved' },
+    ok: true,
+  });
+
+  const failed = resultsLogEntry({
+    kind: 'action',
+    hand: 'h2',
+    street: 'flop',
+    source: 'engine',
+    decision: { action: 'fold', reason: 'safe-fallback:fold', guaranteeLevel: 'operational_fallback' },
+    ok: false,
+    raw: { code: 'STALE_STATE' },
+  });
+  assert.equal(failed.raw !== undefined && (failed.raw as {code: string}).code, 'STALE_STATE');
+  assert.equal(failed.decision.guaranteeLevel, 'operational_fallback');
+
+  const retry = resultsLogEntry({
+    kind: 'action-retry',
+    hand: 'h3',
+    street: 'turn',
+    source: 'engine-recovery',
+    decision: { action: 'check', reason: 'safe-fallback:check', guaranteeLevel: 'operational_fallback' },
+    ok: true,
+  });
+  assert.equal('raw' in retry, false);
+  assert.equal(retry.kind, 'action-retry');
 });

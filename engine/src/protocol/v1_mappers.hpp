@@ -8,6 +8,8 @@
 #include <bigshark/engine/v1/engine.pb.h>
 
 #include <bs/decision.hpp>
+#include <bs/guarantee.hpp>
+#include <bs/policy.hpp>
 #include <bs/v1_protocol.hpp>
 #include <cstdint>
 #include <stdexcept>
@@ -46,6 +48,9 @@ bool isKnownGameType(pv::GameType value);
 // selectable river/multistreet backends remain UNSUPPORTED_FEATURE on both
 // minors. Anything outside 0..7 is invalid.
 bool isKnownSolverMode(pv::SolverMode value);
+// RFC 0008 stage 5: closed set for the minor-2 request floor. UNSPECIFIED(0)
+// and any out-of-range wire value are rejected when the field is present.
+bool isKnownGuaranteeLevel(pv::GuaranteeLevel value);
 
 // Hard cap on reported FieldViolations so a sub-1 MiB request with hundreds of
 // thousands of bad entries cannot produce a multi-hundred-MB error response
@@ -86,8 +91,9 @@ bool isValidUtf8(std::string_view value);
 // Returns ERROR_CODE_UNSPECIFIED when the request is valid, otherwise the
 // applicable failure class (INVALID_REQUEST or UNSUPPORTED_*). All discovered
 // violations are appended to the report regardless of the returned code.
-// negotiated_minor is 0 or 1; it only changes the solver-mode capability
-// checks, so minor 0 produces exactly the Stage-7 results.
+// negotiated_minor is 0, 1, or 2; it only changes the solver-mode capability
+// checks and the minor-2-only minimum_guarantee gate, so minor 0 produces
+// exactly the Stage-7 results.
 pv::ErrorCode validateDecisionRequest(const pv::DecisionRequest& request, ValidationReport& report,
                                       unsigned negotiated_minor = 0);
 
@@ -113,6 +119,13 @@ pv::DecisionResponse mapDecisionResponse(const pv::DecisionRequest& request,
 pv::DecisionResponse mapHeuristicExpandedResponse(const pv::DecisionRequest& request,
                                                   const bs::Decision& decision);
 
+// RFC 0008 stage 5, negotiated minor 2. Maps the POLICY-SOURCED heuristic
+// answer: the wire source is the declared source (toWireSource, no reason
+// inference), the response always carries field 11 via the normative
+// guaranteeFor table, and field 10 is never set.
+pv::DecisionResponse mapGuaranteedHeuristicResponse(const pv::DecisionRequest& request,
+                                                    const bs::SourcedDecision& answer);
+
 // Maps a resident blueprint hit into a minor-1 ExpandedStrategy: every row
 // action becomes one ActionPolicy (1..32, verbatim probabilities, target total
 // only on bet/raise, all_in derived from the legal maximum), the sampled
@@ -124,6 +137,37 @@ pv::DecisionResponse mapHeuristicExpandedResponse(const pv::DecisionRequest& req
 // MappingError only for an internally inconsistent resident row.
 pv::DecisionResponse mapBlueprintExpandedResponse(const pv::DecisionRequest& request,
                                                   const V1BlueprintRow& row);
+
+// RFC 0008 stage 5 minor-2 storage mappers. Same row serialization as minor 1
+// (via the shared builder), but field 11 replaces field 10 and the level is
+// the two-arm function of the lookup outcome: a certified resolve earns
+// certified_bound; resident blueprint hits and resolve-deadline baselines
+// earn approximate. Blueprint/Deadline keep the BLUEPRINT source and
+// cache_hit=true; Certified keeps RESOLVING and cache_hit=false.
+pv::DecisionResponse mapGuaranteedBlueprintResponse(const pv::DecisionRequest& request,
+                                                    const V1BlueprintRow& row);
+pv::DecisionResponse mapGuaranteedDeadlineResponse(const pv::DecisionRequest& request,
+                                                   const V1BlueprintRow& row);
+pv::DecisionResponse mapGuaranteedCertifiedResponse(const pv::DecisionRequest& request,
+                                                    const V1BlueprintRow& row);
+
+// Mapper-independent completeness preconditions, shared by the minor-2
+// dispatcher floor ordering (R9/R15) and the serializers themselves. Throws
+// the same MappingError the serializer would: a coverage miss
+// (UNSUPPORTED_FEATURE, non-retryable) or an internally inconsistent row
+// (INTERNAL). The heuristic counterpart validates action kind and legal
+// membership for the sourced policy answer.
+void verifyStorageRowComplete(const pv::DecisionRequest& request, const V1BlueprintRow& row);
+void verifyHeuristicAnswerComplete(const pv::DecisionRequest& request,
+                                   const bs::SourcedDecision& answer);
+
+// RFC 0008 stage 5 boundary defense (R3/R8): fail-closed reading of a wire
+// source. UNSPECIFIED and any out-of-range value map to operational_fallback;
+// a certified resolve is the only certified_bound arm. The host decision path
+// never calls this - its levels come from guaranteeFor on the declared policy
+// source - it exists so an unrecognized source can never inherit a stronger
+// level, and it is table-tested directly.
+bs::Guarantee failClosedGuaranteeForWireSource(pv::SolverSource source);
 
 // RFC 0005 Stage 9: maps a resolved terminal-only row exactly like the
 // blueprint mapper (same membership and sampler rules) but tags the metadata

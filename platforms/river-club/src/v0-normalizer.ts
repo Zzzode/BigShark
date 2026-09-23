@@ -28,17 +28,22 @@ const RIVER_TERMINALS = new Set([
 ]);
 const PLAYER_ACTIONS = new Set<Action>(['fold', 'check', 'call', 'bet', 'raise']);
 
+// RFC 0008 stage 5: every LOCAL fallback (no engine answer available) is an
+// operational_fallback decision. v0 goldens compare engine-produced
+// decisions (validateEngineDecision), never this function, so the additive
+// field leaves the frozen v0 contract untouched.
 export function safeFallback(room?: RiverRoom | null): ExecutableDecision {
+  const level = { guaranteeLevel: 'operational_fallback' } as const;
   const legal = room?.legal;
-  if (!legal) return { action: 'fold', amount: 0, reason: 'safe-fallback:no-legal' };
+  if (!legal) return { action: 'fold', amount: 0, reason: 'safe-fallback:no-legal', ...level };
   const actions = legal.actions || [];
   if (actions.includes('check')) {
-    return { action: 'check', amount: 0, reason: 'safe-fallback:check' };
+    return { action: 'check', amount: 0, reason: 'safe-fallback:check', ...level };
   }
   if (actions.includes('call')) {
-    return { action: 'call', amount: 0, reason: 'safe-fallback:call' };
+    return { action: 'call', amount: 0, reason: 'safe-fallback:call', ...level };
   }
-  return { action: 'fold', amount: 0, reason: 'safe-fallback:fold' };
+  return { action: 'fold', amount: 0, reason: 'safe-fallback:fold', ...level };
 }
 
 export function normalizePosition(position?: string): string {

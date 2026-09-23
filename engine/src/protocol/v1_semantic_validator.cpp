@@ -585,6 +585,19 @@ class SemanticValidator {
         reject(field + ".preflop_effective_stack_bb",
                "preflop effective stack hint must be a finite positive value within table depth");
     }
+    // RFC 0008 stage 5: minimum_guarantee is a negotiated minor-2 request
+    // field. Presence on either older minor (including an explicit UNSPECIFIED)
+    // is a feature negotiation failure; at minor 2 a present value must be one
+    // of the five real levels, matching the buf in:[1..5] annotation.
+    if (options.has_minimum_guarantee()) {
+      if (minor_ < 2) {
+        rejectFeature(field + ".minimum_guarantee",
+                      "minimum_guarantee requires negotiated protocol minor 2");
+      } else if (!isKnownGuaranteeLevel(options.minimum_guarantee())) {
+        reject(field + ".minimum_guarantee",
+               "minimum_guarantee is outside the closed guarantee level set");
+      }
+    }
   }
 };
 
@@ -642,6 +655,12 @@ bool isKnownSolverMode(pv::SolverMode value) {
          value == pv::SOLVER_MODE_RIVER_LP || value == pv::SOLVER_MODE_RIVER_DCFR ||
          value == pv::SOLVER_MODE_MULTISTREET_CFR || value == pv::SOLVER_MODE_BLUEPRINT ||
          value == pv::SOLVER_MODE_RESOLVING;
+}
+
+bool isKnownGuaranteeLevel(pv::GuaranteeLevel value) {
+  return value == pv::GUARANTEE_LEVEL_OPERATIONAL_FALLBACK ||
+         value == pv::GUARANTEE_LEVEL_APPROXIMATE || value == pv::GUARANTEE_LEVEL_ABSTRACT_SOLVED ||
+         value == pv::GUARANTEE_LEVEL_EXACT_SOLVED || value == pv::GUARANTEE_LEVEL_CERTIFIED_BOUND;
 }
 
 bool isValidUtf8(std::string_view value) {

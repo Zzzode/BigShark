@@ -313,10 +313,14 @@ static Decision postflop(const Ctx& c) {
 }
 
 // ---------- river equilibrium (heads-up, one bet/one raise) ----------
-// Returns an equilibrium action for hero's exact combo, or an absent optional
-// when the spot is outside the solver model / the chosen action is not legal,
-// in which case the caller uses the heuristic baseline.
-static std::optional<Decision> riverGto(const Ctx& c, const std::array<int, 2>& hole) {
+// Returns an equilibrium action for hero's exact combo plus the solver source
+// that produced it (exact LP vs bounded DCFR), or an absent optional when the
+// spot is outside the solver model / the chosen action is not legal, in which
+// case the CALL SITE tags the heuristic baseline. The backend hint is the
+// policy-level test seam: allow_exact=false forces the bounded-CFR backend
+// deterministically; production routing passes the default.
+static std::optional<SourcedDecision> riverAnswer(const Ctx& c, const std::array<int, 2>& hole,
+                                                  RiverBackendHint backend) {
   if (c.playersInHand != 2 || c.board.size() != 5)
     return std::nullopt;
   // node + which solver side hero occupies, derived from the public line
@@ -362,6 +366,7 @@ static std::optional<Decision> riverGto(const Ctx& c, const std::array<int, 2>& 
   opt.max_combos_per_side = kCap;
   opt.time_budget_s = 1.5;
   opt.cfr_iterations = 100000;
+  opt.allow_exact = backend.allow_exact;
   auto sol = gto::SolveRiver(board, c.pot, (float)c.riverBetFrac, (float)c.riverRaiseFrac,
                              ranges.ip, ranges.oop, opt);
   if (!sol->result().ok)
@@ -455,21 +460,34 @@ static std::optional<Decision> riverGto(const Ctx& c, const std::array<int, 2>& 
   if (act.empty())
     return std::nullopt;  // let the heuristic stay legal
   Decision d{act, amount, std::string(tag) + " " + c.riverLine, -1.0, mdf};
-  return d;
+  // Tag from the SAME exact read that built the reason tag, once.
+  return SourcedDecision{std::move(d),
+                         sol->result().exact ? DecisionSource::RiverLp : DecisionSource::RiverDcfr};
+}
+
+SourcedDecision evaluatePolicySourced(const Ctx& c, RiverBackendHint backend) {
+  if (c.hole.size() != 2)
+    // Defensive pre-dispatch fold. Unreachable on a validated v1 request
+    // (the validator requires exactly two hole cards); present on the v0/JSON
+    // path, which keeps its historical classification.
+    return {{"fold", 0, "no hole cards", -1, -1}, DecisionSource::PostflopHeuristic};
+  const std::string k = key169(cardId(c.hole[0]), cardId(c.hole[1]));
+  if (c.street == "preflop")
+    // Every exit of preflop() — including its four chart folds — is a chart
+    // decision: the branch that selected it is the chart.
+    return {preflop(c, k), DecisionSource::PreflopChart};
+  if (c.street == "river" && c.riverGtoOn) {
+    std::array<int, 2> hole{cardId(c.hole[0]), cardId(c.hole[1])};
+    if (auto a = riverAnswer(c, hole, backend))
+      return std::move(*a);
+    // All riverGto fall-throughs (ineligible spot, unknown line, solver not
+    // ok, combo absent, illegal translated action) use the heuristic.
+  }
+  return {postflop(c), DecisionSource::PostflopHeuristic};
 }
 
 Decision evaluatePolicy(const Ctx& c) {
-  if (c.hole.size() != 2)
-    return {"fold", 0, "no hole cards", -1, -1};
-  const std::string k = key169(cardId(c.hole[0]), cardId(c.hole[1]));
-  if (c.street == "preflop")
-    return preflop(c, k);
-  if (c.street == "river" && c.riverGtoOn) {
-    std::array<int, 2> hole{cardId(c.hole[0]), cardId(c.hole[1])};
-    if (auto d = riverGto(c, hole))
-      return *d;
-  }
-  return postflop(c);
+  return evaluatePolicySourced(c, RiverBackendHint{}).decision;
 }
 
 }  // namespace bs

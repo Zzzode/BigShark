@@ -11,6 +11,7 @@ import {
   ForcedContributionType,
   GameType,
   GameVariant,
+  GuaranteeLevel,
   LegalActionSchema,
   PlayerStatus,
   PlayerStateSchema,
@@ -28,12 +29,23 @@ import { validateEngineDecision } from './v0-normalizer.js';
 import type {
   Action,
   ExecutableDecision,
+  GuaranteeLevel as GuaranteeLevelToken,
   RiverEvent,
   RiverRoom,
   RiverSeat,
 } from './types.js';
 
 const PLAYER_ACTION_KINDS = new Set<Action>(['fold', 'check', 'call', 'bet', 'raise']);
+
+// RFC 0008 stage 5: caller-floor token -> request enum. The set mirrors the
+// proto five-value in-list; an unknown token is a local programming error.
+const GUARANTEE_LEVEL_BY_TOKEN: Record<GuaranteeLevelToken, GuaranteeLevel> = {
+  operational_fallback: GuaranteeLevel.OPERATIONAL_FALLBACK,
+  approximate: GuaranteeLevel.APPROXIMATE,
+  abstract_solved: GuaranteeLevel.ABSTRACT_SOLVED,
+  exact_solved: GuaranteeLevel.EXACT_SOLVED,
+  certified_bound: GuaranteeLevel.CERTIFIED_BOUND,
+};
 
 type RoundCode = 'x' | 'c' | 'b' | 'r' | 'f';
 
@@ -212,7 +224,13 @@ function mapCard(rank: string, suit: string): MessageInitShape<typeof CardSchema
  * consumes. Throws on any amount outside the safe integer chip profile. */
 export function toV1DecisionRequest(
   room: RiverRoom,
-  config: { style?: string; heroName?: string; solverMode?: SolverMode } = {},
+  config: {
+    style?: string;
+    heroName?: string;
+    solverMode?: SolverMode;
+    minimumGuaranteeLevel?: GuaranteeLevelToken;
+    negotiatedMinor?: 0 | 1 | 2;
+  } = {},
 ): DecisionRequest {
   if (!room.legal)
     throw new Error('legal actions are required');
@@ -536,11 +554,22 @@ export function toV1DecisionRequest(
       // so a 0 or negative server value must never reach the engine as an
       // (rejected) hint; mirror that sanitization with Number.isFinite.
       preflopEffectiveStackBb: effectiveStackHint(room),
+      // RFC 0008 stage 5: the floor exists ONLY on negotiated minor 2; older
+      // hosts reject field 8 as UNSUPPORTED_FEATURE, so it is never sent below.
+      ...(config.negotiatedMinor === 2 && config.minimumGuaranteeLevel !== undefined
+        ? {
+            minimumGuarantee:
+              GUARANTEE_LEVEL_BY_TOKEN[config.minimumGuaranteeLevel],
+          }
+        : {}),
     },
   });
 }
 
-export function decisionEnvelope(request: DecisionRequest, protocolMinor: 0 | 1 = 0): Envelope {
+export function decisionEnvelope(
+  request: DecisionRequest,
+  protocolMinor: 0 | 1 | 2 = 0,
+): Envelope {
   const envelope = create(EnvelopeSchema, {
     protocolMinor,
   });
@@ -601,8 +630,11 @@ function chipToNumber(value: bigint | undefined, field: string): number | undefi
 // the executable decision the v0 runner validates against the platform legal
 // set. Engine errors and transport anomalies throw; the caller applies the
 // operational safe fallback rather than folding.
-function executeFromStrategy(strategy: StrategyLike,
-                             room: Parameters<typeof fromV1DecisionResponse>[1]):
+function executeFromStrategy(
+  strategy: StrategyLike,
+  room: Parameters<typeof fromV1DecisionResponse>[1],
+  guaranteeLevel: string | undefined,
+):
     Awaited<ReturnType<typeof fromV1DecisionResponse>> {
   if (strategy.actions.length < 1)
     throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
@@ -642,7 +674,9 @@ function executeFromStrategy(strategy: StrategyLike,
   const validated = validateEngineDecision(room, raw);
   if (!validated)
     throw new Error('engine strategy failed platform legality validation');
-  return validated;
+  // validateEngineDecision builds the frozen v0-shaped object (no level); the
+  // guarantee surface is attached by the adapter after validation.
+  return guaranteeLevel === undefined ? validated : { ...validated, guaranteeLevel };
 }
 
 /** Converts a v1 DecisionResponse into the executable decision shape the v0
@@ -650,10 +684,16 @@ function executeFromStrategy(strategy: StrategyLike,
  * actions, degenerate) and the negotiated minor-1 ExpandedStrategy (the full
  * resident distribution, up to 32 actions). Engine errors and transport
  * anomalies throw; the caller applies the operational safe fallback rather
- * than folding. */
+ * than folding.
+ *
+ * At negotiated minor 2 the guarantee is read from field 11 EXCLUSIVELY:
+ * field 10 (the minor-1 vocabulary) is never consulted, and every successful
+ * minor-2 strategy carries the level through to ExecutableDecision. Minors
+ * 0/1 leave the level undefined. */
 export function fromV1DecisionResponse(
   envelope: Envelope,
   room: RiverRoom,
+  negotiatedMinor: 0 | 1 | 2 = 0,
 ): ExecutableDecision {
   if (envelope.payload.case !== 'decisionResponse') {
     throw new Error('engine response did not contain a decision');
@@ -664,10 +704,15 @@ export function fromV1DecisionResponse(
     const name = ErrorCode[error.code] ?? 'UNSPECIFIED';
     throw new V1EngineError(name, error.code, error.retryable);
   }
+  const level = negotiatedMinor === 2
+    ? response.result.case === 'strategy' || response.result.case === 'expandedStrategy'
+      ? response.result.value.solver?.guaranteeLevel
+      : undefined
+    : undefined;
   if (response.result.case === 'strategy')
-    return executeFromStrategy(response.result.value, room);
+    return executeFromStrategy(response.result.value, room, level);
   if (response.result.case === 'expandedStrategy')
-    return executeFromStrategy(response.result.value, room);
+    return executeFromStrategy(response.result.value, room, level);
   throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
 }
 
@@ -676,7 +721,12 @@ export function fromV1DecisionResponse(
  * RESOLVING request produced a certified whole-range result. Anything other
  * than source RESOLVING(7) with guarantee "modeled_exact_bound" is uncertified
  * (a deadline baseline carries source BLUEPRINT / "baseline") and must be
- * labeled as such by the caller; an EngineError is never a strategic fold. */
+ * labeled as such by the caller; an EngineError is never a strategic fold.
+ *
+ * Minor-1 vocabulary only: it reads SolverMetadata.guarantee (field 10), which
+ * a negotiated minor-2 host never sets. Minor-2 callers read
+ * solver.guaranteeLevel (field 11) instead; never apply this to a minor-2
+ * envelope. */
 export type ResolveCertification =
   | { kind: 'modeled-exact-bound'; digest: string }
   | { kind: 'baseline'; digest?: string }

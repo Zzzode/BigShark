@@ -8,6 +8,7 @@ import {
   EnvelopeSchema,
   ExpandedStrategySchema,
   GetCapabilitiesResponseSchema,
+  GuaranteeLevel,
   SolverMode,
   SolverSource,
   StrategySchema,
@@ -142,6 +143,75 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
     return envelope;
   }
 
+  // Minor-2 scripted scenarios (RFC 0008 stage 5).
+  if (minor === 2) {
+    const hasFloor = request.payload.case === 'decisionRequest'
+      && request.payload.value.options?.minimumGuarantee !== undefined;
+    const floor = request.payload.case === 'decisionRequest'
+      ? request.payload.value.options?.minimumGuarantee
+      : undefined;
+    // A caller floor above APPROXIMATE(2) is refused with code 9, except the
+    // hand-id-selected certified scenario which meets every floor.
+    if (handId !== 'certified' && hasFloor && (floor ?? 0) > GuaranteeLevel.APPROXIMATE) {
+      decision.result = {
+        case: 'error',
+        value: create(EngineErrorSchema, {
+          code: 9,  // GUARANTEE_BELOW_REQUEST
+          message: 'achieved guarantee level is below the requested minimum',
+          retryable: false,
+        }),
+      };
+      const envelope = create(EnvelopeSchema);
+      envelope.payload = { case: 'decisionResponse', value: decision };
+      return envelope;
+    }
+    if (handId === 'certified') {
+      decision.result = {
+        case: 'expandedStrategy',
+        value: create(ExpandedStrategySchema, {
+          actions: [{ type: ActionType.CALL, probability: 1 }],
+          selectedAction: { type: ActionType.CALL },
+          solver: {
+            source: SolverSource.RESOLVING,
+            reasonCode: 'resolving',
+            cacheHit: false,
+            artifactSha256:
+              'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+            // Field 11 only; field 10 is deliberately never set.
+            guaranteeLevel: 'certified_bound',
+          },
+        }),
+      };
+      const envelope = create(EnvelopeSchema);
+      envelope.payload = { case: 'decisionResponse', value: decision };
+      return envelope;
+    }
+    // Default minor-2 echo: heuristic answer carrying field 11 = approximate.
+    decision.result = {
+      case: 'expandedStrategy',
+      value: create(ExpandedStrategySchema, {
+        actions: [
+          {
+            type: bigintEcho ? ActionType.FOLD : ActionType.CHECK,
+            ...(bigintEcho ? { targetTotal: toCall } : {}),
+            probability: 1,
+          },
+        ],
+        ...(bigintEcho
+          ? { selectedAction: { type: ActionType.FOLD, targetTotal: toCall } }
+          : { selectedAction: { type: ActionType.CHECK } }),
+        solver: {
+          source: SolverSource.POSTFLOP_HEURISTIC,
+          reasonCode: 'postflop-heuristic',
+          guaranteeLevel: 'approximate',
+        },
+      }),
+    };
+    const envelope = create(EnvelopeSchema);
+    envelope.payload = { case: 'decisionResponse', value: decision };
+    return envelope;
+  }
+
   decision.result = {
     case: 'strategy',
     value: create(StrategySchema, {
@@ -166,8 +236,10 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
 
 function capabilitiesEnvelope(minor: number): Envelope {
   const capabilities = create(GetCapabilitiesResponseSchema, {
-    supportedProtocolMinors: minor === 1 ? [0, 1] : [0],
-    engineBuildVersion: minor === 1 ? 'fake-v1.1' : 'fake',
+    supportedProtocolMinors: minor === 2 ? [0, 1, 2] : minor === 1 ? [0, 1] : [0],
+    engineBuildVersion: minor === 2
+      ? 'fake-v1.2'
+      : minor === 1 ? 'fake-v1.1' : 'fake',
     supportedGameVariants: [1],
     supportedBettingStructures: [1],
     minimumPlayers: 2,
@@ -175,9 +247,9 @@ function capabilitiesEnvelope(minor: number): Envelope {
     supportedStreets: [1, 2, 3, 4],
     supportedActions: [1, 2, 3, 4, 5],
     amountSemantics: 1,
-    // Minor-1 capabilities advertise BLUEPRINT (6); RESOLVING (7) is never
-    // advertised.
-    solverModes: minor === 1
+    // Minor 1/2 capabilities advertise BLUEPRINT (6); RESOLVING (7) stays
+    // unadvertised like the root-less published binary.
+    solverModes: minor >= 1
       ? [SolverMode.AUTOMATIC, SolverMode.HEURISTIC, SolverMode.BLUEPRINT]
       : [1],
     strategyProfiles: ['tag'],
@@ -219,7 +291,7 @@ function pump(): void {
 
 function handle(request: Envelope): void {
   const requestId = request.requestId;
-  const minor = request.protocolMinor <= 1 ? request.protocolMinor : 0;
+  const minor = request.protocolMinor <= 2 ? request.protocolMinor : 0;
 
   if (request.payload.case === 'getCapabilitiesRequest') {
     process.stdout.write(

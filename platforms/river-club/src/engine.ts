@@ -7,6 +7,7 @@ import {
   decisionEnvelope,
   fromV1DecisionResponse,
   toV1DecisionRequest,
+  V1EngineError,
 } from './v1-mapper.js';
 import {
   buildContext,
@@ -16,6 +17,7 @@ import {
 import { create } from '@bufbuild/protobuf';
 import {
   EnvelopeSchema,
+  ErrorCode,
   GetCapabilitiesRequestSchema,
   SolverMode,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
@@ -77,8 +79,9 @@ function protoEngineClient(): ProtoEngineProcessClient | null {
       warmupEnvelope: warmup,
       warmupTimeoutMs: 10_000,
       // The framed path stays minor 0 by default; callers must explicitly
-      // negotiate minor 1 before blueprint features can be used.
+      // negotiate a higher minor before its features can be used.
       negotiateMinor1: process.env.BIGSHARK_ENGINE_PROTO_MINOR1 === '1',
+      negotiateMinor2: process.env.BIGSHARK_ENGINE_PROTO_MINOR2 === '1',
     });
   }
   return defaultProtoClient;
@@ -98,24 +101,37 @@ async function decideV1(
     ?? protoEngineClient();
   if (!client)
     return safeFallback(room);
-  // Minor 1 is used only with a client whose capability handshake succeeded
+  // The concrete process client completes its capability handshake at the end
+  // of start(); awaiting it makes the negotiated minor available on the very
+  // first decision instead of racing it as 0. Structural fakes omit start().
+  await client.start?.();
+  // Minor 1+ is used only with a client whose capability handshake succeeded
   // (explicit opt-in at client construction). On minor 1 a forced blueprint
   // request runs in BLUEPRINT mode; otherwise AUTOMATIC tries the resident
   // blueprint and deterministically falls back to the heuristic on any miss.
-  const minor: 0 | 1 = client.minor1Capable ? 1 : 0;
-  const solverMode = config.protoBlueprint && minor === 1
+  const minor: 0 | 1 | 2 = client.negotiatedProtocolMinor ?? 0;
+  const solverMode = config.protoBlueprint && minor >= 1
     ? SolverMode.BLUEPRINT
     : SolverMode.AUTOMATIC;
   const request = toV1DecisionRequest(room, {
     ...(config.style !== undefined ? { style: config.style } : {}),
     ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
-    ...(minor === 1 ? { solverMode } : {}),
+    ...(minor >= 1 ? { solverMode } : {}),
+    // Field 8 is only valid on minor 2; pass the minor so the mapper gates it.
+    ...(minor === 2
+      ? {
+          negotiatedMinor: 2 as const,
+          ...(config.minimumGuaranteeLevel !== undefined
+            ? { minimumGuaranteeLevel: config.minimumGuaranteeLevel }
+            : {}),
+        }
+      : {}),
   });
   const envelope = await client.request(
     decisionEnvelope(request, minor),
     config.timeoutMs ?? 2000,
   ) as Envelope;
-  return fromV1DecisionResponse(envelope, room);
+  return fromV1DecisionResponse(envelope, room, minor);
 }
 
 export async function decide(
@@ -123,12 +139,19 @@ export async function decide(
   config: EngineConfig = {},
 ): Promise<ExecutableDecision> {
   if (!room?.legal)
-    return { action: 'fold', reason: 'no-legal' };
+    return { action: 'fold', reason: 'no-legal', guaranteeLevel: 'operational_fallback' };
 
   if (protoEnabled(config)) {
     try {
       return await decideV1(room, config);
-    } catch {
+    } catch (error) {
+      // RFC 0008 stage 5: a GUARANTEE_BELOW_REQUEST refusal is a contract
+      // response to a caller-declared floor, not an operational outage. It
+      // must propagate so the explicit caller can react; it never becomes a
+      // strategic safe fallback.
+      if (error instanceof V1EngineError
+        && error.code === ErrorCode.GUARANTEE_BELOW_REQUEST)
+        throw error;
       // Transport, validation, or capability failures are operational errors;
       // the v1 mapper never converts them into a strategic fold.
       return safeFallback(room);

@@ -129,6 +129,22 @@ enum ErrorCode {
   ERROR_CODE_DEADLINE_EXCEEDED = 6;
   ERROR_CODE_RESOURCE_EXHAUSTED = 7;
   ERROR_CODE_INTERNAL = 8;
+  // Negotiated minor 2 only: a complete answer exists but its guarantee level
+  // is below the request's minimum_guarantee. The host refuses rather than
+  // serving a silently weaker policy. Non-retryable for an unchanged state.
+  ERROR_CODE_GUARANTEE_BELOW_REQUEST = 9;
+}
+
+// RFC 0008 L6 closed guarantee-level set. Numeric order = strength, matching
+// the normative source->level table. UNSPECIFIED(0) as a present request
+// floor is rejected (INVALID_REQUEST); an ABSENT field means "accept any".
+enum GuaranteeLevel {
+  GUARANTEE_LEVEL_UNSPECIFIED = 0;
+  GUARANTEE_LEVEL_OPERATIONAL_FALLBACK = 1;
+  GUARANTEE_LEVEL_APPROXIMATE = 2;
+  GUARANTEE_LEVEL_ABSTRACT_SOLVED = 3;
+  GUARANTEE_LEVEL_EXACT_SOLVED = 4;
+  GUARANTEE_LEVEL_CERTIFIED_BOUND = 5;
 }
 
 message AmountUnit {
@@ -317,6 +333,21 @@ message DecisionOptions {
   // with the platform-computed value should send it for exact parity. When
   // present it must be positive and within a sane table-depth bound.
   optional double preflop_effective_stack_bb = 7;
+  // Negotiated minor 2 only: caller-declared minimum acceptable guarantee
+  // level. Absent = accept any level. Presence (even UNSPECIFIED) on minor
+  // 0/1 is rejected as UNSUPPORTED_FEATURE; a present out-of-range value at
+  // minor 2 is INVALID_REQUEST. The host computes the achieved level itself;
+  // this is not a provenance claim (RFC 0005 eligibility stays unchanged).
+  optional GuaranteeLevel minimum_guarantee = 8 [(buf.validate.field).enum = {
+    defined_only: true
+    in: [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  }];
 }
 
 message DecisionRequest {
@@ -381,6 +412,21 @@ message SolverMetadata {
       "modeled_exact_bound",
       "uncertified",
       "baseline"
+    ]
+  }];
+  // Negotiated minor 2 only. RFC 0008 L6 guarantee level. Every successful
+  // minor-2 decision carries this; minor 2 never sets field 10. The
+  // certified_bound token is the minor-2 spelling of minor 1's
+  // modeled_exact_bound (same certified resolver outcome, renamed per the
+  // RFC ladder); exact_solved/abstract_solved exist but no stage-5 source
+  // earns them yet.
+  optional string guarantee_level = 11 [(buf.validate.field).string = {
+    in: [
+      "operational_fallback",
+      "approximate",
+      "abstract_solved",
+      "exact_solved",
+      "certified_bound"
     ]
   }];
 }

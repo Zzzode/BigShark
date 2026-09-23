@@ -222,17 +222,41 @@ export interface ExecutableDecision {
   action: Action;
   amount?: number;
   reason: string;
+  /**
+   * RFC 0008 stage 5 L6 guarantee level attached by the adapter: the engine's
+   * field-11 token on a negotiated minor-2 decision, or "operational_fallback"
+   * on every locally produced fallback. Absent on the frozen v0 path so its
+   * golden deepEqual stays byte-identical.
+   */
+  guaranteeLevel?: string;
 }
+
+/** Caller-declared minimum acceptable guarantee level (minor 2 only). */
+export type GuaranteeLevel =
+  | 'operational_fallback'
+  | 'approximate'
+  | 'abstract_solved'
+  | 'exact_solved'
+  | 'certified_bound';
 
 /** Structural framed v1 client type; the concrete Envelope types live in the
  * generated Protobuf bindings imported by v1-mapper. */
 export interface V1EnvelopeClient {
   request(envelope: unknown, timeoutMs?: number): Promise<unknown>;
-  /** Negotiated protocol minor (0 unless the client opted into minor 1 and the
-   * host capability handshake succeeded). */
-  readonly negotiatedProtocolMinor?: 0 | 1;
-  /** True when the current process negotiated minor 1. */
+  /**
+   * Resolves once the process is started AND the capability handshake has
+   * finished. The adapter MUST await this before reading
+   * negotiatedProtocolMinor: a cold first request's own readiness wait
+   * completes negotiation only after the minor would otherwise have been read.
+   */
+  start?: () => Promise<void>;
+  /** Negotiated protocol minor (0 unless the client opted into a higher minor
+   * and the host capability handshake succeeded). */
+  readonly negotiatedProtocolMinor?: 0 | 1 | 2;
+  /** True when the current process negotiated minor 1 or higher. */
   readonly minor1Capable?: boolean;
+  /** True when the current process negotiated minor 2. */
+  readonly minor2Capable?: boolean;
 }
 
 export interface EngineConfig {
@@ -250,6 +274,14 @@ export interface EngineConfig {
    * safe fallback) instead of AUTOMATIC heuristic-first mode. Requires a
    * client that negotiated minor 1; otherwise requests stay on minor 0. */
   protoBlueprint?: boolean;
+  /**
+   * RFC 0008 stage 5: caller-declared minimum guarantee level, encoded only on
+   * a negotiated minor-2 request. The shipped runner never sets this; when an
+   * explicit caller does and the engine answers below the floor, the typed
+   * GUARANTEE_BELOW_REQUEST error propagates (it is never converted into a
+   * safe fallback).
+   */
+  minimumGuaranteeLevel?: GuaranteeLevel;
 }
 
 export interface GoldenFixture {

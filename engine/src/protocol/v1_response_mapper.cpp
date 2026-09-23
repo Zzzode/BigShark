@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bs/guarantee.hpp>
 #include <bs/prng.hpp>
 #include <bs/river_gto.hpp>
 #include <bs/v1_protocol.hpp>
@@ -56,6 +57,31 @@ const char* sourceCode(pv::SolverSource source) {
   }
 }
 
+// Fail-closed reading of a WIRE source (R3/R8): UNSPECIFIED and any future or
+// out-of-range value map to operational_fallback rather than being assigned a
+// stronger level by default. The host write path never uses this - its own
+// levels derive from guaranteeFor() on the declared policy source, or from the
+// two-arm resolve-outcome labeling; this is a boundary defense, table-tested
+// directly. RESOLVING means certified here because a deadline baseline is
+// emitted under the BLUEPRINT source on every minor.
+// (Definition follows the anonymous namespace so the symbol is externally
+// testable per its v1_mappers.hpp declaration.)
+pv::SolverSource toWireSource(bs::DecisionSource source) {
+  switch (source) {
+    case bs::DecisionSource::PreflopChart:
+      return pv::SOLVER_SOURCE_PREFLOP_CHART;
+    case bs::DecisionSource::PostflopHeuristic:
+      return pv::SOLVER_SOURCE_POSTFLOP_HEURISTIC;
+    case bs::DecisionSource::RiverLp:
+      return pv::SOLVER_SOURCE_RIVER_LP;
+    case bs::DecisionSource::RiverDcfr:
+      return pv::SOLVER_SOURCE_RIVER_DCFR;
+    case bs::DecisionSource::MultistreetCfr:
+      return pv::SOLVER_SOURCE_MULTISTREET_CFR;
+  }
+  return pv::SOLVER_SOURCE_UNSPECIFIED;
+}
+
 // Verifies the engine action against the platform-provided legal set by kind
 // and, for bets/raises, by exact inclusive target total.
 bool actionIsLegal(const pv::HandState& state, pv::ActionType type, std::uint64_t target,
@@ -88,10 +114,12 @@ pv::ActionType wireActionType(bs::poker::ActionType type) {
   return pv::ACTION_TYPE_UNSPECIFIED;
 }
 
-// Fills the heuristic solver metadata exactly as the minor-0 path does; the
-// heuristic keeps its REAL source on both minors.
-void fillHeuristicMetadata(pv::SolverMetadata* metadata, const bs::Decision& decision) {
-  const pv::SolverSource source = solverSource(decision.reason);
+// Fills the heuristic solver metadata. Minor 0/1 pass the source INFERRED FROM
+// the reason text (frozen behavior, including the four chart folds pinned as
+// postflop-heuristic); minor 2 passes the source the policy declared at the
+// routing branch. Equity/MDF/diagnostic fields are identical on every minor.
+void fillHeuristicMetadata(pv::SolverMetadata* metadata, const bs::Decision& decision,
+                           pv::SolverSource source) {
   metadata->set_source(source);
   metadata->set_solve_time_us(0);
   if (decision.equity >= 0)
@@ -194,7 +222,7 @@ pv::DecisionResponse mapDecisionResponse(const pv::DecisionRequest& request,
   }
 
   pv::SolverMetadata* metadata = strategy->mutable_solver();
-  fillHeuristicMetadata(metadata, decision);
+  fillHeuristicMetadata(metadata, decision, solverSource(decision.reason));
 
   return response;
 }
@@ -233,7 +261,50 @@ pv::DecisionResponse mapHeuristicExpandedResponse(const pv::DecisionRequest& req
     selected->set_all_in(false);
   }
 
-  fillHeuristicMetadata(expanded->mutable_solver(), decision);
+  fillHeuristicMetadata(expanded->mutable_solver(), decision, solverSource(decision.reason));
+  return response;
+}
+
+// RFC 0008 stage 5, minor 2: the heuristic answer keeps the source the POLICY
+// declared at its routing branch (no reason-text inference) and always carries
+// field 11, derived from the single normative table. Field 10 is never set.
+pv::DecisionResponse mapGuaranteedHeuristicResponse(const pv::DecisionRequest& request,
+                                                    const bs::SourcedDecision& answer) {
+  const bs::Decision& decision = answer.decision;
+  const pv::SolverSource source = toWireSource(answer.source);
+  const pv::ActionType type = actionType(decision.action);
+  if (type == pv::ACTION_TYPE_UNSPECIFIED || decision.amount < 0)
+    throw MappingError(pv::ERROR_CODE_INTERNAL, "engine produced an unrecognized action",
+                       /*retryable=*/true);
+
+  const bool hasTarget = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
+  const std::uint64_t target = static_cast<std::uint64_t>(decision.amount);
+  if (!actionIsLegal(request.state(), type, target, hasTarget))
+    throw MappingError(pv::ERROR_CODE_INTERNAL,
+                       "engine action is not a member of the requested legal actions",
+                       /*retryable=*/true);
+
+  pv::DecisionResponse response;
+  pv::ExpandedStrategy* expanded = response.mutable_expanded_strategy();
+
+  pv::ActionPolicy* policy = expanded->add_actions();
+  policy->set_type(type);
+  if (hasTarget)
+    policy->set_target_total(target);
+  policy->set_all_in(false);
+  policy->set_probability(1.0);
+
+  if (request.options().include_sampled_action()) {
+    pv::SelectedAction* selected = expanded->mutable_selected_action();
+    selected->set_type(type);
+    if (hasTarget)
+      selected->set_target_total(target);
+    selected->set_all_in(false);
+  }
+
+  pv::SolverMetadata* metadata = expanded->mutable_solver();
+  fillHeuristicMetadata(metadata, decision, source);
+  metadata->set_guarantee_level(guaranteeToken(guaranteeFor(answer.source)));
   return response;
 }
 
@@ -249,6 +320,22 @@ const pv::LegalAction* findLegal(const pv::HandState& state, pv::ActionType type
 }
 
 }  // namespace
+
+bs::Guarantee failClosedGuaranteeForWireSource(pv::SolverSource source) {
+  switch (source) {
+    case pv::SOLVER_SOURCE_PREFLOP_CHART:
+    case pv::SOLVER_SOURCE_POSTFLOP_HEURISTIC:
+    case pv::SOLVER_SOURCE_RIVER_LP:
+    case pv::SOLVER_SOURCE_RIVER_DCFR:
+    case pv::SOLVER_SOURCE_MULTISTREET_CFR:
+    case pv::SOLVER_SOURCE_BLUEPRINT:
+      return bs::Guarantee::Approximate;
+    case pv::SOLVER_SOURCE_RESOLVING:
+      return bs::Guarantee::CertifiedBound;
+    default:
+      return bs::Guarantee::OperationalFallback;
+  }
+}
 
 bool blueprintRowIsLegal(const pv::DecisionRequest& request, const V1BlueprintRow& row) {
   if (row.size < 1 || row.size > 32 || row.actions == nullptr || row.probabilities == nullptr)
@@ -268,15 +355,58 @@ bool blueprintRowIsLegal(const pv::DecisionRequest& request, const V1BlueprintRo
   return std::isfinite(sum) && std::abs(sum - 1.0) <= 1e-12;
 }
 
-pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
-                                             const V1BlueprintRow& row, pv::SolverSource source,
-                                             std::string_view guarantee) {
+// RFC 0008 stage 5 (R9/R15): mapper-independent completeness preconditions for
+// a storage row, run by the minor-2 dispatcher BEFORE the guarantee-floor
+// comparison and again inside the mapper. An un-mappable row must surface as
+// its real error (coverage/INTERNAL), never as code 9. The checks are exactly
+// those the mapper enforces when serializing: row legality, a 64-character
+// artifact digest, and sampled-action liveness plus legal membership when a
+// sample is requested.
+void verifyStorageRowComplete(const pv::DecisionRequest& request, const V1BlueprintRow& row) {
   if (!blueprintRowIsLegal(request, row))
     throw MappingError(pv::ERROR_CODE_UNSUPPORTED_FEATURE,
                        "blueprint action is outside the requested legal action window", false);
   if (row.artifact_sha256.size() != 64)
     throw MappingError(pv::ERROR_CODE_INTERNAL, "resident answer lacks an artifact digest",
                        /*retryable=*/true);
+  if (request.options().include_sampled_action()) {
+    const std::size_t chosen = sampleBucket(row.probabilities, row.size, request.options().seed());
+    if (chosen >= row.size || row.probabilities[chosen] <= 0.0)
+      throw MappingError(pv::ERROR_CODE_INTERNAL, "blueprint sampler selected no live action",
+                         /*retryable=*/true);
+    const bs::poker::Action& action = row.actions[chosen];
+    const pv::ActionType type = wireActionType(action.type);
+    const bool aggressive = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
+    if (!actionIsLegal(request.state(), type, action.target_total, aggressive))
+      throw MappingError(pv::ERROR_CODE_INTERNAL,
+                         "sampled blueprint action is outside the requested legal window",
+                         /*retryable=*/true);
+  }
+}
+
+// Heuristic counterpart of the row verifier (R15): the answer is complete only
+// when the mapper could actually serialize it. Run before the floor comparison
+// so an engine-produced illegal action stays INTERNAL instead of becoming a
+// floor refusal.
+void verifyHeuristicAnswerComplete(const pv::DecisionRequest& request,
+                                   const bs::SourcedDecision& answer) {
+  const bs::Decision& decision = answer.decision;
+  const pv::ActionType type = actionType(decision.action);
+  if (type == pv::ACTION_TYPE_UNSPECIFIED || decision.amount < 0)
+    throw MappingError(pv::ERROR_CODE_INTERNAL, "engine produced an unrecognized action",
+                       /*retryable=*/true);
+  const bool hasTarget = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
+  if (!actionIsLegal(request.state(), type, static_cast<std::uint64_t>(decision.amount), hasTarget))
+    throw MappingError(pv::ERROR_CODE_INTERNAL,
+                       "engine action is not a member of the requested legal actions",
+                       /*retryable=*/true);
+}
+
+pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
+                                             const V1BlueprintRow& row, pv::SolverSource source,
+                                             std::string_view minor1_guarantee,
+                                             bs::Guarantee minor2_level, bool use_field_11) {
+  verifyStorageRowComplete(request, row);
 
   pv::DecisionResponse response;
   pv::ExpandedStrategy* expanded = response.mutable_expanded_strategy();
@@ -310,20 +440,11 @@ pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
   // Deterministic sampled action: one domain-separated draw over the row.
   if (request.options().include_sampled_action()) {
     const std::size_t chosen = sampleBucket(row.probabilities, row.size, request.options().seed());
-    if (chosen >= row.size || row.probabilities[chosen] <= 0.0)
-      throw MappingError(pv::ERROR_CODE_INTERNAL, "blueprint sampler selected no live action",
-                         /*retryable=*/true);
     const bs::poker::Action& action = row.actions[chosen];
     const pv::ActionType type = wireActionType(action.type);
-    // Membership by kind AND exact target against BOTH the row (the sampled
-    // bucket itself) and the request legal set.
-    const bool aggressive = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
-    if (!actionIsLegal(request.state(), type, action.target_total, aggressive))
-      throw MappingError(pv::ERROR_CODE_INTERNAL,
-                         "sampled blueprint action is outside the requested legal window",
-                         /*retryable=*/true);
     pv::SelectedAction* selected = expanded->mutable_selected_action();
     selected->set_type(type);
+    const bool aggressive = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
     if (aggressive)
       selected->set_target_total(action.target_total);
     const pv::LegalAction* legal = findLegal(request.state(), type);
@@ -338,7 +459,13 @@ pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
   metadata->set_cache_hit(source == pv::SOLVER_SOURCE_BLUEPRINT);
   metadata->set_reason_code(source == pv::SOLVER_SOURCE_RESOLVING ? "resolving" : "blueprint");
   metadata->set_artifact_sha256(std::string(row.artifact_sha256));
-  metadata->set_guarantee(std::string(guarantee));
+  // Per-minor disjoint vocabularies, a construction invariant: minor 1 writes
+  // field 10 and never field 11; minor 2 writes field 11 (level token sourced
+  // ONLY from guaranteeToken) and never field 10.
+  if (use_field_11)
+    metadata->set_guarantee_level(guaranteeToken(minor2_level));
+  else
+    metadata->set_guarantee(std::string(minor1_guarantee));
   return response;
 }
 
@@ -346,7 +473,34 @@ pv::DecisionResponse mapBlueprintExpandedResponse(const pv::DecisionRequest& req
                                                   const V1BlueprintRow& row) {
   // Artifact v1 blueprint rows carry no certification bounds by construction;
   // the guarantee is therefore "uncertified".
-  return mapExpandedResponseImpl(request, row, pv::SOLVER_SOURCE_BLUEPRINT, "uncertified");
+  return mapExpandedResponseImpl(request, row, pv::SOLVER_SOURCE_BLUEPRINT, "uncertified",
+                                 bs::Guarantee::Approximate, /*use_field_11=*/false);
+}
+
+// RFC 0008 stage 5 minor-2 storage mappers. The level is a TWO-ARM function of
+// the lookup outcome (R8): a certified resolve is certified_bound; blueprint
+// hits and deadline baselines are approximate. Every token, including the
+// approximate arms (R14), comes from guaranteeToken - no string literal here.
+pv::DecisionResponse mapGuaranteedBlueprintResponse(const pv::DecisionRequest& request,
+                                                    const V1BlueprintRow& row) {
+  return mapExpandedResponseImpl(request, row, pv::SOLVER_SOURCE_BLUEPRINT, std::string_view{},
+                                 bs::Guarantee::Approximate,
+                                 /*use_field_11=*/true);
+}
+
+pv::DecisionResponse mapGuaranteedDeadlineResponse(const pv::DecisionRequest& request,
+                                                   const V1BlueprintRow& row) {
+  // The deadline baseline is emitted under the BLUEPRINT source on every minor.
+  return mapExpandedResponseImpl(request, row, pv::SOLVER_SOURCE_BLUEPRINT, std::string_view{},
+                                 bs::Guarantee::Approximate,
+                                 /*use_field_11=*/true);
+}
+
+pv::DecisionResponse mapGuaranteedCertifiedResponse(const pv::DecisionRequest& request,
+                                                    const V1BlueprintRow& row) {
+  return mapExpandedResponseImpl(request, row, pv::SOLVER_SOURCE_RESOLVING, std::string_view{},
+                                 bs::Guarantee::CertifiedBound,
+                                 /*use_field_11=*/true);
 }
 
 pv::DecisionResponse mapResolvedExpandedResponse(const pv::DecisionRequest& request,
@@ -367,7 +521,8 @@ pv::DecisionResponse mapResolvedExpandedResponse(const pv::DecisionRequest& requ
     throw MappingError(pv::ERROR_CODE_INTERNAL, "unsupported resolving guarantee label",
                        /*retryable=*/true);
   }
-  return mapExpandedResponseImpl(request, row, source, guarantee);
+  return mapExpandedResponseImpl(request, row, source, guarantee, bs::Guarantee::Approximate,
+                                 /*use_field_11=*/false);
 }
 
 pv::DecisionResponse errorResponse(pv::ErrorCode code, const std::string& message, bool retryable,
@@ -405,8 +560,11 @@ pv::GetCapabilitiesResponse buildCapabilities(unsigned negotiated_minor, bool bl
   capabilities.add_supported_protocol_minors(0);
   if (negotiated_minor >= 1)
     capabilities.add_supported_protocol_minors(1);
-  capabilities.set_engine_build_version(negotiated_minor >= 1 ? "bigshark-engine-v1.1.0"
-                                                              : "bigshark-engine-v1.0.0");
+  if (negotiated_minor >= 2)
+    capabilities.add_supported_protocol_minors(2);
+  capabilities.set_engine_build_version(negotiated_minor >= 2   ? "bigshark-engine-v1.2.0"
+                                        : negotiated_minor >= 1 ? "bigshark-engine-v1.1.0"
+                                                                : "bigshark-engine-v1.0.0");
   capabilities.add_supported_game_variants(pv::GAME_VARIANT_NLHE);
   capabilities.add_supported_betting_structures(pv::BETTING_STRUCTURE_NO_LIMIT);
   capabilities.set_minimum_players(2);
