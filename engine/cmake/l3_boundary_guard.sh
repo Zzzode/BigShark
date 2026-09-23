@@ -19,7 +19,10 @@ STD="$1"; shift
 INCDIR="$1"; shift
 STAMP="$1"; shift
 
-SRCROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+# engine/cmake -> engine -> repository root (exactly two levels; three
+# overshoots into the parent directory and made the ENGINE_INC prefix never
+# match, so the guard passed vacuously under absolute CMake paths).
+SRCROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 ENGINE_INC="$SRCROOT/engine/include"
 
 # Repo-relative project headers L3 may depend on (resolved, so transitive
