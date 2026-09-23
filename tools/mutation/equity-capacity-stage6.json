@@ -1,0 +1,50 @@
+{
+  "description": "RFC 0008 stage 6 precursor mutation battery: the equityVsAll opponent-hand buffer, its gate clamp, and its gate-index guard must cover the engine's full 2..10-seat capacity (up to 9 opponents) and tolerate a short gate list. Memory-safety mutations (a write past the opponent buffer, a read past a short gate list) are witnessed under AddressSanitizer; the oversized-list clamp is witnessed in release because the inflated loop count corrupts the estimate. Every mutation must turn its suite red; 0 equivalent.",
+  "expected": {
+    "equivalent": [],
+    "rationale": "Shrinking the opponent buffer reintroduces the stack out-of-bounds WRITE at 8..10 seats; removing the short-list guard reintroduces an out-of-bounds READ when minPct is empty -- both are only observable under AddressSanitizer in release (adjacent storage happens to survive), so they run on the asan target (empirically confirmed). Removing the clamp reintroduces an oversized-list WRITE; in release the 50-entry loop count drives the estimate off the valid range so the suite fails. The capacity suite fills every opponent slot, passes an oversized gate list, and passes an empty gate list."
+  },
+  "build": {
+    "command": "cmake",
+    "args": ["--build", "--preset", "release", "--target", "test_equity_capacity"]
+  },
+  "test": {
+    "command": "./build/release/engine/test_equity_capacity",
+    "args": []
+  },
+  "mutations": [
+    {
+      "name": "the opponent-gate clamp is removed (oversized list indexes past the buffer)",
+      "file": "engine/include/bs/equity.hpp",
+      "find": "  const int nOpp = std::clamp(static_cast<int>(opts.minPct.size()), 1, kMaxOpponents);",
+      "replace": "  const int nOpp =\n      std::max(1, static_cast<int>(opts.minPct.size()));"
+    }
+  ],
+  "additional_targets": [
+    {
+      "name": "equity_capacity_asan",
+      "build": {
+        "command": "cmake",
+        "args": ["--build", "--preset", "asan", "--target", "test_equity_capacity"]
+      },
+      "test": {
+        "command": "./build/asan/engine/test_equity_capacity",
+        "args": []
+      },
+      "mutations": [
+        {
+          "name": "the opponent buffer is shrunk back to the old fixed six slots (ASan witness)",
+          "file": "engine/include/bs/equity.hpp",
+          "find": "  std::array<std::array<int, 2>, kMaxOpponents> opp{};",
+          "replace": "  std::array<std::array<int, 2>, 6> opp{};"
+        },
+        {
+          "name": "the short-gate-list bounds guard is removed (empty list reads past it; ASan witness)",
+          "file": "engine/include/bs/equity.hpp",
+          "find": "      double gate = o < static_cast<int>(opts.minPct.size()) ? opts.minPct[o] : 0.0;",
+          "replace": "      double gate = opts.minPct[o];"
+        }
+      ]
+    }
+  ]
+}

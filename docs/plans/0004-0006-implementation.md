@@ -3054,3 +3054,59 @@ npm run check green (node 107/107), npm run proto:check green,
 replay 156 decisions / 0 illegal / 0 JS fallbacks, mutation battery
 27/27 RED post-format, and the real-binary minor-2 walk passing
 non-skipped against the republished bin/bigshark-engine.
+
+### RFC 0008 stage 6 precursor: ten-seat equity memory-safety fix (2026-09-23)
+
+While mapping the stage-6 surface, a reachable stack out-of-bounds WRITE was
+found in the Monte Carlo equity routine that the pinned postflop baseline
+calls on every flop/turn/river decision.
+
+- Defect: `equityVsAll` (engine/include/bs/equity.hpp) stored each drawn
+  opponent hand in a fixed `std::array<std::array<int,2>, 6> opp`, but the
+  number of opponents is `opts.minPct.size()`, which
+  `postflop()` (engine/src/policy/decision.cpp:195,205) sizes to
+  `playersInHand - 1`. The v1 validator accepts 2..10 seats and nothing
+  upstream rejects large tables, so a postflop request at 8/9/10 seats set
+  7/8/9 gates and `opp[nDrawn++]` wrote past the six-slot stack buffer on the
+  first Monte Carlo iteration that drew a seventh opponent. `opponentPcts`
+  is also an untrusted external JSON array (v0_json.cpp) with no length
+  bound, giving a second overflow path independent of seat count.
+- Why it blocks stage 6: the RFC pins the engine's own heuristic+chart
+  policy as the comparison opponent and requires a measurement at exactly
+  10 seats; that baseline had undefined postflop behavior (memory
+  corruption) there, so it could not be pinned or measured honestly.
+- Fix: the opponent buffer is sized to the true capacity, single-sourced
+  from the L0 constant
+  `kMaxOpponents = poker::kMaxContributionSeats - 1` (9); equity.hpp now
+  includes bs/settlement.hpp (no cycle: settlement is a bigshark_poker
+  sibling). `nOpp` is clamped to `[1, kMaxOpponents]` so an oversized gate
+  list can never overflow, while the normal 1..9 path is unchanged.
+  Widening the fixed buffer changes no indexed value, so <=7-seat results
+  are bit-stable; the existing multiway equity figures (AA heads-up 0.845
+  vs 3-way 0.605) are unchanged and replay stays 156/0/0.
+- Verification: new engine/tests/test_equity_capacity.cpp (registered in
+  engine/CMakeLists.txt) fills opponent slots 1..9 with gate 0, passes a
+  50-entry oversized gate list AND an empty gate list, and asserts seed
+  reproducibility. It trapped `stack-buffer-overflow WRITE ... overflows this
+  variable 'opp'` at equity.hpp under AddressSanitizer on the unpatched code,
+  and passes after the fix. The independent reviewer reproduced that trap
+  against the committed header via a /tmp include overlay (repo untouched).
+  Mutation battery tools/mutation/equity-capacity-stage6.json = 3/3 RED: the
+  buffer-shrink mutant and the short-gate-list guard-removal mutant (a
+  container-overflow READ on an empty list) are witnessed under the asan
+  preset (the decisive witness for memory-safety regressions), and the
+  clamp-removal mutant under release. The short-list guard also closes a
+  pre-existing latent out-of-bounds READ (nOpp floors at 1, so an explicitly
+  empty minPct read past the vector; no shipped caller produced it).
+  Gates: release 46/46 (the new test is the 46th), ASan/UBSan 46/46 clean,
+  npm run check 107/107, replay 156/0 illegal/0 JS fallback. Independent
+  read-only reviewer: APPROVE (bounded indexing, no other opponent-indexed
+  array, no include cycle, <=7-seat behavior unchanged, legal-v1 reachability).
+
+The larger stage-6 machinery (a seat-indexed behavior-policy interface over
+GameState/AbstractTree, an N-seat sampled unilateral-deviation estimator,
+paired confidence-interval statistics, a scalable joint-deal/runout/action
+sampler, the parsed-chart digest and baseline pin, seat permutations, and a
+10-seat policy that cannot materialize a full identity tree and therefore
+needs abstraction/traversal) is designed separately below; none of it is
+implemented in this precursor.

@@ -614,6 +614,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_equity PRIVATE bigshark_poker)
   add_test(NAME equity COMMAND test_equity)
 
+  add_executable(test_equity_capacity tests/test_equity_capacity.cpp)
+  target_link_libraries(test_equity_capacity PRIVATE bigshark_poker)
+  add_test(NAME equity-capacity COMMAND test_equity_capacity)
+
   add_executable(test_v0_protocol tests/test_v0_protocol.cpp)
   target_link_libraries(test_v0_protocol PRIVATE bigshark_v0_protocol)
   add_test(NAME v0_protocol COMMAND test_v0_protocol)

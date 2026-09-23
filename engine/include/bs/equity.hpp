@@ -6,6 +6,7 @@
 #include <array>
 #include <bs/charts.hpp>
 #include <bs/eval.hpp>
+#include <bs/settlement.hpp>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -81,7 +82,12 @@ inline EquityResult equityVsAll(const std::array<int, 2>& holeIds, const std::ve
     if (!blocked[c])
       pool.push_back(c);
 
-  const int nOpp = std::max(1, (int)opts.minPct.size());
+  // One opponent per gate, at least one, never more than the table capacity
+  // minus the hero. minPct comes from a caller (and, historically, an external
+  // JSON array), so clamp rather than trust its length: the opponent buffer is
+  // fixed and an oversized gate list would otherwise write past it.
+  constexpr int kMaxOpponents = static_cast<int>(poker::kMaxContributionSeats) - 1;
+  const int nOpp = std::clamp(static_cast<int>(opts.minPct.size()), 1, kMaxOpponents);
   const int need = 5 - (int)boardIds.size();
 
   int wins = 0, chops = 0, valid = 0;
@@ -101,12 +107,19 @@ inline EquityResult equityVsAll(const std::array<int, 2>& holeIds, const std::ve
     for (int c : boardIds)
       used[c] = true;
 
-    std::array<std::array<int, 2>, 6> opp{};
+    // Fixed for at most one opponent per other seat at full capacity (see
+    // kMaxOpponents): minPct carries one gate per opponent, and a smaller buffer
+    // wrote past the array on every postflop decision at 8..10 seats. Stack
+    // storage keeps the inner Monte Carlo loop allocation-free.
+    std::array<std::array<int, 2>, kMaxOpponents> opp{};
     int nDrawn = 0;
     bool feasible = true;
 
     for (int o = 0; o < nOpp; o++) {
-      double gate = opts.minPct[o];
+      // A caller may supply fewer gates than opponents (an empty list still
+      // models one opponent via the nOpp floor of 1); index safely and fall
+      // back to gate 0 (keep every drawn hand) rather than reading past it.
+      double gate = o < static_cast<int>(opts.minPct.size()) ? opts.minPct[o] : 0.0;
       int a = -1, b = -1;
       for (int tries = 0; tries < 30; tries++) {
         int ca = draw(used);
