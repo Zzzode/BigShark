@@ -4725,3 +4725,40 @@ unreachable by a genuine abstraction miss, and the train-edge guard catching a
 forbidden include live (including a transitive one). Final matrices: release
 62/62, debug 60/60 (release-only benchmarks excluded), ASan 60/60 with zero
 sanitizer findings.
+
+### Offline practice table + adapter bet/raise verb fix (2026-09-27)
+
+User-requested local training tool (not a measurement step): one human seat at
+a 2..10-seat offline table, every other seat a `BehaviorPolicy` bot —
+`bigshark-practice` interactive leaf (`engine/benchmarks/practice_simulator.cpp`)
+over the new reusable `bs::stage6::PracticeTable` core
+(`engine/include/bs/stage6/practice_table.hpp`,
+`engine/src/stage6/practice_table.cpp`, library `bigshark_practice` ->
+`bigshark_stage6_eval`; added to the offline-guard forbidden prefixes).
+Difficulty `easy` = `UniformBehaviorPolicy`, `medium` = the pinned chart +
+equity heuristic baseline; labels are explicit that neither is "GTO". The
+core shuffles with SplitMix64, posts the n==2 vs n>=3 blind layouts, runs the
+unified GameState action/deal loop, settles with the exact L1 rules with a
+per-hand zero-sum assertion, rotates the button, and keeps cumulative P/L.
+Information exposure is enforced in the core: the human callback/observer see
+only the human's holes, the actually-dealt board prefix, and showdown live
+holes only. Gate: `test_stage6_practice` (seat matrix 2/3/6/9/10 for both
+difficulties, blind layouts, fold privacy, illegal-action rejection, bad
+configs, seeded reproducibility).
+
+The simulator exposed a latent adapter defect: `adapt_to_ctx` advertised
+EVERY aggressive legal action as `"raise"`, even postflop when nothing is
+owed, where the deployed policy's lead branches gate on `L.has("bet")` — the
+pinned baseline therefore never led postflop in any stage-6 measurement
+rollout. Session journals pin the live server vocabulary: preflop
+check-available states (the big blind option after a limp) advertise
+`raise`; postflop check-available states advertise `bet`. The adapter now
+emits that street-dependent verb; `map_deployed_decision` accepts exactly
+the advertised token — preflop only `raise` (reconciled onto the state's
+Bet type at the BB option; a literal preflop `bet` throws), postflop an
+exact bet/Bet or raise/Raise pairing — and throws on every mismatch. The
+corpus gate pins a real one-limper BB-option isolation raise (1326-hand scan)
+and both negative token/state pairings. The adapter corpus harness reference leg was updated
+to the same vocabulary (63/63 identical). Artifact identity is unaffected:
+geometry enumeration walks preflop states only. Baseline R11 figures change
+(fidelity increases) and must be regenerated when measurements are re-run.

@@ -94,13 +94,26 @@ std::string deployed_json(const GameState& state, std::size_t seat, const std::a
   os << q("legal") << ":{";
   os << q("actions") << ":[";
   bool first_a = true;
-  for (const char* a : {"fold", "check", "call", "raise"}) {
-    bool have = (std::string(a) == "fold" && L.fold) || (std::string(a) == "check" && L.check) ||
-                (std::string(a) == "call" && L.call) || (std::string(a) == "raise" && L.aggressive);
-    if (have) {
-      os << (first_a ? "" : ",") << q(a);
-      first_a = false;
+  // The live server vocabulary (pinned from session journals): postflop the
+  // first aggression is "bet" and wagering over a bet is "raise"; preflop the
+  // big blind's option after a limp is still advertised as "raise".
+  const std::vector<std::string> legal_actions = [&] {
+    std::vector<std::string> v;
+    if (L.fold)
+      v.push_back("fold");
+    if (L.check)
+      v.push_back("check");
+    if (L.call)
+      v.push_back("call");
+    if (L.aggressive) {
+      const bool preflop = state.board().empty();
+      v.push_back(!preflop && L.aggressive->type == ActionType::Bet ? "bet" : "raise");
     }
+    return v;
+  }();
+  for (const std::string& a : legal_actions) {
+    os << (first_a ? "" : ",") << q(a);
+    first_a = false;
   }
   os << "],";
   os << q("call") << ":" << L.call_amount << ",";
@@ -319,6 +332,110 @@ int main() {
       e2.hero_was_raiser = true;
       for (const auto& hole : kHoles)
         check_row(state, seat, hole, aggressor_log, e2, "flop-n" + std::to_string(n) + "-pfa1");
+    }
+  }
+
+  // --- Preflop big-blind option after one or more limps. This is the ONE
+  // state where the server vocabulary ("raise") and the unified type (Bet:
+  // nothing owed) diverge; the adapter must still advertise "raise" and
+  // map_deployed_decision must reconcile the token onto ActionType::Bet.
+  for (std::size_t n : {std::size_t{2}, std::size_t{6}}) {
+    const GameDef def = preflop_def(n);
+    GameState state(def);
+    HandLog log;
+    // Walk to the big blind's option with EXACTLY ONE limper: the first
+    // voluntary actor calls, every other pre-BB seat folds. Fully-limped
+    // multiway pots are a different chart spot (the pinned chart checks the
+    // option through with four limpers); the single-limper isolation raise
+    // is the canonical BB-option aggression.
+    bool limper_placed = false;
+    int guards = 0;
+    while (state.phase() == Phase::Action) {
+      const std::size_t seat = *state.actor();
+      const LegalActions legal = state.legal();
+      const bool at_bb_option =
+          legal.check && legal.aggressive && legal.aggressive->type == ActionType::Bet;
+      if (at_bb_option || ++guards > 12)
+        break;
+      if (!limper_placed && legal.call) {
+        limper_placed = true;
+        state = apply(std::move(state), seat, poker::Action{poker::ActionType::Call, 0}, &log);
+      } else if (legal.fold) {
+        state = apply(std::move(state), seat, poker::Action{poker::ActionType::Fold, 0}, &log);
+      } else if (legal.check) {
+        state = apply(std::move(state), seat, poker::Action{poker::ActionType::Check, 0}, &log);
+      } else
+        break;
+    }
+    if (state.phase() == Phase::Action) {
+      const LegalActions legal = state.legal();
+      if (legal.check && legal.aggressive && legal.aggressive->type == ActionType::Bet) {
+        const std::size_t seat = *state.actor();
+        Expected e;
+        e.street = "preflop";
+        e.position = position_vocabulary(n, (seat + n - def.button) % n);
+        e.players_in_hand = static_cast<int>(state.live_players().size());
+        for (const LoggedAction& logged : log.preflop)
+          if (logged.action.type == ActionType::Call)
+            ++e.limpers;
+        std::optional<std::array<int, 2>> raising_hole;
+        for (int c0 = 0; c0 < 52 && !raising_hole; ++c0)
+          for (int c1 = c0 + 1; c1 < 52; ++c1) {
+            const std::array<int, 2> hole{c0, c1};
+            const Ctx adapted = adapt_to_ctx(state, seat, hole, log, 424242ULL);
+            const SourcedDecision sd = evaluatePolicySourced(adapted, RiverBackendHint{false});
+            if (sd.decision.action == "raise") {
+              raising_hole = hole;
+              break;
+            }
+          }
+        if (!raising_hole)
+          fail("the chart isolation-raises at the one-limper BB option (n=" + std::to_string(n) +
+               ")");
+        else
+          // Full byte-identical corpus row: this also asserts the mapped
+          // "raise" token is legal as the Bet-typed BB-option action.
+          check_row(state, seat, *raising_hole, log, e,
+                    "preflop-n" + std::to_string(n) + "-bb-option");
+
+        // Negative pin: a literal "bet" token into this preflop state must
+        // FAIL (the server never advertises bet preflop), and a "raise" token
+        // into a postflop due==0 state must fail too — pinned below.
+        Decision bad;
+        bad.action = "bet";
+        bad.amount = static_cast<int>(legal.aggressive->minimum);
+        bool threw = false;
+        try {
+          (void)map_deployed_decision(state, bad);
+        } catch (const std::runtime_error&) {
+          threw = true;
+        }
+        if (!threw)
+          fail("preflop Bet-typed state rejected a literal \"bet\" chart token");
+      }
+    }
+  }
+
+  // Negative pin for the postflop side: opening the betting is typed Bet, and
+  // a "raise" token that names the Bet total is rejected (the chart only
+  // emits "raise" postflop when it faces a bet, so accepting it here would
+  // hide a real vocabulary desync).
+  {
+    const GameDef def = rooted_flop(3, 4);
+    GameState state(def);
+    if (state.phase() == Phase::Action && state.legal().aggressive &&
+        state.legal().aggressive->type == ActionType::Bet) {
+      Decision bad;
+      bad.action = "raise";
+      bad.amount = static_cast<int>(state.legal().aggressive->minimum);
+      bool threw = false;
+      try {
+        (void)map_deployed_decision(state, bad);
+      } catch (const std::runtime_error&) {
+        threw = true;
+      }
+      if (!threw)
+        fail("postflop Bet-typed state rejected a literal \"raise\" chart token");
     }
   }
 

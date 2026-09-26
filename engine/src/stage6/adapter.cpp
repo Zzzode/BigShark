@@ -116,7 +116,15 @@ Ctx adapt_to_ctx(const poker::GameState& state, std::size_t seat, const std::arr
   if (legal.call)
     c.legal.actions.push_back("call");
   if (legal.aggressive)
-    c.legal.actions.push_back("raise");
+    // The aggressive verb follows the live server convention (pinned from
+    // session journals): postflop, opening the betting is "bet" and wagering
+    // over an existing bet is "raise"; preflop the only no-wager-owed state is
+    // the big blind's option after a limp, which the server still calls
+    // "raise", and the deployed chart's preflop branches gate on that token.
+    c.legal.actions.push_back(
+        state.street() == poker::Street::Preflop
+            ? "raise"
+            : (legal.aggressive->type == poker::ActionType::Bet ? "bet" : "raise"));
   c.legal.call = static_cast<int>(legal.call_amount);
   c.legal.potOdds = legal.call_amount > 0 ? static_cast<double>(legal.call_amount) /
                                                 static_cast<double>(state.pot() + legal.call_amount)

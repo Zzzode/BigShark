@@ -383,6 +383,17 @@ target_link_libraries(bigshark-stage6-measurement-driver PRIVATE
   bigshark_stage6_eval bigshark_stage6_train
 )
 
+# RFC 0008 stage 6: the offline interactive practice table leaf. One human at
+# stdin, every other seat an offline bot. Like the measurement driver it is a
+# leaf over the offline eval surface only: no service, host, protocol,
+# network, or credentials.
+add_executable(bigshark-practice
+  benchmarks/practice_simulator.cpp
+)
+target_link_libraries(bigshark-practice PRIVATE
+  bigshark_practice
+)
+
 # RFC 0004 Stage 4 frozen release matrix (schema_version 3 CSV): frozen flop
 # families, stack profiles, SPR 1/4/10, weighted ranges, and runout policies
 # with exact/estimated labeling and node, memory, elapsed-time, and coverage
@@ -553,6 +564,22 @@ target_link_libraries(bigshark_stage6_train
   PUBLIC bigshark_stage6_core bigshark_solver
 )
 
+# RFC 0008 stage 6: the offline single-human practice table. One local human
+# seat (driven by a callback) plays 2..10-seat hands against offline bot
+# BehaviorPolicies; it never links the service, the engine host, a protocol, or
+# anything network/credential-related. It sits on the eval surface because its
+# Medium bot IS the pinned baseline policy.
+add_library(bigshark_practice STATIC
+  src/stage6/practice_table.cpp
+)
+target_include_directories(bigshark_practice
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_practice
+  PUBLIC  bigshark_stage6_eval
+  PRIVATE bigshark_poker
+)
+
 add_library(bigshark_v0_protocol STATIC
   src/protocol/v0_json.cpp
 )
@@ -616,6 +643,13 @@ if(BUILD_TESTING)
   add_executable(test_stage6_infoset_crn tests/test_stage6_infoset_crn.cpp)
   target_link_libraries(test_stage6_infoset_crn PRIVATE bigshark_stage6_eval)
   add_test(NAME stage6_infoset_crn COMMAND test_stage6_infoset_crn)
+
+  # RFC 0008 stage 6: the offline single-human practice table core, driven by
+  # a scripted HumanAgent (full-hand completion, zero-sum, button/blind
+  # layout, fold privacy, illegal-action rejection, seed reproducibility).
+  add_executable(test_stage6_practice tests/test_stage6_practice.cpp)
+  target_link_libraries(test_stage6_practice PRIVATE bigshark_practice)
+  add_test(NAME stage6_practice COMMAND test_stage6_practice)
 
   # RFC 0008 stage 6 R12 step 5: two-phase learn/confirm Monte Carlo
   # deviation-gain estimator (pooled BR, CRN pairing, exact-oracle gates).

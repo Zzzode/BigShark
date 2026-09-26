@@ -22,6 +22,7 @@ set(_stage6_protected_targets
 set(_stage6_forbidden_prefixes
   "bigshark_behavior"
   "bigshark_stage6"
+  "bigshark_practice"
 )
 
 # Returns the transitive set of linkable CMake targets reachable from `root`
