@@ -519,12 +519,160 @@ int test_declared_schedule_is_reduced() {
 
 }  // namespace
 
+// The stage-6 coarse abstraction: a distinct declared identity whose menus
+// offer only the clamped fraction targets, suppressing the identity rule's
+// forced minimum/cap. This is the capability the independent wall review
+// mandated (abstraction.cpp forced {minimum, cap} even with empty fractions,
+// multiplying the coarse tree). Identity schedules and the golden digest are
+// untouched.
+namespace {
+
+int test_declared_only_coarse_menu() {
+  // Fresh identity: distinct name, version 1, digest different from the
+  // identity id even when handed the same schedule.
+  {
+    ActionAbstraction coarse =
+        ActionAbstraction::declared(default_size_schedule(), CoverSeeds::DeclaredOnly);
+    CHECK(coarse.id() != identity_action_id());
+    CHECK(coarse.id().name == "rfc0008-declared-coarse");
+    CHECK(coarse.id().version == 1);
+    CHECK(coarse.cover_seeds() == CoverSeeds::DeclaredOnly);
+    // Same fractions, different seed rule -> different digest.
+    ActionAbstraction seeded =
+        ActionAbstraction::declared(default_size_schedule(), CoverSeeds::MinAndCap);
+    CHECK(seeded.id() != coarse.id());
+    // And neither collides with the RFC 0007 identity despite equal fractions.
+    CHECK(seeded.id() != identity_action_id());
+  }
+
+  // Identity is byte-identical: same schedule, MinAndCap, golden digest.
+  {
+    ActionAbstraction idn = ActionAbstraction::identity();
+    CHECK(idn.cover_seeds() == CoverSeeds::MinAndCap);
+    CHECK(idn.schedule() == default_size_schedule());
+    CHECK(idn.id() == identity_action_id());
+    CHECK(idn.id().digest == 0x422c245239c7a527ULL);
+  }
+
+  // Empty fractions + DeclaredOnly => purely passive menu. Facing no wager the
+  // menu is check only; the minimum bet and the jam are gone.
+  {
+    StreetSizes passive;
+    passive.bets = {};
+    passive.raises = {};
+    ActionAbstraction coarse = ActionAbstraction::declared(
+        SizeSchedule{passive, passive, passive, passive}, CoverSeeds::DeclaredOnly);
+    poker::LegalActions legal = aggressive_menu(poker::ActionType::Bet, 1, 100);
+    MenuContext ctx;
+    ctx.street = poker::Street::Flop;
+    ctx.pot = 6;
+    ctx.opponent_stack = 100;
+    const auto menu = coarse.menu(legal, ctx);
+    CHECK(menu.size() == 1);
+    CHECK(menu[0].type == poker::ActionType::Check);
+  }
+
+  // Empty fractions facing a wager => fold/call, no raise target at all.
+  {
+    StreetSizes passive;
+    passive.bets = {};
+    passive.raises = {};
+    ActionAbstraction coarse = ActionAbstraction::declared(
+        SizeSchedule{passive, passive, passive, passive}, CoverSeeds::DeclaredOnly);
+    poker::LegalActions legal = aggressive_menu(poker::ActionType::Raise, 6, 100);
+    legal.call_amount = 3;
+    MenuContext ctx;
+    ctx.street = poker::Street::Flop;
+    ctx.pot = 6;
+    ctx.actor_committed = 3;
+    ctx.opponent_committed = 6;
+    ctx.opponent_stack = 94;
+    const auto menu = coarse.menu(legal, ctx);
+    CHECK(menu.size() == 2);
+    CHECK(menu[0].type == poker::ActionType::Fold);
+    CHECK(menu[1].type == poker::ActionType::Call);
+  }
+
+  // Declared fractions {1/2,1/1} facing no wager, pot 6: targets ceil 3 and 6
+  // only -- the legal minimum 1 and cap 100 are NOT offered (not coincident).
+  {
+    StreetSizes onew;
+    onew.bets = {{1, 2}, {1, 1}};
+    onew.raises = {};
+    ActionAbstraction coarse =
+        ActionAbstraction::declared(SizeSchedule{onew, onew, onew, onew}, CoverSeeds::DeclaredOnly);
+    poker::LegalActions legal = aggressive_menu(poker::ActionType::Bet, 1, 100);
+    MenuContext ctx;
+    ctx.street = poker::Street::Flop;
+    ctx.pot = 6;
+    ctx.opponent_stack = 100;
+    const auto menu = coarse.menu(legal, ctx);
+    const std::vector<poker::Action> want{
+        {poker::ActionType::Check}, {poker::ActionType::Bet, 3}, {poker::ActionType::Bet, 6}};
+    CHECK(menu == want);
+  }
+
+  // A fraction that clamps to the effective cap DOES surface that cap under
+  // DeclaredOnly -- the rule suppresses the unconditional SEED, not a target a
+  // declared fraction actually reaches.
+  {
+    StreetSizes onew;
+    onew.bets = {{100, 1}};  // clamps to cap 2
+    onew.raises = {};
+    ActionAbstraction coarse =
+        ActionAbstraction::declared(SizeSchedule{onew, onew, onew, onew}, CoverSeeds::DeclaredOnly);
+    poker::LegalActions legal = aggressive_menu(poker::ActionType::Bet, 2, 2);
+    MenuContext ctx;
+    ctx.street = poker::Street::River;
+    ctx.pot = 100;
+    ctx.opponent_stack = 2;
+    const auto menu = coarse.menu(legal, ctx);
+    CHECK(menu.size() == 2);
+    CHECK(menu.front().type == poker::ActionType::Check);
+    CHECK(menu.back() == poker::Action(poker::ActionType::Bet, 2));
+  }
+
+  // Heads-up and multiway declared-only menus agree when the multiway cover is
+  // the single opponent's total (no seat-count divergence in the new mode).
+  {
+    StreetSizes onew;
+    onew.bets = {};
+    onew.raises = {{1, 2}, {1, 1}};
+    ActionAbstraction coarse =
+        ActionAbstraction::declared(SizeSchedule{onew, onew, onew, onew}, CoverSeeds::DeclaredOnly);
+    poker::LegalActions legal = aggressive_menu(poker::ActionType::Raise, 6, 100);
+    legal.call_amount = 3;
+    MenuContext hu;
+    hu.street = poker::Street::Flop;
+    hu.pot = 6;
+    hu.actor_committed = 3;
+    hu.opponent_committed = 6;
+    hu.opponent_stack = 94;
+    MultiwayMenuContext mw;
+    mw.street = poker::Street::Flop;
+    mw.pot = 6;
+    mw.actor_committed = 3;
+    mw.cover = 100;
+    // base 6, pot-after-call 9: ceil 4.5=5 and 9 -> 11 and 15; min 6 and jam
+    // 100 are suppressed in both.
+    const std::vector<poker::Action> want{{poker::ActionType::Fold},
+                                          {poker::ActionType::Call},
+                                          {poker::ActionType::Raise, 11},
+                                          {poker::ActionType::Raise, 15}};
+    CHECK(coarse.menu(legal, hu) == want);
+    CHECK(coarse.multiway_menu(legal, mw) == want);
+  }
+  return 0;
+}
+
+}  // namespace
+
 int main() {
   struct Case {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 7> cases{{
+  const std::array<Case, 8> cases{{
       {"action_menu_math", test_action_menu_math},
       {"fraction_validation", test_fraction_validation},
       {"identity_and_typed_refusal", test_identity_and_typed_refusal},
@@ -532,6 +680,7 @@ int main() {
       {"lossy_tier_bucket_merges", test_lossy_tier_bucket_merges},
       {"multiway_cover_cap", test_multiway_cover_cap},
       {"declared_schedule_is_reduced", test_declared_schedule_is_reduced},
+      {"declared_only_coarse_menu", test_declared_only_coarse_menu},
   }};
   int failures = 0;
   for (const Case& item : cases) {

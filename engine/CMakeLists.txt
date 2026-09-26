@@ -353,6 +353,36 @@ add_custom_target(benchmark-heads-up-capacity
   USES_TERMINAL
 )
 
+# RFC 0008 stage 6 R3b: flop-geometry enumeration + coarse-tree sizing. Manual
+# measurement target, NOT a CTest; emits the frozen-matrix evidence.
+add_executable(bigshark-stage6-geometry-benchmark
+  benchmarks/stage6_geometry_benchmark.cpp
+)
+target_link_libraries(bigshark-stage6-geometry-benchmark PRIVATE
+  bigshark_stage6_eval
+)
+# bigshark_tree arrives transitively through bigshark_solver (a stage6_eval
+# dependency); naming it here links the archive twice.
+add_custom_target(benchmark-stage6-geometry
+  COMMAND $<TARGET_FILE:bigshark-stage6-geometry-benchmark> --trees
+  DEPENDS bigshark-stage6-geometry-benchmark
+  COMMENT "Enumerating and sizing the RFC 0008 stage-6 flop geometry matrix"
+  USES_TERMINAL
+)
+
+# RFC 0008 stage 6 R12 step 8: the larger-table measurement driver. The ONE
+# leaf that links the eval and trainer siblings together: it trains the
+# buckets, binds the composed candidate, and estimates candidate vs pinned
+# baseline general-sum NashConv with paired Student-t CIs. Manual evidence
+# binary, NOT a CTest; its numbers are published as-is, including a negative
+# or indistinguishable result.
+add_executable(bigshark-stage6-measurement-driver
+  benchmarks/stage6_measurement_driver.cpp
+)
+target_link_libraries(bigshark-stage6-measurement-driver PRIVATE
+  bigshark_stage6_eval bigshark_stage6_train
+)
+
 # RFC 0004 Stage 4 frozen release matrix (schema_version 3 CSV): frozen flop
 # families, stack profiles, SPR 1/4/10, weighted ranges, and runout policies
 # with exact/estimated labeling and node, memory, elapsed-time, and coverage
@@ -438,6 +468,91 @@ target_link_libraries(bigshark_service
   PRIVATE bigshark_policy
 )
 
+# RFC 0008 stage 6: the OFFLINE seat-indexed behavior-policy interface and the
+# declared fixed uniform reference. This target links only bigshark_poker by
+# design (no Ctx/policy vocabulary in L0/L1, no solver), and must never be
+# linked by bigshark_service, the protocols, or the engine host; a stage-6
+# link guard test enforces that below.
+add_library(bigshark_behavior STATIC
+  src/behavior/behavior_policy.cpp
+)
+target_include_directories(bigshark_behavior
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_behavior
+  PUBLIC bigshark_poker
+)
+
+# RFC 0008 stage 6 offline CORE: pure-poker shared vocabulary for the trainer
+# and the evaluation surface — geometry signatures/bucketing/coverage. It may
+# reach only L1 poker and the L2 abstraction (plus the poker-only behavior
+# value types); it never reaches the deployed policy, the service, or eval. A
+# dedicated train-edge guard (stage6_train_edge_guard.cmake) enforces that the
+# trainer's transitive closure stays free of bigshark_policy / eval.
+add_library(bigshark_stage6_core STATIC
+  src/stage6/frozen_artifact.cpp
+  src/stage6/geometry_core.cpp
+  src/stage6/infoset_id.cpp
+  src/stage6/public_path.cpp
+  src/stage6/random_streams.cpp
+  src/stage6/translator_id.cpp
+)
+target_include_directories(bigshark_stage6_core
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_stage6_core
+  PUBLIC bigshark_behavior
+  PRIVATE bigshark_poker bigshark_abstraction
+)
+
+# RFC 0008 stage 6 offline EVALUATION surface: the GameState->Ctx adapter, the
+# pinned-baseline behavior, the policy-linked flop geometry enumerators, and
+# (later) the simulator, estimator, oracle, stats, digest, translator, frozen
+# candidate and measurement drivers. This is the ONE target permitted to
+# include both game_definition.hpp and decision.hpp. It links the deployed
+# policy for the baseline call ONLY; the configure-time stage-6 guard prevents
+# the edge from ever being reversed into the live service/protocols.
+add_library(bigshark_stage6_eval STATIC
+  src/stage6/adapter.cpp
+  src/stage6/baseline_policy.cpp
+  src/stage6/br_estimator.cpp
+  src/stage6/candidate_policy.cpp
+  src/stage6/chart_digest.cpp
+  src/stage6/chart_preflop.cpp
+  src/stage6/geometry_enumerator.cpp
+  src/stage6/infoset_key.cpp
+  src/stage6/crn_streams.cpp
+  src/stage6/exact_oracle.cpp
+  src/stage6/simulator.cpp
+  src/stage6/statistics.cpp
+  src/stage6/translator.cpp
+)
+target_include_directories(bigshark_stage6_eval
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_stage6_eval
+  PUBLIC  bigshark_behavior bigshark_stage6_core
+  PRIVATE bigshark_poker bigshark_solver bigshark_policy ${BS_OPENSSL_CRYPTO_TARGET}
+)
+
+# RFC 0008 stage 6 R12 step 7: the multiplayer external-sampling MCCFR
+# trainer. It is a SIBLING of eval, never a dependent: the trainer produces the
+# frozen postflop candidate artifacts but must not reach the deployed policy,
+# the eval-side translator/baseline/adapter, or bigshark_policy. Its closure is
+# core (pure-poker shared vocabulary) + solver (the RFC 0006 joint sampler,
+# which itself links only poker/abstraction/tree) and nothing else. The
+# configure-time stage6_train_edge_guard.cmake and a build-time resolved-include
+# scan enforce both directions of that edge.
+add_library(bigshark_stage6_train STATIC
+  src/stage6/mccfr_trainer.cpp
+)
+target_include_directories(bigshark_stage6_train
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_stage6_train
+  PUBLIC bigshark_stage6_core bigshark_solver
+)
+
 add_library(bigshark_v0_protocol STATIC
   src/protocol/v0_json.cpp
 )
@@ -454,6 +569,98 @@ if(BUILD_TESTING)
   add_executable(test_eval tests/test_eval.cpp)
   target_link_libraries(test_eval PRIVATE bigshark_poker)
   add_test(NAME eval COMMAND test_eval)
+
+  # RFC 0008 stage 6: the offline behavior-policy interface and the declared
+  # uniform reference. Links only bigshark_behavior (which links only poker);
+  # a separate link-guard test enforces that service/protocols never link it.
+  add_executable(test_behavior_policy tests/test_behavior_policy.cpp)
+  target_link_libraries(test_behavior_policy PRIVATE bigshark_behavior)
+  add_test(NAME behavior_policy COMMAND test_behavior_policy)
+
+  # RFC 0008 stage 6 R4/F5: the GameState->Ctx adapter must drive the pinned
+  # baseline byte-identically to the deployed parseRequest path (same action
+  # and amount) on the required corpus. Links the eval surface, which is the
+  # one place allowed to join poker and policy vocabulary.
+  add_executable(test_stage6_adapter_corpus tests/test_stage6_adapter_corpus.cpp)
+  target_link_libraries(test_stage6_adapter_corpus
+    PRIVATE bigshark_stage6_eval bigshark_v0_protocol)
+  add_test(NAME stage6_adapter_corpus COMMAND test_stage6_adapter_corpus)
+
+  # RFC 0008 stage 6 R4: golden SHA-256 over the parsed chart data pins the
+  # baseline by content, not prose.
+  add_executable(test_stage6_chart_digest tests/test_stage6_chart_digest.cpp)
+  target_link_libraries(test_stage6_chart_digest PRIVATE bigshark_stage6_eval)
+  add_test(NAME stage6_chart_digest COMMAND test_stage6_chart_digest)
+
+  # RFC 0008 stage 6 R8/R9: Student-t moments, scalar-sum CI, paired CI.
+  add_executable(test_stage6_statistics tests/test_stage6_statistics.cpp)
+  target_link_libraries(test_stage6_statistics PRIVATE bigshark_stage6_eval)
+  add_test(NAME stage6_statistics COMMAND test_stage6_statistics)
+
+  # RFC 0008 stage 6 Revision 3: geometry bucketing (key, totality, no-mix
+  # guard, reduced representative).
+  add_executable(test_stage6_geometry tests/test_stage6_geometry.cpp)
+  target_link_libraries(test_stage6_geometry PRIVATE bigshark_stage6_eval)
+  # bigshark_tree arrives transitively (PUBLIC dep of bigshark_solver); it is
+  # not named here or the static archive is linked twice.
+  add_test(NAME stage6_geometry COMMAND test_stage6_geometry)
+
+  # RFC 0008 stage 6 R12 step 4: full-hand N-seat simulator + exact 3p oracle
+  # (conservation, determinism, total geometry coverage, joint enumeration).
+  add_executable(test_stage6_simulator tests/test_stage6_simulator.cpp)
+  target_link_libraries(test_stage6_simulator PRIVATE bigshark_stage6_eval)
+  add_test(NAME stage6_simulator COMMAND test_stage6_simulator)
+
+  # RFC 0008 stage 6 step-5 foundation: infoset-key pooling invariant and
+  # content-addressed CRN stream derivation.
+  add_executable(test_stage6_infoset_crn tests/test_stage6_infoset_crn.cpp)
+  target_link_libraries(test_stage6_infoset_crn PRIVATE bigshark_stage6_eval)
+  add_test(NAME stage6_infoset_crn COMMAND test_stage6_infoset_crn)
+
+  # RFC 0008 stage 6 R12 step 5: two-phase learn/confirm Monte Carlo
+  # deviation-gain estimator (pooled BR, CRN pairing, exact-oracle gates).
+  add_executable(test_stage6_br_estimator tests/test_stage6_br_estimator.cpp)
+  target_link_libraries(test_stage6_br_estimator PRIVATE bigshark_stage6_eval)
+  add_test(NAME stage6_br_estimator COMMAND test_stage6_br_estimator)
+
+  # RFC 0008 stage 6 R12 step 6: the deterministic exact<->coarse translator
+  # (R7) — passive passthrough, nearest snap with ties to the smaller total,
+  # mass merge, declared call/check/fold fallback, fail-closed input
+  # validation, and exact->coarse nearest-index mapping, all pinned against
+  # the real GameState legal interval.
+  add_executable(test_stage6_translator tests/test_stage6_translator.cpp)
+  target_link_libraries(test_stage6_translator PRIVATE bigshark_stage6_eval)
+  add_test(NAME stage6_translator COMMAND test_stage6_translator)
+
+  # RFC 0008 stage 6 R12 step 7: external-sampling multiplayer MCCFR (RM+
+  # regrets, uniform visit-weighted average), independent scripted-world
+  # algebra reference, statistical contraction/repeatability gates, and the
+  # exhaustive materialized/streaming cursor-alignment proof. Links the
+  # policy-free trainer sibling only.
+  add_executable(test_stage6_trainer tests/test_stage6_trainer.cpp)
+  target_link_libraries(test_stage6_trainer PRIVATE bigshark_stage6_train)
+  add_test(NAME stage6_trainer COMMAND test_stage6_trainer)
+
+  # RFC 0008 stage 6 P1-1: enumerable three-player river game parity between
+  # the production external sampler and an independently written full-tree
+  # CFR, on both the average policy and the general-sum NashConv scalar.
+  add_executable(test_stage6_multiway_average tests/test_stage6_multiway_average.cpp)
+  target_link_libraries(test_stage6_multiway_average PRIVATE bigshark_stage6_train)
+  add_test(NAME stage6_multiway_average COMMAND test_stage6_multiway_average)
+
+  # RFC 0008 stage 6 P2-2: artifact write/load roundtrip and tamper refusal.
+  add_executable(test_stage6_frozen_artifact tests/test_stage6_frozen_artifact.cpp)
+  target_link_libraries(test_stage6_frozen_artifact PRIVATE bigshark_stage6_core)
+  add_test(NAME stage6_frozen_artifact COMMAND test_stage6_frozen_artifact)
+
+  # RFC 0008 stage 6 R12 step 8: the composed candidate (pinned charts preflop,
+  # frozen trained artifact postflop, R7 projection, total geometry lookup).
+  # This is the documented LEAF that joins the eval and trainer siblings: it
+  # trains a small artifact in-process and binds it into the candidate.
+  add_executable(test_stage6_candidate_policy tests/test_stage6_candidate_policy.cpp)
+  target_link_libraries(test_stage6_candidate_policy
+    PRIVATE bigshark_stage6_eval bigshark_stage6_train)
+  add_test(NAME stage6_candidate_policy COMMAND test_stage6_candidate_policy)
 
   add_executable(test_heads_up tests/test_heads_up.cpp)
   target_link_libraries(test_heads_up PRIVATE bigshark_poker)
@@ -535,6 +742,19 @@ if(BUILD_TESTING)
   add_executable(test_tree_link_negative tests/test_tree_link_negative.cpp)
   target_link_libraries(test_tree_link_negative PRIVATE bigshark_tree)
   add_test(NAME tree_link_negative COMMAND test_tree_link_negative)
+
+  # RFC 0008 stage 6 offline link-negative guard: this binary links the live
+  # v0+v1 protocols (and through them the service, policy, solver) and drives
+  # one parse/evaluate/serialize path. A companion cmake-script test runs nm
+  # and fails if the final link contains ANY bs::stage6 symbol, proving no
+  # offline object code reached a live binary.
+  add_executable(test_stage6_link_negative tests/test_stage6_link_negative.cpp)
+  target_link_libraries(test_stage6_link_negative
+    PRIVATE bigshark_v1_protocol bigshark_v0_protocol)
+  add_test(NAME stage6_link_negative_scan
+    COMMAND ${CMAKE_COMMAND}
+            -DSTAGE6_BIN=$<TARGET_FILE:test_stage6_link_negative>
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/stage6_link_negative.cmake")
 
   add_executable(test_icm tests/test_icm.cpp)
   target_link_libraries(test_icm PRIVATE bigshark_poker)

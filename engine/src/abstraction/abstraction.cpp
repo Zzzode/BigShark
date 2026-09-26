@@ -116,6 +116,26 @@ AbstractionId ActionAbstraction::make_id(const SizeSchedule& schedule) {
   return id;
 }
 
+AbstractionId ActionAbstraction::make_declared_id(const SizeSchedule& schedule, CoverSeeds seeds) {
+  AbstractionId id;
+  id.name = "rfc0008-declared-coarse";
+  id.version = 1;
+  // The cover-seed rule is part of the declared map: two coarse schedules that
+  // differ only in whether the forced min/cap are offered must not share an id.
+  std::string params = canonical_schedule(schedule);
+  params += seeds == CoverSeeds::DeclaredOnly ? "cover-seeds=declared-only\n"
+                                              : "cover-seeds=min-and-cap\n";
+  id.parameters = std::move(params);
+  id.digest = abstraction_digest(id.name, id.version, id.parameters);
+  return id;
+}
+
+ActionAbstraction ActionAbstraction::declared(SizeSchedule schedule, CoverSeeds seeds) {
+  SizeSchedule reduced_schedule = reduced(std::move(schedule));
+  AbstractionId id = make_declared_id(reduced_schedule, seeds);
+  return ActionAbstraction(std::move(reduced_schedule), seeds, std::move(id));
+}
+
 SizeSchedule ActionAbstraction::reduced(SizeSchedule schedule) {
   auto reduce = [](std::vector<Fraction>& fracs) {
     for (Fraction& frac : fracs) {
@@ -163,7 +183,7 @@ static std::vector<Action> build_menu_with_cover(const poker::LegalActions& lega
                                                  const StreetSizes& street_sizes,
                                                  poker::Street street, poker::Chips pot,
                                                  poker::Chips actor_committed,
-                                                 poker::Chips cover_total) {
+                                                 poker::Chips cover_total, CoverSeeds seeds) {
   std::vector<Action> result;
   if (legal.fold)
     result.push_back({ActionType::Fold});
@@ -182,13 +202,22 @@ static std::vector<Action> build_menu_with_cover(const poker::LegalActions& lega
   const Chips base = checked_add(actor_committed, legal.call_amount);
   const Chips pot_after_call = checked_add(pot, legal.call_amount);
 
-  std::vector<Chips> targets{bounds.minimum, cap};
+  // The identity rule (MinAndCap) always offers the legal minimum and the
+  // effective all-in cap. DeclaredOnly starts empty: those targets survive
+  // only when a declared fraction clamps onto one. With no fractions the
+  // coarse menu is purely passive.
+  std::vector<Chips> targets;
+  targets.reserve(street_sizes.bets.size() + street_sizes.raises.size() + 2);
+  if (seeds == CoverSeeds::MinAndCap)
+    targets = {bounds.minimum, cap};
   const std::vector<Fraction>& fractions =
       bounds.type == ActionType::Bet ? street_sizes.bets : street_sizes.raises;
   for (const Fraction& f : fractions) {
     const Chips target = checked_add(base, ceil_fraction(pot_after_call, f));
     targets.push_back(std::clamp(target, bounds.minimum, cap));
   }
+  if (targets.empty())
+    return result;  // declared-only with no fractions: passive menu only
   std::sort(targets.begin(), targets.end());
   targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
   for (Chips target : targets)
@@ -202,17 +231,19 @@ static std::vector<Action> build_menu_with_cover(const poker::LegalActions& lega
 }
 
 std::vector<Action> build_action_menu(const poker::LegalActions& legal,
-                                      const StreetSizes& street_sizes, const MenuContext& context) {
+                                      const StreetSizes& street_sizes, const MenuContext& context,
+                                      CoverSeeds seeds) {
   const Chips cover_total = checked_add(context.opponent_committed, context.opponent_stack);
   return build_menu_with_cover(legal, street_sizes, context.street, context.pot,
-                               context.actor_committed, cover_total);
+                               context.actor_committed, cover_total, seeds);
 }
 
 std::vector<Action> build_multiway_action_menu(const poker::LegalActions& legal,
                                                const StreetSizes& street_sizes,
-                                               const MultiwayMenuContext& context) {
+                                               const MultiwayMenuContext& context,
+                                               CoverSeeds seeds) {
   return build_menu_with_cover(legal, street_sizes, context.street, context.pot,
-                               context.actor_committed, context.cover);
+                               context.actor_committed, context.cover, seeds);
 }
 
 std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<int>& board) {

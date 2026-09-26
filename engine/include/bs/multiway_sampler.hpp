@@ -71,4 +71,31 @@ std::size_t sample_joint_deal(const JointDealTable& table,
                               const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
                               SplitMix64& rng, std::size_t max_attempts = 10000);
 
+// Scalable joint dealer for games too large to enumerate: draws one
+// compatible joint deal from the SAME product-conditional distribution as
+// enumerate_joint_deals WITHOUT materializing the joint support. Per seat it
+// builds a board-filtered marginal cumulative-weight table; each attempt then
+// proposes one combo per seat INDEPENDENTLY from that seat's marginal and
+// restarts from seat 0 on any card conflict. Because a positive-weight
+// proposal is then accepted unconditionally, acceptance is proportional to
+// the product of the per-seat weights, which is exactly the distribution
+// proportional to the product of range weights conditioned on mutual
+// compatibility RFC 0006 requires. This is the restart construction
+// sample_joint_deal already proves, minus that function's O(D) table-index
+// lookup. The forbidden alternative (independently sampling earlier seats
+// and renormalizing only the LAST seat's pool) changes every earlier
+// marginal and is not used here.
+//
+// Diagnostic: `attempts_out`, when non-null, receives the number of proposal
+// rounds used (1 + restarts), so a harness can report the measured acceptance
+// rate rather than assume one.
+//
+// Same validation and rejection-budget exceptions as sample_joint_deal,
+// applied without enumerating: board-blocked combos are excluded from the
+// marginals (the enumeration excludes them too), and inter-seat conflicts
+// trigger a full restart.
+MultiwayDeal sample_scalable_joint_deal(
+    const std::vector<std::vector<MultiwayWeightedHand>>& ranges, const std::vector<int>& board,
+    SplitMix64& rng, std::size_t max_attempts = 100000, std::size_t* attempts_out = nullptr);
+
 }  // namespace bs::solver

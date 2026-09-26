@@ -145,14 +145,30 @@ struct MenuContext {
   poker::Chips opponent_stack = 0;
 };
 
+// Selects whether an action menu seeds the legal minimum wager and the
+// effective all-in cap independently of the declared pot fractions.
+//
+//   * MinAndCap (default): always offer the minimum full wager and the cap,
+//     even when the fraction list is empty. This is the exact shipped RFC
+//     0007 behavior and the identity abstraction's rule.
+//   * DeclaredOnly: offer ONLY the clamped declared fraction targets. The
+//     minimum and cap appear only when a fraction clamps onto one. An empty
+//     fraction list therefore yields a purely passive menu (fold/check/call).
+//     This is the coarse multiplayer-CFR menu: it removes the forced
+//     min-bet/jam at every aggressive node that otherwise multiplies the
+//     abstract tree, without changing any identity schedule.
+enum class CoverSeeds { MinAndCap, DeclaredOnly };
+
 // The state-neutral ordered-menu rule shared by every profile. Fold/check/call
-// are emitted when legal; bets/raises seed the legal minimum and effective
-// all-in cap, add each declared pot fraction of the pot after the call (rounded
-// up, clamped to [minimum, cap]), then sort and de-duplicate. This is the exact
-// shipped RFC 0007 computation, lifted out of the solver. At most 32 actions.
+// are emitted when legal; bets/raises add each declared pot fraction of the
+// pot after the call (rounded up, clamped to [minimum, cap]), then sort and
+// de-duplicate. Under MinAndCap (the identity rule) the legal minimum and the
+// effective all-in cap are seeded first, reproducing the shipped RFC 0007
+// computation exactly; under DeclaredOnly they are not. At most 32 actions.
 std::vector<poker::Action> build_action_menu(const poker::LegalActions& legal,
                                              const StreetSizes& street_sizes,
-                                             const MenuContext& context);
+                                             const MenuContext& context,
+                                             CoverSeeds seeds = CoverSeeds::MinAndCap);
 
 // The multi-seat (3..10) menu context. There is no single opponent: a raise is
 // legal if ANY other live, non-folded seat can respond (the existential rule in
@@ -175,32 +191,57 @@ struct MultiwayMenuContext {
 
 std::vector<poker::Action> build_multiway_action_menu(const poker::LegalActions& legal,
                                                       const StreetSizes& street_sizes,
-                                                      const MultiwayMenuContext& context);
+                                                      const MultiwayMenuContext& context,
+                                                      CoverSeeds seeds = CoverSeeds::MinAndCap);
 
 // A declared action abstraction: identity schedule plus its id. `menu` selects
-// the street entry and delegates to build_action_menu.
+// the street entry and delegates to build_action_menu. `declared()` mints the
+// stage-6 coarse abstraction: the SAME schedule type but a distinct identity
+// ("rfc0008-declared-coarse") whose menus honor the given CoverSeeds, so the
+// coarse trainer can suppress the forced min/cap without moving a byte of the
+// identity schedule or its golden digest.
 class ActionAbstraction {
  public:
   explicit ActionAbstraction(SizeSchedule schedule)
-      : schedule_(reduced(std::move(schedule))), id_(make_id(schedule_)) {}
+      : schedule_(reduced(std::move(schedule))),
+        seeds_(CoverSeeds::MinAndCap),
+        id_(make_id(schedule_)) {}
 
   static ActionAbstraction identity() { return ActionAbstraction(default_size_schedule()); }
 
+  // The declared-only coarse abstraction. `schedule` carries the coarse
+  // fractions; `seeds` is serialized into the identity parameters so that
+  // MinAndCap and DeclaredOnly mint distinct digests even at equal fractions.
+  static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds);
+
   const AbstractionId& id() const noexcept { return id_; }
   const SizeSchedule& schedule() const noexcept { return schedule_; }
+  CoverSeeds cover_seeds() const noexcept { return seeds_; }
 
   std::vector<poker::Action> menu(const poker::LegalActions& legal,
                                   const MenuContext& context) const {
-    return build_action_menu(legal, schedule_[static_cast<std::size_t>(context.street)], context);
+    return build_action_menu(legal, schedule_[static_cast<std::size_t>(context.street)], context,
+                             seeds_);
+  }
+
+  // The multi-seat (3..10) menu; honors the same CoverSeeds as `menu`.
+  std::vector<poker::Action> multiway_menu(const poker::LegalActions& legal,
+                                           const MultiwayMenuContext& context) const {
+    return build_multiway_action_menu(legal, schedule_[static_cast<std::size_t>(context.street)],
+                                      context, seeds_);
   }
 
  private:
+  ActionAbstraction(SizeSchedule schedule, CoverSeeds seeds, AbstractionId id)
+      : schedule_(std::move(schedule)), seeds_(seeds), id_(std::move(id)) {}
   static AbstractionId make_id(const SizeSchedule& schedule);
+  static AbstractionId make_declared_id(const SizeSchedule& schedule, CoverSeeds seeds);
   // Reduced form is part of declared identity: an unreduced fraction such as
   // 2/4 is normalized to 1/2 at declaration so the stored schedule and its
   // canonical id always agree (a zero component is rejected here).
   static SizeSchedule reduced(SizeSchedule schedule);
   SizeSchedule schedule_;
+  CoverSeeds seeds_;
   AbstractionId id_;
 };
 

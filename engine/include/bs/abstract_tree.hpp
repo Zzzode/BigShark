@@ -31,6 +31,18 @@ using poker::Street;
 inline constexpr std::size_t kNoNode = static_cast<std::size_t>(-1);
 inline constexpr int kNoCard = -1;
 
+// The shared L3 menu rule: the ordered coarse abstract menu at an action node
+// (HU MenuContext at 2 seats, max-cover MultiwayMenuContext at 3+). The tree
+// builder and the stage-6 streaming/MCCFR trainer both call THIS so their menus
+// can never drift; re-implementation is forbidden.
+std::vector<Action> abstract_node_menu(const GameState& state,
+                                       const abstraction::ActionAbstraction& action,
+                                       const poker::LegalActions& legal);
+
+// Public-card set of a chance node: ascending {0..51} minus the board. The
+// trainer's streaming chance ordinal indexes this exact list.
+std::vector<int> public_runout_cards(const GameState& state);
+
 enum class NodeKind { Action, Chance, TerminalFold, TerminalShowdown };
 
 // One seat's terminal ledger entry. Folded seats are retained with their GROSS

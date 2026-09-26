@@ -390,6 +390,205 @@ int test_wider_tables_enumerate() {
   return 0;
 }
 
+// ------------------------------------------------- scalable restart dealer
+
+// Primary distribution gate (R5): the scalable restart dealer must match the
+// enumerated product-conditional joint distribution on the same skewed
+// nonuniform fixture the enumeration sampler is tested on, where conflicts are
+// common and the weights genuinely skew the support.
+int test_scalable_matches_joint_distribution() {
+  const std::vector<Range> ranges = {
+      {{{card("As"), card("Ks")}, 3.0}, {{card("Qh"), card("Jh")}, 1.0}},
+      {{{card("As"), card("Ad")}, 1.0}, {{card("2c"), card("2d")}, 1.0}},
+      {{{card("Ad"), card("Kd")}, 2.0}, {{card("Jh"), card("Jd")}, 1.0}},
+  };
+  const JointDealTable table = enumerate_joint_deals(ranges);
+  constexpr std::size_t kDraws = 400000;
+  SplitMix64 rng(0x5ca1ab1eULL);
+  std::map<std::string, std::size_t> counts;
+  std::size_t total_attempts = 0;
+  for (std::size_t i = 0; i < kDraws; ++i) {
+    std::size_t attempts = 0;
+    const MultiwayDeal deal = sample_scalable_joint_deal(ranges, {}, rng, 100000, &attempts);
+    CHECK(deal.hands.size() == ranges.size());
+    CHECK(attempts >= 1);
+    total_attempts += attempts;
+    ++counts[deal_key(deal)];
+    // Zero card duplication across the deal.
+    bool used[52] = {};
+    for (const auto& hand : deal.hands)
+      for (int c : hand) {
+        CHECK(!used[c]);
+        used[c] = true;
+      }
+  }
+  CHECK(counts.size() == table.deals.size());
+  double max_deviation = 0;
+  for (const MultiwayDeal& deal : table.deals) {
+    const auto it = counts.find(deal_key(deal));
+    CHECK(it != counts.end());
+    const double observed = static_cast<double>(it->second) / static_cast<double>(kDraws);
+    max_deviation = std::max(max_deviation, std::abs(observed - deal.weight));
+  }
+  // ~400k draws; 0.01 bound mirrors the enumeration-sampler gate.
+  CHECK(max_deviation < 0.01);
+  // Conflicts occur on this fixture, so the restart counter must have fired;
+  // the measured acceptance rate stays comfortably above zero.
+  CHECK(total_attempts > kDraws);
+  CHECK(static_cast<double>(kDraws) / static_cast<double>(total_attempts) > 0.05);
+  return 0;
+}
+
+int test_scalable_is_reproducible() {
+  const std::vector<Range> ranges = overlapping_fixture();
+  SplitMix64 rng_a(12345ULL);
+  SplitMix64 rng_b(12345ULL);
+  MultiwayDeal a = sample_scalable_joint_deal(ranges, {}, rng_a);
+  MultiwayDeal b = sample_scalable_joint_deal(ranges, {}, rng_b);
+  CHECK(a.hands == b.hands);
+  CHECK(std::abs(a.weight - b.weight) < 1e-12);
+  return 0;
+}
+
+// The balanced-marginal assertion is exact ONLY for the symmetric uniform
+// control (R5): with every seat offered the same full uniform range, each
+// accepted seat's marginal must be uniform over its 1326 combos. Under
+// nonuniform/asymmetric weights the marginal is instead shifted by suffix
+// completion mass, which the joint-frequency gate above covers.
+int test_scalable_uniform_control_preserves_marginals() {
+  Range all;
+  for (int a = 0; a < 52; ++a)
+    for (int b = a + 1; b < 52; ++b)
+      all.push_back(MultiwayWeightedHand{std::array<int, 2>{a, b}, 1.0});
+  CHECK(all.size() == 1326);
+  const std::vector<Range> ranges = {all, all, all};
+  constexpr std::size_t kDraws = 200000;
+  SplitMix64 rng(0xabcdef01ULL);
+  std::array<std::map<int, std::size_t>, 3> per_combo{};
+  for (std::size_t i = 0; i < kDraws; ++i) {
+    const MultiwayDeal deal = sample_scalable_joint_deal(ranges, {}, rng);
+    for (std::size_t s = 0; s < 3; ++s) {
+      const int canonical = deal.hands[s][0] < deal.hands[s][1]
+                                ? deal.hands[s][0] * 64 + deal.hands[s][1]
+                                : deal.hands[s][1] * 64 + deal.hands[s][0];
+      ++per_combo[s][canonical];
+    }
+  }
+  // Every one of the 1326 combos appears for every seat, and no combo's share
+  // is far off 1/1326. Allow generous Monte Carlo slack on the per-combo tail
+  // while still catching a systematic renormalization bias.
+  for (std::size_t s = 0; s < 3; ++s) {
+    CHECK(per_combo[s].size() == 1326);
+    const double expected = kDraws / 1326.0;
+    for (const auto& [combo, n] : per_combo[s]) {
+      (void)combo;
+      const double z = std::abs(static_cast<double>(n) - expected) / std::sqrt(expected);
+      CHECK(z < 6.0);  // far beyond any per-combo MC fluctuation
+    }
+  }
+  return 0;
+}
+
+// Negative control (R5): the forbidden construction — independently sampling
+// every earlier seat and renormalizing ONLY the last seat's pool — yields a
+// distribution measurably different from the enumerated one. This verifies
+// the test fixture itself can detect the RFC 0006 violation, so a passing
+// scalable match cannot be a fixture artifact.
+int test_scalable_detects_last_seat_renormalization() {
+  // Dedicated fixture that isolates the RFC 0006 prohibition. With equal
+  // weights the last-seat-renormalization construction coincides with the
+  // correct distribution, so the discriminating ingredient is UNEQUAL last-
+  // seat weight:
+  //   seat 0: single X=AsKs ; seat 1: single A=QhQd (X,A compatible)
+  //   seat 2: U=AdKd (w=3), V=2c3c (w=1) — both compatible with X,A;
+  //           W=Ks2d (w=1) — shares Ks with X, so filtered out.
+  // The correct joint distribution keeps U's weight: 3/4 U, 1/4 V. The
+  // forbidden construction renormalizes the last seat's compatible pool to
+  // UNIFORM: 1/2 U, 1/2 V. The 1/4 gap is far beyond MC noise.
+  const std::vector<Range> ranges = {
+      {{{card("As"), card("Ks")}, 1.0}},
+      {{{card("Qh"), card("Qd")}, 1.0}},
+      {{{card("Ad"), card("Kd")}, 3.0},
+       {{card("2c"), card("3c")}, 1.0},
+       {{card("Ks"), card("2d")}, 1.0}},
+  };
+  const JointDealTable table = enumerate_joint_deals(ranges);
+  CHECK(table.deals.size() == 2);
+  auto conflicts = [](const std::array<int, 2>& a, const std::array<int, 2>& b) {
+    for (int x : a)
+      for (int y : b)
+        if (x == y)
+          return true;
+    return false;
+  };
+  constexpr std::size_t kDraws = 300000;
+  SplitMix64 rng(0xdeadbeefULL);
+  std::map<std::string, std::size_t> counts;
+  for (std::size_t i = 0; i < kDraws; ++i) {
+    const auto h0 = ranges[0][0].cards;  // deterministic single-combo seat
+    const auto h1 = ranges[1][0].cards;
+    std::vector<std::array<int, 2>> ok;
+    for (const auto& h2 : ranges[2])
+      if (!conflicts(h2.cards, h0) && !conflicts(h2.cards, h1))
+        ok.push_back(h2.cards);
+    CHECK(ok.size() == 2);  // U and V survive; W is filtered by the X conflict
+    // Forbidden step: uniform over the last seat's compatible pool, dropping
+    // the declared weights entirely.
+    const auto h2 = ok[rng.next_u64() % ok.size()];
+    MultiwayDeal deal;
+    deal.hands = {h0, h1, h2};
+    ++counts[deal_key(deal)];
+  }
+  std::size_t accepted = 0;
+  for (const auto& [k, n] : counts)
+    accepted += n;
+  CHECK(accepted == kDraws);  // no restart possible with these fixed prefixes
+  double max_deviation = 0;
+  for (const MultiwayDeal& deal : table.deals) {
+    const auto it = counts.find(deal_key(deal));
+    const double observed = it == counts.end() ? 0.0 : static_cast<double>(it->second) / accepted;
+    max_deviation = std::max(max_deviation, std::abs(observed - deal.weight));
+  }
+  // Correct is 3/4 vs 1/4; the renormalization yields 1/2 vs 1/2 -> gap 1/4.
+  // Generous MC slack; still far above the 0.01 the correct sampler passes.
+  CHECK(max_deviation > 0.20);
+  return 0;
+}
+
+// Board cards are excluded from every marginal (an accepted hand never uses a
+// board card), and the attempts counter reports the restarts.
+int test_scalable_filters_board_and_counts_attempts() {
+  // Two single-combo seats that are mutually compatible but share the board
+  // card 2c: with 2c on board both marginals empty out and the dealer throws.
+  const std::vector<Range> blocked = {
+      {{{card("2c"), card("3c")}, 1.0}},
+      {{{card("2c"), card("4c")}, 1.0}},
+  };
+  bool threw = false;
+  try {
+    SplitMix64 rng(1ULL);
+    (void)sample_scalable_joint_deal(blocked, {card("2c")}, rng);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+
+  // Without the board conflict the same two hands deal successfully and the
+  // accepted hands contain no board card.
+  const std::vector<Range> ok = {
+      {{{card("2c"), card("3c")}, 1.0}},
+      {{{card("2d"), card("4c")}, 1.0}},
+  };
+  SplitMix64 rng(2ULL);
+  std::size_t attempts = 99;
+  const MultiwayDeal deal = sample_scalable_joint_deal(ok, {card("As")}, rng, 1000, &attempts);
+  CHECK(attempts == 1);  // single-combo seats never conflict here
+  for (const auto& hand : deal.hands)
+    for (int c : hand)
+      CHECK(c != card("As"));
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -403,6 +602,11 @@ int main() {
     CHECK(test_zero_weight_combos_are_absent() == 0);
     CHECK(test_sampler_validates_input() == 0);
     CHECK(test_wider_tables_enumerate() == 0);
+    CHECK(test_scalable_matches_joint_distribution() == 0);
+    CHECK(test_scalable_is_reproducible() == 0);
+    CHECK(test_scalable_uniform_control_preserves_marginals() == 0);
+    CHECK(test_scalable_detects_last_seat_renormalization() == 0);
+    CHECK(test_scalable_filters_board_and_counts_attempts() == 0);
   } catch (const std::exception& error) {
     std::printf("Unexpected sampler exception: %s\n", error.what());
     return 1;

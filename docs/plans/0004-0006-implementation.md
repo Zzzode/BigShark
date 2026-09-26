@@ -3110,3 +3110,1618 @@ sampler, the parsed-chart digest and baseline pin, seat permutations, and a
 10-seat policy that cannot materialize a full identity tree and therefore
 needs abstraction/traversal) is designed separately below; none of it is
 implemented in this precursor.
+
+## RFC 0008 Stage 6 Design Brief Revision 0 (2026-09-23) — FOR INDEPENDENT REVIEW, NOT YET APPROVED
+
+Status: draft. Nothing in this section is implemented beyond the ten-seat
+equity precursor (b430a09). This brief exists to be challenged; it does not
+authorize the build. The RFC's own rule governs: stage 6 MEASURES, it does not
+have to win, and a negative result reported honestly completes the stage while
+blocking only the Summary's capability claim (RFC 0008:619-627).
+
+### What the three read-only machinery maps established (with file:line)
+
+**Exists and is reusable.**
+- 2..10-seat rules/transitions/exact N-vector payout through unified
+  GameState (`after_action`, `after_card`, `settle_fold`,
+  `settle_showdown(span<array<int,2>>)`; game_definition.hpp:194-206) and
+  settle_contributions (side pots, ties, rake).
+- The seat-agnostic L3 AbstractTree (2..10), with fold leaves carrying exact
+  chip_utility vectors and showdown leaves carrying ledger+board; chance edges
+  carry no probability (per-deal conditioning is L4's job).
+- Joint PRIVATE-hole distribution with zero card duplication:
+  enumerate_joint_deals / sample_joint_deal (multiway_sampler.hpp:55-72),
+  caller-owned SplitMix64 (prng.hpp). Its documented scaling dead end:
+  sample returns an index into the fully ENUMERATED table, so it is only for
+  small validation games, and it conditions on a static board (no runout, no
+  action sampling).
+- The exact 2-player BR recursion (heads_up_solver.cpp:481-546, evaluate
+  :700-729) and the external-sampling traversal pattern
+  (SampledTraversal::walk :434-478; enumerate traverser actions, sample one
+  opponent action) as the algorithmic template, plus pinned unbiased
+  bounded_index/weighted_index and top-53-bit unit doubles (:369-405).
+- The pinned baseline source: charts.{cpp,hpp} + preflop()/postflop()/
+  evaluatePolicySourced in decision.cpp; preflop is already seat-count aware
+  (rfiBucket/openerBucket keyed on playersInHand; a 9-seat chart case already
+  exists in test_decision_provenance.cpp:144) and postflop has explicit
+  multi = playersInHand>=3 branches (decision.cpp:181,245,281,294,301).
+
+**Does not exist and must be built.**
+1. A seat-indexed BEHAVIOR POLICY interface over GameState/AbstractTree:
+   state+own-hole -> distribution over the legal menu. Today the heuristic is
+   reachable only via string-context evaluatePolicy(Ctx); HeadsUpPolicy is
+   2-seat and HeadsUpState-keyed. Need adapters: pinned-baseline policy,
+   uniform-random reference, and the candidate abstract policy, all behind one
+   interface.
+2. An N-seat sampled UNILATERAL-DEVIATION estimator (general-sum NashConv:
+   sum_i E[u_i(BR_i, sigma_-i) - u_i(sigma)]), using sampled joint deals,
+   sampled public runouts conditioned on all N hands, sampled opponent
+   actions, and traverser-action maximization, with exact terminal settlement.
+   This is the documented unbuilt design (plan lines ~34-56).
+3. Paired-sample mean/variance/confidence-interval statistics under COMMON
+   RANDOM NUMBERS (same joint deal + opponent-action draws for sigma vs
+   deviator), with Student-t critical values for the published seed-list size.
+   No stats code exists anywhere in the repo.
+4. A scalable joint-deal/runout/action sampler that does NOT enumerate the
+   full 1326-combo support (the existing sampler cannot serve full ranges),
+   and a full-table hand simulator (game + per-seat policies + deal -> payoff
+   vector). Nothing maps GameState+holes+policies to payoffs today.
+5. A deterministic digest of the 24 PARSED chart ranges (sorted 169-key sets),
+   to pin the baseline by content as the RFC requires alongside the SHA/files.
+6. A seat-permutation driver over a fixed published seed list.
+
+**The hard constraint the maps measured (do not hand-wave this).** A full
+IDENTITY L3 tree does not materialize at the target seat counts. Empirical
+rooted-flop node counts (identity menu, equal stacks): 2p 31k, 3p 103k,
+4p 289k, 5p 744k, 6p 1.81M (already past the 1 GiB default), 7p 4.25M /
+~3 GB, 8p 9.75M / ~6 GB, 9p 21.98M / ~12 GB; 10p projects ~50M / ~27 GB and
+exhausted even a raised 24 GiB/60M-node probe. Deeper stacks explode faster
+(7 seats at 4-unit stacks exhausted 16 GiB). Therefore the candidate policy
+CANNOT be "CFR over a materialized full identity tree" at 7/10. It must use
+either (a) a COARSER action+card abstraction whose tree fits, trained by a
+streaming/external-sampling multiplayer CFR that does not retain the full
+public tree, or (b) on-the-fly tree traversal without materialization. This is
+the central design decision this brief must settle, and it is exactly the
+"abstraction" the RFC says the larger-table policy is allowed to earn
+abstract_solved through (RFC 0008:291-297, 619).
+
+### Open decisions Revision 0 proposes (each to be confirmed or overturned in review)
+
+D1. **Candidate policy = coarse-abstraction multiplayer external-sampling
+CFR (vanilla CFR+), trained offline, stored as abstract-node -> averaged
+distribution; NOT a materialized full tree.** Propose a deliberately coarse,
+declared abstraction sized so the TRAINED tree fits even at 10 seats (e.g. a
+single bet/one raise per street with a small pot-fraction set plus an all-in
+edge, and the existing L2 CategoryTiersV1 card buckets), and a streaming
+trainer that walks GameState on demand and retains only infoset regret/sum
+tables keyed by the L3 public-path id + the acting seat's L2 card bucket.
+Reason: this is the only path that fits the measured memory envelope and it
+matches Pluribus-style abstracted self-play the RFC cites. The RFC does not
+commit to a training budget and explicitly keeps large-scale training out of
+scope (RFC:448-451), so this stage uses a SMALL, declared, reproducible
+iteration budget on LOCAL hardware; the point is the measurement harness and
+an honest number, not a strong policy.
+
+D2. **Estimator = Monte Carlo external-sampling best response per seat, on the
+EXACT game (not the training abstraction), reporting estimated NashConv in
+chips/pot with a paired CI.** The evaluator must walk the real L1 GameState
+with the real legal menu (so a candidate trained on a coarse tree is measured
+against true poker, not against its own coarse rules), draw joint holes and
+runouts via the RFC 0006 joint distribution, sample the FIXED opponents from
+the policy under test, and maximize over the deviator's true legal actions.
+Estimate is explicitly NOT a bound at 7..10 (RFC:291-297).
+
+D3. **Estimator validation before any large-table number.** RFC 0006:298-299
+requires a small three-player game with INDEPENDENTLY ENUMERATED unilateral
+deviations and a complete utility vector. Build that exact 3p oracle (full
+enumeration, deterministic) and require the Monte Carlo estimator to agree
+with it within a tight tolerance on the enumerable 3p game before trusting
+any 7/10 estimate. This is the same "validate the estimator on a game where
+the exact answer exists" discipline as Stage 3's zero-error identity and the
+2p ExactEvaluation.
+
+D4. **Baseline pin (RFC:568-580).** Record (i) commit SHA a9584b4 plus the
+equity fix b430a09 (the baseline is only defined at 10 seats after the fix),
+(ii) the exact files, and (iii) a content digest of the 24 parsed chart
+ranges. The baseline adapter drives evaluatePolicy through a GameState->Ctx
+adaptor (new) and is wrapped by the same behavior-policy interface as the
+candidate, so the comparison is like-for-like at the same seats.
+
+D5. **Protocol of the published table.** Seat counts {2, 3, 6, 7, 9, 10}
+(>=6 included to bracket the engine's old 6-max ceiling; >6 and =10 satisfy
+the RFC). At every count: abstract-candidate estimate vs pinned-baseline
+estimate vs uniform-random and (where meaningful) a previous-stage reference,
+on IDENTICAL fixtures/seeds; candidate occupies EVERY seat (RFC:605-609);
+seats permuted across the seed list; each figure with a paired CI at a
+declared level (propose 95%) and the seed-list size justified by the interval
+it produces (start from RFC 0006 seeds 1/17/43 and ADD seeds until the
+interval width is reported; a one-element list is rejected). Report resident
+bytes, train wall clock, and per-decision latency in the same table
+(RFC:444-447). State "estimate, no convergence guarantee" beside every
+multiplayer figure.
+
+D6. **Negative result is the default-honest expectation and is fine.** The
+coarse, locally-trained candidate is plausibly WEAKER than the tuned
+heuristic; if intervals do not separate in the candidate's favor the stage
+reports that, does not promote/enable the policy, and proceeds to stage 7 on
+the architecture alone. The deliverable that cannot be skipped is the
+falsifiable harness, the pinned baseline, and the seat-by-seat curve.
+
+### Explicit questions for the independent reviewers
+
+Q1. Is on-the-fly streaming CFR keyed by L3 public-path id + L2 card bucket
+SOUND at 3+ seats (the public-path id is defined on the materialized tree; a
+streaming trainer that never materializes must derive the SAME id from a
+GameState walk — is that identity provable, or should the trainer materialize
+only a COARSE tree that fits at 10 and key by node index)? Which is the
+correct primary path given the measured memory envelope?
+
+Q2. General-sum NashConv is a measure, not a convergence certificate. Is the
+proposed per-seat sampled BR estimator unbiased given the RFC 0006 joint
+distribution and exact settlement, and what is the correct variance unit
+(per-seat gain vs the sum) for the paired CI?
+
+Q3. Is measuring the candidate on the EXACT game while it was trained on a
+COARSE tree the right (and feasible) design, or must evaluation also stay on
+the training abstraction (which would be circular and is rejected)?
+
+Q4. Is the proposed coarse abstraction + local training budget too weak to be
+worth building, given the RFC explicitly says stage 6 does not need to win?
+Is there a smaller valid stage (harness + baseline pin + measurement of the
+baseline against references, candidate optional) that still satisfies every
+acceptance criterion at 7 and 10?
+
+Q5. What is the minimal set of NEW targets/files, and does the dependency
+graph stay acyclic (estimator/trainer must not be linked by the live decision
+service or v1 paths; this is offline-only tooling)?
+
+## RFC 0008 Stage 6 Design Brief Revision 1/2 (2026-09-23) — DESIGN APPROVED BY TWO INDEPENDENT LANES
+
+Approval record: the RFC-fidelity lane APPROVED Revision 1 and re-APPROVED
+Revision 2 (F1-F14 all RESOLVED, new-defect scan clean; explicit rulings that
+the composed profile is an RFC-permitted reading and the frozen-matrix hash
+gate satisfies reproducibility). The algorithm lane returned CHANGES REQUIRED
+on Revision 1 (three blockers), then APPROVED Revision 2 after verifying the
+flop-geometry matrix, the distinct (kind,total) branch pin, the
+chart-union-deviation-grid reach, the corrected marginal scoping, the uniform
+primary deal, the solver-target dealer placement, and the sampled-root-board
+ordinal alignment against source. Both approvers were fresh read-only agents,
+neither authored this brief. Implementation proceeds under R12; design changes
+after this point require a new dated revision and re-review.
+
+Status: Revision 0 was reviewed by two independent read-only agents (an
+algorithm/estimator skeptic and an RFC-fidelity/architecture reviewer). Both
+returned "sound/compliant WITH mandatory changes" (24 findings: A1-A10,
+F1-F14). Revision 1 resolved all 24; the RFC-fidelity lane then APPROVED,
+while the algorithm lane returned CHANGES REQUIRED with three blockers
+(undefined flop-root geometry matrix; a marginal assertion false under
+nonuniform weights; no defined BB dealing range). Revision 2 (same date)
+resolves all three via R1-D10/R1-D11, the new R3b geometry matrix, the R3
+uniform-primary dealing distribution, and the corrected R5 marginal scoping,
+plus the R2 solver-target placement note; it awaits the algorithm lane's
+re-review. Every finding was checked by the implementer against source before
+being resolved here; one reviewer sub-claim that was factually wrong (that
+TrainingLimits lacks max_depth/max_bytes; it has both at
+heads_up_solver.hpp:105-106) did not change the underlying requirement and is
+noted. Revision 1/2 supersede Revision 0 in full; Revision 0 is retained as the
+draft history. Nothing below is implemented beyond the ten-seat equity
+precursor (b430a09).
+
+### R1. Decision summary (what changed since Revision 0)
+
+- R1-D1 **Materialize the coarse tree; do not stream.** There is no "L3
+  public-path id": TreeNode carries only an allocation-order position index
+  (abstract_tree.hpp:88-115; assigned in deterministic DFS order at
+  abstract_tree.cpp:244), and GameState is explicitly historyless
+  (game_definition.hpp:20-26). Infosets are keyed by materialized node index
+  plus the acting seat's own card bucket. Coarse-tree size at every seat count
+  must be MEASURED and within declared caps before the trainer is built
+  (A1, A2, F14). Streaming is removed from the stage scope.
+- R1-D2 **Preflop is composed, not trained.** L2 card bucketing legally throws
+  on boards under three cards (abstraction.cpp:222-223) and CategoryTiersV1 has
+  no preflop image. The candidate is therefore a declared COMPOSED PROFILE:
+  preflop actions come from the pinned charts (identical source to the
+  baseline, in every seat), postflop actions from the coarse-trained policy.
+  Training trees remain rooted-flop, matching L3. This is labeled on every
+  row of the published table as part of the policy's identity (A3, F10).
+- R1-D3 **Two-phase frozen best-response estimator.** Naive per-episode
+  "max over one-sampled continuation per action" is upward biased. Phase 1
+  accumulates per-infoset Q with traverser-action enumeration under common
+  random numbers, freezes BR-hat once; phase 2 measures on disjoint fresh
+  seeds with paired best=true/false rollouts (A7).
+- R1-D4 **Pre-registered, disjoint seed lists.** Pilot seeds estimate variance
+  and fix sample count against a predeclared target half-width; the
+  confirmatory list (containing RFC 0006 seeds 1/17/43) is committed and
+  frozen before any confirmatory run. No adaptive seed addition. The trained
+  artifact is frozen and digested before confirmatory evaluation (F1, F2).
+- R1-D5 **An explicit, versioned exact<->coarse translator is built and named
+  as a declared confound.** No nearest-size mapper exists today
+  (v1_response_mapper.cpp:87-97 is only an interval predicate) (A9).
+- R1-D6 **Baseline pin hardened:** content digest over expanded chart sets +
+  raw specs + the Chen percentile table; a byte-identical decision gate
+  between the deployed parseRequest path and the new adapter; deterministic
+  seed derivation; river solver disabled for the harness baseline (F4-F7).
+- R1-D7 **Exact recurrence, guarantee, and oracle discipline written out**
+  (external-sampling MCCFR, RM+ regrets, uniform average strategy, abstract
+  CCE only, sampled-vs-full averaging gate on the enumerated 3p game; A5,
+  A10).
+- R1-D8 **Offline target graph with four link guards**; new targets
+  bigshark_behavior / bigshark_stage6_train / bigshark_stage6_eval, never
+  linked by service/protocol/host (F14).
+- R1-D9 **Candidate is required, strength is not.** Q4 is settled against the
+  acceptance language (RFC:556-557, 684-690): the stage must produce and
+  measure an abstract policy at >6 and 10 seats; a harness measuring only the
+  heuristic and uniform policies fails. Losing honestly is the accepted
+  outcome (F-scope).
+- R1-D10 **Flop geometries are an enumerated matrix, not one tree per seat
+  count (Revision 2).** A rooted tree's node indices and node.actions carry
+  CONCRETE chip totals (abstract_tree.hpp:88-99), so limped pots, single-raised
+  pots, 3-bet pots, and 4-bet-call pots with different live-seat subsets are
+  different training artifacts. The finite set of flop chip geometries
+  reachable under the composed preflop profile AND the declared preflop
+  deviation menu is enumerated, sized, cap-tested, and frozen before training
+  (see R3b). An uncovered geometry at simulation time is a typed harness
+  failure with no fallback.
+- R1-D11 **Sampler/statistics corrections (Revision 2).** The balanced
+  marginal assertion is scoped to the symmetric uniform control (nonuniform
+  weights shift marginals by suffix completion mass); the primary distribution
+  test stays joint-frequency vs enumerate_joint_deals. The PRIMARY dealing
+  variant is uniform 1326 combos per seat including BB (the game's own
+  unconditional chance distribution); chart weights exist only as an explicit
+  node-CONDITIONAL optional variant with BB defined. The scalable dealer lives
+  in bigshark_solver, linked by both train and eval targets.
+
+### R2. Architecture and target graph (offline only)
+
+New targets, all links point downstream; the graph stays acyclic:
+
+1. `bigshark_behavior` — `engine/include/bs/behavior_policy.hpp` plus
+   implementations under `engine/src/behavior/`. Interface:
+   given GameState, acting seat, that seat's two hole cards, and the legal
+   menu, return a probability distribution over the legal actions. Links only
+   `bigshark_poker`. Ctx/policy vocabulary stays out of L0/L1 (no
+   poker<-policy edge).
+2. `bigshark_stage6_train` — coarse-tree training driver, infoset regret/
+   average store. Links poker, abstraction, tree, solver. Never links policy,
+   service, or either protocol.
+3. `bigshark_stage6_eval` — behavior-policy implementations (pinned-baseline
+   adapter, uniform, candidate-composed), the GameState->Ctx adapter,
+   full-hand simulator, two-phase deviation estimator, exact 3p oracle, stats
+   module, digest generator, translator. Links poker, abstraction, tree,
+   solver, policy, behavior. The adapter is the ONE place allowed to include
+   both bs/game_definition.hpp and bs/decision.hpp.
+3a. The scalable joint dealer (R5) lives in `bigshark_solver` next to
+    multiway_sampler, which both new targets already link; one implementation,
+    no duplication (Revision 2 placement correction).
+4. Harness binary in `engine/benchmarks/` (manual target, never a timing-gated
+   CTest; precedent: heads_up_matrix_benchmark.cpp) emitting a deterministic
+   CSV + markdown table. tools/replay (TypeScript) is not used.
+
+Guards, replicating the stage-4 L3 discipline:
+
+- CMake configure/CTest assertion over LINK_LIBRARIES of bigshark_service,
+  bigshark_v0_protocol, bigshark_v1_protocol, and the engine-host executable:
+  fail if any stage6/behavior target appears.
+- Resolved-include allowlist guard (the engine/cmake/l3_boundary_guard.sh
+  -MMD pattern) over service/protocol sources excluding behavior and stage-6
+  headers.
+- A link-negative test binary that links service+v0+v1 and references no
+  stage-6 symbols.
+- The frozen trained artifact is harness-local files only; it is never
+  registered with the decision service, resident storage, L5, v0, or v1. The
+  harness performs no network access, reads no credentials, and reads no
+  sessions/ journals (RFC:455-460).
+
+### R3. Fixtures, ranges, positions, permutations
+
+Frozen before any confirmatory result (F3):
+
+- Seat counts {2, 3, 6, 7, 9, 10}. Primary endpoints for claims are 7 and 10
+  (the RFC-required >6 and =10); {2,3,6,9} are secondary curve points.
+- Cash fixture: 100 BB effective stacks, blinds 1/2 (big blind = 2 chips),
+  rake zero, no antes. Training uses rooted-flop games (board 3 cards); the
+  measured full hands run preflop->river through the simulator composed
+  profile.
+- Dealing distribution, PRIMARY variant: every seat is dealt uniformly from
+  all 1326 combos (weight 1 each), joint-conditioned on zero card duplication
+  by the R5 restart sampler. This is the game's own unconditional preflop
+  chance distribution and the correct measure for whole-hand NashConv against
+  a fixed profile; it also has a defined BB marginal, which the RFI chart does
+  not (charts.cpp:55-60 has no BB key). OPTIONAL secondary variant, labeled
+  and never used for headline claims: node-CONDITIONAL chart weights — when the
+  simulator reaches a preflop decision, subsequent conditional analysis may
+  weight a seat's combos by the pinned chart range appropriate to its exact
+  situation (RFI for unopened seats UTG/HJ/CO/BTN/SB; the vs-open value/bluff/
+  call sets facing an opener; BB = all 1326 combos, matching the deployed BB
+  check-option baseline). These conditional weights never overwrite the
+  unconditional deal and are reported separately. vs-open/3-bet continuations
+  do not modify the unconditional dealing weights.
+  Runout cards are uniform conditional on the board and ALL 2N hole cards,
+  including seats that later fold (all hole cards are removed from the deck at
+  deal time; 2p precedent heads_up_solver.cpp:151-153).
+- Position identity: every GameDef is canonicalized before tree build by
+  rotating seats so seat 0 is the button. Tree actor indices are therefore
+  button-relative, and one trained policy serves every permutation. The
+  permutation driver rotates real assignments across the seed list with
+  balanced position coverage (an assertion verifies each seat occupies each
+  canonical position equally). The canonicalization is pinned by a
+  round-trip equivalence test against unrotated builds.
+- Seat->chart-position vocabulary ({UTG,MP,HJ,CO,BTN,SB,BB} per seat count,
+  with the n=3/6/8 bucket switches at decision.cpp:38-55) is a committed
+  mapping table and is proven identical to the deployed adapter (F7).
+
+### R3b. Flop-geometry matrix (Revision 2; resolves algorithm blockers 1 and 3)
+
+A rooted AbstractTree is not parameterized by pot or stacks — the root
+GameDef's concrete contributions, pot, and per-seat stacks are baked into
+every node index and into the chip totals in node.actions
+(abstract_tree.hpp:88-115; game_definition.hpp:75-125). Limped pots,
+single-raised pots, 3-bet pots, and 4-bet-call pots, crossed with the set of
+seats that reaches the flop and the seated count, are therefore DISTINCT
+artifacts; one tree per seat count cannot serve the simulator's flops, and R7
+action translation cannot bridge a pot-geometry mismatch. The stage therefore
+operates on an enumerated, frozen geometry matrix:
+
+1. Enumeration is by deterministic exhaustive preflop ROLLOUT, not by
+   hand-picked cases, and the per-seat ACTION SUPPORT SOURCE is explicit.
+   Candidate artifacts are queried only where the composed candidate acts
+   postflop, so the matrix must cover the flop geometries reached by:
+   (i) every profile seat playing the pinned charts
+      (evaluatePolicySourced, riverGtoOn=false); and
+   (ii) ONE designated deviator seat playing the full R8 deviation grid at
+      each of its preflop decisions, with every other seat on chart support,
+      iterated over every canonical deviator position relative to the button
+      (seat permutations collapse under canonicalization).
+   The uniform-random and previous-stage all-seat reference measurements need
+   NO candidate artifacts: in those profiles every seat is the reference, the
+   candidate is never queried, and settlement is exact on the exact game.
+   The pinned charts are deterministic for a fixed hand (one action per Ctx;
+   postflop-only rng draws do not occur preflop), but DIFFERENT hole cards map
+   to different actions: the chart support at a preflop state is computed from
+   the range memberships (rfi / vs value,bluff,call / four-bet sets) and the
+   <=12bb jam/fold branch (decision.cpp:76-138). Both sources emit a set of
+   DISTINCT (action kind, chip total) pairs; the enumerator branches over
+   exactly that union. Kind alone is insufficient: one state can emit two
+   different raise totals — short-stack jams go to raiseMax while ordinary
+   members get the fixed sized open (2.5+1.5*limpers BB), and 4-bet value
+   jams (raiseMax) while 4-bet bluffs use 2.2x the call. Fold and check carry
+   total zero; calls carry the state's call amount. The deviation grid is the
+   finite R8 raise set (declared pot fractions including min-raise and
+   all-in), so the rollout set stays finite and card-independent; the
+   enumerator never samples cards for this step. Folded seats' blinds/calls
+   remain in the pot exactly as the rules settle them. If the cap test in
+   step 3 fails because the deviation grid explodes the matrix, the grid may
+   be coarsened ONLY in a declared revision whose final grid is frozen and
+   named alongside the estimate (the quantity is explicitly an estimate over
+   that declared menu, R8); chart-support geometry may not be coarsened away.
+2. Each distinct flop state is canonicalized (button rotation, R3) and reduced
+   to its geometry signature: player_count, per-seat remaining stack, street
+   contribution, total pot, and live-seat set relative to the button. The
+   concrete flop CARDS are deliberately NOT part of the signature: the public
+   tree topology is board-value-independent (chance degrees are 49 then 48 for
+   any three-card root; the pinned fixture uses one representative board), and
+   board identity enters training and lookup only through the L2 card bucket
+   and the sampled joint deals. Two flops with the same signature share one
+   GameDef root topology and one artifact regardless of their cards; the
+   enumerator emits the deduplicated signature list with the originating
+   preflop action line(s) for audit. To keep regret rows from conditioning on
+   the representative board, TRAINING samples the three root board cards per
+   iteration uniformly from the deck conditioned on that iteration's joint
+   holes (the R5 dealer supplies holes + root board together as the deal),
+   while the single materialized tree for the signature supplies node indices
+   and abstract menus — the MCCFR walk advances a GameState carrying the
+   sampled board and aligns it to the topology by construction order. Index
+   alignment at chance nodes is ordinal, not by card identity: chance children
+   are ordered by card id in the representative tree, so the walk maps a
+   sampled card to the child with the same ordinal k among the conditional
+   deck sorted by id (the post-chance ACTION subtree is card-value-
+   independent, so every k selects the same action topology). Action nodes and
+   terminal leaves therefore share one index space across sampled boards. The
+   ordinal mapping is pinned by a test: walks with identical action lines on
+   two different sampled boards visit identical action-node index sequences,
+   and the k-th conditional card round-trips. Root-board sampling is declared
+   as part of the abstraction's identity and named with the translator in the
+   table's confound label.
+3. Every signature is built under the R6 coarse ActionAbstraction at its seat
+   count and measured (nodes, action/chance/terminal counts, infoset-row
+   estimate, charged retained bytes) against the unchanged TreeLimits caps
+   (2,000,000 nodes / 1 GiB; never raised). If a signature misses a cap the R6
+   menu escalation coarsens the schedule and the ENTIRE matrix is rebuilt and
+   re-measured; the frozen config records one menu schedule per signature if
+   escalation diverges.
+4. The frozen matrix (signatures, action lines, counts/bytes, menu id, and the
+   exact artifact key each simulator flop must select) is committed in the
+   config directory before training and content-hashed; R10's confirmatory
+   gate hashes it together with the seed list.
+5. Simulation-time lookup is total and typed: the simulator computes a flop's
+   signature and MUST find its artifact; an uncovered signature throws a
+   typed `stage6_geometry_uncovered` error (never a fallback tree, clamp, or
+   skip), because a silent omission would bias the measured profile.
+6. Coverage of the enumerator itself is pinned by a test asserting, per seat
+   count, that (a) every generated line terminates legally under GameState
+   transitions; (b) a fixed sample of full-hand simulator runs for EVERY
+   measured profile maps to enumerated signatures with zero uncovered events,
+   and in particular best=true phase-1/phase-2 deviator rollouts (one
+   designated deviator seat exercising the full R8 preflop deviation grid,
+   opponents chart) produce zero uncovered flop signatures; (c) the per-state
+   support computation returns distinct CONCRETE (kind, total) branches,
+   pinned on the raises==2/heroWasRaiser node where fourValue combos map to a
+   raiseMax jam and fourBluff combos to the sized 2.2x total
+   (decision.cpp:125-130): the two totals must appear as separate branches in
+   the matrix, and jam-vs-sized lines must produce distinct signatures; (d)
+   the matrix equals the union of chart-support reach and deviation-grid reach
+   asserted against an independent brute-force rollout on the smallest seat
+   counts.
+
+### R4. Baseline pin (F4-F8)
+
+Stage-start evidence records, in the plan and the table header:
+
+- Full 40-char SHAs a9584b4 and b430a09, with the statement that the pinned
+  baseline is only defined at 10 seats after b430a09.
+- Exact file list: engine/src/poker/charts.cpp,
+  engine/include/bs/charts.hpp, engine/src/policy/decision.cpp, plus decision
+  dependencies engine/include/bs/equity.hpp, eval.hpp, range.hpp.
+- A deterministic digest generator (registered CTest linking bigshark_poker),
+  SHA-256 over a canonical serialization of: the raw spec strings and the
+  sorted post-expansion Range169 sets for all 24 chart fields, each labeled by
+  canonical field path (rfi per position; vs per opener bucket
+  value/bluff/call; fourValue, fourBluff, vs3Call, vs4Continue), and the 169
+  entries of preflopPctTable in key order (it drives the <=12bb jam branch at
+  decision.cpp:76-85). The digest value is recorded before training starts.
+- Byte-identical decision gate: a committed corpus covering seats
+  {2,3,6,7,9,10}, all streets, raises 0/1/2, multiway branches, and
+  Monte-Carlo-sensitive spots, each with a fixed deterministic seed; every
+  state is decided both through the deployed string path
+  (v0_json parseRequest -> evaluatePolicySourced) and through the
+  GameState->Ctx adapter, asserting identical action AND amount. An
+  adapter-produced action not present in GameState::legal() is a typed harness
+  failure, never a clamp. The existing 156-decision replay
+  (node bin/replay.mjs: 156 / 0 illegal / 0 JS fallbacks), test_heads_up_preflop,
+  and test_v0_protocol are named and run unchanged in the same gate.
+- Stochasticity is fully pinned: the Ctx.seed for each corpus/table decision
+  is a deterministic SplitMix64 function of (seed, seat, decision index). The
+  harness baseline sets riverGtoOn=false (so no figure depends on a
+  HiGHS-present build; exact-vs-DCFR build dependence is removed), and the
+  RiverBackendHint is recorded in evidence.
+
+### R5. Scalable joint dealer (A6)
+
+A new dealer in bigshark_solver (R2 item 3a) implements the SAME construction the
+enumeration-bound sample_joint_deal proves exact, minus its O(D) table-index
+lookup (multiway_sampler.cpp:135-158): build one marginal cumulative-weight
+table per seat over its fixture range, then per deal independently propose one
+combo per seat via the pinned unbiased weighted selection
+(heads_up_solver.cpp:369-405), and ACCEPT only when no card is duplicated
+across seats or the board; on any conflict discard the ENTIRE proposal and
+restart from seat 0. A positive-weight proposal is accepted with probability
+proportional to the product of its per-seat weights, so the restart-on-conflict
+construction (not conditioning) yields exactly the joint distribution
+proportional to the product of range weights conditioned on mutual
+compatibility (RFC 0006:192-195). The forbidden construction is different:
+sampling seats independently and renormalizing only the LAST seat's pool
+conditioned on the others, which changes every earlier seat's marginal; the
+restart sampler restarts symmetrically and its marginals are exactly those of
+the enumerated product-conditional joint table (which under nonuniform
+per-seat weights are NOT the raw marginals — see the validation below). Worst-case acceptance at ten seats with full 1326-combo
+uniform ranges is about 1.8 percent (~57 restart attempts per accepted deal),
+measured, so no support enumeration is ever required; with sparse chart ranges
+the rate is lower and the measured rate is reported. Validation on the small
+game: empirical JOINT frequencies must match enumerate_joint_deals within a
+declared tolerance — this is the primary distribution test, and it is the only
+correct equality claim under nonuniform weights, because restart-on-conflict
+acceptance shifts each seat's marginal by the suffix completion mass of the
+seats drawn after it. The balanced-marginal assertion (each seat's empirical
+marginal equals its declared weights) is therefore scoped to a symmetric
+uniform-weights control fixture where every combo blocks exactly the same
+number of opponent combos and the equality is exact; in every other fixture
+the asserted comparison is empirical marginals vs the marginals derived from
+enumerate_joint_deals. A last-seat-renormalization control must produce a
+measurably different joint distribution and is rejected. Per-deal
+normalization and zero-duplication are asserted on every accepted deal. RNG
+streams are caller-owned SplitMix64, deterministically derived per (seed,
+public node, role, phase).
+
+### R6. Candidate trainer (A4, A5, F13)
+
+- Sizing measurement FIRST: for EVERY flop geometry signature in the frozen
+  R3b matrix (not one game per seat count), build the declared coarse
+  ActionAbstraction (AbstractionId published; initial menu: fold/check/call
+  backbone plus one bet and one raise per street over a small declared
+  pot-fraction schedule plus an all-in edge; card abstraction
+  CategoryTiersV1 postflop) rooted at that signature and record node counts,
+  infoset-row counts, and charged retained bytes against TreeLimits. If any
+  signature misses its predeclared caps (max_nodes 2,000,000 / max_bytes 1 GiB
+  defaults are NOT raised for training), the menu is coarsened per the declared
+  escalation order in R3b and the ENTIRE matrix is rebuilt and re-measured;
+  the menu id per signature is frozen before training. A build that hits a cap
+  reports tree_resource_exhausted typed, never a truncated tree (RFC:466-468).
+- Artifact and infoset key: one artifact per frozen geometry signature. Within
+  an artifact the infoset key is materialized TreeNode::index + the acting
+  seat's own L2 card bucket; globally a row is addressed by (geometry
+  signature hash, node index, bucket). Row actions are literally node.actions;
+  no key derivation from historyless state exists or is attempted.
+- Recurrence: external-sampling MCCFR (Lanctot), applied per geometry root
+  with its rooted flop (postflop training only; preflop is the pinned composed
+  source, R1-D2). One iteration = N traverser sweeps, one joint conditional
+  board-and-private deal per sweep through the R5 dealer; at chance nodes
+  sample one conditional card; at each of the N-1 non-traverser seats sample
+  one action from that seat's current regret-matched policy; at traverser
+  nodes enumerate all abstract actions; sampled regret
+  r[I,a] += v(child_a) - v(I) unweighted; regrets are positive-clipped after
+  update (RM+); the reported strategy is the UNIFORM average strategy
+  (visit-weighted action sums), not CFR+'s linear-weighted average. Claim: at
+  most convergence to a coarse correlated equilibrium of the abstract
+  imperfect-recall game; never a Nash equilibrium claim and never a zero-
+  NashConv claim (RFC 0006:202-208).
+- Per-geometry iteration counts and TrainingLimits
+  (max_nodes, max_information_sets, max_depth, max_bytes, wall time) are
+  predeclared constants in the frozen config; the total local budget is the
+  sum over the matrix and is reported as such. No game-copy/footprint
+  accounting constant is rebased (RFC:439-443). RFC 0006:197-199 gate: on the
+  enumerated 3p game the sampled multiway average must match full
+  average-policy updates within a pinned tolerance before scaling.
+- Output: one frozen artifact per geometry signature (infoset table +
+  AbstractionId + translator id + training config), content-digested before
+  confirmatory evaluation. No retraining after confirmatory results.
+
+### R7. Exact<->coarse translation (A9)
+
+A deterministic, versioned translator, unit-tested against LegalActions:
+
+- coarse->exact: fold/check/call map directly; an aggressive total maps to the
+  nearest legal integer target in the inclusive [raiseMin, raiseMax] interval
+  (reuse the v1 actionIsLegal interval test), ties break to the SMALLER total;
+  when two coarse targets translate to the same exact action their probability
+  mass merges; if no aggressive action is legal, aggressive mass follows a
+  declared rule (shift to call; fold mass unchanged).
+- exact-history->coarse path: when the candidate acts as an OPPONENT inside
+  the exact traversal, each past exact action is replayed through the
+  as-of-that-node translator to locate the coarse node for the row lookup.
+- The translator id is part of policy identity; every exact-game figure names
+  it as a declared confound: the measured quantity is NashConv of the
+  TRANSLATED candidate, and unseen exact sizings carry zero candidate mass by
+  construction.
+
+### R8. Two-phase deviation estimator (A7, A8, F9)
+
+- Deviation menu: the exact raise continuum is not enumerable, so the
+  deviator maximizes over a declared finite deviation menu —
+  fold/check/call plus a fine raise grid (pot-fraction steps denser than the
+  training menu, always including min-raise and all-in). This makes the
+  quantity a unilateral-deviation estimate over a declared superset menu; it
+  is labeled as such next to "estimate, no convergence guarantee".
+- Phase 1 (learn, pilot/training seeds): at deviator nodes enumerate deviation
+  actions and recurse each subtree, sampling chance and the N-1 fixed-profile
+  opponents, using sibling-shared streams (CRN) for prefixes; accumulate
+  Q_i(I,a). Freeze BR-hat_i = argmax_a Q_i once. Naive per-episode noisy
+  max is explicitly rejected (upward Jensen bias); frozen-argmax on fresh data
+  is unbiased for the gain against BR-hat and consistent for the gain against
+  the true BR.
+- Phase 2 (measure, confirmatory seeds only): BR-hat is now a fixed policy;
+  paired best=true/false rollouts exactly as heads_up response()/evaluate()
+  (heads_up_solver.cpp:481-546, 715-720), sharing deal, runout, and opponent
+  draws. g_{i,s} = u_i(BR-hat_i, sigma_-i) - u_i(sigma) per seed s.
+- Terminals settle through the exact N-vector paths (settle_fold /
+  settle_showdown with live-seat-ascending holes; game_definition.hpp:194-206).
+- Statistical unit: one seed = one vector-valued replicate (g_{1,s}..g_{N,s})
+  in declared units (chips per pot, per hand). Per-seat CIs: Student-t on the
+  S replicates (t implementation validated against tabulated critical
+  values). NashConv CI is computed on the scalar Y_s = sum_i g_{i,s} —
+  never by summing per-seat half-widths. Candidate vs baseline: PRIMARY
+  statistic is the paired difference d_s = Y_candidate,s - Y_baseline,s on
+  identical draws with its own CI; the RFC-literal "beats" rule (non-overlap
+  of the two marginal 95% intervals, RFC:596-604) is ALSO reported, and the
+  word "beats" is used only when that literal rule separates. Primary claims
+  are at 7 and 10 seats with Holm correction over the two comparisons; the
+  other counts are descriptive. All per-seed values and spreads are published
+  beside the intervals. Estimation error (MC vs exact on the oracle) and
+  numerical error (floating residual) are reported separately per RFC
+  0006:203-205.
+- Estimator gates before any large-table number:
+  1. Exact 3p oracle agreement (R9) within tight tolerance, with a residual
+     bias test whose CI includes zero.
+  2. Two-seat cross-check: the sampled estimator against the existing exact
+     heads-up ExactEvaluation::nash_conv on the same rooted game, both
+     definitions reported where both are computable.
+  3. Same-build 1e-12 repeatability; sampler zero-overlap/normalization
+     checks.
+
+### R9. Exact 3p oracle (A10)
+
+- Primary fixture: the pinned three_seat_rooted({1,1,1}) identity tree
+  (test_abstract_tree_fidelity.cpp:251-263; 102,827 nodes / 28,824 action /
+  941 chance / 7,206 fold / 65,856 showdown — inside default TreeLimits),
+  with declared 2-4 combo per-seat ranges chosen to (a) force card-overlap
+  conflict rejection, (b) allow an all-three-to-river line. Complete
+  3-component utility vectors asserted at every leaf with sum_i u_i = 0 for
+  both fold and showdown leaves; RFC 0006 seeds 1/17/43, permutation, and
+  1e-12 repeatability.
+- Unequal-stack variant three_seat_rooted({1,2,2}) to exercise side-pot
+  layers and multi-raise geometry (s=1 menus collapse nearly to
+  fold/call/all-in); node count measured and pinned, offline oracle caps
+  raised only for this validation binary if needed.
+- The oracle serves two gates: estimator bias (R8) and sampled-vs-full CFR
+  averaging (R6).
+
+### R10. Seeds and pre-registration (F1, F2)
+
+- Pilot list: a committed fixed set of constants (published in the harness
+  config before any run), disjoint from the confirmatory list, used ONLY for
+  variance estimation, the sample-size decision, and any hyperparameter
+  choice.
+- Predeclare level 95% and target half-width h = 0.05 pot for the paired
+  NashConv difference; pilot variance fixes N per fixture/seat. The
+  confirmatory list (values, including 1/17/43, count, declared space, and the
+  per-purpose stream derivation) is then committed in a frozen config file and
+  hashed together with the R3b geometry matrix and the fixture/range configs;
+  the harness refuses to run a confirmatory table unless every hash matches
+  its committed value. Every figure is reproducible from seed + frozen
+  fixture + frozen geometry matrix alone.
+- Train/test separation: no abstraction, budget, bucket, or translator change
+  after a confirmatory run; a negative or indistinguishable result is
+  reported as-is, the artifact is neither promoted nor enabled, and stage 7
+  proceeds on architecture alone (RFC:618-627).
+
+### R11. Reference opponents and published table (F11, F12)
+
+- Every seat-count row reports, on identical fixtures/seeds: the composed
+  abstract candidate in EVERY seat (permuted), the pinned baseline, fixed
+  uniform-random, and a previous-stage reference named per count: at 2 seats
+  the RFC 0004 blueprint policy if loadable in the behavior interface, else
+  the literal entry "no previous-stage policy exists"; that same literal entry
+  for all counts >2.
+- Columns: per-seat gains and summed NashConv with 95% CIs, paired-difference
+  CI vs baseline, RFC-literal separated/intervals-overlap verdict, estimator
+  and translator ids, "estimate — no convergence guarantee".
+- Cost columns, one row per seat count (10 mandatory): frozen policy resident
+  bytes via the counting-allocator precedent, train wall clock with hardware
+  and thread count declared, per-decision candidate latency at 10 seats over
+  fixed states; estimator peak bytes reported as informational.
+
+### R12. Build sequence (each step has pinned tests; no step may merge on a later step)
+
+1. Chart digest generator + recorded stage-start pin evidence + preflop
+   rollout geometry enumerator and the frozen, cap-tested R3b geometry matrix
+   (per-signature node/infoset/byte measurements) + frozen fixture/range/menu
+   configs.
+2. bigshark_behavior + baseline/uniform adapters + GameState->Ctx adapter +
+   byte-identical corpus gate + named baseline tests.
+3. Scalable restart-on-conflict joint dealer in bigshark_solver +
+   distribution-match tests vs enumerate (joint-frequency primary,
+   uniform-control marginals, renormalization negative control).
+4. Full-hand N-seat simulator (with total typed geometry lookup) + exact 3p
+   oracle fixtures (both stack shapes) with conservation/full-vector
+   assertions + R3b enumerator coverage test.
+5. Two-phase estimator + stats module + oracle agreement + 2p exact
+   cross-check + repeatability.
+6. Translator with legality/projection tests.
+7. MCCFR trainer over every frozen geometry signature + sampled-vs-full
+   averaging gate on the 3p oracle + per-signature frozen artifacts.
+8. Pilot -> freeze confirmatory list/matrix hashes -> frozen artifact digest
+   -> confirmatory table -> markdown report with every column and the
+   negative-result framing.
+
+End state: one stage commit after the full gate matrix and independent
+approval review of the IMPLEMENTATION (separate from this design approval).
+
+### R13. Answers to Revision 0's questions (resolved)
+
+- Q1: materialize the coarse tree keyed by TreeNode index + own bucket;
+  streaming rejected (no derivable key, and it does not escape the
+  regret-table memory wall).
+- Q2: estimator unbiased only in the two-phase frozen form (R8); variance
+  unit is the per-seed vector, NashConv CI on its sum, paired difference
+  primary.
+- Q3: exact-game evaluation correct and required; feasible only WITH the
+  declared translator (R7), which is part of the measured policy's identity.
+- Q4: candidate mandatory, winning optional; no smaller deliverable satisfies
+  RFC:556-557/684-690.
+- Q5: targets and guards as R2; graph acyclic; offline-only enforced by four
+  guards.
+
+### Stage 6 stage-start baseline pin evidence (R4, recorded 2026-09-23)
+
+- Baseline commit (policy/heuristic at stage start):
+  `a9584b4df7466287a121938b56ae4942f44671ca`
+- Ten-seat baseline-defining equity precursor:
+  `b430a099f2da565cca52f3e003ad872dc19b2d5c`
+- Pinned source files: engine/src/poker/charts.cpp,
+  engine/include/bs/charts.hpp, engine/src/policy/decision.cpp, plus decision
+  dependencies engine/include/bs/equity.hpp, eval.hpp, range.hpp.
+- Parsed-chart content digest (SHA-256 over the 24 sorted expanded range sets
+  + raw specs + the 169-entry Chen percentile table), pinned in
+  test_stage6_chart_digest:
+  `cb2da0d1b99f6e3ef1912fcd83c14234dc71c118eb954fe3da3d875ef6898bda`
+  Proven mutation-sensitive (removing one RFI token changes the digest and
+  turns the golden test red).
+- Byte-identical corpus gate test_stage6_adapter_corpus: 63 decision points
+  across seats {2,3,6,7,9,10}, preflop raises 0/1/2 and rooted flop
+  snapshots (non-PFA and PFA), three hole sets each; adapter-derived Ctx and
+  the deployed parseRequest path return identical action AND amount, and the
+  shared decision is legal in GameState. The gate proved itself red while it
+  was being built: it caught two adapter derivation errors against the real
+  platform normalizer (v0-normalizer.ts) — raises/limpers/openerPosition are
+  preflop-only fields on later streets, and heroWasRaiser/heroPreflopAggressor
+  are a single "last raise across every street is this seat" boolean.
+- Offline boundary: bigshark_behavior (poker-only interface + uniform
+  reference) and bigshark_stage6_eval (adapter, baseline, digest). Three
+  guards all proven red-green: configure-time transitive-link assertion over
+  service/v0/v1/host; a -MMD resolved-include shell guard (compile_commands
+  flags per source); an nm scan of a v0+v1 link-negative binary.
+- The stage-4 L3 guard had been passing vacuously (a ../../.. root
+  overshoot); fixed in precursor commit
+  `9d6e5d58f600abce5d1a2f62d7bfd4a78be62edf`, independently reviewed and
+  approved.
+
+### Stage 6 implementation progress (R12), 2026-09-23
+
+- Step 2 DONE: bigshark_behavior target (BehaviorPolicy interface over
+  concrete legal poker::Actions, declared finite behavior menu,
+  UniformBehaviorPolicy, sample_distribution); bigshark_stage6_eval target
+  (GameState->Ctx adapter, pinned BaselineBehaviorPolicy, SHA-256 chart
+  digest). test_behavior_policy pins menu ordering/interval/dedup. The
+  byte-identical corpus gate test_stage6_adapter_corpus pins 63 decisions
+  (seats {2,3,6,7,9,10}, preflop raises 0/1/2 + rooted flop PFA/non-PFA),
+  adapter vs deployed parseRequest equal on action AND amount, all legal;
+  while being written it caught two real adapter semantic errors that were
+  corrected against the live normalizer (raises/limpers/openerPosition are
+  preflop-only; the two hero-raiser flags are one all-street last-raise
+  boolean). test_stage6_chart_digest pins golden
+  cb2da0d1b99f6e3ef1912fcd83c14234dc71c118eb954fe3da3d875ef6898bda,
+  proven mutation-sensitive.
+- Offline boundary: three guards all proven red-green — configure-time
+  transitive-link assertion, -MMD resolved-include shell guard, nm scan of a
+  v0+v1 link-negative binary.
+- Step 3 DONE: sample_scalable_joint_deal in bigshark_solver (independent
+  marginal proposals + full-restart rejection; no joint-support
+  enumeration). test_multiway_sampler extended with: joint-frequency match
+  vs enumerate (nonuniform, <0.01), determinism, symmetric-uniform marginal
+  equality (1326 combos x 3 seats), a hand-computed last-seat-renormalization
+  negative control (correct 3/4 vs renormalized 1/2, gap 1/4), board
+  filtering and the attempts counter. Release and ASan green.
+- Precursor commit 9d6e5d5 fixed the vacuous stage-4 L3 guard.
+- NEXT: R12 step 1 flop-geometry enumerator + sizing (and the frozen config
+  artifacts); then step 4 simulator + exact 3p oracle.
+
+### Stage 6 Revision 3 (2026-09-23): geometry bucket finding — FOR INDEPENDENT REVIEW
+
+Measured while implementing R12 step 1. The implemented enumerator
+(enumerate_chart_flop_geometries, chart-only reach, exact concrete chip
+signatures per R3b) produced this exact-geometry matrix:
+
+| seats | exact geometries | (bb-pot x live-count x seats-behind) buckets |
+|-------|-----------------:|--------------------------------------------:|
+| 2     | 2                | 2 |
+| 3     | 12               | 9 |
+| 6     | 732              | 63 |
+| 7     | 2,478            | 91 |
+| 9     | 25,731           | 150 |
+| 10    | **80,438**       | **184** |
+
+Revision 2's "tens-to-low-thousands per seat count" assumption held only up to
+about 7 seats. At 100bb/1-2 the exact signature (per-seat remaining stack,
+per-seat contribution, exact pot, exact live subset) is essentially unique:
+87-273 distinct pots and the fold subsets fan out, so at 10 seats there are
+80,438 exact geometries. Building and training one materialized coarse tree
+per exact geometry is structurally infeasible under the declared local budget.
+
+Proposed Revision-3 change (the standard abstraction this design already
+commits to in principle): QUANTIZE the geometry key. Strategy is pot-scale
+invariant, so a rooted artifact is identified by
+  (pot rounded to whole BB, count of live seats, count of live seats with
+   postflop stack behind)
+rather than exact per-seat chip vectors. The representative rooted GameDef for
+a bucket derives per-seat stacks/contributions from the bb pot (even split of
+dead money among the live count; each acting seat the same effective
+stack-behind). Collapsing exact signatures onto this key gives 184 buckets at
+10 seats — a trainable matrix under the local budget. Exact chip action at
+evaluation time still goes through the R7 translator; the bucket tree is the
+abstraction, the discrepancy is a declared confound exactly like card
+bucketing.
+
+Open questions the independent review must rule on:
+1. Is collapsing dead-money distribution to an even split, and per-seat
+   stack-behind to the counted set, a faithful abstraction, or does folding in
+   WHO put the money (positions) lose information the card/strategy needs?
+   (Mitigation already present: button-canonical position; but bucket trees
+   would no longer distinguish, say, 3 live with the opener UTG vs on the
+   button at equal pot.)
+2. Should the bucket key retain the opener-position class in addition to the
+   three fields above (small increase in count), given the postflop heuristic
+   itself does not read opener position but the candidate might benefit?
+3. Does training on a representative even-split pot while evaluating on exact
+   pots break the R3b "simulator flop must find its artifact; uncovered throws"
+   guarantee, or is every exact geometry guaranteed to map to a bucket (it is,
+   by construction — bucketing is total)?
+4. Is 184 x per-bucket-tree still within the declared local training budget,
+   given measured per-tree node counts (step 1 tree sizing must be run on the
+   184-bucket matrix, not the exact one, before approval)?
+
+No implementation beyond the read-only enumerator and its measurement binary
+is committed to this change; the trainer/simulator stay unwritten until the
+bucketed signature is approved.
+
+### Stage 6 Revision 3 APPROVED-WITH-CONDITIONS (independent review, 2026-09-23)
+
+The fresh geometry-bucketing reviewer verified the measurement (reproduced
+80,438 at n=10 / 184 buckets; confirmed the fan-out is pot x fold-subset, not a
+dedup or termination bug) and returned APPROVE-WITH-CONDITIONS. The direction
+(pot-scale bucket key) is accepted; the trainer is not built until these
+conditions are met. Recorded decisions:
+
+- **The 184 is mostly non-actionable.** 160 of 184 buckets are all-in-at-flop
+  with zero acting seats (n=6: 51/63); at most 24 n=10 buckets need trained
+  postflop trees. All-in buckets are typed "no candidate queried" (pure
+  runout settlement), NOT uncovered and NOT trained.
+- **Representative GameDef = a REDUCED live-count rooted game.** The first
+  attempt (rooted_def_for in the benchmark) crashed with "positive pot layer
+  has no eligible winner" because GameDef has no folded-seat field: a rooted
+  game cannot carry folded players with live stacks. The representative for a
+  bucket is a new GameDef whose player_count is the bucket's LIVE count, seats
+  reindexed clockwise from a canonical button, equal acting stacks set to the
+  MINIMUM acting depth among the bucket's members (never deeper — that emits
+  illegal targets R7 would have to clamp; never shallower — that drops legal
+  sizings), dead money reconciled to an exact pot the 3+ validator accepts
+  (odd chip declared), street commitments zeroed.
+- **No-mix guard (pinned test):** a bucket must not mix an all-in-for-less live
+  seat with acting members, nor acting-depth classes beyond a declared
+  tolerance; the ≤2-chip folded-blind redistribution and ≤1bb pot rounding are
+  named confounds. Measured acting-stack spread in n=3 deviation reach was
+  <=1 chip, and equal-97bb equal-contribution is structural at the uniform
+  100bb fixture, so the collapse is near-lossless FOR THE FROZEN FIXTURE only.
+- **Opener/last-raiser position is NOT a key field now.** Own relative seat is
+  retained (node index encodes it). Condition: train over the actual
+  member-geometry mixture and run a predeclared pilot sensitivity test (split
+  vs merged opener class at 6/7 seats on a CI threshold); promote to a fourth
+  key field only if it fires.
+- **Totality:** stage6_geometry_uncovered fires on key-not-in-FROZEN-set;
+  all-in buckets are "no candidate queried". The deviation-reach buckets
+  (n=3 already grows 9->39) must be enumerated at every seat count and unioned
+  into the frozen matrix BEFORE any budget/sizing claim.
+- **Geometry quantization is a NEW AbstractionId.** Node/sizing counts measure
+  cost, not error. The quantizer is a named/versioned AbstractionId parameter
+  in the frozen rehashed matrix, superseding Revision 2's "chart-support
+  geometry may not be coarsened away" under the measured-infeasibility
+  rationale. Before the trainer: (i) structural menu-displacement rate across
+  all buckets (zero-displacement fraction, no training needed); (ii) on the
+  n=3 oracle where all 12 exact geometries are feasible, bucketed-vs-exact
+  policy/deviation-gain delta with CIs. Without (ii) the table may still be
+  published but only at guarantee level approximate, so labeled.
+- **R7 alignment pin:** ordinal node alignment between representative tree
+  and exact-state replay for sampled lines, per bucket.
+
+Revised R12 step 1 therefore: enumerate exact reach (chart union deviation) at
+all seats -> quantize to the conditioned bucket key -> split actionable vs
+all-in-runout -> build REDUCED representative GameDef per actionable bucket
+(min-depth equal stacks, reconciled pot) -> tree sizing against caps ->
+no-mix + node-alignment + menu-displacement tests -> freeze/rehash matrix with
+quantizer id. Then step 4 (simulator/oracle) and the n=3 error measurement
+precede the trainer (step 7).
+
+### Stage 6 measured wall (2026-09-23): deep postflop public tree cannot be
+### materialized even with a passive-only menu
+
+While validating Revision 3's reduced representative trees
+(bigshark-stage6-geometry-benchmark --trees), EVERY actionable representative
+exhausted the caps. Isolation measurements on 2-seat rooted-flop games
+(board 2c3d7h, even contributions), with the most aggressive-free menu
+possible (passive only: fold/check/call, no bets/raises):
+
+| stack/chip | nodes |
+|-----------|------:|
+| 2  | 31,124 |
+| 4  | 164,416 |
+| 8  | 1,168,352 |
+| 16 | 9,286,720 |
+| 32 | >24 GiB (exhausted) |
+| 64/194 | >24 GiB |
+
+Control: the pinned 3-seat stack-1 identity tree is 102,827 nodes because all
+players are immediately all in and there are no postflop action rounds.
+
+This is the public CARD fan-out, not the action fan-out: the materialized
+tree enumerates every public-card combination (49/48/47 conditional runouts)
+under each action history, and with even one check/call round per street the
+cross product explodes. Coarsening the ACTION menu does not help (passive-only
+still exhausts), so this wall is independent of the R6 coarse action
+abstraction and of geometry bucketing.
+
+Consequence for the design:
+- Revision 2's D1 fallback ("materialize the coarse tree; stream only if it
+  misses the cap") is INFEASIBLE for deep postflop, not just at 7-10 seats but
+  at TWO seats. The trainer must be streaming external-sampling CFR from the
+  start (it never retains the public tree), as the Revision-1 algorithm lane
+  recommended.
+- The R3b per-bucket tree SIZING step and the R6 "measured coarse-tree size in
+  caps" claim cannot be produced by AbstractTree for deep games. Sizing must
+  instead measure (a) the STREAMING trainer's retained footprint (infoset rows
+  visited, not tree nodes) and (b) wall time, which is what R11/R12 actually
+  report anyway.
+- The R3b enumerated matrix remains correct and needed for the set of flop
+  CHIP geometries the simulator/translator must cover, but it must not be used
+  to build materialized trees.
+- The R9 3p oracle at {1,1,1} is unaffected (immediately-all-in, 102k nodes,
+  fully enumerable). The {1,2,2} variant and any deeper oracle fixture must be
+  checked the same way before use.
+- This also bounds the n=3 bucketed-vs-exact equivalence error gate (Revision
+  3 condition ii): the "exact" side at deep n=3 cannot be a materialized tree,
+  so exact NashConv there must itself be sampled/MC, weakening the oracle
+  comparison to MC-vs-MC. The only HARD exact comparison available is the
+  stack-1 pinned 3p game.
+
+This finding awaits independent design review. The streaming CFR trainer was
+already the approved algorithm; what changes is (1) deleting the
+materialize-if-fits fallback, (2) replacing tree-node sizing with
+streaming-footprint sizing, (3) scoping the exact equivalence oracle to the
+enumerable all-in pinned fixture and labeling every deep comparison estimated.
+
+### Stage 6 wall CORRECTED after node-kind analysis (2026-09-23)
+
+The earlier "deep postflop public tree cannot be materialized even passive"
+finding was WRONG about the cause and overstated the conclusion. The
+independent verifier stalled but flagged that the so-called passive tree still
+contained 4,804 ACTION nodes, which led to the correction:
+
+1. The L2 menu builder `build_menu_with_cover` ALWAYS seeds `{bounds.minimum,
+   cap}` (a minimum bet and the all-in) even when a StreetSizes fraction list
+   is empty (abstraction.cpp:185). There is no SizeSchedule value that removes
+   aggressions, so my "passive-only" menu was actually min-bet+jam at every
+   node — unbounded aggressive branching. That, not public-card fan-out,
+   produced the 31k->9.3M->>24GiB growth with stack depth.
+
+2. A TRULY passive tree (fold/check/call only; measured by a direct GameState
+   DFS) is tiny and STACK-INDEPENDENT: 4,804 action nodes, 2,352 showdown
+   leaves at every stack 8..194. Card fan-out alone (49*48*47 runouts) is
+   only ~2.4k terminals — it is NOT the wall.
+
+3. With a genuinely coarse action menu (passive + one pot-sized wager, at most
+   one raise per street) measured by the same controlled DFS:
+   - 2 seats: 140k nodes at stack16, 950k at stack194 — fits the 2M cap.
+   - 3 seats: 102,827 at stack16; 9.06M at stack194 — materializable in memory
+     but over the default 2M-NODE cap; use a raised cap or streaming.
+   - 6 seats: 1.8M at stack16; >80M at stack194 — genuinely too large to
+     materialize at 6+ seats deep, so streaming external-sampling CFR is
+     required for the high-seat end (7/9/10) regardless.
+
+Corrected design consequences (supersede the prior "measured wall" text):
+- Add an abstraction capability to build a coarse menu WITHOUT forced
+  min/cap: an explicit menu mode (e.g. a "declared fractions only" flag or an
+  option suppressing the mandatory minimum/all-in seeds). Without it the
+  candidate cannot be given the coarse one-wager menu R6 specifies. This is an
+  L2 change with its own identity/zero-error consideration and independent
+  review — it must not silently change the existing identity schedule.
+- Materialized coarse rooted trees are viable for 2 seats (and shallow 3-6);
+  the trainer can materialize there and must STREAM for 7/9/10 (and deep 3-6
+  if node caps bind). The Revision-2 "materialize if it fits, else stream"
+  structure is therefore CORRECT after all, conditioned on the new coarse-menu
+  capability.
+- R3b sizing must use the corrected coarse menu; the earlier capped counts are
+  void.
+- The R9 exact oracle: 2-seat and shallow-3 exact coarse trees are enumerable,
+  restoring a stronger-than-MC equivalence gate at low seats; only the
+  high-seat end is MC-estimated.
+
+### L2 declared-only coarse menu implemented; wall verification CONFIRMED (2026-09-24)
+
+Independent verifier agent aad1823b8870c442b returned **CONFIRMED** on all
+three corrected claims:
+
+- **A** `abstraction.cpp:185` unconditionally seeded `{bounds.minimum, cap}`;
+  an empty fraction list still returned `check0 bet2 bet194`.
+- **B** the truly passive DFS is exactly 4,804 action / 50 chance / 2,352
+  showdown / 7,206 total nodes, stack-independent at every depth 8..194.
+- **C** the shallow pins matched element-for-element (2p st16 = 140,498; 3p
+  st16 = 102,827; 6p st16 = 1,808,828); 2p st194 ≤ 967k under every menu
+  variant (fits the 2M cap), 6p st194 = 370,849,562 (unmaterializable). The
+  ~950k/9.06M point estimates vary by one jam-reopen branch but never cross
+  either bound.
+
+The verifier prescribed the API, which is now implemented:
+
+- `enum class CoverSeeds { MinAndCap, DeclaredOnly }` threaded into
+  `build_menu_with_cover` through both `build_action_menu` and
+  `build_multiway_action_menu` (default `MinAndCap`, so every existing caller
+  is byte-unchanged).
+- `ActionAbstraction::declared(schedule, CoverSeeds)` is a NEW factory minting
+  identity `name="rfc0008-declared-coarse"`, version 1, with the seed rule
+  serialized into `parameters` (`cover-seeds=declared-only`); MinAndCap and
+  DeclaredOnly at equal fractions mint distinct digests, and neither collides
+  with `rfc0007-pot-fractions`. The identity constructor, `identity()`,
+  `identity_action_id()`, and the golden digest `0x422c245239c7a527` are
+  untouched. The AbstractTree multiway path now calls
+  `action.multiway_menu(...)` so the mode reaches tree construction.
+- Coarse id measured: `rfc0008-declared-coarse:v1:84e07a99ff1ee719`.
+- Tests: the golden digest and the equivalence node-count pins
+  (kIdentityFlopNodes 2720 / kIdentityPreflopNodes 1156) still pass with zero
+  rebaselining; a new `declared_only_coarse_menu` case covers the fresh id,
+  empty-fraction passive menus (check-only and fold/call), exact {1/2,1/1}
+  fraction-only targets with no min/cap, clamp-reaches-cap survival, and
+  HU==multiway declared-only menu equality.
+
+R3b was re-measured with the corrected declared-only menu (bets {1/2}, raises
+{1/1}, no forced seeds). The geometry matrix is unchanged (2/9/63/91/150/184
+buckets; actionable 1/3/12/15/21/24), and the materialization boundary is now
+deterministic:
+
+| seats | actionable buckets | materialized | capped (>2M nodes) |
+| --- | --- | --- | --- |
+| 2 | 1 | 1 (1,010,162 nodes) | 0 |
+| 3 | 3 | 2 (each 1,010,162) | 1 (the live-3 deep `potbb9`) |
+| 6 | 12 | 3 (all live-2, 1,010,162 each) | 9 (every live≥3 deep) |
+| 7 | 15 | 3 | 12 |
+| 9 | 21 | 3 | 18 |
+| 10 | 24 | 3 | 21 |
+
+Only heads-up (live=2) representatives materialize under the default 2M-node
+cap; every live≥3 deep representative exceeds it (the representative always
+uses the minimum = deepest 194 acting stack, a conservative bound). The
+materialize/stream switch is therefore a deterministic pure function of
+(live count, GameDef, abstraction id), as the verifier required: materialize
+the exact full-width tree at live=2 (the R9 exact equivalence oracle), stream
+external-sampling CFR for live≥3.
+
+A real representative-construction bug surfaced when the 6-seat sizer first
+ran these trees: the representative force-split the *rounded* bucket pot
+evenly across the reduced live seats, inventing uneven contributions such as
+`in{6,7,7}` for a pot whose real members are three callers of 6 plus a folded
+1-chip small blind. Settlement rejects that (the 6-chip layer then has a single
+contributor: "positive pot layer has no eligible winner"). In every real hand
+the non-folded, non-all-in live seats reach the flop having called the SAME
+preflop-close total. The representative now gives every reduced seat the
+shallowest member's equal contribution and sets `pot = equal × live` — a
+legal, realizable rooted game; the folded-dead/rounding residual is exactly
+the pot-scale quantization the Revision-3 bucketed-vs-exact delta test must
+measure, not chips to fabricate. A mutation-RED regression in
+test_stage6_geometry materializes the folded-dead representative tree; under
+the old even-split it fails on both the invented 7 and the settlement throw.
+
+Status: full release build and 54/54 ctest green; the stage6 offline
+boundary guards (configure closure, -MMD resolved-include, nm "6stage6"
+scan) and tree link-negative pass; format applied. Awaiting INDEPENDENT
+review of the L2 API + representative change before R12 step 4.
+
+### Independent L2 review APPROVE-WITH-CONDITIONS; conditions resolved (2026-09-24)
+
+Fresh reviewer (agent a568f90e9ae93082e, not the author) returned
+**APPROVE-WITH-CONDITIONS, no P1**. It independently: reproduced the golden
+digest in Python from the exact FNV-1a blob; proved only `declared()` can
+produce DeclaredOnly and no deployed source calls it; probed every
+declared-only edge (empty-target, clamp-to-min/cap, 32-guard skip); confirmed
+the three id digests are pairwise distinct and unparseable so no round-trip
+collision exists; scanned 121,760 chart + 12,457 deviation signatures across
+n=2..10 and found ZERO live acting-seat unequal contributions or pot
+mismatches (the equal-contribution invariant); mutation-tested BOTH offline
+guards RED→GREEN; and reproduced the exact sizing (2p 1,010,162 fits, every
+live≥3 capped).
+
+Conditions, now resolved:
+
+- **P2 (latent, unreachable at the uniform fixture):** the cross-member
+  minimum-depth reduction borrowed a `first` sentinel reset only per member,
+  so across the FIRST member's seats it overwrote the minimum with each seat
+  and ended at that member's LAST stack (e.g. ascending {50,100} → 100). Fixed
+  with a dedicated `have_min_stack` sentinel. Mutation-RED regression added
+  (ascending {50,100} + {100,100} in one bucket must reduce to 50); reverting
+  the sentinel fails it.
+- **Nit:** removed the dead `acting_stack_min` computation in
+  `bucket_key_for`.
+
+Gate state after resolution: release 54/54, debug 52/52, ASan 52/52 (the one
+ASan failure was a not-yet-built scan binary, since resolved), format clean,
+offline guards green. The L2 coarse-menu + equal-contribution representative
+is the settled foundation for R12 step 4.
+
+### R12 step 4 implemented: full-hand simulator + exact 3p oracle (2026-09-24)
+
+New offline components in bigshark_stage6_eval (nothing linked by the service
+or protocols):
+
+- `stage6/simulator.{hpp,cpp}` — `HandSimulator` drives one preflop GameDef to
+  an exact terminal over per-seat `BehaviorPolicy`s. The five board cards and
+  all 2N hole cards are fixed BEFORE the first action (the R5 joint dealer
+  supplies both), so chance is predetermined and the loop only advances
+  `Phase::Deal` via `after_card`; runouts are therefore conditioned on the
+  full deal including seats that fold. It validates the deck (distinct/in
+  range), re-checks every policy action with `LegalActions::contains` and
+  throws `stage6_sim_error` on an illegal/non-distribution (never clamps),
+  settles with the exact `settle_fold`/`settle_showdown`, and asserts the
+  per-seat chip-utility vector is zero-sum at every terminal. A
+  `GeometryCoverage*` makes flop lookup TOTAL: the first 3-card flop with
+  ≥2 live seats computes `flop_signature(state)` and `require_covered`
+  throws `stage6_geometry_uncovered` on a miss (no fallback/skip).
+- `stage6/geometry.{hpp,cpp}` gains `flop_signature(const GameState&)` (one
+  construction shared with the enumerator) and `GeometryCoverage`, a sorted,
+  deduplicated exact-signature set with total lookup and a deterministic
+  FNV-1a content hash for the frozen matrix.
+- `stage6/exact_oracle.{hpp,cpp}` — `exact_deal_utility` (full recursion over
+  the real L1 tree for one fixed joint deal: policy expectation at Action,
+  uniform average over every runout card at Deal conditioned on board AND all
+  holes, exact settlement at terminals) and `exact_oracle_utility` (enumerates
+  the RFC 0006 joint table over small per-seat ranges and averages the
+  per-deal expectations by the joint weights). No sampling; `OracleCounts`
+  surfaces action/chance/fold/showdown/node and joint-deal counts.
+
+Tests: `test_stage6_simulator` (new, registered as `stage6_simulator`) pins
+2-seat fold and 3-seat showdown conservation with exact utility values,
+seed/hand_id/board determinism, empty-vs-covered typed coverage, illegal-
+policy rejection, coverage dedup/hash/membership, and:
+- the R3b ENUMERATOR COVERAGE gate: 400 uniform-joint full hands with the
+  pinned `BaselineBehaviorPolicy` in every 3-seat chair run under total lookup
+  against `enumerate_chart_flop_geometries` (12 EXACT geometries); 21 hands
+  reached showdown and none escaped, so the card-free enumerator matches real
+  chart-baseline reach (non-vacuous);
+- the exact 3p oracle at `three_seat_rooted({1,1,1})` and `{1,2,2}` with
+  2-combo ranges that force card-overlap rejection (6 compatible joint deals,
+  33,300 action / 264 chance / 10,836 showdown leaves), zero-sum expected
+  vector; plus an aggressive {1,2,2} walk that explores a different tree than
+  the check-down and a single-deal zero-sum check.
+
+Release 55/55 green after format. Awaiting INDEPENDENT step-4 review and the
+debug/ASan gates before R12 step 5 (two-phase estimator).
+
+### Independent step-4 review APPROVE-WITH-CONDITIONS; conditions resolved (2026-09-24)
+
+Fresh reviewer (agent a064bf1a1df5880eb, not the author) returned
+**APPROVE-WITH-CONDITIONS, no P1**. It empirically verified every high-risk
+claim and could not refute them: everyone-all-in preflop runs out all five
+cards purely through Phase::Deal and settles exactly (2p u=[200,-200], 3p
+chop); the oracle's used-card set matches L1/2p so it can never request a
+board or folder card; no partial-flop/auto-runout loop or missed street;
+joint weights do NOT double-count (a 2:1 weighted range reproduced the
+weighted average with error 0.0); stochastic recursion is linear (50/50
+mixture error 0.0); the pinned counts 33,300/264/10,836 independently
+re-derived; dealing the flop leaves chip state byte-identical to the
+preflop-close snapshot (measured), so flop_signature timing is exact; the
+all-in flop does NOT skip total lookup (the matrix contains that signature);
+zero-sum held across {1,2,2} side pots and all-in-for-less.
+
+Conditions, now resolved:
+
+- **P2-1 oracle NaN gap:** the oracle's manual probability check omitted
+  `std::isfinite`, so a NaN mass made every guard false and poisoned the
+  exact R9 value. Fixed to the canonical `!isfinite || <0` check used by the
+  simulator and require_finite_distribution. Mutation-RED regression
+  `test_oracle_rejects_nan` (reverting the check fails it).
+- **P2-2 weak pinning:** the 33,300/264/10,836 oracle counts are now ASSERTED
+  (not just printed), and a new `test_deviator_reach_covers_jam_hands`
+  rotates one always-jam deviator across all three seats with the others on
+  the pinned baseline for 360 hands under TOTAL lookup against
+  enumerate_flop_geometries (78 deviation geometries); 67 called-jam
+  showdowns exercise the all-in-at-flop/short geometries the baseline-only
+  sample never reached. Higher seat counts (>3) remain for the step-5/7
+  seat-curve work and are recorded as a deliberate scope boundary, not a
+  defect.
+
+Step 4 gate state: release 55/55; debug 53/53 and ASan 53/53 green before the
+one-line NaN hardening, with the final ASan/debug rerun after that change in
+progress; format clean; offline guards green. Step 4 is the settled base for
+R12 step 5 (two-phase frozen best-response estimator).
+
+### R12 step 5 foundation: exact best-response R9 reference (2026-09-24)
+
+Before the sampled estimator, the exact R9 quantity it must reproduce was
+added to exact_oracle: `exact_best_response_utility(def, ranges, policies,
+traverser)` generalizes the oracle recursion with an optional BR traverser.
+At every traverser ACTION node it takes the MAX over the declared finite
+deviation menu (`declared_behavior_menu`: fold/check/call + the fine
+pot-fraction grid including min-raise and all-in); opponent action nodes
+follow their fixed policy; Deal averages uniformly over runout cards
+conditioned on the full joint deal; terminals settle exactly. Ties resolve to
+the first menu entry, so the exact BR is a deterministic reference policy
+(not the biased per-episode max the R8 design explicitly rejects). The joint
+average is shared with the profile expectation; the exact per-seat gain is
+BR_utility[seat] − profile_utility[seat].
+
+Test `test_exact_best_response_gain` on the enumerable {1,1,1} fixture pins:
+for every traverser the unilateral gain is ≥ −eps and BR utility ≥ profile
+utility; against jam opponents the BR vector is finite and zero-sum. The
+sampled two-phase estimator (frozen Q-argmax phase 1, paired best=true/false
+rollouts phase 2), the MC-vs-exact oracle agreement tolerance, the 2p
+ExactEvaluation cross-check, and 1e-12 repeatability remain the next focused
+increment — they are statistically subtle and get their own independent
+review rather than being rushed onto this checkpoint.
+
+### Exact BR review found omniscience P1; corrected to infoset-pooled BR (2026-09-24)
+
+An independent review of the first exact-BR cut returned
+APPROVE-WITH-CONDITIONS with TWO P1s:
+
+- **P1-1 (critical):** the first BR maximized PER joint deal, E_z[max_a Q],
+  which lets the traverser condition on opponents' unrevealed hole cards — an
+  OMNSCIENT deviation. The reviewer built a strict 3p counterexample (a
+  fold/call infoset whose preference splits across opponent holdings;
+  per-deal value exceeded the best fixed infoset action by 2.57 chip/hand). A
+  correct frozen estimator (which fixes one argmax per infoset) would have
+  been wrongly flagged biased against that reference.
+- **P1-2:** BR>=profile non-negativity requires the profile's action support
+  to be contained in the declared deviation menu; the baseline can emit
+  off-grid totals.
+
+Correction (modeled line-for-line on the proven 2p `response()` reach-vector
+walk, generalized to N seats):
+
+- The correct quantity `exact_best_response_utility` groups joint deals by the
+  traverser's OWN holding (own hand + public history = information set) and
+  runs `br_group`, which carries a per-view (weight, reach) through ONE public
+  GameState walk: traverser nodes force a single action across every pooled
+  view and compare UNNORMALIZED summed values (max_a E_z[Q]); opponent nodes
+  multiply each view's reach by that view's policy probability; deal nodes
+  split reach over the runout cards available conditional on that view's FULL
+  fixed deal; per-group unnormalized sums combine and normalize by total
+  mass. Mass conservation is enforced at every node.
+- The per-deal quantity survives only under the honest name
+  `exact_omniscient_deviation_utility`, documented as the E_z[max_a Q] upper
+  bound and explicitly NOT the estimator target.
+- Non-negativity is documented as holding only for menu-contained profiles
+  (check/call, always-jam).
+
+Tests: menu-contained pooled BR >= profile; omniscient >= pooled everywhere;
+and a multi-holding stacks-10 fixture where the information-set argmax splits,
+asserting a STRICT omniscient-minus-pooled gap (measured 0.371601 chip/hand) —
+empirical proof the pooled BR no longer peeks. Release 55/55 green; an
+independent re-review of the pooled recursion and the ASan/debug gates are in
+progress before any step-5 sampled estimator is built.
+
+### Pooled-BR re-review APPROVED, no P1 (2026-09-24)
+
+A fresh reviewer (agent aa7a952d861ad7f9a) returned **APPROVE**, verifying the
+correction three independent ways: (1) a from-scratch brute-force enumerator
+over EVERY pure deviation strategy (one declared-menu action per traverser
+infoset keyed by own hand + public history) matched the library BR, omniscient,
+and profile full 10-vectors to 1e-9 for all three traversers on a 24-deal 3p
+game with a 0.6/0.4 stochastic mix AND under non-uniform 5:1:3:2/7:1/4:1:2
+weights — proving the pooled value is achieved by an explicit legal strategy
+(no omniscience, no factor-of-P(own-hand) normalization error); (2)
+instrumented mass-conservation and zero-sum invariants at every node type over
+~1.4M action nodes / ~2.5M terminals, clean to 1e-9/1e-7; (3) ASan/UBSan clean.
+It confirmed chance conditions on board + all 2N holes (folders included),
+views with identical own hand never split at a traverser node, and the strict
+0.371601 gap is genuine pooling. One optional P2 (redundant avail-count
+recompute per chance node; immaterial offline) left unfixed.
+
+Gate state for the corrected exact reference: release 55/55, ASan 53/53,
+debug 53/53, format clean. The exact R9 best response is now a sound target
+for the R12 step-5 sampled two-phase estimator (frozen per-infoset argmax,
+paired rollouts, MC-vs-exact agreement).
+
+### R12 step 6 translator + step-5 foundations via Ultracode (2026-09-24)
+
+A four-agent workflow (one writer + three read-only contract agents,
+implementer separate from the later reviewer) produced:
+
+- **Step 6 translator (implemented, release 56/56 then 57/57):**
+  `stage6/translator.{hpp,cpp}` + `test_stage6_translator.cpp` in
+  bigshark_stage6_eval. `TranslatorId rfc0008-coarse-to-exact:v1`;
+  `translate_coarse_to_exact` does passive passthrough, nearest legal integer
+  aggressive snap with round-half-DOWN ties to the smaller total, same-action
+  probability-mass merge, aggressive->call/check/fold fallback when no raise is
+  legal, full fail-closed re-validation (illegal/NaN/non-summing/unknown-id
+  throw, never clamp); `project_exact_to_coarse_index` does same-type nearest
+  index for candidate-as-opponent node location. Tests build REAL GameState
+  legal intervals (preflop UTG [4,200], short-BB call-only no-reopen,
+  check-only all-in). Independent adversarial review launched.
+- **Step-5 deterministic foundations (implemented, 57/57):**
+  `stage6/infoset_key.{hpp,cpp}` — InfosetKey = traverser's own SORTED pair +
+  canonical length-prefixed public-history tokens (board + per-street
+  seat/type/target triples); explicit vector key (no hash collisions); the key
+  contains NO opponent/folder cards or undealt board, structurally preventing
+  the omniscient pooling regression. `stage6/crn_streams.{hpp,cpp}` —
+  content-addressed draws crn_u64/crn_unit(seed, public_token, purpose, seat,
+  counter) via mix64 composition + a seed-only crn_deal_rng, so paired
+  best/false legs and deviation siblings share draws on a common public spine
+  independent of call order. `test_stage6_infoset_crn` pins own-pair order
+  independence, no-opponent-card pooling, action/seat/target key sensitivity,
+  CRN determinism/sensitivity/order-independence, and golden vectors for seeds
+  1/17/43.
+- **Three detailed contracts returned** (in the workflow journal, not yet
+  code): step-5 br_estimator (epoch policy-iteration learn over FIXED learn
+  seeds to avoid upward max bias, one frozen argmax per InfosetKey, disjoint
+  confirm seeds, paired recursion, MC-vs-exact-pooled-R9 + 2p
+  ExactEvaluation::nash_conv gates + 1e-12 repeatability); step-7 trainer
+  (materialize live=2 / stream live>=3, RM+, uniform average, public-path key +
+  ordinal chance alignment, RFC 0006:197-199 sampled-vs-full average gate);
+  and an integration adjudication (acyclic core/train/eval target split,
+  shared BehaviorPolicy/InfosetUuid vocabulary, per-purpose stream table,
+  frozen lock.json hashing, ordered T0..T12 driver tasks).
+
+Next: implement the step-5 br_estimator learn/confirm recursion in the main
+thread (the statistically subtle component), gated on the exact pooled oracle;
+then await/merge the translator review.
+
+
+### Step-6 review closure + step-5 estimator implementation (2026-09-24, main thread)
+
+**Translator review (fresh independent agent, APPROVE-WITH-CONDITIONS, no P1):**
+independently brute-forced nearest snapping over all intervals in [0,60] plus
+8,405 REAL GameState action nodes (1,290 all-in-only, 2,700 no-aggressive, 3p
++ HU), ASan/UBSan-clean instrumented translator, guards green, zero stage6
+symbols in service/host. P2s fixed with mutation-RED pins: (1) corrected the
+factual header comment (std::invalid_argument derives from std::logic_error,
+not std::runtime_error — callers must catch std::exception); (2) added a real
+all-in-only [9,9] pin (three coarse aggressive entries collapse to Raise 9 at
+0.6 mass at the short BB's own node); (3) added fail-closed pins for illegal
+Check at a due>0 node, illegal Call at a check-to node, and +Inf mass; (4)
+added heads-up real-node pins (SB-first preflop + BB option); (5) fixed the
+sign-conversion nit in project_exact_to_coarse_index.
+
+**Step-5 two-phase deviation-gain estimator (implemented, release 58/58):**
+`stage6/br_estimator.{hpp,cpp}` + `test_stage6_br_estimator.cpp` (16 gates) in
+bigshark_stage6_eval; supporting additions are public_history_hash and
+seed_list_hash in the infoset/CRN foundations, declared_menu_identity_hash in
+bigshark_behavior, and a behavior-preserving ExactBrChoiceSink defaulted
+out-parameter on exact_best_response_utility (single source of pooling truth
+per the contract's chosen option).
+
+- Phase-1 LEARN runs policy-iteration epochs over the same keyed seeds: full
+  declared-menu bush at every traverser node with counterfactual-unchanged
+  reach (exactly the br_group device, so unweighted accumulation at every
+  fanned node is unbiased — no on-policy gating needed), one predecessor-frozen
+  continuation returned to the ancestor, first-menu-order strict argmax,
+  lazy profile-bootstrap, stabilization fixed-point detection with a typed
+  stage6_br_not_stabilized. CRN keying guarantees identical visited nodes
+  across epochs, so epoch-over-epoch table comparison is sound.
+- Phase-2 CONFIRM is a paired best/profile recursion over disjoint seeds:
+  shared walk at Deal/opponent nodes (identical recorded CrnDrawEvents),
+  one-leg merge when frozen == profile draw, two legs after divergence with
+  content-addressed re-pairing; stage6_br_infoset_miss is fail-closed with a
+  declared RecordMiss fallback. FrozenBestResponsePolicy wraps a table as a
+  legal point-mass BehaviorPolicy for exact evaluation.
+- Gate design learned empirically: MC learn SATURATES only on river-rooted
+  fixtures (the flop-rooted runout key space is own-combo x 43 x 42), so
+  MC-vs-exact gains are pinned on river-rooted {1,1,1} passive / {1,2,2} jam /
+  {2,2,2} stochastic opponents and a one-card turn-rooted runout gate uses
+  the EXACT freeze; the flop-rooted stacks-10 fixture pins the strict 0.371601
+  omniscient separation with 40k pinned confirm seeds (CI [10.312,10.519] vs
+  omni 10.796). The 2p cross-check trains a real HeadsUpPolicy (2-chip
+  all-in-only stacks where abstract and declared menus coincide exactly),
+  replays it through GameState, and the estimator's exact freeze + MC confirm
+  matches HeadsUpTrainer::evaluate nash_conv: exact unified oracle 0.272441 ==
+  solver to 6 decimals; MC 0.285 with residual CI [-0.047,+0.072]. A bug found
+  during validation was in the TEST (negative gains truncated into uint64),
+  not the engine.
+- Other gates: disjoint/empty seed rejection, seed-list hashing, miss
+  Throw/RecordMiss, corrupted frozen action rejection, wrong-seat refusal,
+  max_epochs=1 stabilization throw vs report, off-menu profile labeled
+  (negative gains allowed), zero-sum paired settlements, identical-CRN
+  shared-spine check, deal fingerprint equality across per-traverser runs,
+  bitwise repeatability of tables/gains/Y series, joint-deal frequency vs the
+  table measure, scalar NashConv stats. Resolved-include offline guard
+  re-verified green with the three new sources; nm shows zero stage6 symbols
+  in libbigshark_service.a and the host binary.
+
+Next: independent adversarial review of the step-5 estimator (separate agent,
+gated on exactness/pooling/bias), then step-7 MCCFR trainer.
+
+**Step-5 independent review verdict: APPROVE, no P1.** A fresh adversarial
+agent traced both walks, the exact oracle, CRN/key/content addressing,
+settlement and legal paths, and ran six empirical scratch probes (nested
+traverser decisions under chance, two-card flop runouts, learn-count decay
+to 40k, 2p reached-node census, epoch flag, preflop smoke). It could not
+construct a bias; the flop-rooted residual decayed monotonically to ~0 as
+learn seeds grew (undercoverage, not bias), and frozen actions matched the
+exact pooled table on every high-visit bucket. All P2/P3 findings fixed:
+- P2-1 added the missing MC-LEARN-with-chance gate: a turn-rooted game
+  (one 42-card river draw above a descendant traverser decision) runs full
+  Monte Carlo learn at 6000 seeds on THREE independent learn lists with
+  RecordMiss; zero confirm misses, residual CIs all include zero, all
+  stabilized. Previously every chance-bearing gate used the exact freeze.
+- P2-2 added the traverser < policies.size() guard to
+  mc_learn_frozen_best_response (was reachable OOB).
+- P2-3 addressed by the three-independent-learn-list gate above: a persistent
+  small learn bias would shift all three residual means the same way.
+- P3: stabilization flag now compares the first epoch against the lazily-
+  seeded bootstrap (a one-epoch confirmation of b_0 reports stabilized);
+  duplicate seeds within a list are now rejected (iid claim); the frozen
+  legality test now performs a real root point-mass query (freeze for the
+  seat-1 opener, whose own root key exists) instead of dead code; the CRN
+  pairing assertion is global over all equal-coordinate events; stale
+  8-deal comment corrected to six; documented why the runout stream hardwires
+  seat=0 (cross-traverser pairing must not be personalized).
+
+Gate matrix after closure: release 58/58; debug/asan rebuilt and rerun after
+the engine-logic changes (stabilization/seed/bounds). Step 5 is fully
+reviewed and closed; next is the R12 step-7 MCCFR trainer per the returned
+trainer contract.
+
+### R12 steps 7-8 implementation (2026-09-26): MCCFR trainer + composed candidate — kFull correction, coarse-space R11, honest null measurement — REVIEWED (two independent APPROVE verdicts; P1/P2/P3 resolved)
+
+**Step 7 — external-sampling multiplayer MCCFR trainer**
+(`engine/src/stage6/mccfr_trainer.cpp`, new `bigshark_stage6_train` static
+target). One iteration runs N traverser sweeps; each sweep draws one
+product-conditional joint deal (RFC 0006 restart sampler over uniform
+1326-combo ranges) and one residual-deck root flop, then an external-sampling
+walk: at a traverser node it enumerates every menu action over one shared
+sampled continuation and applies the unweighted RM+ update
+`R[a]=max(0,R[a]+v_a-v)`; at an opponent node it samples one action; at a deal
+node it samples one legal runout card; terminals use exact L1 settlement with
+a zero-sum assertion.
+
+**kFull average (P1-1 correction).** The average is the OWN-REACH-weighted CFR
+full average: at the traverser's OWN node, once per sweep,
+`sums[a] += own_reach * sigma[a]`, with `own_reach` the product of the
+traverser's own probabilities threaded through enumerated actions (opponent
+actions, chance and the joint deal are externally sampled and carry no reach
+factor). The earlier per-visit `sums += sigma` snapshot equals the full CFR
+average ONLY at N=2; for N>=3 the sampled other-players reach contributes a
+history-varying elementary-symmetric factor e_{N-2} and biases the average.
+Header, TU and test comments were corrected to state kFull; CFR+ linear
+weighting is still not used.
+
+Two cursors share one walk: live==2 materializes the coarse AbstractTree and
+keys rows by TreeNode index (chance children indexed by board-only ordinal,
+tree topology board-value-independent); live>=3 builds no tree and keys rows by
+PublicPath FNV hash. Rows are sealed with an artifact-identity stamp and an
+FNV rows hash; the manifest records provenance and `iterations_completed`.
+
+Guards: `stage6_train_edge_guard.{cmake,sh}` enforce the trainer<->eval sibling
+edge in both directions and a resolved-include whitelist. The resolved-include
+half now scans EVERY source in the `bigshark_stage6_train` target rather than a
+hand-maintained list, so a new trainer TU inherits the edge automatically
+(P2-5). Depth accounting is RAII (`DepthGuard`, P2-6).
+
+Gates:
+* `test_stage6_trainer`: independent external-sampling reference reproduces
+  every RM+ regret and kFull average cell at 1e-9 for BOTH cursors;
+  determinism; distribution validity; 100k stability and the
+  `BS_STAGE6_TRAINER_LONG=1` 100k->600k mature-row stability gate; exhaustive
+  cursor alignment (2p 9,608 / shallow 3p 28,824 action nodes). New: P1-2
+  refuses zero completed iterations before the wall cap; P2-1
+  `test_stream_order_sensitivity` proves `derive_stream` distinguishes key
+  order (a commutative XOR mutation is RED). Mutation-RED: RM+ clip, kFull
+  weighting (an unweighted `sums += sigma` mutation fails at the first own node:
+  got 0.5 vs ref 0.25), runout deck, chance-token shift, stream commutativity.
+* `test_stage6_multiway_average` (new): the RFC 0006:197-199 enumerable
+  three-player parity gate. On a RIVER-rooted 3-seat fixture (one chip behind,
+  six dead, five public cards, eight equal-weight joint deals from two disjoint
+  combos per seat; 25 public nodes, ZERO chance nodes) an independently written
+  full-traversal RM+ CFR is run against the production streaming sampler
+  through the new test-only `debug_run_fixed_world_sweep` seam (production walk
+  and RowStore verbatim; caller supplies the root def + joint deal). The
+  independent reference accumulates BOTH the vanilla full average and the
+  external-measure (pi_own*pi_opponents) average; the sampler is an unbiased
+  estimator of the latter row-for-row, mass-weighted, and the SEALED profile is
+  checked on the economically meaningful invariant — general-sum NashConv from
+  exact infoset-consistent best responses on the restricted game: at 12k and
+  30k checkpoints both independently produced profiles reach the same
+  near-equilibrium (Y<0.01), agree with each other within 0.005 chip, and both
+  contract with iterations, across seeds 1/43/777/999. Key sets are identical
+  (no row on either side the other lacks). SCOPE: this aggregate gate does NOT
+  itself discriminate the kFull-vs-unweighted weighting — the tiny fixture
+  converges to near-pure equilibria (pi_opponents ~ {0,1}), so the e_{N-2}
+  bias vanishes and an unweighted mutation leaves its NashConv green (verified
+  on seeds 1/43/777). Its role is the end-to-end N>=3 property; the weighting
+  is pinned at the measure level only by the 1e-9 single-sweep algebra gate.
+  A future mixed-equilibrium enumerable fixture could add aggregate
+  discrimination but is not needed for correctness.
+* `test_stage6_frozen_artifact` (new, P2-2): write->load round-trip is
+  byte/struct-identical for rows and manifest, serialization is deterministic,
+  and a one-byte payload flip, bad magic, truncation, trailing bytes and a
+  missing file are all rejected by the content-hash check.
+
+**Step 8 — composed candidate** (`candidate_policy.{hpp,cpp}`, shared
+`chart_preflop.{hpp,cpp}` — one pinned chart path). Charts preflop; postflop
+the candidate replays the hand onto the bucket's reduced representative
+shadow, locates the sealed row (TreeNode index / PublicPath hash) and projects
+coarse mass onto concrete legal actions through the R7 translator. Binds by
+reduced-representative def identity (reduced pot drops folded money and does
+NOT round-trip to bucket.pot_bb) or by real flop signature. Added
+`CandidateMissPolicy`: deployed default is fail-closed `Throw`; the coarse
+NashConv measurement uses `UniformOnUnvisited`, which answers a
+structurally-VALID coarse node no sampled sweep sealed with the SAME uniform
+value an all-zero average row freezes to (`average_row`), counting the miss —
+genuine abstraction violations (no binding, wrong stamp, off-menu concrete
+action, desync, uncovered geometry) still throw in every mode. Gate
+`test_stage6_candidate_policy` covers both cursors, preflop==baseline, deployed
+fail-closed totality, and the new uniform/throw distinction.
+
+**R11 deviation space — RESOLVED: coarse-game NashConv.** The frozen best
+response gained an explicit deviation space
+(`BrEstimatorConfig::deviation_space`, P1 of the R11 design question):
+`Declared5Fraction` (the R8 menu; prior behavior) or `CoarseAbstraction`, where
+the deviator is restricted to the SAME coarse action abstraction the artifact
+was trained in (`bs::tree::abstract_node_menu`), with a distinct tagged menu
+identity hash. The measurement driver measures BOTH profiles in the coarse
+space, so the paired difference is apples-to-apples; opponents still play
+their native policy. This is the only equilibrium claim an artifact with zero
+off-menu mass can honestly make. Exact-sizings robustness stays a separate,
+fail-closed Proposed question; the candidate does not project onto a
+nearest-coarse node it never solved. Gate `test_coarse_deviation_space`
+(`test_stage6_br_estimator`): null-action refusal, distinct/deterministic
+identity, structural subset proof (coarse frozen menus are exactly
+{check, half-pot bet} at check-to nodes and never contain an R8-only 1/3,3/4,
+3/2 size), L3-menu equality, and the monotonicity bound coarse-NashConv <=
+declared-menu NashConv (measured 1.02 <= 2.04 on the river fixture).
+
+The measurement driver (`bigshark-stage6-measurement-driver`, a non-ctest leaf
+joining eval+train) gained measurement-scale caps (`--max-infosets`,
+`--max-gib`, `--wall-seconds`) and reports two coverage columns:
+`br_confirm_misses` (unfrozen learn infosets hit in confirm) and
+`candidate_uniform_rows` (structurally-valid coarse nodes answered uniform).
+
+**R11 measured result so far — NOT a measurable advantage at feasible sampled
+coverage; published, not promoted.** Running the coarse R11 table over uniform
+1326-combo ranges is coverage-bound: a real 100bb 2p coarse tree has 1.43M
+public nodes (553k action), and external sampling over 1326 holdings cannot
+densely cover it at feasible iteration/seed budgets. At 200k iterations, 256
+learn / 128 confirm seeds, the n=2 table (4 actionable buckets) shows
+br_confirm_misses ~600-710 per traverser, candidate_uniform_rows ~2k-3k, and
+every paired-difference 95% CI STRADDLES ZERO (e.g. n2 potbb4 d=-1.56 mean but
+CI [-4.52,+1.39]); the same on n=3. Pushing one 2p bucket to 500k iterations
+and 2000 learn seeds (5.3 min/bucket) still left ~1000 confirm misses and a
+candidate CI of +-6.7 chips. The honest conclusion is that the sampled
+uniform-range artifact is statistically INDISTINGUISHABLE from the pinned
+baseline under coarse-game NashConv at any budget that completes in the test
+window — with coverage counters showing WHY (the estimate is unsaturated), not
+a tight equivalence. Per the project rule, no candidate is promoted and this
+null is recorded as data. A meaningful larger-table table needs either
+restricted (non-uniform) ranges, a narrower coarse tree, or a coverage
+mechanism (result sampling / VR-MCCFR / chance-sampled average that does not
+require every holding-path to be visited); that is future work, not a reason to
+loosen the metric. Full n in {6,7,9,10} screening tables were not run because
+each has 44-83+ actionable buckets with multi-minute per-bucket cost and the
+n=2/n=3 signal already establishes the coverage-bound null with its diagnosis;
+the driver runs them on demand. Geometry enumeration (offline, not a gate):
+n=2 4 actionable, n=3 11, n=6 44, n=7 56, n=9 83, n=10 98 (1.81M exact
+geometries at n=10; that enumeration alone takes tens of minutes and is a
+one-time offline count, not a gate).
+
+**P1 streaming-addressing bug found by the larger-table run — PublicPath hash
+collision, FIXED.** Running the streamed (live>=3) table at n=6 threw
+"trainer row address merged nodes with different menus" at live>=4 (it never
+appeared at n=2/3 because those paths are shallow). The row address for a
+streamed infoset is FNV-style `PublicPath::hash()` over the uint16 edge-token
+sequence; that hash used the boost::hash_combine idiom
+`h ^= value + golden + (h<<6) + (h>>2)` over uint16 tokens drawn from a small
+~84-symbol alphabet, which is LOSSY on deep small-alphabet sequences. Two
+genuinely distinct production paths captured from the n=6 run —
+geo;seat1,2,3 all action0;turn;seat1 a1,seat3 a1 then {seat3 a2, river o355,
+seat2 a0} vs {seat1 a0, river o340, seat2 a1} — hashed to the identical
+64-bit value, merging a check-to node with a facing-a-bet node. Fix:
+`PublicPath::hash()` is now FNV-1a over the little-endian BYTES of every token
+plus the sequence length (the same canonical hash used for rows and the
+geometry matrix), so distinct sequences differ in both content and length.
+This is an artifact row-key identity change (acceptable pre-promotion: no
+artifact has shipped) and is pinned by `test_public_path_hash_injectivity`
+(the exact captured pair, a trailing-zero length case, determinism);
+mutation-RED proven (restoring hash_combine fails on the captured pair). After
+the fix n=6 live3/live4 train cleanly (3.35M / 6.7M distinct infosets vs the
+silently-collapsed counts before) — the collision had been collapsing real
+nodes, which also explains why n>=4 streamed artifacts looked smaller than
+they are. The n=6 live5 streamed artifact exceeds the 8M-infoset driver cap at
+100k iterations: streaming keys by concrete public cards does not share
+card-bucket trees across streets, so high-live flop-rooted artifacts are very
+large. That scale bound, together with the coverage null, is the practical
+ceiling on the uniform-range larger-table policy; producing a tight,
+separated NashConv at n>=4 needs restricted ranges or a coverage mechanism,
+not a bigger map.
+
+Also: unified the duplicate `bs::stage6::TranslatorId` onto the single core
+type (eval fills the rule digest; projection gated on name+version).
+`GeometryBucket` gained its big-blind denomination; the manifest gained
+`artifact_content_hash` and `iterations_completed`. Full release matrix is
+62/62; debug and ASan presets are run in the verification step.
+
+
+**Independent review (2026-09-26, two reviewers, implementer != reviewer).**
+Both returned APPROVE with no P1/P2 blockers. Reviewer findings and resolutions:
+* comments that called kFull the "exact/unbiased full average for every N" were
+  tightened to the precise statement — the sealed per-row policy is an unbiased
+  estimator of the EXTERNAL-MEASURE average (pi_own*pi_opponents), coinciding
+  with the vanilla full average at N=2 / convergence (trainer.hpp,
+  mccfr_trainer.cpp header + walk_action);
+* the aggregate multiway gate's non-discrimination of the weighting on the
+  near-pure fixture is stated in the test SCOPE block and here (the weighting
+  rests on the 1e-9 single-sweep algebra gate; a mixed-equilibrium enumerable
+  fixture is a future optional addition);
+* deleted the unused `WalkArgs` struct;
+* added an explicit artifact duplicate-key/repeated-record rejection case and
+  an end-to-end mutated-sealed-POLICY-under-stale-manifest case to
+  `test_stage6_frozen_artifact` (the loader's content hash rejects it).
+Reviewers additionally live-verified: the external-measure math and world-set
+BR infoset consistency, the FNV path fix, the coarse DeviationSpace null/menu
+guards (opponents never use the coarse menu), UniformOnUnvisited being
+unreachable by a genuine abstraction miss, and the train-edge guard catching a
+forbidden include live (including a transitive one). Final matrices: release
+62/62, debug 60/60 (release-only benchmarks excluded), ASan 60/60 with zero
+sanitizer findings.

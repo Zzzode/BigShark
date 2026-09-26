@@ -84,49 +84,9 @@ Chips deepest_cover(const GameState& state, std::size_t actor) {
 }
 
 // Builds the L2 menu for a node using the profile-neutral rule. The L2 action
-// abstraction owns the fractions; L3 supplies the profile's cover.
-std::vector<Action> node_menu(const GameState& state, const abstraction::ActionAbstraction& action,
-                              const LegalActions& legal) {
-  const std::size_t actor = *state.actor();
-  const GamePlayer& hero = state.players()[actor];
-  if (state.player_count() == 2) {
-    // Pick the single opponent (the other live seat; at two seats there is
-    // exactly one).
-    std::size_t opponent = actor;
-    for (std::size_t seat : state.live_players())
-      if (seat != actor)
-        opponent = seat;
-    const GamePlayer& other = state.players()[opponent];
-    abstraction::MenuContext ctx;
-    ctx.street = state.street();
-    ctx.pot = state.pot();
-    ctx.actor_committed = hero.street_committed;
-    ctx.opponent_committed = other.street_committed;
-    ctx.opponent_stack = other.stack;
-    return action.menu(legal, ctx);
-  }
-  abstraction::MultiwayMenuContext ctx;
-  ctx.street = state.street();
-  ctx.pot = state.pot();
-  ctx.actor_committed = hero.street_committed;
-  ctx.cover = deepest_cover(state, actor);
-  return abstraction::build_multiway_action_menu(
-      legal, action.schedule()[static_cast<std::size_t>(state.street())], ctx);
-}
-
-// Unconditioned public-card set: 0..51 minus the cards already on the board.
-// Per-deal conditioning (subtracting the deal's hole cards and runout
-// reservations) is the L4 solver's job, not the tree's.
-std::vector<int> public_cards(const GameState& state) {
-  std::array<bool, 52> used{};
-  for (int card : state.board())
-    used[card] = true;
-  std::vector<int> cards;
-  for (int c = 0; c < 52; ++c)
-    if (!used[c])
-      cards.push_back(c);
-  return cards;
-}
+// abstraction owns the fractions; L3 supplies the profile's cover. The single
+// exported implementation lives below the anonymous namespace
+// (bs::tree::abstract_node_menu); deep cover is the file-local helper above.
 
 TerminalPayload make_terminal(const GameState& state, bool folded, Budget& budget) {
   TerminalPayload payload;
@@ -177,6 +137,47 @@ void grow_to_fit(std::vector<T>& vec, std::size_t need, Budget& budget) {
 }
 
 }  // namespace
+
+// Exported shared L3 menu rule and public-card list (declared in
+// abstract_tree.hpp). Defined OUTSIDE the anonymous namespace so the builder
+// and the stage-6 trainer bind to the same external symbol.
+std::vector<Action> abstract_node_menu(const GameState& state,
+                                       const abstraction::ActionAbstraction& action,
+                                       const LegalActions& legal) {
+  const std::size_t actor = *state.actor();
+  const GamePlayer& hero = state.players()[actor];
+  if (state.player_count() == 2) {
+    std::size_t opponent = actor;
+    for (std::size_t seat : state.live_players())
+      if (seat != actor)
+        opponent = seat;
+    const GamePlayer& other = state.players()[opponent];
+    abstraction::MenuContext ctx;
+    ctx.street = state.street();
+    ctx.pot = state.pot();
+    ctx.actor_committed = hero.street_committed;
+    ctx.opponent_committed = other.street_committed;
+    ctx.opponent_stack = other.stack;
+    return action.menu(legal, ctx);
+  }
+  abstraction::MultiwayMenuContext ctx;
+  ctx.street = state.street();
+  ctx.pot = state.pot();
+  ctx.actor_committed = hero.street_committed;
+  ctx.cover = deepest_cover(state, actor);
+  return action.multiway_menu(legal, ctx);
+}
+
+std::vector<int> public_runout_cards(const GameState& state) {
+  std::array<bool, 52> used{};
+  for (int card : state.board())
+    used[card] = true;
+  std::vector<int> cards;
+  for (int c = 0; c < 52; ++c)
+    if (!used[c])
+      cards.push_back(c);
+  return cards;
+}
 
 // In bs::tree (not the anonymous namespace) so its name matches the
 // `friend class TreeBuilder` declaration on AbstractTree.
@@ -234,7 +235,8 @@ class TreeBuilder {
       } else {
         node.kind = NodeKind::Action;
         node.actor = *frame.state.actor();
-        std::vector<Action> menu = node_menu(frame.state, tree_.action_, frame.state.legal());
+        std::vector<Action> menu =
+            abstract_node_menu(frame.state, tree_.action_, frame.state.legal());
         // Bounded transient (the L2 builder rejects a menu over 32); charge the
         // slab the node retains before it takes ownership.
         budget_.charge_capacity(0, menu.capacity(), sizeof(Action));
@@ -254,7 +256,7 @@ class TreeBuilder {
       // in ascending edge order; each parent's children vector (appended above
       // in expansion order) then reads in the L1/L2 enumeration order.
       if (phase == Phase::Deal) {
-        const std::vector<int> cards = public_cards(frame.state);
+        const std::vector<int> cards = public_runout_cards(frame.state);
         for (auto it = cards.rbegin(); it != cards.rend(); ++it) {
           stack.push_back(Frame{frame.state.after_card(*it), node.index, frame.depth + 1, {}, *it});
         }
