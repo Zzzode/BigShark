@@ -375,7 +375,9 @@ double walk_action(SweepContext& ctx, const GameState& state, const std::vector<
     // node touches separately for maturity instrumentation; it is not the
     // average weight.
     for (std::size_t a = 0; a < menu.size(); ++a)
-      row.sums[a] += own_reach * sigma[a];
+      row.sums[a] += ctx.config->average_weighting == AverageWeighting::PerVisit
+                         ? sigma[a]
+                         : own_reach * sigma[a];
     ++row.visits;
 
     // Enumerate every action over its sampled external continuation, then the

@@ -495,8 +495,7 @@ int test_nearest_coarse_edge_line() {
       try {
         (void)strict.distribution(real, actor, hole, ctx);
       } catch (const stage6_candidate_error& e) {
-        strict_parity_throw =
-            std::string(e.what()).find("aggressive options") != std::string::npos;
+        strict_parity_throw = std::string(e.what()).find("aggressive options") != std::string::npos;
       }
       if (strict_parity_throw) {
         CandidateBehaviorPolicy edge(make_one(), CandidateMissPolicy::UniformOnUnvisited,

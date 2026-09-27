@@ -56,6 +56,26 @@ struct TrainerLimits {
   std::chrono::milliseconds wall{3'600'000};
 };
 
+// Selects the average-policy weighting accumulated in TrainerRow::sums.
+//
+//   OwnReach (the production default): kFull external-sampling average
+//     sums += pi_own * sigma at the traverser's own node. Unbiased for the
+//     external-measure (pi_own*pi_opp) policy at EVERY player count.
+//
+//   PerVisit (test-only): sums += sigma per own-node visit, dropping the own
+//     reach weight. Its per-row seal is the time-average of sigma(I), not the
+//     external-measure policy E[pi_own*sigma | reach of I under pi_-i]; it
+//     coincides with OwnReach when the traverser's own prefix reach is ~{0,1}
+//     (trivially at N==2, where the single opponent is integrated out, and at
+//     a converged equilibrium) but is biased at N>=3 while play is mixed.
+//     Exists solely so the multiplayer mixed-equilibrium gate can prove the
+//     production weighting discriminates against the biased one. It is
+//     deliberately excluded from artifact_identity_hash/training_config_hash:
+//     no production artifact is ever sealed under PerVisit (production
+//     entry points keep the OwnReach default), and the multiplayer gate uses
+//     the debug fixed-world seam, not the artifact writer.
+enum class AverageWeighting { OwnReach, PerVisit };
+
 struct TrainingConfig {
   bs::abstraction::ActionAbstraction action = bs::abstraction::ActionAbstraction::declared(
       bs::abstraction::SizeSchedule(), bs::abstraction::CoverSeeds::DeclaredOnly);
@@ -64,6 +84,9 @@ struct TrainingConfig {
   std::uint64_t master_seed = 0;
   std::uint64_t geometry_matrix_hash = 0;
   std::string chart_digest_sha256;
+  // Production kFull weighting; PerVisit is a test-only deliberately-biased
+  // alternative for the multiplayer mixed-equilibrium discrimination gate.
+  AverageWeighting average_weighting = AverageWeighting::OwnReach;
   TrainerLimits limits{};
 };
 

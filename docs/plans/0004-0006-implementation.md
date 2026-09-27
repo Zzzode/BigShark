@@ -4812,3 +4812,49 @@ the trainer coarse game, without changing any sealed artifact.
   strict fails at an off-tree point while edge answers with a legal unit
   distribution and increments the counter, and that on-coarse passive lines
   still work. release 63/63.
+
+### R11 Item 4: multiplayer average-weighting discrimination gate (2026-09-27)
+
+Question: is the production external-sampling average `sums += pi_own*sigma`
+(kFull/OwnReach) genuinely the correct weighting for N>=3, and can a gate
+prove it? Theory: an external-sampling sweep reaches infoset I with
+probability pi_opponents(I), so the per-row normalized own-node accumulation
+is an unbiased estimator of the external-measure (pi_own*pi_opp) policy for
+EVERY player count; the unweighted per-visit alternative `sums += sigma`
+drops the opponent-reach factor and is biased at N>=3 while play is mixed.
+At a converged equilibrium sigma is stationary, pi_opponents(I) is constant
+in time, and after per-row normalization the vanilla/external/per-visit
+averages seal the SAME equilibrium policy — kFull vs per-visit differ ONLY as
+a finite-time effect, which carries no systematic NashConv sign (empirically:
+a signed "per-visit is more exploitable" assertion is unattainable on any
+small robust game; the biased time-average can land on non-binding rows).
+
+Implementation: `AverageWeighting{OwnReach,PerVisit}` in trainer.hpp (default
+OwnReach; one ternary in walk_action; deliberately excluded from the
+artifact/training hashes — PerVisit is unreachable from production entry
+points and no artifact is ever sealed under it). Gate
+`test_mixed_equilibrium_discriminates_weighting` in
+test_stage6_multiway_average.cpp, two parts on one nine-node no-chance
+3-seat river (board 2s3d6h8dQs; seat0 all-in dummy; seats 1/2 play
+check/bet-jam -> fold/call, six joint worlds):
+
+- Part 1, deterministic estimator identity: only seat 1 traverses so seat 2
+  keeps uniform regrets (a permanent 0.5/0.5 check/bet mix). Before every
+  fixed-world sweep, seat 1's root and pinned fold/call row regrets are
+  forced across two phases (own check-reach 1.0/fold vs 0.1/call), RNG keyed
+  by (sweep, world) only so both phases see identical opponent draws. The
+  sealed pinned row equals the closed forms to 1e-9 on seeds
+  {1,43,777,424242}: kFull (10/11,1/11), per-visit (1/2,1/2); own-reach-1
+  root rows are identical under both. A production mutation
+  `sums += sigma` collapses kFull onto (1/2,1/2) and goes RED.
+- Part 2, vanishing at convergence: full CFR all-seat self-play, 400k
+  iterations; a genuinely-reached (positive external-reach mass) interior
+  mixed row exists, general-sum NashConv 0.015714 < 0.02, and
+  external-reach-mass L1 between sealed kFull and per-visit full references
+  is 0.000001 < 0.01 over reached rows only. Full-CFR only; late-checkpoint
+  sampler-vs-full agreement remains pinned by the untouched parity gate.
+
+Independent implementer!=reviewer review: APPROVE WITH NON-BLOCKING NITS
+(all three applied — non-vacuous interior-row predicate, hash-exclusion
+rationale on the enum, precise per-row equivalence wording). release/debug/
+asan test runs green; test runtime ~51 s.
