@@ -19,11 +19,14 @@
 //
 // CRN pairing: candidate and baseline estimates use identical learn/confirm
 // seed lists, so the per-bucket paired difference uses the same joint deals.
-// Every figure is general-sum COARSE-GAME NashConv (the deviation space is the
-// trainer's coarse abstraction) in chips/hand with a Student-t 95% CI on the
-// scalar per-replicate seat sum; it is an estimate with no convergence
-// guarantee, confirm_misses discloses unsaturated learn tables, and
-// "exploitability" is never used.
+// `measure` reports general-sum COARSE-GAME NashConv (deviator restricted to
+// the trainer menu); `measure --exact` reports EXACT-GAME NashConv over the
+// declared five-pot-fraction action space with the candidate following
+// off-coarse sizings via its nearest coarse EDGE. Both are in chips/hand
+// with a Student-t 95% CI on the scalar per-replicate seat sum; they are
+// estimates with no convergence guarantee, confirm_misses discloses
+// unsaturated learn tables, candidate_uniform_rows/candidate_offtree_rows
+// disclose no-opinion answers, and "exploitability" is never used.
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
@@ -226,29 +229,40 @@ std::vector<std::uint64_t> seed_series(std::uint64_t base, std::size_t count) {
 }
 
 // Measures one profile's NashConv replicates on one reduced representative.
+// `exact_space` selects the declared five-pot-fraction EXACT deviation menu
+// (the deviator plays concrete legal sizings) instead of the trainer coarse
+// menu; the candidate must be built with NearestCoarseEdge to follow an exact
+// off-coarse line back to a sealed node.
 BrEstimatorResult measure_profile(const GeometryBucket& bucket,
                                   std::vector<const BehaviorPolicy*> policies,
                                   std::span<const std::uint64_t> learn,
                                   std::span<const std::uint64_t> confirm,
-                                  const bs::abstraction::ActionAbstraction& coarse_action) {
+                                  const bs::abstraction::ActionAbstraction& coarse_action,
+                                  bool exact_space) {
   const std::array<int, 3> flop = {0, 6, 21};
   const poker::GameDef def = reduced_rooted_def(bucket, flop);
   auto ranges = uniform_ranges(bucket.key.live_count);
   BrEstimatorConfig config;
   config.require_stabilization = false;  // MC learn; report estimate, not fixed point
-  // R11 measures COARSE-GAME general-sum NashConv: the deviator is restricted
-  // to the same coarse abstraction the artifacts were trained in. An infoset
-  // the learn seeds never froze is recorded as "no deviation there" rather
-  // than aborting; its count is published so a saturated estimate can never be
+  // Coarse R11 restricts the deviator to the trainer menu; exact R11 lets it
+  // pick the declared five-fraction concrete sizings the real game offers.
+  // An infoset the learn seeds never froze is recorded as "no deviation
+  // there"; its count is published so a saturated estimate can never be
   // mistaken for a converged one.
-  config.deviation_space = DeviationSpace::CoarseAbstraction;
-  config.coarse_action = &coarse_action;
+  if (exact_space) {
+    config.deviation_space = DeviationSpace::Declared5Fraction;
+    config.coarse_action = nullptr;
+  } else {
+    config.deviation_space = DeviationSpace::CoarseAbstraction;
+    config.coarse_action = &coarse_action;
+  }
   config.on_confirm_miss = FrozenMissPolicy::RecordMiss;
   return estimate_deviation_gains(def, ranges, policies, learn, confirm, nullptr, config);
 }
 
 int cmd_measure(std::size_t n, std::uint64_t iters, std::uint64_t seed, std::size_t limit,
-                std::size_t learn_count, std::size_t confirm_count, const TrainBudget& budget) {
+                std::size_t learn_count, std::size_t confirm_count, const TrainBudget& budget,
+                bool exact_space) {
   std::vector<TrainedBucket> trained = train_buckets(n, iters, seed, limit, true, budget);
 
   // Identical disjoint seed lists for both profiles so the paired difference
@@ -257,22 +271,25 @@ int cmd_measure(std::size_t n, std::uint64_t iters, std::uint64_t seed, std::siz
   const std::vector<std::uint64_t> confirm = seed_series(500000, confirm_count);
   const bs::abstraction::ActionAbstraction coarse = coarse_action();
 
-  std::printf(
-      "# R11 coarse-game general-sum NashConv (deviation space = trainer coarse "
-      "{1/2 bet,1x raise}); estimate, no convergence guarantee\n");
+  std::printf("# R11 %s general-sum NashConv (%s); estimate, no convergence guarantee\n",
+              exact_space ? "EXACT-game" : "coarse-game",
+              exact_space ? "deviation menu = declared five pot fractions; candidate follows exact "
+                            "sizings via nearest coarse EDGE"
+                          : "deviation space = trainer coarse {1/2 bet,1x raise}");
   std::printf(
       "bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,"
-      "paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows\n");
+      "paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows\n");
   for (const TrainedBucket& tb : trained) {
     const std::size_t seats = tb.bucket.key.live_count;
 
     // Candidate profile: every seat plays the composed candidate bound to THIS
     // bucket (the estimate is run on the bucket's reduced representative
-    // game). Coarse-space NashConv explores the whole coarse bush, so it
-    // reaches structurally-valid nodes a finite sampled artifact never sealed;
-    // the candidate answers those with the artifact's own uniform-unvisited
-    // rule and the count is published. A genuine abstraction violation still
-    // throws.
+    // game). NashConv explores the whole deviation bush, so it reaches
+    // structurally-valid nodes a finite sampled artifact never sealed; the
+    // candidate answers those with the artifact's own uniform-unvisited rule
+    // and the count is published. A genuine abstraction violation still
+    // throws. The exact-space pass uses NearestCoarseEdge addressing so an
+    // off-coarse concrete deviation still lands on a sealed coarse node.
     CandidateBinding binding;
     binding.bucket = tb.bucket;
     binding.action = coarse_action();
@@ -281,16 +298,18 @@ int cmd_measure(std::size_t n, std::uint64_t iters, std::uint64_t seed, std::siz
     std::vector<CandidateBinding> one_binding;
     one_binding.push_back(std::move(binding));
     CandidateBehaviorPolicy candidate_one(std::move(one_binding),
-                                          CandidateMissPolicy::UniformOnUnvisited);
+                                          CandidateMissPolicy::UniformOnUnvisited,
+                                          exact_space ? CandidateProjectionMode::NearestCoarseEdge
+                                                      : CandidateProjectionMode::StrictCoarse);
     std::vector<const BehaviorPolicy*> candidate_policies(seats, &candidate_one);
     // Baseline profile: every seat plays the pinned baseline.
     BaselineBehaviorPolicy baseline_one;
     std::vector<const BehaviorPolicy*> baseline_policies(seats, &baseline_one);
 
     const BrEstimatorResult cand =
-        measure_profile(tb.bucket, candidate_policies, learn, confirm, coarse);
+        measure_profile(tb.bucket, candidate_policies, learn, confirm, coarse, exact_space);
     const BrEstimatorResult base =
-        measure_profile(tb.bucket, baseline_policies, learn, confirm, coarse);
+        measure_profile(tb.bucket, baseline_policies, learn, confirm, coarse, exact_space);
 
     const ConfidenceInterval cand_ci = confidence_interval_95(cand.nashconv_replicates);
     const ConfidenceInterval base_ci = confidence_interval_95(base.nashconv_replicates);
@@ -306,15 +325,17 @@ int cmd_measure(std::size_t n, std::uint64_t iters, std::uint64_t seed, std::siz
         std::accumulate(cand.counts.confirm_misses_per_traverser.begin(),
                         cand.counts.confirm_misses_per_traverser.end(), std::uint64_t{0});
     const std::uint64_t cand_uniform = candidate_one.unvisited_misses();
+    const std::uint64_t cand_offtree = candidate_one.off_tree_misses();
 
-    std::printf("%s,baseline,%.6f,%.6f,%.6f,,,,%zu,%llu,0\n", tb.bucket.key.to_string().c_str(),
+    std::printf("%s,baseline,%.6f,%.6f,%.6f,,,,%zu,%llu,0,0\n", tb.bucket.key.to_string().c_str(),
                 base_ci.mean, base_ci.lower, base_ci.upper, base.nashconv_replicates.size(),
                 static_cast<unsigned long long>(base_misses));
-    std::printf("%s,candidate,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%zu,%llu,%llu\n",
+    std::printf("%s,candidate,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%zu,%llu,%llu,%llu\n",
                 tb.bucket.key.to_string().c_str(), cand_ci.mean, cand_ci.lower, cand_ci.upper,
                 d_ci.mean, d_ci.lower, d_ci.upper, cand.nashconv_replicates.size(),
                 static_cast<unsigned long long>(cand_misses),
-                static_cast<unsigned long long>(cand_uniform));
+                static_cast<unsigned long long>(cand_uniform),
+                static_cast<unsigned long long>(cand_offtree));
   }
   return 0;
 }
@@ -335,6 +356,7 @@ int main(int argc, char** argv) {
     std::uint64_t wall_seconds = 0;
     std::size_t max_infosets = budget.max_infosets;
     std::uint64_t max_gib = 8;
+    bool exact_space = false;
     for (int i = 2; i < argc; ++i) {
       const std::string arg = argv[i];
       auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -358,6 +380,8 @@ int main(int argc, char** argv) {
         max_infosets = std::stoul(next());
       else if (arg == "--max-gib")
         max_gib = std::stoull(next());
+      else if (arg == "--exact")
+        exact_space = true;
     }
     budget.wall = std::chrono::milliseconds(wall_seconds * 1000);
     budget.max_infosets = max_infosets;
@@ -369,11 +393,11 @@ int main(int argc, char** argv) {
     if (command == "train")
       return cmd_train(n, iters, seed, limit, outdir, budget);
     if (command == "measure")
-      return cmd_measure(n, iters, seed, limit, learn_count, confirm_count, budget);
+      return cmd_measure(n, iters, seed, limit, learn_count, confirm_count, budget, exact_space);
     std::fprintf(stderr,
                  "usage: %s hashes|geometries|train|measure [--n N --iters K --seed S "
                  "--buckets K --learn L --confirm C --out dir --wall-seconds S "
-                 "--max-infosets M --max-gib G]\n",
+                 "--max-infosets M --max-gib G --exact]\n",
                  argv[0]);
     return 2;
   } catch (const std::exception& e) {

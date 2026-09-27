@@ -509,6 +509,63 @@ void test_exact_to_coarse_index() {
         "an empty coarse menu yields -1");
 }
 
+void test_exact_to_coarse_edge() {
+  // A real postflop coarse menu is passives + BET edges (nothing owed).
+  const std::vector<poker::Action> bet_menu{
+      {poker::ActionType::Check, 0},
+      {poker::ActionType::Bet, 4},
+      {poker::ActionType::Bet, 8},
+      {poker::ActionType::Bet, 200},
+  };
+  // A raise-facing menu is passives + RAISE edges.
+  const std::vector<poker::Action> raise_menu{
+      {poker::ActionType::Fold, 0},    {poker::ActionType::Call, 0},
+      {poker::ActionType::Raise, 8},   {poker::ActionType::Raise, 16},
+      {poker::ActionType::Raise, 200},
+  };
+
+  // Passives keep the strict exact rule on both menu shapes.
+  check(project_exact_to_coarse_edge(bet_menu, {poker::ActionType::Check, 0}) == 0,
+        "edge: check locates its entry");
+  check(project_exact_to_coarse_edge(bet_menu, {poker::ActionType::Call, 0}) == -1,
+        "edge: an absent passive is -1");
+  check(project_exact_to_coarse_edge(raise_menu, {poker::ActionType::Fold, 0}) == 0,
+        "edge: fold locates its entry");
+
+  // Same-type nearest works exactly like the strict variant.
+  check(project_exact_to_coarse_edge(bet_menu, {poker::ActionType::Bet, 6}) == 1,
+        "edge: bet 6 is equidistant between 4 and 8; tie to the smaller");
+  check(project_exact_to_coarse_edge(raise_menu, {poker::ActionType::Raise, 12}) == 2,
+        "edge: raise 12 is equidistant between 8 and 16; tie to the smaller");
+
+  // The EDGE difference: cross-type aggressive actions still land on the
+  // nearest edge. An exact 3/4-pot bet (say 12 chips) observed against a line
+  // whose sealed menu only carries raise edges is addressed to the nearest
+  // raise edge rather than refused.
+  check(project_exact_to_coarse_edge(raise_menu, {poker::ActionType::Bet, 12}) == 2,
+        "edge: a cross-type bet maps to the nearest raise edge");
+  check(project_exact_to_coarse_edge(bet_menu, {poker::ActionType::Raise, 100}) == 2,
+        "edge: a cross-type raise maps to the nearest bet edge");
+
+  // Both cross-type and same-type searches refuse a menu with no aggressive
+  // edge at all.
+  const std::vector<poker::Action> passive_only{
+      {poker::ActionType::Fold, 0},
+      {poker::ActionType::Call, 0},
+  };
+  check(project_exact_to_coarse_edge(passive_only, {poker::ActionType::Bet, 10}) == -1,
+        "edge: no aggressive entry means -1 even in type-agnostic mode");
+  check(project_exact_to_coarse_edge({}, {poker::ActionType::Raise, 10}) == -1,
+        "edge: an empty menu yields -1");
+
+  // The strict projection must STILL reject the cross-type observations that
+  // edge accepts (the deployed default is unchanged).
+  check(project_exact_to_coarse_index(raise_menu, {poker::ActionType::Bet, 12}) == -1,
+        "strict mode still refuses a cross-type bet on a raise menu");
+  check(project_exact_to_coarse_index(bet_menu, {poker::ActionType::Raise, 100}) == -1,
+        "strict mode still refuses a cross-type raise on a bet menu");
+}
+
 // Heads-up preflop root: the button posts the small blind and acts first; the
 // big blind holds the option after a limp. This is a distinct rules profile
 // from the 3-seat fixtures, so one real HU node is pinned here.
@@ -611,6 +668,7 @@ int main() {
   test_fail_closed_inputs();
   test_translation_over_declared_coarse_menu();
   test_exact_to_coarse_index();
+  test_exact_to_coarse_edge();
   test_heads_up_real_nodes();
   test_determinism();
   if (failures) {

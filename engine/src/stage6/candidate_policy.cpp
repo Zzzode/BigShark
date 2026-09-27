@@ -117,7 +117,9 @@ struct CandidateBehaviorPolicy::Impl {
   // GeometryBucketKey::to_string() -> installed binding.
   std::unordered_map<std::string, std::unique_ptr<Installed>> bindings;
   CandidateMissPolicy miss_policy = CandidateMissPolicy::Throw;
+  CandidateProjectionMode projection_mode = CandidateProjectionMode::StrictCoarse;
   mutable std::uint64_t unvisited_misses = 0;
+  mutable std::uint64_t off_tree_misses = 0;
 
   Installed* find(const GeometryBucketKey& key) const {
     auto it = bindings.find(key.to_string());
@@ -126,9 +128,11 @@ struct CandidateBehaviorPolicy::Impl {
 };
 
 CandidateBehaviorPolicy::CandidateBehaviorPolicy(std::vector<CandidateBinding> supplied,
-                                                 CandidateMissPolicy miss_policy)
+                                                 CandidateMissPolicy miss_policy,
+                                                 CandidateProjectionMode projection_mode)
     : impl_(std::make_unique<Impl>()) {
   impl_->miss_policy = miss_policy;
+  impl_->projection_mode = projection_mode;
   for (CandidateBinding& in : supplied) {
     auto installed = std::make_unique<Installed>();
     installed->binding = std::move(in);
@@ -169,6 +173,10 @@ std::size_t CandidateBehaviorPolicy::binding_count() const noexcept {
 
 std::uint64_t CandidateBehaviorPolicy::unvisited_misses() const noexcept {
   return impl_->unvisited_misses;
+}
+
+std::uint64_t CandidateBehaviorPolicy::off_tree_misses() const noexcept {
+  return impl_->off_tree_misses;
 }
 
 std::vector<PolicyAction> CandidateBehaviorPolicy::distribution(
@@ -232,6 +240,26 @@ std::vector<PolicyAction> CandidateBehaviorPolicy::distribution(
   if (live_seats.size() != live_count)
     throw stage6_candidate_error("flop live count disagrees with the bound bucket");
 
+  // In an exact-game measurement the translated candidate can be driven OFF
+  // the coarse tree (nearest-edge chip overshoot changes the shadow
+  // commitment history so the actor/leaf diverges). The artifact has no
+  // sealed opinion there; measurement mode answers the concrete state with
+  // zero information and counts it. Deployed/strict mode stays fail-closed.
+  auto off_tree_allowed = [&]() {
+    return impl_->projection_mode == CandidateProjectionMode::NearestCoarseEdge &&
+           impl_->miss_policy == CandidateMissPolicy::UniformOnUnvisited;
+  };
+  auto off_tree_answer = [&]() -> std::vector<PolicyAction> {
+    ++impl_->off_tree_misses;
+    const std::vector<poker::Action> exact_menu = declared_behavior_menu(state, seat);
+    std::vector<PolicyAction> uniform;
+    const double mass = 1.0 / static_cast<double>(exact_menu.size());
+    uniform.reserve(exact_menu.size());
+    for (const poker::Action& action : exact_menu)
+      uniform.push_back(PolicyAction{action, mass});
+    return uniform;
+  };
+
   // Original flop-live seat -> reduced representative seat. In a representative
   // rooted game the def seats ARE the live seats in order; in a full-hand game
   // the live set is the signature's ascending live order (live_seats).
@@ -253,13 +281,23 @@ std::vector<PolicyAction> CandidateBehaviorPolicy::distribution(
   std::size_t node = installed->tree ? installed->tree->root_index() : bs::tree::kNoNode;
   (void)representative_root;
 
+  // Set true the moment the real line and the reduced coarse shadow diverge;
+  // the caller then answers off-tree once the current real state is at an
+  // action point.
+  bool off_tree = false;
+
   // Applies the real public cards needed until the shadow reaches an action
   // state (a street may have closed after the prior observed action).
   auto advance_deals = [&](std::size_t through_board) {
     while (shadow.phase() == poker::Phase::Deal) {
       const std::size_t want = shadow.board().size();
-      if (want >= through_board)
-        throw stage6_candidate_error("shadow needs a public card the real state has not dealt");
+      if (want >= through_board) {
+        // The shadow closed a street (or reached a runout) the real line has
+        // not dealt to: coarse-edge overshoot advanced the representative
+        // chip state beyond the real game. Off the coarse tree.
+        off_tree = true;
+        return;
+      }
       const int card = state.board()[want];
       const std::size_t ordinal = board_only_ordinal(shadow, card);
       if (installed->tree)
@@ -276,17 +314,56 @@ std::vector<PolicyAction> CandidateBehaviorPolicy::distribution(
   for (const std::vector<LoggedAction>* street_log : streets) {
     for (const LoggedAction& observed : *street_log) {
       advance_deals(state.board().size());
-      if (shadow.phase() != poker::Phase::Action)
-        throw stage6_candidate_error("shadow was not at an action state before a logged action");
+      if (off_tree) {
+        if (off_tree_allowed())
+          return off_tree_answer();
+        throw stage6_candidate_error("shadow needs a public card the real state has not dealt");
+      }
       const int rep_actor = original_to_reduced[observed.seat];
-      if (rep_actor < 0)
-        throw stage6_candidate_error("logged postflop action came from a non-live seat");
-      if (*shadow.actor() != static_cast<std::size_t>(rep_actor))
+      // Any divergence between the real public line and the reduced coarse
+      // shadow — the shadow is not at an action state, the actor differs, the
+      // seat folded out, or the line falls off a coarse leaf — means the
+      // translated candidate has no sealed node on this exact line. In the
+      // exact-game measurement mode that is a disclosed off-tree answer; in
+      // strict/deployed mode it is a structural failure.
+      const bool shadow_aligned = shadow.phase() == poker::Phase::Action && rep_actor >= 0 &&
+                                  *shadow.actor() == static_cast<std::size_t>(rep_actor);
+      if (!shadow_aligned) {
+        if (off_tree_allowed())
+          return off_tree_answer();
+        if (shadow.phase() != poker::Phase::Action)
+          throw stage6_candidate_error("shadow was not at an action state before a logged action");
+        if (rep_actor < 0)
+          throw stage6_candidate_error("logged postflop action came from a non-live seat");
         throw stage6_candidate_error("representative shadow actor disagrees with the hand log");
+      }
 
       const std::vector<poker::Action> menu = shadow_menu(*installed, shadow, node);
-      const int ordinal = project_exact_to_coarse_index(menu, observed.action);
+      const int ordinal = impl_->projection_mode == CandidateProjectionMode::NearestCoarseEdge
+                              ? project_exact_to_coarse_edge(menu, observed.action)
+                              : project_exact_to_coarse_index(menu, observed.action);
       if (ordinal < 0) {
+        const bool observed_aggressive = observed.action.type == poker::ActionType::Bet ||
+                                         observed.action.type == poker::ActionType::Raise;
+        bool menu_has_aggressive = false;
+        for (const poker::Action& ca : menu)
+          if (ca.type == poker::ActionType::Bet || ca.type == poker::ActionType::Raise) {
+            menu_has_aggressive = true;
+            break;
+          }
+        // Exact-game replay can leave the coarse tree when nearest-edge
+        // overshoots changed the reduced shadow commitment history so far that
+        // the shadow reaches a passives-only node while the real game still
+        // allows a wager. The artifact has no sealed node on such a line; in
+        // measurement mode answer the CURRENT concrete state with zero
+        // information (uniform over the exact declared menu) and count it, so
+        // the off-tree proportion of the estimate stays visible. Everything
+        // else — a passive mismatch, and off-tree in deployed/strict mode — is
+        // a genuine structural failure.
+        const bool passive_only_off_tree =
+            off_tree_allowed() && observed_aggressive && !menu_has_aggressive;
+        if (passive_only_off_tree)
+          return off_tree_answer();
         std::string detail =
             "observed type=" + std::to_string(static_cast<int>(observed.action.type)) +
             " target=" + std::to_string(observed.action.target_total) + " coarse{";
@@ -311,12 +388,47 @@ std::vector<PolicyAction> CandidateBehaviorPolicy::distribution(
     }
   }
   advance_deals(state.board().size());
-  if (shadow.phase() != poker::Phase::Action ||
-      *shadow.actor() != static_cast<std::size_t>(reduced_seat))
+  if (off_tree) {
+    if (off_tree_allowed())
+      return off_tree_answer();
+    throw stage6_candidate_error("shadow needs a public card the real state has not dealt");
+  }
+  // Coarse-edge overshoot can leave the shadow mid-hand at a non-action phase
+  // or waiting on a different seat than the real state: the translated line is
+  // off the coarse tree. Answer the concrete state with zero information in
+  // measurement mode; otherwise this is a structural failure.
+  const bool reached_acting_node = shadow.phase() == poker::Phase::Action &&
+                                   *shadow.actor() == static_cast<std::size_t>(reduced_seat);
+  if (!reached_acting_node) {
+    if (off_tree_allowed())
+      return off_tree_answer();
     throw stage6_candidate_error("replayed shadow does not reach the acting seat's node");
+  }
+
+  // Final-decision-node menu parity. Coarse-edge chip overshoot can make the
+  // shadow node's aggressive options disagree with the real state's in EITHER
+  // direction (the representative cover ran out where the real game still has
+  // a jam; or the shadow still offers aggression at a state the real game has
+  // closed). In both cases no sealed row models THIS real decision, so reading
+  // one would be a silent substitution: measurement mode answers zero
+  // information over the exact declared menu and counts it. Deployed/strict
+  // mode treats the disagreement as a structural failure.
+  const std::vector<poker::Action> node_menu = shadow_menu(*installed, shadow, node);
+  auto has_aggressive = [](const std::vector<poker::Action>& m) {
+    for (const poker::Action& a : m)
+      if (a.type == poker::ActionType::Bet || a.type == poker::ActionType::Raise)
+        return true;
+    return false;
+  };
+  if (has_aggressive(node_menu) != static_cast<bool>(state.legal().aggressive)) {
+    if (off_tree_allowed())
+      return off_tree_answer();
+    throw stage6_candidate_error(
+        "reached coarse node menu disagrees with the real state's aggressive options");
+  }
 
   // ---- Locate the frozen row at this public node + own card bucket. --------
-  const std::vector<int> board_vec(state.board().begin(), state.board().end());
+  std::vector<int> board_vec(state.board().begin(), state.board().end());
   const std::uint32_t own_bucket =
       static_cast<std::uint32_t>(card_bucket(installed->card_kind, hole, board_vec));
   AbstractInfosetKey row_key;
@@ -331,7 +443,7 @@ std::vector<PolicyAction> CandidateBehaviorPolicy::distribution(
   auto row_it = rows.find(row_key);
   // The coarse menu at this structurally-valid node is known whether or not a
   // sampled row exists.
-  const std::vector<poker::Action> menu = shadow_menu(*installed, shadow, node);
+  const std::vector<poker::Action>& menu = node_menu;
   if (row_it == rows.end()) {
     // A structurally-valid coarse node the sampled training never touched. In
     // the measurement mode answer with the SAME uniform value an all-zero

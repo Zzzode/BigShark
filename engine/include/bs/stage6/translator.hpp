@@ -95,4 +95,21 @@ std::vector<PolicyAction> translate_coarse_to_exact(const poker::GameState& stat
 int project_exact_to_coarse_index(const std::vector<poker::Action>& coarse_menu,
                                   const poker::Action& exact_action);
 
+// EDGE variant for exact-game NashConf traversals. Same passive rule (exact
+// match or -1). For an aggressive exact action it matches the nearest
+// aggressive menu entry WITHOUT regard to Bet vs Raise type, ties to the
+// smaller total, and returns -1 only when the menu has no aggressive edge.
+//
+// Empirically (stage-6 R11 item 3 probes) the type-agnostic arm is currently
+// DEFENSIVE BREADTH that never fires on a reachable line: every observed
+// aggression is replayed into the reduced shadow as a coarse aggression, so
+// aligned actors imply the street's bet/raise label is aligned too — chip
+// overshoot changes amounts, not the type. The materially different piece of
+// exact-game handling is the candidate's off-tree fallback (a shadow node with
+// no aggressive edge at all), not this matcher. Kept type-agnostic so the
+// addressing rule stays a pure "nearest coarse edge" invariant and is pinned
+// by translator unit tests.
+int project_exact_to_coarse_edge(const std::vector<poker::Action>& coarse_menu,
+                                 const poker::Action& exact_action);
+
 }  // namespace bs::stage6

@@ -84,6 +84,23 @@ class stage6_candidate_error : public std::runtime_error {
 //     action, shadow desync) still throws regardless of this setting.
 enum class CandidateMissPolicy { Throw, UniformOnUnvisited };
 
+// How an observed CONCRETE aggressive action is mapped onto a coarse menu
+// edge while replaying the public action line to the lookup node.
+//
+//   StrictCoarse (the deployed default): the exact bet/raise must be a coarse
+//     menu entry of the SAME aggressive type (nearest target otherwise); a
+//     size the trainer never built throws. This is the coarse-game lookup.
+//
+//   NearestCoarseEdge: the exact aggressive action maps to the nearest
+//     aggressive coarse edge regardless of Bet/Raise type (within one street
+//     the menu is uniformly one type; passives still require an exact entry).
+//     Node addressing still advances with the matched COARSE action, so the
+//     sealed distribution is unchanged — only which sealed row an off-menu
+//     concrete line reads becomes defined. Used by the exact-game NashConv
+//     measurement; an unseen off-coarse size otherwise has zero candidate
+//     mass by construction.
+enum class CandidateProjectionMode { StrictCoarse, NearestCoarseEdge };
+
 class CandidateBehaviorPolicy final : public BehaviorPolicy {
  public:
   // `bindings` maps GeometryBucketKey (bucket.key.to_string()) to one frozen
@@ -91,8 +108,10 @@ class CandidateBehaviorPolicy final : public BehaviorPolicy {
   // tree for each live==2 binding. Throws stage6_candidate_error if a binding
   // is internally inconsistent (missing representative inputs, action
   // abstraction mismatch).
-  explicit CandidateBehaviorPolicy(std::vector<CandidateBinding> bindings,
-                                   CandidateMissPolicy miss_policy = CandidateMissPolicy::Throw);
+  explicit CandidateBehaviorPolicy(
+      std::vector<CandidateBinding> bindings,
+      CandidateMissPolicy miss_policy = CandidateMissPolicy::Throw,
+      CandidateProjectionMode projection_mode = CandidateProjectionMode::StrictCoarse);
   ~CandidateBehaviorPolicy() override;
 
   std::vector<PolicyAction> distribution(const poker::GameState& state, std::size_t seat,
@@ -105,6 +124,16 @@ class CandidateBehaviorPolicy final : public BehaviorPolicy {
   // fallback (UniformOnUnvisited mode only); zero under Throw and zero for a
   // fully sampled artifact.
   std::uint64_t unvisited_misses() const noexcept;
+
+  // Number of decision points whose public line leaves the coarse tree
+  // entirely (NearestCoarseEdge + UniformOnUnvisited only): an observed
+  // aggression reaches a point where the reduced shadow chip game offers no
+  // aggressive edge while the real game still does — coarse-edge overshoot
+  // changed the commitment history. The candidate has no sealed node for such
+  // a line and answers uniform over the EXACT declared menu; the driver
+  // publishes the count so the off-tree proportion of an exact-game estimate
+  // stays visible. Zero in every other mode.
+  std::uint64_t off_tree_misses() const noexcept;
 
  private:
   struct Impl;

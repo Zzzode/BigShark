@@ -4762,3 +4762,53 @@ and both negative token/state pairings. The adapter corpus harness reference leg
 to the same vocabulary (63/63 identical). Artifact identity is unaffected:
 geometry enumeration walks preflop states only. Baseline R11 figures change
 (fidelity increases) and must be regenerated when measurements are re-run.
+
+### R11 Item 3: exact-sizings EDGE projection for exact-game NashConv (2026-09-27)
+
+Goal: report NashConv of the TRANSLATED candidate in the real declared
+five-pot-fraction action space (DeviationSpace::Declared5Fraction), not only
+the trainer coarse game, without changing any sealed artifact.
+
+- `project_exact_to_coarse_edge` (translator.hpp/.cpp) joins the existing
+  strict `project_exact_to_coarse_index`: passives keep the exact-entry rule;
+  an aggressive exact action maps to the nearest aggressive coarse EDGE
+  regardless of Bet/Raise type (within a street the reduced menu is uniformly
+  one type), ties to the smaller total; -1 only when no aggressive edge
+  exists. Unit-gated (cross-type match both directions, tie-smaller, no-edge,
+  empty menu, and strict still refuses what edge accepts).
+- `CandidateBehaviorPolicy` gains `CandidateProjectionMode`
+  {StrictCoarse (deployed default, unchanged), NearestCoarseEdge} and an
+  `off_tree_misses()` counter. Node addressing still advances with the
+  matched COARSE menu action, so materialized TreeNode / streaming PublicPath
+  never leave the sealed tree and the sealed distribution is unchanged; an
+  unseen exact size keeps zero candidate mass except via the disclosed
+  fallbacks.
+- Empirical finding the original design note under-specified (confirmed by
+  independent review instrumentation, ~11% of 2p and ~22% of 3p decision
+  nodes at 100bb): nearest-edge chip OVERSHOOT (an exact 3/4 pot maps onto
+  the coarse 1x edge, committing more than the real line) desyncs the
+  reduced representative shadow from the real game at three places — mid-log
+  (passives-only shadow while an observed action is aggressive, different
+  actor, or a runout card the real line has not dealt) AND at the candidate's
+  own final decision node (the reached coarse node's aggressive-option
+  presence differs from the real state in either direction). At ALL of these
+  there is no sealed row modeling the real decision; in NearestCoarseEdge +
+  UniformOnUnvisited the candidate answers that concrete state with zero
+  information (uniform over the exact declared menu) and counts it as the
+  distinct `candidate_offtree_rows` CSV column. Every other mode/pairing
+  stays fail-closed (a passive mismatch and a deployed/strict divergence
+  still throw). Same-type off-coarse SIZES that land on a sealed edge are not
+  off-tree. The reviewer also established the type-agnostic translator arm
+  is currently-unreachable defensive breadth (actor alignment implies the
+  Bet/Raise label aligns; overshoot changes amounts only), now documented on
+  project_exact_to_coarse_edge; strict and edge shadow traversals are
+  identical, so EDGE only unlocks the disclosed off-tree fallback.
+- Driver: `measure --exact` runs the declared-space pass (candidate built
+  NearestCoarseEdge); CSV gains `candidate_offtree_rows`. `hashes` is
+  byte-identical, proving addressing-only change: rows, FrozenManifest,
+  translator id, action digest unchanged, no retrain.
+- Gates: translator EDGE unit cases; candidate test_nearest_coarse_edge_line
+  walks a deep representative game along exact 3/4-pot aggressions, proves
+  strict fails at an off-tree point while edge answers with a legal unit
+  distribution and increments the counter, and that on-coarse passive lines
+  still work. release 63/63.

@@ -22,6 +22,36 @@ void add_mass(std::vector<PolicyAction>* projected, const poker::Action& action,
   projected->push_back(PolicyAction{action, mass});
 }
 
+// Nearest aggressive menu entry by target total; an equidistant tie resolves
+// to the smaller total (the explicit comparison also handles an unsorted
+// menu). When same_type_only is set, Bet matches only Bet and Raise only
+// Raise; otherwise every aggressive entry is eligible. Returns -1 when no
+// eligible edge exists.
+int nearest_aggressive_index(const std::vector<poker::Action>& coarse_menu,
+                             const poker::Action& exact_action, bool same_type_only) {
+  int best = -1;
+  poker::Chips best_distance = 0;
+  for (std::size_t i = 0; i < coarse_menu.size(); ++i) {
+    const poker::Action& candidate = coarse_menu[i];
+    if (candidate.type != poker::ActionType::Bet && candidate.type != poker::ActionType::Raise)
+      continue;
+    if (same_type_only && candidate.type != exact_action.type)
+      continue;
+    const poker::Chips distance = candidate.target_total >= exact_action.target_total
+                                      ? candidate.target_total - exact_action.target_total
+                                      : exact_action.target_total - candidate.target_total;
+    const bool closer = best < 0 || distance < best_distance;
+    const bool ties_smaller =
+        best >= 0 && distance == best_distance &&
+        candidate.target_total < coarse_menu[static_cast<std::size_t>(best)].target_total;
+    if (closer || ties_smaller) {
+      best = static_cast<int>(i);
+      best_distance = distance;
+    }
+  }
+  return best;
+}
+
 }  // namespace
 
 const TranslatorId& declared_translator_id() {
@@ -170,30 +200,24 @@ int project_exact_to_coarse_index(const std::vector<poker::Action>& coarse_menu,
     case poker::ActionType::Raise:
       break;
   }
+  return nearest_aggressive_index(coarse_menu, exact_action, /*same_type_only=*/true);
+}
 
-  // Aggressive: nearest target among menu actions of the SAME type, ties to
-  // the smaller total. The explicit equal-distance comparison (rather than
-  // relying on menu order) makes an unsorted menu resolve to the smaller
-  // target too; the declared menus are ascending.
-  int best = -1;
-  poker::Chips best_distance = 0;
-  for (std::size_t i = 0; i < coarse_menu.size(); ++i) {
-    const poker::Action& candidate = coarse_menu[i];
-    if (candidate.type != exact_action.type)
-      continue;
-    const poker::Chips distance = candidate.target_total >= exact_action.target_total
-                                      ? candidate.target_total - exact_action.target_total
-                                      : exact_action.target_total - candidate.target_total;
-    const bool closer = best < 0 || distance < best_distance;
-    const bool ties_smaller =
-        best >= 0 && distance == best_distance &&
-        candidate.target_total < coarse_menu[static_cast<std::size_t>(best)].target_total;
-    if (closer || ties_smaller) {
-      best = static_cast<int>(i);
-      best_distance = distance;
-    }
+int project_exact_to_coarse_edge(const std::vector<poker::Action>& coarse_menu,
+                                 const poker::Action& exact_action) {
+  switch (exact_action.type) {
+    case poker::ActionType::Fold:
+    case poker::ActionType::Check:
+    case poker::ActionType::Call:
+      for (std::size_t i = 0; i < coarse_menu.size(); ++i)
+        if (coarse_menu[i] == exact_action)
+          return static_cast<int>(i);
+      return -1;
+    case poker::ActionType::Bet:
+    case poker::ActionType::Raise:
+      break;
   }
-  return best;
+  return nearest_aggressive_index(coarse_menu, exact_action, /*same_type_only=*/false);
 }
 
 }  // namespace bs::stage6

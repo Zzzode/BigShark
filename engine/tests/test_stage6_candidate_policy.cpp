@@ -434,6 +434,195 @@ int test_preflop_matches_baseline() {
   return local;
 }
 
+// NearestCoarseEdge integration, found empirically rather than hand-crafted.
+// Walk a deep representative game along the EXACT declared five-fraction menu
+// (aggressive at every seat) and locate a logged action where the strict
+// lookup fails but the edge policy still answers the real state legally;
+// record it as an off-tree decision. Same-type off-sizes are NOT such a point
+// (strict already snaps those to the nearest edge).
+int test_nearest_coarse_edge_line() {
+  int local = 0;
+  GeometryBucket bucket = bucket_2p();
+  bucket.representative_stacks = {196, 196};  // 200 start, 4 in each
+  const TrainingConfig config = make_config(20'000, 11);
+  BucketTrainingResult trained = train_bucket(bucket, config);
+  auto make_one = [&]() {
+    CandidateBinding b;
+    b.bucket = bucket;
+    b.action = config.action;
+    b.manifest = manifest_for(bucket, config, trained.rows, trained.report.iterations_completed);
+    b.rows = trained.rows;
+    std::vector<CandidateBinding> v;
+    v.push_back(std::move(b));
+    return v;
+  };
+
+  const std::array<int, 3> flop = {0, 6, 21};
+
+  // Drive the real representative game with aggressive EXACT jam actions to
+  // reach deep pots where coarse-edge overshoot desyncs the shadow.
+  GameState real(GameState(rooted_def(bucket, flop)));
+  HandLog log;
+  PolicyContext ctx;
+  ctx.decision_seed = 777;
+  const HoleCards hole{2, 8};
+  bool found_strict_failure = false;
+  bool found_edge_answer = false;
+  auto street_log = [&](Street s) -> std::vector<LoggedAction>& {
+    return s == Street::Flop ? log.flop : (s == Street::Turn ? log.turn : log.river);
+  };
+  // Fixed 5-card runout consistent with the flop ids {0,6,21}.
+  const std::array<int, 5> runout = {0, 6, 21, 30, 44};
+  bool found_on_tree_equivalence = false;
+  bool found_final_parity_offtree = false;
+  for (int step = 0; step < 12; ++step) {
+    if (real.phase() != Phase::Action)
+      break;
+    const std::size_t actor = *real.actor();
+    ctx.hand_log = &log;
+
+    // Final-node parity probe. The menu-parity branch fires at the acting
+    // seat's OWN decision node (shadow aligned in phase/actor but aggression
+    // presence differs): strict throws specifically the parity error, while
+    // edge returns the counted uniform answer. A fresh policy is used so the
+    // counter isolates THIS single query. This is the discriminating mutation
+    // gate for the parity block — deleting it makes strict succeed here (the
+    // later mid-log detector only trips after advancing the shadow).
+    {
+      CandidateBehaviorPolicy strict(make_one(), CandidateMissPolicy::UniformOnUnvisited,
+                                     CandidateProjectionMode::StrictCoarse);
+      bool strict_parity_throw = false;
+      try {
+        (void)strict.distribution(real, actor, hole, ctx);
+      } catch (const stage6_candidate_error& e) {
+        strict_parity_throw =
+            std::string(e.what()).find("aggressive options") != std::string::npos;
+      }
+      if (strict_parity_throw) {
+        CandidateBehaviorPolicy edge(make_one(), CandidateMissPolicy::UniformOnUnvisited,
+                                     CandidateProjectionMode::NearestCoarseEdge);
+        std::vector<PolicyAction> answer;
+        bool edge_ok = true;
+        try {
+          answer = edge.distribution(real, actor, hole, ctx);
+        } catch (const std::exception&) {
+          edge_ok = false;
+        }
+        if (edge_ok && edge.off_tree_misses() == 1 && is_distribution_legal(answer, real)) {
+          const std::vector<Action> exact_menu = declared_behavior_menu(real, actor);
+          bool uniform = answer.size() == exact_menu.size();
+          const double expect = 1.0 / static_cast<double>(exact_menu.size());
+          for (const PolicyAction& pa : answer)
+            if (std::abs(pa.probability - expect) > 1e-12)
+              uniform = false;
+          if (uniform)
+            found_final_parity_offtree = true;
+        }
+      }
+    }
+
+    // Before diverging, strict and edge MUST agree at every still-on-tree
+    // node (edge is addressing-only there): same distribution, zero off-tree.
+    {
+      CandidateBehaviorPolicy strict(make_one(), CandidateMissPolicy::UniformOnUnvisited,
+                                     CandidateProjectionMode::StrictCoarse);
+      CandidateBehaviorPolicy edge(make_one(), CandidateMissPolicy::UniformOnUnvisited,
+                                   CandidateProjectionMode::NearestCoarseEdge);
+      std::vector<PolicyAction> ds;
+      std::vector<PolicyAction> de;
+      bool s_ok = true, e_ok = true;
+      try {
+        ds = strict.distribution(real, actor, hole, ctx);
+      } catch (const std::exception&) {
+        s_ok = false;
+      }
+      try {
+        de = edge.distribution(real, actor, hole, ctx);
+      } catch (const std::exception&) {
+        e_ok = false;
+      }
+      if (s_ok && e_ok) {
+        found_on_tree_equivalence = true;
+        if (ds.size() != de.size()) {
+          std::printf("FAIL: strict/edge diverge in support at an on-tree node\n");
+          return ++local;
+        }
+        for (std::size_t i = 0; i < ds.size(); ++i)
+          if (ds[i].action != de[i].action ||
+              std::abs(ds[i].probability - de[i].probability) > 1e-12) {
+            std::printf("FAIL: strict/edge diverge in mass at an on-tree node\n");
+            return ++local;
+          }
+      }
+    }
+    {
+      CandidateBehaviorPolicy strict(make_one(), CandidateMissPolicy::UniformOnUnvisited,
+                                     CandidateProjectionMode::StrictCoarse);
+      try {
+        (void)strict.distribution(real, actor, hole, ctx);
+      } catch (const stage6_candidate_error&) {
+        found_strict_failure = true;
+        CandidateBehaviorPolicy edge(make_one(), CandidateMissPolicy::UniformOnUnvisited,
+                                     CandidateProjectionMode::NearestCoarseEdge);
+        std::vector<PolicyAction> answer;
+        try {
+          answer = edge.distribution(real, actor, hole, ctx);
+        } catch (const std::exception& e) {
+          std::printf("FAIL: edge candidate also failed at an off-tree point: %s\n", e.what());
+          return ++local;
+        }
+        if (!is_distribution_legal(answer, real)) {
+          std::printf("FAIL: edge off-tree answer is not a legal unit distribution\n");
+          return ++local;
+        }
+        // The off-tree answer is exactly UNIFORM over the real declared menu:
+        // zero information, not some biased proxy.
+        const std::vector<Action> exact_menu = declared_behavior_menu(real, actor);
+        if (answer.size() != exact_menu.size()) {
+          std::printf("FAIL: off-tree answer is not uniform over the exact declared menu\n");
+          return ++local;
+        }
+        const double expect = 1.0 / static_cast<double>(exact_menu.size());
+        for (const PolicyAction& pa : answer)
+          if (std::abs(pa.probability - expect) > 1e-12) {
+            std::printf("FAIL: off-tree answer is not equal-mass\n");
+            return ++local;
+          }
+        if (edge.off_tree_misses() == 0) {
+          std::printf("FAIL: edge answered off-tree but did not count it\n");
+          return ++local;
+        }
+        found_edge_answer = true;
+        break;
+      }
+    }
+    // Advance the real line with one exact 3/4-pot aggression (a size the
+    // coarse {1/2 bet,1x raise} edges do NOT carry), then the fixed runout
+    // cards; coarse-edge overshoot eventually desyncs the shadow.
+    const LegalActions legal = real.legal();
+    if (!legal.aggressive)
+      break;
+    long long target =
+        static_cast<long long>(legal.call_amount) +
+        (static_cast<long long>(real.pot()) + static_cast<long long>(legal.call_amount)) * 3 / 4;
+    target = std::max<long long>(target, legal.aggressive->minimum);
+    target = std::min<long long>(target, legal.aggressive->maximum);
+    const Action a{legal.aggressive->type, static_cast<Chips>(target)};
+    street_log(real.street()).push_back(LoggedAction{actor, a});
+    real = real.after_action(actor, a);
+    while (real.phase() == Phase::Deal) {
+      const std::size_t want = real.board().size();
+      real = real.after_card(runout[want]);
+    }
+  }
+  check(found_strict_failure, "the deterministic edge walk reaches an off-tree point");
+  check(found_edge_answer, "edge mode answers the off-tree point uniformly and counts it");
+  check(found_on_tree_equivalence, "strict and edge agree at a preceding on-tree node");
+  check(found_final_parity_offtree,
+        "the final-node menu-parity branch is itself exercised by a single fresh query");
+  return local;
+}
+
 }  // namespace
 
 int main() {
@@ -442,6 +631,7 @@ int main() {
   failures += test_totality_failures();
   failures += test_uniform_on_unvisited_policy();
   failures += test_preflop_matches_baseline();
+  failures += test_nearest_coarse_edge_line();
   if (failures) {
     std::printf("STAGE 6 CANDIDATE TESTS FAILED: %d\n", failures);
     return 1;
