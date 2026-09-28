@@ -4858,3 +4858,61 @@ Independent implementer!=reviewer review: APPROVE WITH NON-BLOCKING NITS
 (all three applied — non-vacuous interior-row predicate, hash-exclusion
 rationale on the enum, precise per-row equivalence wording). release/debug/
 asan test runs green; test runtime ~51 s.
+
+### R11 Item 2, Chunk A: chart-reach-restricted preflop ranges — reach + range builder (2026-09-28)
+
+The uniform all-1326 hole ranges cap the larger-table policy: streamed
+artifacts at n>=4 live exceed the infoset caps and the general-sum NashConv
+stays unseparated. Item 2 adds a SECOND range profile, `chart-reach`: at a
+rooted flop each live seat's hole distribution is restricted, by replaying the
+exact preflop line that reaches the geometry through the PINNED chart path, to
+the holdings whose chart action equals every logged action of that seat
+(conditioning only on the seat's own actions; inter-seat card compatibility
+remains the RFC 0006 product-conditional joint dealer's job). All surviving
+combos carry weight 1.0. The estimand is explicitly "coarse NashConv
+CONDITIONAL on chart reach"; it is never comparable as-if-unconditional.
+
+Chunk A (this change) is the eval-side range surface and its gate; the
+trainer/driver threading is Chunk B.
+
+- `enumerate_chart_flop_reach(n,bb)` (geometry_enumerator refactor,
+  behavior-preserving for the existing projection and byte-identical for the
+  UNION/deviation `enumerate_flop_geometries` — independently compiled
+  HEAD-vs-worktree diff by the reviewer) returns one
+  `{GeometrySignature, HandLog}` per chart-only flop sig, keeping the
+  lexicographically smallest canonical reaching line on duplicate sigs.
+  `enumerate_chart_flop_reach_hits` exposes the raw pre-dedupe hits for an
+  audit. `chart_reach_ranges` builds per-live-seat surviving sets;
+  `chart_reach_bucket_ranges` indicator-unions members per reduced seat.
+- Bucket semantics (empirically pinned, see below): under chart-reach the
+  bucket matrix is built from the CHART-ONLY enumeration, not the union
+  matrix — deviation-only members pull the representative toward shallower
+  chip lines no conditioned deal reaches. Members of one actionable bucket
+  with identical live sets carry IDENTICAL surviving card sets; the only
+  member variation is the position rotation, so per-reduced-seat indicator
+  union is a well-defined mixture over rotations, never over incompatible
+  action classes. A future same-liveset/different-set collision throws
+  `stage6_chart_reach_error` (fail-closed).
+- Empirical table (pinned TAG chart, bb=2): chart-only exact sigs /
+  actionable chart-reachable buckets — n2 2/1, n3 12/3, n6 732/12,
+  n7 2478/15, n9 25731/21, n10 80438/24. HU open-to-6/call surviving ranges
+  exactly 526 (opener) / 84 (BB) combos; n3 single-raised 526/84/84. Zero
+  actionable geometry has an empty per-live-seat range (empties occur only on
+  acting_count==0 all-in-at-flop sigs, which never train/measure). Zero
+  actionable sigs are reached by more than one distinct line at n=2/3/6.
+  Joint-dealer restart cost under the restricted ranges: avg 1.44 (n6 live3),
+  3.75 (n6 all-live) proposals/deal.
+- Gate `stage6_chart_reach`: hand-checked include/exclude combo pins (AsAh/
+  AsKs in, 7s2s out; 84-combo callers contain every pocket pair and exclude
+  AsKs/KsJs/JsTs/QsJs/As2s/Ks2s/7s2c), folded-button seat mapping, the
+  nonemptiness/rotation-union sweep for n in {2,3,6} with an independent
+  union recompute, raw-walk single-line audit, seed determinism (the preflop
+  chart never reads ctx.seed), 10k joint-deal validity draws, the fabricated
+  same-liveset conflict throw, and the natural n6 all-in-at-flop empty-range
+  throw. The n=3 chart-only totality pin (12) and every geometry/simulator
+  gate stay green. Mutation-neutralizing the intersection makes the 526/84
+  pins go RED (reviewer-verified, restored).
+- Independent implementer!=reviewer review: APPROVE WITH NITS (all applied —
+  post-dedupe `geometries=` log count kept alongside raw `reaches=`,
+  joint-deal threshold rationale comment, raw-walk actionable single-line
+  audit). release 64/64.

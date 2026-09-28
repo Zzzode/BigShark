@@ -3,16 +3,25 @@
 // the only geometry half that reaches the deployed chart policy (through the
 // GameState->Ctx adapter), so it stays in bigshark_stage6_eval; the pure
 // signature/bucketing half is geometry_core.cpp in bigshark_stage6_core.
+//
+// The chart-only walk is shared by enumerate_chart_flop_geometries (which
+// projects signatures and canonical origin lines) and
+// enumerate_chart_flop_reach (which additionally carries the reaching
+// HandLog, consumed by the chart-reach-restricted hole-range builder in
+// chart_reach.cpp).
 #include <algorithm>
 #include <array>
 #include <bs/policy.hpp>
 #include <bs/stage6/adapter.hpp>
 #include <bs/stage6/baseline_policy.hpp>
+#include <bs/stage6/chart_reach.hpp>
 #include <bs/stage6/geometry_enumerator.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -143,10 +152,28 @@ poker::GameDef make_preflop_def(std::size_t n, poker::Chips bb) {
   return def;
 }
 
-// Appends the flop signature for a state that has just closed preflop (the
-// next transition deals the flop). We read chips from the state directly.
-void record_signature(std::vector<GeometrySignature>* out, std::vector<std::string>* lines,
-                      const poker::GameState& state, const HandLog& log) {
+// The canonical one-action encoding shared by every origin line, kept in one
+// place so the projection of enumerate_chart_flop_reach and the lines the
+// geometry enumerators emit always match byte-for-byte:
+// "s<seat>:<int(action.type)>=<target_total> ".
+std::string canonical_action_string(const LoggedAction& a) {
+  std::ostringstream os;
+  os << "s" << a.seat << ":" << static_cast<int>(a.action.type) << "=" << a.action.target_total
+     << " ";
+  return os.str();
+}
+
+// The canonical line for a full preflop log (concatenated action encodings).
+std::string canonical_line_string(const HandLog& log) {
+  std::string line;
+  for (const LoggedAction& a : log.preflop)
+    line += canonical_action_string(a);
+  return line;
+}
+
+// Builds the flop signature for a state that has just closed preflop (the
+// next transition deals the flop). Chips are read from the state directly.
+GeometrySignature signature_from_state(const poker::GameState& state) {
   GeometrySignature sig;
   sig.player_count = state.def().player_count;
   sig.pot = state.pot();
@@ -156,31 +183,23 @@ void record_signature(std::vector<GeometrySignature>* out, std::vector<std::stri
     if (!state.players()[p].folded)
       sig.live.push_back(p);
   }
-  if (std::find(out->begin(), out->end(), sig) == out->end()) {
-    out->push_back(sig);
-    if (lines) {
-      std::ostringstream os;
-      for (const auto& a : log.preflop)
-        os << "s" << a.seat << ":" << static_cast<int>(a.action.type) << "="
-           << a.action.target_total << " ";
-      lines->push_back(os.str());
-    }
-  }
+  return sig;
 }
 
 // Depth-first over preflop decisions until the flop. When `deviator` < player
 // count that one seat gets the deviation grid and every other seat chart
-// support; when `deviator` >= player_count the walk is chart-only.
-void walk(poker::GameState state, HandLog log, std::size_t deviator,
-          std::vector<GeometrySignature>* out, std::vector<std::string>* lines, int depth,
-          std::size_t* nodes) {
+// support; when `deviator` >= player_count the walk is chart-only. Every
+// reached flop geometry is appended together with the exact preflop log that
+// reached it (duplicate signatures kept: the caller decides how to dedupe).
+void walk_reach(poker::GameState state, HandLog log, std::size_t deviator,
+                std::vector<ReachableGeometry>* out, int depth, std::size_t* nodes) {
   if (nodes)
     ++*nodes;
   if (depth > 64)
     throw std::runtime_error("flop geometry enumeration exceeded depth bound");
   if (state.phase() == poker::Phase::Deal) {
     // Preflop closed: the next deal begins the flop. Record from the state.
-    record_signature(out, lines, state, log);
+    out->push_back(ReachableGeometry{signature_from_state(state), std::move(log)});
     return;
   }
   if (state.phase() != poker::Phase::Action)
@@ -197,62 +216,127 @@ void walk(poker::GameState state, HandLog log, std::size_t deviator,
     HandLog next_log = log;
     next_log.preflop.push_back(LoggedAction{seat, action});
     poker::GameState next = state.after_action(seat, action);
-    walk(std::move(next), std::move(next_log), deviator, out, lines, depth + 1, nodes);
+    walk_reach(std::move(next), std::move(next_log), deviator, out, depth + 1, nodes);
   }
+}
+
+// Orders reached geometries by canonical signature string, ties broken by the
+// lexicographically smallest canonical line so unique-per-signature keeps it.
+bool reach_less(const ReachableGeometry& a, const ReachableGeometry& b) {
+  const std::string sa = a.sig.to_string();
+  const std::string sb = b.sig.to_string();
+  if (sa != sb)
+    return sa < sb;
+  return canonical_line_string(a.preflop_log) < canonical_line_string(b.preflop_log);
 }
 
 }  // namespace
 
-std::vector<GeometrySignature> enumerate_chart_flop_geometries(
-    std::size_t player_count, poker::Chips big_blind, std::vector<std::string>* origin_lines) {
-  std::vector<GeometrySignature> all;
-  std::vector<std::string> lines;
+std::vector<ReachableGeometry> enumerate_chart_flop_reach_hits(std::size_t player_count,
+                                                               poker::Chips big_blind) {
+  std::vector<ReachableGeometry> all;
   const poker::GameDef def = make_preflop_def(player_count, big_blind);
   std::size_t nodes = 0;
-  walk(poker::GameState(def), HandLog{}, player_count, &all, origin_lines ? &lines : nullptr, 0,
-       &nodes);
-  std::fprintf(stderr, "[geometry] n=%zu chart-only walk_nodes=%zu geometries=%zu\n", player_count,
+  walk_reach(poker::GameState(def), HandLog{}, player_count, &all, 0, &nodes);
+  std::fprintf(stderr, "[geometry] n=%zu chart-only walk_nodes=%zu raw_reaches=%zu\n", player_count,
                nodes, all.size());
-  std::sort(all.begin(), all.end(), [](const GeometrySignature& a, const GeometrySignature& b) {
-    return a.to_string() < b.to_string();
-  });
-  all.erase(std::unique(all.begin(), all.end()), all.end());
+  return all;
+}
+
+std::vector<ReachableGeometry> enumerate_chart_flop_reach(std::size_t player_count,
+                                                          poker::Chips big_blind) {
+  std::vector<ReachableGeometry> all = enumerate_chart_flop_reach_hits(player_count, big_blind);
+  const std::size_t raw_reaches = all.size();
+  std::sort(all.begin(), all.end(), reach_less);
+  // Unique per signature: when two walks reached the same geometry retain the
+  // lexicographically smallest canonical line (it sorts first within a
+  // signature group).
+  std::vector<ReachableGeometry> unique;
+  unique.reserve(all.size());
+  for (const ReachableGeometry& rec : all) {
+    if (unique.empty() || !(unique.back().sig == rec.sig))
+      unique.push_back(rec);
+  }
+  // `geometries` is the post-dedupe count the previous chart-only log always
+  // carried (kept for log continuity); `reaches` additionally reports the raw
+  // walk hits before signature dedupe.
+  std::fprintf(stderr, "[geometry] n=%zu chart-only dedupe reaches=%zu geometries=%zu\n",
+               player_count, raw_reaches, unique.size());
+  return unique;
+}
+
+std::vector<GeometrySignature> enumerate_chart_flop_geometries(
+    std::size_t player_count, poker::Chips big_blind, std::vector<std::string>* origin_lines) {
+  // Thin projection over the log-carrying chart-only walk: one entry per
+  // unique signature, canonical lines collected and sorted/deduped exactly as
+  // the previous implementation did.
+  const std::vector<ReachableGeometry> reach = enumerate_chart_flop_reach(player_count, big_blind);
+  std::vector<GeometrySignature> out;
+  std::vector<std::string> lines;
+  out.reserve(reach.size());
+  if (origin_lines)
+    lines.reserve(reach.size());
+  for (const ReachableGeometry& rec : reach) {
+    out.push_back(rec.sig);
+    if (origin_lines)
+      lines.push_back(canonical_line_string(rec.preflop_log));
+  }
   if (origin_lines) {
     std::sort(lines.begin(), lines.end());
     lines.erase(std::unique(lines.begin(), lines.end()), lines.end());
     origin_lines->insert(origin_lines->end(), lines.begin(), lines.end());
   }
-  return all;
+  return out;
 }
 
 std::vector<GeometrySignature> enumerate_flop_geometries(std::size_t player_count,
                                                          poker::Chips big_blind,
                                                          std::vector<std::string>* origin_lines) {
-  std::vector<GeometrySignature> all;
   std::vector<std::string> lines;
   const poker::GameDef def = make_preflop_def(player_count, big_blind);
   // Run once per canonical deviator seat. A deviator seat that must post a
   // blind still deviates on its later voluntary decisions. Seat 0 (button) is
   // always included (also covers the no-deviator chart-only reach because the
   // grid is a superset of chart support).
+  //
+  // The previous implementation deduped DURING the walk (a signature was
+  // recorded together with its FIRST-encounter origin line); keep that exact
+  // behavior here rather than taking the lexicographically smallest line, so
+  // the union/deviation matrix and its origin lines are unchanged.
+  std::vector<ReachableGeometry> first_hit;
   for (std::size_t deviator = 0; deviator < player_count; ++deviator) {
+    std::vector<ReachableGeometry> reached;
     poker::GameState state(def);
     HandLog log;
     std::size_t nodes = 0;
-    walk(std::move(state), log, deviator, &all, origin_lines ? &lines : nullptr, 0, &nodes);
+    walk_reach(std::move(state), std::move(log), deviator, &reached, 0, &nodes);
+    for (ReachableGeometry& rec : reached) {
+      const auto it =
+          std::find_if(first_hit.begin(), first_hit.end(),
+                       [&](const ReachableGeometry& kept) { return kept.sig == rec.sig; });
+      if (it == first_hit.end()) {
+        if (origin_lines)
+          lines.push_back(canonical_line_string(rec.preflop_log));
+        first_hit.push_back(std::move(rec));
+      }
+    }
     std::fprintf(stderr, "[geometry] n=%zu deviator=%zu walk_nodes=%zu total_sigs=%zu\n",
-                 player_count, deviator, nodes, all.size());
+                 player_count, deviator, nodes, first_hit.size());
   }
-  std::sort(all.begin(), all.end(), [](const GeometrySignature& a, const GeometrySignature& b) {
-    return a.to_string() < b.to_string();
-  });
-  all.erase(std::unique(all.begin(), all.end()), all.end());
+  std::sort(first_hit.begin(), first_hit.end(),
+            [](const ReachableGeometry& a, const ReachableGeometry& b) {
+              return a.sig.to_string() < b.sig.to_string();
+            });
+  std::vector<GeometrySignature> out;
+  out.reserve(first_hit.size());
+  for (const ReachableGeometry& rec : first_hit)
+    out.push_back(rec.sig);
   if (origin_lines) {
     std::sort(lines.begin(), lines.end());
     lines.erase(std::unique(lines.begin(), lines.end()), lines.end());
     origin_lines->insert(origin_lines->end(), lines.begin(), lines.end());
   }
-  return all;
+  return out;
 }
 
 }  // namespace bs::stage6

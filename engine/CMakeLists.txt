@@ -530,6 +530,7 @@ add_library(bigshark_stage6_eval STATIC
   src/stage6/candidate_policy.cpp
   src/stage6/chart_digest.cpp
   src/stage6/chart_preflop.cpp
+  src/stage6/chart_reach.cpp
   src/stage6/geometry_enumerator.cpp
   src/stage6/infoset_key.cpp
   src/stage6/crn_streams.cpp
@@ -695,6 +696,14 @@ if(BUILD_TESTING)
   target_link_libraries(test_stage6_candidate_policy
     PRIVATE bigshark_stage6_eval bigshark_stage6_train)
   add_test(NAME stage6_candidate_policy COMMAND test_stage6_candidate_policy)
+
+  # RFC 0008 stage 6 R11 item 2 (chunk A): chart-only reach carries the
+  # reaching preflop log; per-live-seat chart-reach-restricted hole ranges and
+  # the fail-closed bucket union, checked against the pinned combo counts.
+  add_executable(test_stage6_chart_reach tests/test_stage6_chart_reach.cpp)
+  target_link_libraries(test_stage6_chart_reach
+    PRIVATE bigshark_stage6_eval bigshark_stage6_train)
+  add_test(NAME stage6_chart_reach COMMAND test_stage6_chart_reach)
 
   add_executable(test_heads_up tests/test_heads_up.cpp)
   target_link_libraries(test_heads_up PRIVATE bigshark_poker)
