@@ -142,6 +142,55 @@ std::vector<std::vector<bs::solver::MultiwayWeightedHand>> uniform_ranges(std::s
   return ranges;
 }
 
+// Resolves the joint-deal support for one training run exactly once (the
+// caller keeps the instance and passes a const reference into every sweep;
+// never re-resolve per iteration). Nullptr means the production all-1326
+// self-build. A non-null carrier is copied out and fully validated: one
+// non-empty range per game seat, sorted distinct in-range cards, finite
+// strictly-positive weights. A non-null carrier under the Uniform profile is
+// the allowed explicit-uniform path (it must be hash-inert there); the only
+// profile/carrier mismatch refused is ChartReach without a carrier.
+std::vector<std::vector<bs::solver::MultiwayWeightedHand>> resolve_ranges(const TrainingConfig& cfg,
+                                                                          std::size_t seats) {
+  if (cfg.range_profile == RangeProfile::ChartReach && cfg.root_ranges == nullptr)
+    throw std::invalid_argument("chart-reach range profile requires config.root_ranges");
+  if (cfg.root_ranges == nullptr)
+    return uniform_ranges(seats);
+  if (cfg.root_ranges->size() != seats)
+    throw std::invalid_argument("root_ranges must contain one range per game seat");
+  std::vector<std::vector<bs::solver::MultiwayWeightedHand>> ranges;
+  ranges.reserve(seats);
+  for (std::size_t s = 0; s < seats; ++s) {
+    const std::vector<bs::solver::MultiwayWeightedHand>& source = (*cfg.root_ranges)[s];
+    if (source.empty())
+      throw std::invalid_argument("root_ranges seat range is empty");
+    std::vector<bs::solver::MultiwayWeightedHand> seat;
+    seat.reserve(source.size());
+    // A duplicated combo would double its mass in the sampler's marginal CDF
+    // while the content hash dedupes combos and masked it, so reject any
+    // intra-seat repeat outright (current producers emit sorted unique sets).
+    std::array<bool, 52 * 52> seen{};
+    for (const bs::solver::MultiwayWeightedHand& hand : source) {
+      if (hand.cards[0] < 0 || hand.cards[0] >= 52 || hand.cards[1] < 0 || hand.cards[1] >= 52)
+        throw std::invalid_argument("root_ranges combo card is outside the deck [0,52)");
+      if (hand.cards[0] >= hand.cards[1])
+        throw std::invalid_argument(
+            "root_ranges combo must carry two distinct sorted cards (a < b)");
+      if (!std::isfinite(hand.weight) || hand.weight <= 0.0)
+        throw std::invalid_argument(
+            "root_ranges combo weight must be finite and strictly positive");
+      const std::size_t key =
+          static_cast<std::size_t>(hand.cards[0]) * 52 + static_cast<std::size_t>(hand.cards[1]);
+      if (seen[key])
+        throw std::invalid_argument("root_ranges seat range contains a duplicated combo");
+      seen[key] = true;
+      seat.push_back(hand);
+    }
+    ranges.push_back(std::move(seat));
+  }
+  return ranges;
+}
+
 // Three distinct flop cards sampled uniformly without replacement from the
 // deck minus every seat's two hole cards (partial Fisher-Yates pop).
 std::array<int, 3> sample_root_flop(const std::vector<HoleCards>& holes, bs::SplitMix64& rng) {
@@ -478,6 +527,14 @@ std::uint64_t artifact_identity_hash(const GeometryBucket& bucket, const Trainin
      << bs::abstraction::card_abstraction_id(config.card_kind).digest << '|'
      << config.geometry_matrix_hash << '|' << geometry_bucket_token(bucket.key) << '|'
      << config.chart_digest_sha256;
+  // range_profile is deliberately INERT for Uniform (even with an explicit
+  // all-1326 carrier and a nonzero range_content_hash) so every existing
+  // uniform artifact keeps its byte-identical identity. Under chart-reach the
+  // marker + content hash make the conditioned game explicit; the
+  // geometry_matrix_hash already differs there because the driver feeds the
+  // chart-only matrix hash.
+  if (config.range_profile == RangeProfile::ChartReach)
+    os << '|' << "chart-reach" << '|' << config.range_content_hash;
   return fnv1a(os.str());
 }
 
@@ -503,6 +560,10 @@ std::uint64_t training_config_hash(const TrainingConfig& config) {
      << bs::abstraction::card_abstraction_id(config.card_kind).digest << '|'
      << config.geometry_matrix_hash << '|' << config.chart_digest_sha256 << '|' << config.iterations
      << '|' << config.master_seed;
+  // See artifact_identity_hash: the range fields are hash-inert under Uniform
+  // and appended only for the chart-reach conditioned game.
+  if (config.range_profile == RangeProfile::ChartReach)
+    os << '|' << "chart-reach" << '|' << config.range_content_hash;
   return fnv1a(os.str());
 }
 
@@ -707,7 +768,9 @@ BucketTrainingResult train_bucket(const GeometryBucket& bucket, const TrainingCo
     tree = std::make_unique<AbstractTree>(tree_def, config.action, tree_limits);
   }
   const std::uint64_t geometry_token = geometry_bucket_token(bucket.key);
-  const auto ranges = uniform_ranges(seats);
+  // Resolved once per training run; every sweep of the iteration loop shares
+  // this one const instance.
+  const auto ranges = resolve_ranges(config, seats);
 
   const auto wall_start = std::chrono::steady_clock::now();
   bool wall_reached = false;
@@ -775,7 +838,7 @@ void debug_run_one_sweep(const GeometryBucket& bucket, const TrainingConfig& con
   if (want_tree != (tree != nullptr))
     throw std::invalid_argument("debug sweep tree presence must match the bucket cursor mode");
   const std::uint64_t geometry_token = geometry_bucket_token(bucket.key);
-  const auto ranges = uniform_ranges(bucket.key.live_count);
+  const auto ranges = resolve_ranges(config, bucket.key.live_count);
   RowStore store(config.limits, rows);
   run_sweep(bucket, config, tree, traverser, ranges, geometry_token, deal_rng, flop_rng, action_rng,
             chance_rng, store);

@@ -4916,3 +4916,74 @@ trainer/driver threading is Chunk B.
   post-dedupe `geometries=` log count kept alongside raw `reaches=`,
   joint-deal threshold rationale comment, raw-walk actionable single-line
   audit). release 64/64.
+
+### R11 Item 2, Chunk B: trainer/driver range-profile threading (2026-09-28)
+
+Chunk A built the eval-side conditioned ranges; Chunk B threads a second
+hole-range profile through the trainer and the measurement driver while the
+uniform production path stays BYTE-IDENTICAL.
+
+- Trainer carrier: `TrainingConfig` gains `RangeProfile range_profile`
+  (`Uniform` default / `ChartReach`), a
+  `shared_ptr<const vector<vector<MultiwayWeightedHand>>> root_ranges`, and a
+  `uint64 range_content_hash`. A file-local `resolve_ranges(cfg, seats)`,
+  invoked exactly once per training run and shared by every sweep, returns the
+  production all-1326 self-build for a null carrier and otherwise copies out
+  and validates the supplied support (one non-empty range per game seat,
+  sorted distinct cards in [0,52), finite strictly-positive weights);
+  `ChartReach` without a carrier throws `invalid_argument`. A non-null
+  all-1326 carrier under `Uniform` is the allowed explicit-uniform path. Both
+  `train_bucket` and the `debug_run_one_sweep` seam resolve through it; the
+  trainer library never sees the chart.
+- Conditional hashes: `artifact_identity_hash` and `training_config_hash`
+  append the `chart-reach` marker plus `range_content_hash` ONLY under
+  ChartReach. Under Uniform the range fields (including a nonzero content
+  hash) are deliberately hash-inert, so existing uniform artifacts and
+  manifests are unchanged; the geometry bucket token is profile-independent.
+- Driver: `train`/`measure` accept `--ranges uniform|chart-reach` (default
+  uniform; an invalid value prints usage and exits 2). Chart-reach builds the
+  matrix from `enumerate_chart_flop_reach` (chart-only sigs, bucketed on
+  those) and stamps `GeometryCoverage(chart-only sigs).content_hash()`; the
+  per-bucket conditioned carrier comes from `chart_reach_bucket_ranges` and
+  its content hash is a deterministic FNV-1a over per-seat sorted
+  `seat|c0,c1\n` lines. Candidate and baseline BR passes measure the SAME
+  restricted game (one ranges object, shared CRN seeds); a preflight refuses
+  a seat range fully blocked by the fixed flop. `geometries` and `hashes`
+  stay on the union matrix.
+- Outputs: the R11 CSV gains a 13th column `range_profile`; the chart-reach
+  banner names the estimand "general-sum <EXACT-game|coarse> NashConv
+  CONDITIONAL ON CHART REACH" — the label branches on `--exact` and carries the
+  matching deviation-menu text (the combination `--exact --ranges chart-reach`
+  genuinely runs the Declared5Fraction exact pass with the candidate on
+  NearestCoarseEdge, so a banner that always said "coarse" would be the one
+  false record of the deviation space; CSV keeps only the range column) —
+  states the conditioned holdings / indicator mixture over member
+  position-rotations / chart-only matrix, and that absolute values are not
+  comparable across range profiles; the uniform banner gains
+  `range_profile=uniform`. `train --out` segments artifacts as
+  `<out>/<range_profile>/n<N>/<bucket>/` so the two profiles can never
+  overwrite.
+- Honesty rule: chart-reach numbers answer a DIFFERENT question (equilibrium
+  gap conditioned on the pinned chart reaching the bucket), so only the
+  within-same-game paired `d` is meaningful; null/overlapping CIs are
+  published verbatim and cross-profile absolute NashConv comparisons are
+  forbidden.
+- Gate `test_stage6_trainer::test_range_profile`: bitwise-identical sealed
+  regret/sum deltas for the null path vs an explicit all-1326 Uniform
+  carrier over reconstructed RNG streams; uniform hash inertia (default vs
+  explicit carrier + nonzero content hash); chart-reach changes both hashes
+  and the content hash differentiates further; missing/malformed/duplicate
+  carriers throw; and a restricted one-combo-per-seat carrier changes the
+  dealt worlds (34/34 compared rows differ in regret/sum vs the full carrier
+  under identical RNG — the mutation gate that `root_ranges` really feeds the
+  joint dealer). cmd_measure asserts the measured carrier hashes back to the
+  per-bucket `range_content_hash` the artifact was trained with, so train and
+  measure cannot diverge on the conditioned support.
+- Independent implementer!=reviewer review: APPROVE WITH NITS, all applied —
+  exact/coarse chart-reach banner fixed (the one MAJOR), `resolve_ranges`
+  rejects an intra-seat duplicate combo (it would double marginal mass behind
+  the content-deduping hash), the content hash folds in weight bits as well
+  as combos, the write-only TrainedBucket.profile field removed and
+  range_hash turned into a train/measure carrier-consistency assertion, and
+  the restricted-carrier consumption gate promoted to a permanent test.
+  release 64/64 (twice); ASan trainer gate clean.

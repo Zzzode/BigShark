@@ -734,6 +734,250 @@ int test_stream_order_sensitivity() {
   return local_failures;
 }
 
+// R11 Item 2 Chunk B: the second hole-range profile.
+//
+// (a) Sweep identity: the null/default path and an EXPLICIT all-1326 carrier
+//     under the Uniform profile must drive bitwise identical sealed-row
+//     updates over reconstructed identical RNG streams. resolve_ranges is
+//     file-local in the trainer TU; producing the same dealt worlds (and thus
+//     bitwise equal regrets/sums on the small materialized bucket) is the
+//     observable proof that it resolves to exactly uniform_ranges(seats).
+// (b) Hash behavior: range fields are INERT under Uniform (default vs explicit
+//     carrier + nonzero range_content_hash keep identical artifact/config
+//     hashes, so the uniform production path is byte-stable), and DISTINCT
+//     under ChartReach (marker changes the hashes; the content hash changes
+//     them again). ChartReach without a carrier, and malformed carriers, are
+//     refused.
+std::shared_ptr<const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>>
+explicit_uniform_carrier(std::size_t seats) {
+  auto carrier = std::make_shared<std::vector<std::vector<bs::solver::MultiwayWeightedHand>>>();
+  carrier->resize(seats);
+  for (std::size_t s = 0; s < seats; ++s)
+    for (int a = 0; a < 52; ++a)
+      for (int b = a + 1; b < 52; ++b)
+        (*carrier)[s].push_back(bs::solver::MultiwayWeightedHand{{a, b}, 1.0});
+  return carrier;
+}
+
+int test_range_profile() {
+  int local_failures = 0;
+  const GeometryBucket bucket = bucket_2p();
+  const TrainingConfig base = make_config(2, 7);
+  const GameDef def = rooted_def(bucket, {0, 6, 21});
+
+  // (a) Bitwise sweep identity over a few sweeps of the materialized bucket.
+  auto run_sweeps = [&](const TrainingConfig& cfg) {
+    auto tree = std::make_unique<AbstractTree>(def, cfg.action);
+    std::map<AbstractInfosetKey, TrainerRow> rows;
+    for (std::uint64_t iter = 0; iter < 3; ++iter) {
+      for (std::size_t traverser = 0; traverser < bucket.key.live_count; ++traverser) {
+        bs::SplitMix64 deal_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainJointDeal, iter, traverser);
+        bs::SplitMix64 flop_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainRootBoard, iter, traverser);
+        bs::SplitMix64 action_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainOpponentAction, iter, traverser);
+        bs::SplitMix64 chance_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainBoardRunout, iter, traverser);
+        debug_run_one_sweep(bucket, cfg, tree.get(), traverser, deal_rng, flop_rng, action_rng,
+                            chance_rng, rows);
+      }
+    }
+    return rows;
+  };
+
+  TrainingConfig explicit_cfg = base;
+  explicit_cfg.root_ranges = explicit_uniform_carrier(bucket.key.live_count);
+  explicit_cfg.range_content_hash = 0xdeadbeefcafe1234ULL;  // must be inert under Uniform
+
+  const std::map<AbstractInfosetKey, TrainerRow> null_rows = run_sweeps(base);
+  const std::map<AbstractInfosetKey, TrainerRow> explicit_rows = run_sweeps(explicit_cfg);
+  check(explicit_rows.size() == null_rows.size(),
+        "explicit all-1326 carrier touches the same row set as the null path");
+  if (explicit_rows.size() == null_rows.size()) {
+    bool bitwise_equal = true;
+    for (const auto& [key, null_row] : null_rows) {
+      auto it = explicit_rows.find(key);
+      if (it == explicit_rows.end() || it->second.actions != null_row.actions ||
+          it->second.regrets != null_row.regrets || it->second.sums != null_row.sums ||
+          it->second.visits != null_row.visits) {
+        bitwise_equal = false;
+        break;
+      }
+    }
+    check(bitwise_equal, "explicit all-1326 carrier produces bitwise identical regret/sum deltas");
+  }
+
+  // (b) Hash behavior, observed through the public artifact hash and manifest.
+  auto hashes_for = [&](const TrainingConfig& cfg) {
+    const BucketTrainingResult result = train_bucket(bucket, cfg);
+    const FrozenManifest manifest =
+        manifest_for(bucket, cfg, result.rows, result.report.iterations_completed);
+    return std::pair<std::uint64_t, std::uint64_t>{result.artifact_content_hash,
+                                                   manifest.training_config_hash};
+  };
+
+  TrainingConfig uniform_explicit = base;
+  uniform_explicit.root_ranges = explicit_uniform_carrier(bucket.key.live_count);
+  uniform_explicit.range_content_hash = 0x0123456789abcdefULL;
+
+  const auto default_hashes = hashes_for(base);
+  const auto uniform_explicit_hashes = hashes_for(uniform_explicit);
+  check(default_hashes.first == uniform_explicit_hashes.first,
+        "artifact identity hash is uniform-byte-stable with an explicit carrier");
+  check(default_hashes.second == uniform_explicit_hashes.second,
+        "training config hash is uniform-byte-stable with a nonzero range hash");
+
+  TrainingConfig chart_a = base;
+  chart_a.range_profile = RangeProfile::ChartReach;
+  chart_a.root_ranges = explicit_uniform_carrier(bucket.key.live_count);
+  chart_a.range_content_hash = 0x1111111111111111ULL;
+  const auto chart_a_hashes = hashes_for(chart_a);
+  check(chart_a_hashes.first != default_hashes.first,
+        "chart-reach changes the artifact identity hash");
+  check(chart_a_hashes.second != default_hashes.second,
+        "chart-reach changes the training config hash");
+
+  TrainingConfig chart_b = chart_a;
+  chart_b.range_content_hash = 0x2222222222222222ULL;
+  const auto chart_b_hashes = hashes_for(chart_b);
+  check(chart_b_hashes.first != chart_a_hashes.first &&
+            chart_b_hashes.second != chart_a_hashes.second,
+        "range_content_hash differentiates chart-reach runs");
+
+  // The geometry token depends only on the bucket key in every profile.
+  GeometryBucket bucket_copy = bucket;
+  check(geometry_bucket_token(bucket.key) == geometry_bucket_token(bucket_copy.key),
+        "geometry bucket token is profile-independent");
+
+  // ChartReach without a carrier is refused.
+  TrainingConfig chart_no_carrier = base;
+  chart_no_carrier.range_profile = RangeProfile::ChartReach;
+  bool threw = false;
+  try {
+    (void)train_bucket(bucket, chart_no_carrier);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  check(threw, "chart-reach without root_ranges throws invalid_argument");
+
+  // Malformed carriers are refused (validation is profile-independent).
+  const auto expect_bad_carrier =
+      [&](std::vector<std::vector<bs::solver::MultiwayWeightedHand>> bad, const char* what) {
+        auto carrier =
+            std::make_shared<const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>>(
+                std::move(bad));
+        TrainingConfig bad_cfg = base;
+        bad_cfg.root_ranges = carrier;
+        bool bad_threw = false;
+        try {
+          (void)train_bucket(bucket, bad_cfg);
+        } catch (const std::invalid_argument&) {
+          bad_threw = true;
+        }
+        check(bad_threw, what);
+      };
+  {
+    auto bad = std::vector<std::vector<bs::solver::MultiwayWeightedHand>>(2);
+    bad[0].push_back({{0, 1}, 1.0});
+    bad[1] = {};  // empty seat range
+    expect_bad_carrier(std::move(bad), "empty seat range throws invalid_argument");
+  }
+  {
+    auto bad = std::vector<std::vector<bs::solver::MultiwayWeightedHand>>(2);
+    bad[0].push_back({{5, 5}, 1.0});  // duplicate / unsorted cards
+    bad[1].push_back({{0, 1}, 1.0});
+    expect_bad_carrier(std::move(bad), "unsorted duplicate combo throws invalid_argument");
+  }
+  {
+    auto bad = std::vector<std::vector<bs::solver::MultiwayWeightedHand>>(2);
+    bad[0].push_back({{0, 1}, 0.0});  // non-positive weight
+    bad[1].push_back({{0, 1}, 1.0});
+    expect_bad_carrier(std::move(bad), "non-positive combo weight throws invalid_argument");
+  }
+  {
+    auto bad = std::vector<std::vector<bs::solver::MultiwayWeightedHand>>(3);  // wrong seat count
+    for (auto& seat : bad)
+      seat.push_back({{0, 1}, 1.0});
+    expect_bad_carrier(std::move(bad), "seat-count mismatch throws invalid_argument");
+  }
+  {
+    // The same sorted combo listed twice would double its marginal mass while
+    // the content hash dedupes combos; resolve_ranges must reject it.
+    auto bad = std::vector<std::vector<bs::solver::MultiwayWeightedHand>>(2);
+    bad[0].push_back({{0, 1}, 1.0});
+    bad[0].push_back({{0, 1}, 1.0});  // intra-seat duplicate
+    bad[1].push_back({{2, 3}, 1.0});
+    expect_bad_carrier(std::move(bad), "duplicated intra-seat combo throws invalid_argument");
+  }
+
+  // (c) Dealer CONSUMPTION of a genuinely restricted (non-uniform) carrier:
+  // under IDENTICAL reconstructed RNG streams the restricted support must
+  // draw different joint worlds than the all-1326 carrier, so the resulting
+  // regret/sum content differs. (Infoset COUNTS are not the signal — at a few
+  // hundred sweeps the sparse full carrier touches fewer rows than a board-
+  // varying fixed holding; the signed row content is.) This is the mutation
+  // gate for "resolve_ranges actually feeds the joint dealer": if the carrier
+  // were ignored, the two runs would be bitwise identical.
+  auto all1326 = std::vector<std::vector<bs::solver::MultiwayWeightedHand>>{};
+  for (std::size_t s = 0; s < bucket.key.live_count; ++s) {
+    std::vector<bs::solver::MultiwayWeightedHand> seat;
+    for (int a = 0; a < 52; ++a)
+      for (int b = a + 1; b < 52; ++b)
+        seat.push_back({{a, b}, 1.0});
+    all1326.push_back(std::move(seat));
+  }
+  auto restricted = std::vector<std::vector<bs::solver::MultiwayWeightedHand>>(2);
+  restricted[0].push_back({{0, 1}, 1.0});  // 2s2h
+  restricted[1].push_back({{4, 5}, 1.0});  // 3s3h, disjoint
+
+  auto run_with_carrier = [&](const TrainingConfig& cfg) {
+    auto tree = std::make_unique<AbstractTree>(def, cfg.action);
+    std::map<AbstractInfosetKey, TrainerRow> rows;
+    for (std::uint64_t iter = 0; iter < 8; ++iter)
+      for (std::size_t traverser = 0; traverser < bucket.key.live_count; ++traverser) {
+        bs::SplitMix64 deal_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainJointDeal, iter, traverser);
+        bs::SplitMix64 flop_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainRootBoard, iter, traverser);
+        bs::SplitMix64 action_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainOpponentAction, iter, traverser);
+        bs::SplitMix64 chance_rng =
+            derive_stream(cfg.master_seed, StreamPurpose::TrainBoardRunout, iter, traverser);
+        debug_run_one_sweep(bucket, cfg, tree.get(), traverser, deal_rng, flop_rng, action_rng,
+                            chance_rng, rows);
+      }
+    return rows;
+  };
+
+  TrainingConfig full_cfg = base;
+  full_cfg.range_profile = RangeProfile::ChartReach;
+  full_cfg.root_ranges =
+      std::make_shared<const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>>(
+          std::move(all1326));
+  TrainingConfig tiny_cfg = base;
+  tiny_cfg.range_profile = RangeProfile::ChartReach;
+  tiny_cfg.root_ranges =
+      std::make_shared<const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>>(
+          std::move(restricted));
+
+  const std::map<AbstractInfosetKey, TrainerRow> full_rows = run_with_carrier(full_cfg);
+  const std::map<AbstractInfosetKey, TrainerRow> tiny_rows = run_with_carrier(tiny_cfg);
+  std::size_t differing_rows = 0;
+  for (const auto& [key, fr] : full_rows) {
+    auto it = tiny_rows.find(key);
+    if (it == tiny_rows.end() || it->second.regrets != fr.regrets || it->second.sums != fr.sums)
+      ++differing_rows;
+  }
+  std::printf("[range-profile] carrier-content differing_rows=%zu full_keys=%zu tiny_keys=%zu\n",
+              differing_rows, full_rows.size(), tiny_rows.size());
+  check(differing_rows > 0,
+        "a restricted carrier changes the dealt worlds (regret/sum content differs under the "
+        "same RNG)");
+  check(!tiny_rows.empty(), "a restricted carrier still trains a non-empty table");
+  return local_failures;
+}
+
 }  // namespace
 
 int main() {
@@ -741,6 +985,7 @@ int main() {
   failures += test_contract();
   failures += test_public_path_hash_injectivity();
   failures += test_stream_order_sensitivity();
+  failures += test_range_profile();
   {
     const GeometryBucket bucket = bucket_2p();
     const TrainingConfig config = make_config(1, 1);

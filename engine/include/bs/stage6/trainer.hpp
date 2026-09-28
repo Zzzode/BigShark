@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -76,6 +77,22 @@ struct TrainerLimits {
 //     the debug fixed-world seam, not the artifact writer.
 enum class AverageWeighting { OwnReach, PerVisit };
 
+// Selects the per-seat hole-range support the iteration loop joint-deals.
+//
+//   Uniform (the production default): the trainer self-builds the all-1326
+//     unit-weight per-seat ranges. Artifact/config hashes are deliberately
+//     INERT in the range fields for this profile, so every existing uniform
+//     artifact keeps its byte-identical identity whether or not a caller
+//     attaches an explicit all-1326 carrier.
+//
+//   ChartReach (eval-side measurement only): the caller supplies one
+//     non-empty conditioned range per GAME seat through root_ranges, used
+//     verbatim as the joint-deal support. The trainer library cannot see the
+//     pinned chart (train/eval edge guard), so only the eval-side
+//     driver/leaf constructs the carrier. The profile marker and the range
+//     content hash then enter the identity/config hashes.
+enum class RangeProfile { Uniform, ChartReach };
+
 struct TrainingConfig {
   bs::abstraction::ActionAbstraction action = bs::abstraction::ActionAbstraction::declared(
       bs::abstraction::SizeSchedule(), bs::abstraction::CoverSeeds::DeclaredOnly);
@@ -87,6 +104,18 @@ struct TrainingConfig {
   // Production kFull weighting; PerVisit is a test-only deliberately-biased
   // alternative for the multiplayer mixed-equilibrium discrimination gate.
   AverageWeighting average_weighting = AverageWeighting::OwnReach;
+  RangeProfile range_profile = RangeProfile::Uniform;
+  // Nullptr => the production default: all-1326 unit-weight per-seat ranges
+  // self-built by the trainer. When non-null it MUST contain one non-empty
+  // vector per GAME seat and is used verbatim as the joint-deal support. The
+  // trainer library cannot see the chart (edge guard), so only the eval-side
+  // driver/leaf constructs it. A non-null carrier under the Uniform profile
+  // is allowed as an EXPLICIT uniform carrier and changes no hashes; a
+  // ChartReach profile without a carrier is refused.
+  std::shared_ptr<const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>> root_ranges;
+  // 0 for uniform; folded into the identity/config hashes only when the
+  // profile is ChartReach.
+  std::uint64_t range_content_hash = 0;
   TrainerLimits limits{};
 };
 
