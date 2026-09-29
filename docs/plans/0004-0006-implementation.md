@@ -4987,3 +4987,60 @@ uniform production path stays BYTE-IDENTICAL.
   range_hash turned into a train/measure carrier-consistency assertion, and
   the restricted-carrier consumption gate promoted to a permanent test.
   release 64/64 (twice); ASan trainer gate clean.
+
+### R11 Item 2, Chunk C: chart-reach measurement campaign — coverage-bound null confirmed at every table (2026-09-29)
+
+Ran the committed `--ranges chart-reach` profile (post bet/raise-verb fix, so
+baseline postflop fidelity is current) over the full actionable table set,
+all offline via bigshark-stage6-measurement-driver. Raw CSVs live only under
+artifacts/stage6/r11-item2/chart-reach/ (git-ignored); this is the durable
+summary. Feasibility and budget:
+
+- The streaming (live>=3) trainer keys rows by CONCRETE public cards, so its
+  infoset count scales with sampled board paths x iterations, not with range
+  width. Restricting each seat to 62-526 preflop combos therefore does NOT
+  shrink the streamed public tree. At 200k iterations the live>=4 tables
+  exceed the 8M-infoset cap ("trainer exceeded the information-set cap",
+  aborts that measure); at 50k every actionable bucket trains under the cap —
+  max infosets per bucket are essentially identical across table sizes
+  (live2 ~0.7M, live3 ~2.0M, live4 ~2.9M, live5 ~3.4M, live6 ~4.0M,
+  live7 ~5.1M, live8 ~6.0M, live9 ~6.2M, live10 ~6.0M) because the reduced
+  live-count game is shared. Feasible campaign point: 50,000 iterations,
+  256 learn / 128 confirm CRN replicates, 8M/8GiB caps.
+- Actionable chart-reachable buckets trained/measured: n2 1, n3 3, n6 12,
+  n7 15, n9 21, n10 24.
+
+RESULT: no separated candidate advantage at any table; published as a null,
+not promoted. Every bucket fails the saturation HEALTH bars AND has a paired
+CI that straddles zero:
+- br_confirm_misses stays hundreds-to-thousands per bucket at every size
+  (n2 ~495-508; n3 ~495-783; live2 ~503-559; live3 ~798-863; live4
+  ~953-1018; live5 ~1048-1149; live6 ~1192-1294; live7 ~1341-1420; live8
+  ~1483-1598; live9 ~1573-1679; live10 ~1677): confirm rollouts keep
+  reaching public board paths the learn phase never froze, regardless of the
+  preflop conditioning.
+- candidate_uniform_rows stays thousands to ~125k per bucket (live2
+  ~6.6-7.1k; live3 ~28-33k; live4 ~47-57k; live5 ~57-63k; live6 ~70-77k;
+  live7 ~93-102k; live8 ~112-122k; live9 ~118-125k; live10 ~108k): most
+  sealed public-path rows carry no candidate opinion at this sampled
+  coverage. candidate_offtree rows are 0 (coarse space, as expected).
+- paired d (baseline - candidate NashConv, same restricted CRN game) is
+  positive-point-estimate at many low-live buckets but its 95% CI straddles
+  zero at EVERY bucket (0/24 separated at n=10; 0/21 at n=9; 0/12 at n=6;
+  0/15 at n=7 — e.g. live2 d~10.9 [-0.3,22.0], live3 d~18.9 [-1.7,39.5]);
+  some high-live buckets are directionally negative with very wide CIs
+  (live7 d~-130.8 [-206.6,-55.0] at cm=1411/unif~100k — untrusted under
+  that coverage). No bucket meets br_confirm_misses~0,
+  candidate_uniform_rows~0, paired_d_lo>0.
+
+CONCLUSION: chart-reach conditioning successfully makes the full
+{6,7,9,10} tables TRAINABLE (uniform ranges could not even train high-live
+tables under the caps), but it does not produce a saturated, separated
+general-sum NashConv because the dominant coverage gap is the postflop
+PUBLIC-PATH explosion in the streaming trainer, which preflop range
+restriction cannot address. The composed candidate is NOT promoted on
+multiplayer; the earlier n=2/n=3 uniform null and this larger conditional
+null are consistent. Closing the remaining gap would require postflop
+coverage (e.g. public-card bucketing/abstraction, a coverage mechanism, or a
+different streaming key), not narrower preflop ranges — recorded as the next
+direction, not undertaken here.

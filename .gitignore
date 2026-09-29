@@ -52,3 +52,7 @@ core.*
 *.swo
 *~
 CMakeUserPresets.json
+
+# Local stage-6 measurement evidence (raw driver CSVs/artifacts; summaries go
+# in docs/plans, not here)
+artifacts/stage6/
