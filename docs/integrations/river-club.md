@@ -116,14 +116,20 @@ All files below are local and ignored by Git:
 
 | Path | Purpose |
 | --- | --- |
-| `.runtime/config.json` | Runner mode, style, timing, and stop-loss settings |
-| `.runtime/pending.json` | Latest model decision opportunity |
+| `.runtime/config.json` | Runner mode, style, timing, stop-loss settings, and (RFC 0009 W1) `residentRoots`: `[{path, sha256}]` resident artifact roots, each a published strategy artifact and its mandatory 64-lowercase-hex whole-file pin. A malformed value fails the runner at startup (`runner-config-invalid`, exit 2) instead of silently running without the configured roots |
+| `.runtime/pending.json` | Latest model decision opportunity, including the engine decision's `guaranteeLevel` and `artifactSha256` (W1; `null` when the decision carried none) |
 | `.runtime/pending.log` | Append-only decision opportunities |
 | `.runtime/action.json` | Model override for one hand and street |
-| `.runtime/results.log` | Executed actions and outcomes |
+| `.runtime/results.log` | Executed actions and outcomes; each decision carries its `guaranteeLevel` and `artifactSha256` when the framed engine attached them |
 | `.runtime/stop` | Graceful stop request |
 | `.runtime/resume` | Explicit approval to resume table selection |
 | `sessions/*.jsonl` | Full CLI command and response journal |
+
+With at least one configured resident root the runner opts into the framed v1
+protocol at negotiated minor 2 (the guarantee-level and artifact-digest
+surface) and passes the server's remaining-time budget through as the solve
+budget. Without roots nothing changes: the call path, launch line, and
+journaling are exactly as before.
 
 ## Credentials
 

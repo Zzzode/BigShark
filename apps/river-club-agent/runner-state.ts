@@ -1,6 +1,10 @@
 import {
+  isRecord,
+} from '../../platforms/river-club/src/json.js';
+import {
   isRiverRoom,
   type ExecutableDecision,
+  type ResidentRootSpec,
   type RiverApiError,
   type RiverRoom,
   type RiverState,
@@ -98,6 +102,34 @@ export function overrideWindowMs(
   if (mode === 'auto') return Math.min(autoWindowMs, availableMs);
   if (availableMs < minimumWindowMs) return 0;
   return Math.min(20_000, availableMs);
+}
+
+// RFC 0009 W1: validate the runtime config's `residentRoots` value. Pure and
+// exported so the runner's startup preflight and the tests share one
+// definition. A malformed value THROWS: the runner fails fast rather than
+// silently playing without the configured roots, and the throw must never be
+// caught by the config file's parse fallback (an invalid root spec must not
+// discard the sibling settings). Mirrors `parseResidentRoots` in
+// platforms/river-club/src/engine.ts, which the launcher applies to the same
+// values; the duplication is deliberate (the runner imports only the engine
+// entry points it needs) and the two validators are pinned by tests.
+export function parseConfigResidentRoots(value: unknown): ResidentRootSpec[] {
+  if (!Array.isArray(value)) {
+    throw new Error('residentRoots must be an array of {path, sha256} objects');
+  }
+  return value.map(entry => {
+    if (!isRecord(entry)) {
+      throw new Error('residentRoots entries must be {path, sha256} objects');
+    }
+    const path = typeof entry.path === 'string' ? entry.path : '';
+    const sha256 = typeof entry.sha256 === 'string' ? entry.sha256 : '';
+    if (!path || !/^[a-f0-9]{64}$/.test(sha256)) {
+      throw new Error(
+        'resident root requires a path and a 64-lowercase-hex sha256 pin',
+      );
+    }
+    return { path, sha256 };
+  });
 }
 
 // RFC 0008 stage 5 (R10/R13): pure builder for the .runtime/results.log entry.

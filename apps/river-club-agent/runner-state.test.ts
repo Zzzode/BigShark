@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   engineBudgetMs,
   overrideWindowMs,
+  parseConfigResidentRoots,
   resultsLogEntry,
   selectCliFailureStep,
   selectPausedStep,
@@ -181,4 +182,26 @@ test('resultsLogEntry embeds the engine guarantee level and attaches raw only on
   });
   assert.equal('raw' in retry, false);
   assert.equal(retry.kind, 'action-retry');
+});
+
+// RFC 0009 W1: the runtime config's resident-root validator. It throws on a
+// malformed value so the runner's startup preflight exits loudly instead of
+// silently discarding the whole config (which the file-parse fallback would
+// otherwise do).
+test('parseConfigResidentRoots accepts valid specs and rejects malformed ones', () => {
+  const pin = 'a'.repeat(64);
+  assert.deepEqual(
+    parseConfigResidentRoots([{ path: '/x/policy.db', sha256: pin }]),
+    [{ path: '/x/policy.db', sha256: pin }],
+  );
+  assert.deepEqual(parseConfigResidentRoots([]), []);
+  assert.throws(() => parseConfigResidentRoots('nope'), /must be an array/);
+  assert.throws(() => parseConfigResidentRoots([null]), /entries must be/);
+  assert.throws(() => parseConfigResidentRoots([{ path: '', sha256: pin }]), /nonempty|requires/);
+  assert.throws(() => parseConfigResidentRoots([{ path: '/x', sha256: 'AB'.repeat(32) }]), /64-lowercase-hex/);
+  assert.throws(() => parseConfigResidentRoots([{ path: '/x', sha256: 'abc' }]), /64-lowercase-hex/);
+  assert.throws(
+    () => parseConfigResidentRoots([{ path: '/x', sha256: pin }, { sha256: pin }]),
+    /requires/,
+  );
 });

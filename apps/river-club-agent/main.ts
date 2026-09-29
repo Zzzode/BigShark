@@ -39,6 +39,7 @@ import {
   isRiverRoom,
   isStreet,
   type ExecutableDecision,
+  type ResidentRootSpec,
   type RiverApiError,
   type RiverRoom,
   type RiverRoomSummary,
@@ -48,6 +49,7 @@ import {
 import {
   engineBudgetMs,
   overrideWindowMs,
+  parseConfigResidentRoots,
   resultsLogEntry,
   selectCliFailureStep,
   selectPausedStep,
@@ -78,6 +80,13 @@ interface RunnerConfig {
   safetyMs?: number;
   minWindowMs?: number;
   autoWindowMs?: number;
+  /**
+   * RFC 0009 W1: resident artifact roots ({path, sha256}) launch the framed
+   * engine child with `--resident-root` and negotiate minor 2. Empty or absent
+   * keeps the previous behavior exactly: the engine answers from its built-in
+   * sources with the decision labeled by its guarantee level.
+   */
+  residentRoots?: ResidentRootSpec[];
 }
 
 interface ModelOverride {
@@ -104,7 +113,28 @@ const maxBb = maxBbFlag ? Number(maxBbFlag) : 50;
 const argStyle = flag('style');
 const argMode = flag('mode');
 
-const cfg = readRunnerConfig(join(rt, 'config.json'));
+function runStartupPreflight(): void {
+  // RFC 0009 W1: fail fast on a malformed resident-root config. This runs
+  // BEFORE any table connection, so an invalid root spec can never discard
+  // sibling settings or silently downgrade to an uncovered-decision fallback.
+  try {
+    loadRunnerConfig();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    note({ event: 'runner-config-invalid', error: message });
+    process.exit(2);
+  }
+}
+
+let runnerCfg: RunnerConfig | null = null;
+function loadRunnerConfig(): RunnerConfig {
+  runnerCfg ??= readRunnerConfig(join(rt, 'config.json'));
+  return runnerCfg;
+}
+
+runStartupPreflight();
+
+const cfg = loadRunnerConfig();
 const style0 = argStyle || cfg.style || 'tag';
 const mode0: RunnerMode = argMode === 'auto' || argMode === 'adaptive'
   ? argMode
@@ -121,6 +151,9 @@ const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(r
 const log = (file: string, value: Record<string, unknown>): void => {
   appendFileSync(file, `${JSON.stringify({ ts: Date.now(), ...value })}\n`);
 };
+if (cfg.residentRoots !== undefined && cfg.residentRoots.length === 0) {
+  note({ event: 'resident-roots-empty' });
+}
 
 function note(value: Record<string, unknown>): void {
   process.stderr.write(`${JSON.stringify(value)}\n`);
@@ -240,21 +273,33 @@ async function pauseForApproval(reason: string): Promise<boolean> {
   return false;
 }
 
+// RFC 0009 W1: parse `residentRoots` from the runtime config. Validation is
+// `parseConfigResidentRoots` in runner-state.ts so the runner's startup
+// preflight and the unit tests share one definition. The throw must not be
+// caught by readRunnerConfig's file-parse fallback: an invalid root spec must
+// not discard the sibling settings, and it must not hide a typo behind an
+// uncovered-decision fallback.
 function readRunnerConfig(path: string): RunnerConfig {
   if (!existsSync(path)) return {};
+  let value: unknown;
   try {
-    const value = parseJson(readFileSync(path, 'utf8'));
-    if (!isRecord(value)) return {};
-    const config: RunnerConfig = {};
-    if (value.mode === 'adaptive' || value.mode === 'auto') config.mode = value.mode;
-    if (typeof value.style === 'string') config.style = value.style;
-    if (typeof value.safetyMs === 'number') config.safetyMs = value.safetyMs;
-    if (typeof value.minWindowMs === 'number') config.minWindowMs = value.minWindowMs;
-    if (typeof value.autoWindowMs === 'number') config.autoWindowMs = value.autoWindowMs;
-    return config;
+    value = parseJson(readFileSync(path, 'utf8'));
   } catch {
     return {};
   }
+  if (!isRecord(value)) return {};
+  const config: RunnerConfig = {};
+  if (value.mode === 'adaptive' || value.mode === 'auto') config.mode = value.mode;
+  if (typeof value.style === 'string') config.style = value.style;
+  if (typeof value.safetyMs === 'number') config.safetyMs = value.safetyMs;
+  if (typeof value.minWindowMs === 'number') config.minWindowMs = value.minWindowMs;
+  if (typeof value.autoWindowMs === 'number') config.autoWindowMs = value.autoWindowMs;
+  // Validated outside the fallback: a malformed root spec throws to the
+  // startup handler, never silently dropping the settings parsed above.
+  if (value.residentRoots !== undefined) {
+    config.residentRoots = parseConfigResidentRoots(value.residentRoots);
+  }
+  return config;
 }
 
 function readModelOverride(path: string): ModelOverride | null {
@@ -313,10 +358,36 @@ function responseCode(value: unknown): string | undefined {
     : undefined;
 }
 
+// RFC 0009 W1: one shared frame-path decision object. With at least one
+// configured resident root the runner opts into the framed v1 path so the
+// served decision's guarantee level and artifact digest are decoded and
+// journaled; without roots the call stays exactly as before (v0 unless the
+// caller opted in). `protoBlueprint` is deliberately NOT set: AUTOMATIC mode
+// already tries the resident blueprint first on minor 1+, and the minor-2
+// AUTOMATIC route keeps the demotion contract (a miss falls through to the
+// engine's declared fallback rather than failing the turn).
+function engineDecisionConfig(
+  timeoutMs: number,
+): Parameters<typeof decide>[1] {
+  const roots = cfg.residentRoots;
+  return {
+    style,
+    heroName,
+    timeoutMs,
+    ...(roots && roots.length > 0
+      ? {
+          proto: true,
+          residentRoots: roots,
+          solveTimeBudgetMs: timeoutMs,
+        }
+      : {}),
+  };
+}
+
 async function decideWithinBudget(room: RiverRoom): Promise<ExecutableDecision> {
   const timeoutMs = engineBudgetMs(room.timeLeftMs ?? 0, safetyMs);
   if (timeoutMs === 0) return safeFallback(room);
-  return decide(room, { style, heroName, timeoutMs });
+  return decide(room, engineDecisionConfig(timeoutMs));
 }
 
 async function loadInitialState(): Promise<RiverState> {
@@ -450,7 +521,8 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
     autoWindowMs,
   );
 
-  const pending = { ...digest(room), style, engine: fb, windowMs, deadline: Date.now() + windowMs };
+  const pending = { ...digest(room), style, engine: fb, windowMs, deadline: Date.now() + windowMs,
+    guaranteeLevel: fb.guaranteeLevel ?? null, artifactSha256: fb.artifactSha256 ?? null };
   writeFileSync(PEND_LAST, JSON.stringify(pending));
   log(PEND, pending);
 
@@ -524,8 +596,9 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
   const ok = responseSucceeded(res.status, raw);
   log(RESULTS, resultsLogEntry(
     { kind: 'action', hand: room.handId, street: room.street, source, decision, ok,
-      raw: ok ? undefined : raw }));
-  note({ event: 'acted', source, action: decision.action, amount: decision.amount ?? null, reason: decision.reason, ok });
+      ...(ok ? {} : { raw }) }));
+  note({ event: 'acted', source, action: decision.action, amount: decision.amount ?? null, reason: decision.reason,
+    guaranteeLevel: decision.guaranteeLevel ?? null, artifactSha256: decision.artifactSha256 ?? null, ok });
 
   // Stale snapshot (network stall + server deadline): ONE immediate engine
   // re-decision on fresh state, no override window — recover the fold/check
@@ -550,8 +623,10 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
       const ok2 = responseSucceeded(r2.status, raw2);
       log(RESULTS, resultsLogEntry(
         { kind: 'action-retry', hand: retryRoom.handId, street: retryRoom.street,
-          source: 'engine-recovery', decision: d2, ok: ok2, raw: ok2 ? undefined : raw2 }));
-      note({ event: 'acted', source: 'engine-recovery', action: d2.action, amount: d2.amount ?? null, reason: d2.reason, ok: ok2 });
+          source: 'engine-recovery', decision: d2, ok: ok2,
+          ...(ok2 ? {} : { raw: raw2 }) }));
+      note({ event: 'acted', source: 'engine-recovery', action: d2.action, amount: d2.amount ?? null, reason: d2.reason,
+        guaranteeLevel: d2.guaranteeLevel ?? null, artifactSha256: d2.artifactSha256 ?? null, ok: ok2 });
       if (ok2) { acted++; continue; }
     }
   }

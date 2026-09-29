@@ -14,6 +14,7 @@ import {
   safeFallback,
   validateEngineDecision,
 } from './v0-normalizer.js';
+import { resolveSolveTimeBudgetMs } from './v1-mapper.js';
 import { create } from '@bufbuild/protobuf';
 import {
   EnvelopeSchema,
@@ -25,6 +26,7 @@ import type {
   EngineConfig,
   ExecutableDecision,
   RawEngineDecision,
+  ResidentRootSpec,
   RiverRoom,
   V0DecisionContext,
   V1EnvelopeClient,
@@ -36,6 +38,7 @@ const defaultBinary = process.env.BIGSHARK_ENGINE_BINARY || fileURLToPath(
 );
 let defaultClient: EngineProcessClient<V0DecisionContext, RawEngineDecision> | null = null;
 let defaultProtoClient: ProtoEngineProcessClient | null = null;
+let defaultProtoClientKey = '';
 
 function engineClient(): EngineProcessClient<V0DecisionContext, RawEngineDecision> | null {
   if (!defaultClient && existsSync(defaultBinary)) {
@@ -65,25 +68,104 @@ function engineClient(): EngineProcessClient<V0DecisionContext, RawEngineDecisio
   return defaultClient;
 }
 
-function protoEngineClient(): ProtoEngineProcessClient | null {
-  if (!defaultProtoClient && existsSync(defaultBinary)) {
-    const warmup: Envelope = create(EnvelopeSchema, { protocolMinor: 0 });
-    warmup.payload = {
-      case: 'getCapabilitiesRequest',
-      value: create(GetCapabilitiesRequestSchema),
-    };
-    warmup.requestId = 'warmup-capabilities';
-    defaultProtoClient = new ProtoEngineProcessClient({
-      command: defaultBinary,
-      args: ['--serve-proto'],
-      warmupEnvelope: warmup,
-      warmupTimeoutMs: 10_000,
-      // The framed path stays minor 0 by default; callers must explicitly
-      // negotiate a higher minor before its features can be used.
-      negotiateMinor1: process.env.BIGSHARK_ENGINE_PROTO_MINOR1 === '1',
-      negotiateMinor2: process.env.BIGSHARK_ENGINE_PROTO_MINOR2 === '1',
-    });
+const SHA256_HEX = /^[a-f0-9]{64}$/;
+
+/**
+ * RFC 0009 W1: parse the resident-root configuration surface. The explicit
+ * `config.residentRoots` wins over the `BIGSHARK_ENGINE_RESIDENT_ROOTS`
+ * environment variable (a JSON array of `{path, sha256}` objects). Malformed
+ * entries are configuration errors: the engine child would refuse the launch
+ * line anyway, so silently dropping one would hide a typo behind an
+ * uncovered-decision fallback. An unparseable environment value yields an
+ * empty list (and therefore the declared fallback path, never a crash).
+ */
+export function parseResidentRoots(
+  config: EngineConfig,
+): ResidentRootSpec[] {
+  if (config.residentRoots !== undefined)
+    return config.residentRoots.map(validateResidentRoot);
+  const raw = process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS;
+  if (!raw)
+    return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return [];
   }
+  if (!Array.isArray(value))
+    return [];
+  return value.map(entry => {
+    if (typeof entry !== 'object' || entry === null)
+      throw new Error('resident root entries must be {path, sha256} objects');
+    const record = entry as { path?: unknown; sha256?: unknown };
+    return validateResidentRoot({
+      path: String(record.path ?? ''),
+      sha256: String(record.sha256 ?? ''),
+    });
+  });
+}
+
+function validateResidentRoot(spec: ResidentRootSpec): ResidentRootSpec {
+  if (!spec.path)
+    throw new Error('resident root requires a nonempty path');
+  if (!SHA256_HEX.test(spec.sha256)) {
+    throw new Error(
+      `resident root ${spec.path} requires a 64-lowercase-hex sha256 pin`,
+    );
+  }
+  return { path: spec.path, sha256: spec.sha256 };
+}
+
+function residentRootArgs(roots: readonly ResidentRootSpec[]): string[] {
+  return roots.flatMap(root => ['--resident-root', `${root.path}=${root.sha256}`]);
+}
+
+/**
+ * RFC 0009 W1: the framed child's launch line. With no configured roots this
+ * is exactly the historical `['--serve-proto']`; each root appends the host's
+ * documented repeatable `--resident-root <path>=<sha256>` argument, in the
+ * configuration's order. Exported so the launch line is asserted directly by
+ * the wiring tests.
+ */
+export function protoEngineLaunchArgs(roots: readonly ResidentRootSpec[]): string[] {
+  return ['--serve-proto', ...residentRootArgs(roots)];
+}
+
+function protoEngineClient(roots: readonly ResidentRootSpec[]): ProtoEngineProcessClient | null {
+  // The implicit client is keyed by its launch line: configuration is fixed
+  // for a runner's lifetime, and a different root set must not silently reuse
+  // the previous child. Default (no roots) keeps the historical bare
+  // `--serve-proto` launch line.
+  const key = JSON.stringify(roots);
+  if (defaultProtoClient && defaultProtoClientKey === key)
+    return defaultProtoClient;
+  if (!existsSync(defaultBinary))
+    return null;
+  defaultProtoClient?.stop();
+  defaultProtoClient = null;
+  const warmup: Envelope = create(EnvelopeSchema, { protocolMinor: 0 });
+  warmup.payload = {
+    case: 'getCapabilitiesRequest',
+    value: create(GetCapabilitiesRequestSchema),
+  };
+  warmup.requestId = 'warmup-capabilities';
+  defaultProtoClient = new ProtoEngineProcessClient({
+    command: defaultBinary,
+    args: protoEngineLaunchArgs(roots),
+    warmupEnvelope: warmup,
+    warmupTimeoutMs: 10_000,
+    // The framed path stays minor 0 by default; callers must explicitly
+    // negotiate a higher minor before its features can be used. RFC 0009 W1:
+    // a configured resident root set is that explicit opt-in to the minor-2
+    // guarantee-and-digest surface, so the runner's served decisions carry
+    // their provenance; without roots nothing changes.
+    negotiateMinor1: roots.length > 0
+      || process.env.BIGSHARK_ENGINE_PROTO_MINOR1 === '1',
+    negotiateMinor2: roots.length > 0
+      || process.env.BIGSHARK_ENGINE_PROTO_MINOR2 === '1',
+  });
+  defaultProtoClientKey = key;
   return defaultProtoClient;
 }
 
@@ -97,8 +179,19 @@ async function decideV1(
   room: RiverRoom,
   config: EngineConfig,
 ): Promise<ExecutableDecision> {
+  // A malformed programmatic root spec is a configuration error, not an
+  // operational outage: surface it instead of silently serving every turn
+  // from the fallback with the fault hidden.
+  let roots: ResidentRootSpec[];
+  try {
+    roots = parseResidentRoots(config);
+  } catch (error) {
+    throw new Error(
+      `invalid resident root configuration: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const client = (config.protoEngineClient as V1EnvelopeClient | undefined)
-    ?? protoEngineClient();
+    ?? protoEngineClient(roots);
   if (!client)
     return safeFallback(room);
   // The concrete process client completes its capability handshake at the end
@@ -117,6 +210,11 @@ async function decideV1(
     ...(config.style !== undefined ? { style: config.style } : {}),
     ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
     ...(minor >= 1 ? { solverMode } : {}),
+    // RFC 0009 W1: the runner's real remaining-time budget reaches the
+    // resolver instead of the historical pinned 2000 ms.
+    ...(config.solveTimeBudgetMs !== undefined
+      ? { solveTimeBudgetMs: resolveSolveTimeBudgetMs(config.solveTimeBudgetMs) }
+      : {}),
     // Field 8 is only valid on minor 2; pass the minor so the mapper gates it.
     ...(minor === 2
       ? {
@@ -152,6 +250,12 @@ export async function decide(
       if (error instanceof V1EngineError
         && error.code === ErrorCode.GUARANTEE_BELOW_REQUEST)
         throw error;
+      // RFC 0009 W1: a malformed resident-root configuration is likewise a
+      // caller error, not an outage; it must be visible rather than becoming
+      // a per-turn silent fallback.
+      if (error instanceof Error
+        && error.message.startsWith('invalid resident root configuration'))
+        throw error;
       // Transport, validation, or capability failures are operational errors;
       // the v1 mapper never converts them into a strategic fold.
       return safeFallback(room);
@@ -172,8 +276,12 @@ export async function decide(
 }
 
 export function closeEngine(): void {
+  // Resets the implicit-client key too: a later decide() re-evaluates the
+  // launch line instead of reusing the stopped client's key. Any future reset
+  // path must clear both fields together.
   defaultClient?.stop();
   defaultClient = null;
   defaultProtoClient?.stop();
   defaultProtoClient = null;
+  defaultProtoClientKey = '';
 }

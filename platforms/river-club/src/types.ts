@@ -229,6 +229,13 @@ export interface ExecutableDecision {
    * golden deepEqual stays byte-identical.
    */
   guaranteeLevel?: string;
+  /**
+   * RFC 0009 W1 provenance: the SHA-256 of the resident artifact that served
+   * this decision (SolverMetadata field 9), attached with the level on a
+   * negotiated minor-2 strategy response. Absent on the v0 path, on minors
+   * 0/1, and on every local fallback, so golden deepEqual stays byte-identical.
+   */
+  artifactSha256?: string;
 }
 
 /** Caller-declared minimum acceptable guarantee level (minor 2 only). */
@@ -238,6 +245,17 @@ export type GuaranteeLevel =
   | 'abstract_solved'
   | 'exact_solved'
   | 'certified_bound';
+
+/**
+ * RFC 0009 W1: one resident artifact root. `path` is a filesystem path to a
+ * published strategy artifact and `sha256` its mandatory 64-lowercase-hex
+ * whole-file pin, matching the host's `--resident-root <path>=<sha256>` parse.
+ * Root specs are operator configuration, never credentials.
+ */
+export interface ResidentRootSpec {
+  path: string;
+  sha256: string;
+}
 
 /** Structural framed v1 client type; the concrete Envelope types live in the
  * generated Protobuf bindings imported by v1-mapper. */
@@ -282,6 +300,23 @@ export interface EngineConfig {
    * safe fallback).
    */
   minimumGuaranteeLevel?: GuaranteeLevel;
+  /**
+   * RFC 0009 W1: resident artifact roots (path + mandatory SHA-256 pin) the
+   * engine child is launched with. Each entry becomes a repeatable
+   * `--resident-root <path>=<sha256>` child argument. Only the implicit
+   * process client consumes this; a caller-supplied `protoEngineClient` owns
+   * its own launch line. On the framed path the client also negotiates minor 2
+   * so the served decision's guarantee level and artifact digest are decoded.
+   */
+  residentRoots?: readonly ResidentRootSpec[];
+  /**
+   * RFC 0009 W1: the caller's real remaining-time budget in milliseconds for
+   * this decision (the runner derives it from the server's timeLeftMs). It is
+   * sanitized into the wire's declared 1..120000 range by the mapper
+   * (`resolveSolveTimeBudgetMs`) and omitted pins the historical 2000 ms. It
+   * bounds the resolver's solve; the transport timeout stays `timeoutMs`.
+   */
+  solveTimeBudgetMs?: number;
 }
 
 export interface GoldenFixture {

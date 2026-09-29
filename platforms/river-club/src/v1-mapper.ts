@@ -220,6 +220,19 @@ function mapCard(rank: string, suit: string): MessageInitShape<typeof CardSchema
   return { rank: rankEnum, suit: suitEnum };
 }
 
+/**
+ * RFC 0009 W1: sanitize a caller-supplied solve budget for the wire's declared
+ * 1..120000 ms range. Absent, non-finite, or non-integer values fall back to
+ * the historical pinned 2000 ms, and anything outside the declared range is
+ * clamped rather than rejected: the budget is a resource hint, and a bad hint
+ * must never cost a legal decision.
+ */
+export function resolveSolveTimeBudgetMs(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || !Number.isInteger(value))
+    return 2000;
+  return Math.min(120_000, Math.max(1, value));
+}
+
 /** Builds a v1 DecisionRequest from the same frozen River state the v0 path
  * consumes. Throws on any amount outside the safe integer chip profile. */
 export function toV1DecisionRequest(
@@ -230,6 +243,12 @@ export function toV1DecisionRequest(
     solverMode?: SolverMode;
     minimumGuaranteeLevel?: GuaranteeLevelToken;
     negotiatedMinor?: 0 | 1 | 2;
+    /**
+     * RFC 0009 W1: the resolver's solve budget in milliseconds for this
+     * decision, derived from the server's real timeLeftMs by the caller.
+     * Omitted keeps the historical pinned 2000.
+     */
+    solveTimeBudgetMs?: number;
   } = {},
 ): DecisionRequest {
   if (!room.legal)
@@ -543,7 +562,7 @@ export function toV1DecisionRequest(
     },
     options: {
       strategyProfile: config.style ?? 'tag',
-      solveTimeBudgetMs: 2000,
+      solveTimeBudgetMs: resolveSolveTimeBudgetMs(config.solveTimeBudgetMs),
       seed: 0n,
       includeSampledAction: true,
       includeFullStrategy: false,
@@ -634,6 +653,7 @@ function executeFromStrategy(
   strategy: StrategyLike,
   room: Parameters<typeof fromV1DecisionResponse>[1],
   guaranteeLevel: string | undefined,
+  artifactSha256?: string,
 ):
     Awaited<ReturnType<typeof fromV1DecisionResponse>> {
   if (strategy.actions.length < 1)
@@ -674,9 +694,14 @@ function executeFromStrategy(
   const validated = validateEngineDecision(room, raw);
   if (!validated)
     throw new Error('engine strategy failed platform legality validation');
-  // validateEngineDecision builds the frozen v0-shaped object (no level); the
-  // guarantee surface is attached by the adapter after validation.
-  return guaranteeLevel === undefined ? validated : { ...validated, guaranteeLevel };
+  // validateEngineDecision builds the frozen v0-shaped object (no level or
+  // digest); the guarantee surface is attached by the adapter after
+  // validation so the frozen path stays byte-identical.
+  return {
+    ...validated,
+    ...(guaranteeLevel === undefined ? {} : { guaranteeLevel }),
+    ...(artifactSha256 === undefined ? {} : { artifactSha256 }),
+  };
 }
 
 /** Converts a v1 DecisionResponse into the executable decision shape the v0
@@ -709,10 +734,17 @@ export function fromV1DecisionResponse(
       ? response.result.value.solver?.guaranteeLevel
       : undefined
     : undefined;
+  // RFC 0009 W1 provenance: the served artifact's SHA-256 (field 9), attached
+  // with the level on a negotiated minor-2 strategy response.
+  const digest = negotiatedMinor === 2
+    ? response.result.case === 'strategy' || response.result.case === 'expandedStrategy'
+      ? response.result.value.solver?.artifactSha256
+      : undefined
+    : undefined;
   if (response.result.case === 'strategy')
-    return executeFromStrategy(response.result.value, room, level);
+    return executeFromStrategy(response.result.value, room, level, digest);
   if (response.result.case === 'expandedStrategy')
-    return executeFromStrategy(response.result.value, room, level);
+    return executeFromStrategy(response.result.value, room, level, digest);
   throw new V1EngineError('NO_DECISION', ErrorCode.NO_DECISION, true);
 }
 
