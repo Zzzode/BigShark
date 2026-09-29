@@ -960,9 +960,9 @@ void test_two_seat_nash_conv_crosscheck() {
       bs::solver::enumerate_joint_deals(ranges, {card("2c"), card("3d"), card("7h")});
   const std::vector<std::uint64_t> confirm = confirm_seeds(4000);
   BrEstimatorConfig config;
-  // The two-seat L1 profile only accepts a flop-rooted board, so the estimator
-  // side averages over the free turn/river with the EXACT frozen BR (every
-  // runout information set covered) and Monte Carlo confirm seeds; the phase-2
+  // This two-seat case is rooted at the flop, so the estimator side averages
+  // over the free turn/river with the EXACT frozen BR (every runout
+  // information set covered) and Monte Carlo confirm seeds; the phase-2
   // sample is unbiased for the solver's uniform runout average.
   std::vector<std::vector<double>> gains(2);
   std::array<double, 2> profile_leg_sum{0.0, 0.0};

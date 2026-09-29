@@ -1065,9 +1065,19 @@ int case_construction_rejections() {
     CHECK(rejects(def));
   }
   {
+    // A two-seat turn or river root constructs under the unified profile as of
+    // RFC 0009 W2a: the flop-only restriction lives at the heads-up solve
+    // route (HeadsUpRoot is structurally flop-rooted), not at the game
+    // definition, so the seat-parameterized trainer can solve a two-seat
+    // turn- or river-rooted game.
     GameDef def = base;
     def.board_size = 4;
-    CHECK(rejects(def));
+    const GameState turn_root(def);
+    CHECK(turn_root.street() == Street::Turn);
+    def.board[4] = card("5h");  // a distinct fifth card
+    def.board_size = 5;
+    const GameState river_root(def);
+    CHECK(river_root.street() == Street::River);
   }
   {
     GameDef def = base;

@@ -742,6 +742,14 @@ void HeadsUpDebugKey::add_policy_row(HeadsUpPolicy& policy, InformationKey key, 
 
 }  // namespace detail
 
+void HeadsUpSolverDebug::assemble_policy(HeadsUpPolicy& policy, const HeadsUpGame& game,
+                                         const std::map<InformationKey, PolicyRow>& rows) {
+  const detail::HeadsUpDebugKey token;
+  detail::HeadsUpDebugKey::set_policy_game(policy, game, token);
+  for (const auto& [key, row] : rows)
+    detail::HeadsUpDebugKey::add_policy_row(policy, key, row, token);
+}
+
 std::vector<std::uint64_t> HeadsUpSolverDebug::splitmix64(std::uint64_t seed, std::size_t count) {
   SplitMix64 rng(seed);
   std::vector<std::uint64_t> values;

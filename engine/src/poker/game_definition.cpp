@@ -73,11 +73,16 @@ void validate(const GameDef& def) {
 
   if (heads_up) {
     // The two-seat profile. It is not the three-handed profile turned down:
-    // the BUTTON posts the small blind, no ante exists, both blinds post their
-    // full nominal amounts (only the big blind may be short, by posting its
-    // whole stack for the nominal amount), and a rooted board carries exactly
-    // the flop. Each is a rule the 3+ profile does not share, so they are
-    // pinned here rather than folded into one general formula.
+    // the BUTTON posts the small blind, no ante exists, and both blinds post
+    // their full nominal amounts (only the big blind may be short, by posting
+    // its whole stack for the nominal amount). Each is a rule the 3+ profile
+    // does not share, so they are pinned here rather than folded into one
+    // general formula. A rooted board carries a complete street (3/4/5), the
+    // same allowance the 3+ profile makes; the flop-only restriction lives at
+    // the heads-up solve route (HeadsUpRoot is structurally flop-rooted), not
+    // at the game definition, so the seat-parameterized trainer -- which
+    // consumes the L3 tree directly and supports any postflop root -- can
+    // solve a two-seat turn- or river-rooted game.
     require(def.ante == 0, "the two-seat profile has no ante");
 
     if (def.preflop) {
@@ -95,7 +100,8 @@ void validate(const GameDef& def) {
       require(add(def.contributions[0], def.contributions[1]) <= def.pot,
               "preflop root contributions exceed the pot");
     } else {
-      require(def.board_size == 3, "a rooted board must carry a complete flop");
+      require(def.board_size == 3 || def.board_size == 4 || def.board_size == 5,
+              "a rooted board must carry a complete street");
       // A rooted board implies the blinds already completed, so the pot IS the
       // dead money and the two must reconcile exactly.
       require(def.contributions[0] == def.contributions[1],

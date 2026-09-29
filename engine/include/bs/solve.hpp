@@ -12,11 +12,15 @@
 // Stage 4 routes the heads-up multistreet CFR behind solve() with ZERO numeric
 // change (the unchanged HeadsUpTrainer is the numeric core), and registers the
 // river LP/DCFR and experimental multistreet solvers as reachable refuse-only
-// adapters. A future N-seat trainer will consume the materialized tree directly.
+// adapters. RFC 0009 W2a adds the seat-parameterized MCCFR trainer
+// (SolverKind::NSeatCfr) that consumes the materialized tree directly for
+// 3..10-seat identity trees, without moving the two-seat route: an Auto
+// request on a two-seat identity tree still reaches HeadsUpCfr bit-for-bit.
 #pragma once
 
 #include <bs/abstract_tree.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/nseat_trainer.hpp>
 #include <chrono>
 #include <cstdint>
 #include <optional>
@@ -58,6 +62,21 @@ struct SolveLimits {
     l.time = time;
     return l;
   }
+
+  // The n-seat trainer's limits. The tree build consumes max_nodes (the
+  // materialized-tree cap) and max_depth; the sampled walk is bounded by the
+  // wall clock (its visit cap stays at NSeatTrainerLimits' default, because a
+  // visit is not a retained byte or a materialized node -- a caller that wants
+  // a finite visit bound makes an NSeatTrainerLimits directly).
+  NSeatTrainerLimits nseat_limits() const {
+    NSeatTrainerLimits l;
+    l.max_nodes = max_nodes;
+    l.max_information_sets = max_information_sets;
+    l.max_depth = max_depth;
+    l.max_bytes = max_bytes;
+    l.wall = time;
+    return l;
+  }
 };
 
 // Fixed turn/river conditioning, the owner-composed slot that is NOT GameDef
@@ -75,16 +94,23 @@ struct RunoutConditioning {
 // (L3 is hole-card-free). At two seats this maps to HeadsUpGame.ranges.
 using SeatRanges = std::vector<WeightedHand>;
 
-// Which solver to address. Auto routes to the solver whose model the tree IS
-// (the heads-up multistreet CFR for a two-seat identity tree this stage). The
-// other RFC-named solvers are explicitly selectable so they are REACHABLE
+// Which solver to address. Auto routes to the solver whose model the tree IS:
+// the heads-up multistreet CFR for a two-seat identity tree, and (RFC 0009
+// W2a) the seat-parameterized MCCFR trainer for a 3..10-seat identity tree.
+// The other RFC-named solvers are explicitly selectable so they are REACHABLE
 // through solve(); their models are not L1 identity trees this stage, so each
 // throws unsupported_tree_shape rather than being approximated. The RFC 0005
 // resolver is a separate interface (different request shape) and is intentionally
 // absent here.
+//
+// NSeatCfr is explicitly selectable on a TWO-seat tree as well (conformance
+// fixtures compare the two routes on one game); it reports its own algorithm
+// revision (NSeatTrainingResult::algorithm_revision) and never pretends to be
+// the HeadsUpCfr stream. HeadsUpCfr on a 3+-seat tree keeps its typed refusal.
 enum class SolverKind {
   Auto,
   HeadsUpCfr,
+  NSeatCfr,
   RiverLp,
   RiverDcfr,
   MultistreetCfr,
@@ -102,27 +128,70 @@ struct SolveRequest {
   RunoutConditioning runout{};
 };
 
-// Move-only result. Wraps the concrete heads-up TrainingResult (the only
-// numeric solver routed this stage) and moves HeadsUpPolicy with no per-row map
-// copy. Carries the abstraction identity so L5 can later key on it; it never
-// carries a self-assigned guarantee level.
+// Move-only result. A DISCRIMINATED wrap: exactly one of the two concrete
+// results is present, selected by which solver solve() routed to. The
+// heads-up discriminant is byte-identical to the pre-W2a single-member wrap
+// (the heads-up accessors still return the same TrainingResult by value), so
+// the two-seat path's consumers and conformance pins do not move; the
+// n-seat arm carries the seat-generic NSeatTrainingResult (RFC 0009 D2 chose
+// this minimal change over widening TrainingResult, which the artifact
+// boundary and every existing consumer key on). `training()` asserts its
+// discriminant and throws std::runtime_error on misuse, so a caller that
+// ignores the discriminant fails loudly rather than reading a default row.
+// The result carries the abstraction identity so L5 can later key on it; it
+// never carries a self-assigned guarantee level.
 class SolveResult {
  public:
   explicit SolveResult(TrainingResult result, const abstraction::AbstractionId& action_id)
-      : result_(std::move(result)), action_id_(action_id) {}
+      : result_(std::move(result)), action_id_(action_id), is_heads_up_(true) {}
+  explicit SolveResult(NSeatTrainingResult result, const abstraction::AbstractionId& action_id)
+      : nseat_(std::move(result)), action_id_(action_id), is_heads_up_(false) {}
 
   SolveResult(const SolveResult&) = delete;
   SolveResult& operator=(const SolveResult&) = delete;
   SolveResult(SolveResult&&) noexcept = default;
   SolveResult& operator=(SolveResult&&) noexcept = default;
 
-  const TrainingResult& training() const noexcept { return result_; }
-  TrainingResult take_training() noexcept { return std::move(result_); }
+  // True iff this result came from the heads-up route (SolverKind::HeadsUpCfr
+  // or the 2-seat Auto route).
+  bool is_heads_up() const noexcept { return is_heads_up_; }
+
+  // Heads-up arm. Throws std::runtime_error when the result is n-seat.
+  const TrainingResult& training() const {
+    require_heads_up();
+    return result_;
+  }
+  TrainingResult take_training() {
+    require_heads_up();
+    return std::move(result_);
+  }
+
+  // N-seat arm. Throws std::runtime_error when the result is heads-up.
+  const NSeatTrainingResult& nseat() const {
+    require_nseat();
+    return nseat_;
+  }
+  NSeatTrainingResult take_nseat() {
+    require_nseat();
+    return std::move(nseat_);
+  }
+
   const abstraction::AbstractionId& action_id() const noexcept { return action_id_; }
 
  private:
+  void require_heads_up() const {
+    if (!is_heads_up_)
+      throw std::runtime_error("SolveResult holds an n-seat result, not a heads-up one");
+  }
+  void require_nseat() const {
+    if (is_heads_up_)
+      throw std::runtime_error("SolveResult holds a heads-up result, not an n-seat one");
+  }
+
   TrainingResult result_{};
+  NSeatTrainingResult nseat_{};
   abstraction::AbstractionId action_id_ = abstraction::identity_action_id();
+  bool is_heads_up_ = true;
 };
 
 // The unified entry point. Selects the solver by the tree's shape and runs it;

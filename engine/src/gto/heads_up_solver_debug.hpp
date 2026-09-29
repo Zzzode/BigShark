@@ -120,6 +120,13 @@ class HeadsUpSolverDebug {
                                           std::array<int, 2> own, bool best,
                                           std::vector<double> reach, TrainingLimits limits = {});
 
+  // Assembles a HeadsUpPolicy from fixture rows (debug/test support only): the
+  // one path outside the trainer that populates a policy, through the passkey.
+  // The game and every row are taken verbatim; no normalization, fill, or
+  // translation is applied, so a fixture states exactly the policy it means.
+  static void assemble_policy(HeadsUpPolicy& policy, const HeadsUpGame& game,
+                              const std::map<InformationKey, PolicyRow>& rows);
+
   // The single pinned sampled driver over any SplitMix64-compatible entropy
   // source; the public trainer shares this implementation. export_raw_rows
   // additionally copies the committed table into DebugRow storage and is used

@@ -360,12 +360,17 @@ refusal. The contract this stage enforces:
   `include/bs/detail/solve_projection.hpp`; `PlayerChips` is a strict prefix of
   the unified `GamePlayer`): a preflop root carries the three `-1` flop
   sentinels and posted blinds, a rooted flop carries its three board cards with
-  zero blinds. The numeric `HeadsUpTrainer` core is otherwise untouched — the
-  tree is not traversed for numerics — so full-traversal and external-sampling
-  results, including the SplitMix64 PRNG stream, reproduce the direct trainer
-  bit-for-bit over every fixed-runout variant. Because a preflop public tree is
-  unmaterializable, the preflop projection arm is verified directly against the
-  legacy `HeadsUpState` in `test_solve_conformance` rather than end-to-end;
+  zero blinds. `HeadsUpRoot` is structurally flop-rooted (its board slot is
+  exactly three cards), so a two-seat turn- or river-rooted tree
+  (`board_size` 4/5) is refused with `unsupported_tree_shape` before the
+  projection rather than silently dropping `board[3..4]`; the n-seat route
+  solves such roots directly. The numeric `HeadsUpTrainer` core is otherwise
+  untouched — the tree is not traversed for numerics — so full-traversal and
+  external-sampling results, including the SplitMix64 PRNG stream, reproduce
+  the direct trainer bit-for-bit over every fixed-runout variant. Because a
+  preflop public tree is unmaterializable, the preflop projection arm is
+  verified directly against the legacy `HeadsUpState` in `test_solve_conformance`
+  rather than end-to-end;
 - fixed turn/river conditioning arrives on the REQUEST
   (`RunoutConditioning`), never as `GameDef` root identity, matching the
   ownership split of the shipped `HeadsUpGame.fixed_runout`. Conditioning is a

@@ -283,6 +283,7 @@ add_library(bigshark_solver STATIC
   src/gto/solve.cpp
   src/gto/solve_projection.cpp
   src/gto/multiway_sampler.cpp
+  src/gto/nseat_trainer.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
 )
@@ -777,6 +778,20 @@ if(BUILD_TESTING)
   add_executable(test_solve_conformance tests/test_solve_conformance.cpp)
   target_link_libraries(test_solve_conformance PRIVATE bigshark_solver)
   add_test(NAME solve_conformance COMMAND test_solve_conformance)
+
+  # RFC 0009 W2a L4 conformance: the seat-parameterized MCCFR trainer consumes
+  # the L3 tree directly. Two-seat parity against the heads-up route on one
+  # game, an independently coded 3-seat update-rule oracle over one visible
+  # sweep, determinism, the typed refusals, and zero-sum terminals.
+  add_executable(test_solve_nseat tests/test_solve_nseat.cpp)
+  # The heads-up evaluator's policy surface is reached through the solver
+  # debug passkey header for fixture conversion (as test_heads_up_solver and
+  # test_resident_policy already do).
+  target_include_directories(test_solve_nseat PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_solve_nseat PRIVATE bigshark_solver)
+  add_test(NAME solve_nseat COMMAND test_solve_nseat)
 
   # RFC 0008 stage 4 link-negative guard: links bigshark_tree WITHOUT the
   # solver. The solver LIBRARY is not reachable from L3 by construction (the

@@ -1,4 +1,5 @@
 #include <bs/detail/solve_projection.hpp>
+#include <bs/nseat_trainer.hpp>
 #include <bs/solve.hpp>
 #include <sstream>
 
@@ -7,6 +8,46 @@ namespace bs::solver {
 namespace {
 
 using poker::GameDef;
+
+// The seat-parameterized MCCFR trainer (RFC 0009 D2/W2a), routed for identity
+// trees at 3+ seats under Auto and explicitly selectable at any seat count.
+// Everything this pre-validates has a typed solver-selection refusal so the
+// trainer's invalid_argument family is reached only for genuinely malformed
+// ranges (which the host should treat as a bad request); the training itself
+// runs under the request's limits (tree build + sampled walk).
+SolveResult solve_nseat(const SolveRequest& request) {
+  const tree::AbstractTree& tree = *request.tree;
+  const GameDef& def = tree.def();
+
+  if (def.player_count < 2 || def.player_count > poker::kMaxUnifiedSeats)
+    throw unsupported_tree_shape("n-seat CFR supports 2..10 seat trees");
+  if (tree.action_id() != abstraction::identity_action_id())
+    throw unsupported_tree_shape("n-seat CFR solves only the identity action abstraction");
+  if (request.ranges.size() != def.player_count)
+    throw unsupported_tree_shape("n-seat CFR needs one range per game seat");
+  if (request.iterations == 0)
+    throw std::invalid_argument("solve requires a positive iteration count");
+  // The unabstracted legal game is unbounded, so every tree root this route
+  // accepts is a postflop root (the card abstraction is defined on a complete
+  // flop); a preflop tree also cannot materialize under any sane node cap.
+  if (def.board_size < 3 || def.board_size > 5)
+    throw unsupported_tree_shape("n-seat CFR requires a postflop root");
+  // Fixed runout conditioning is a stage-4 heads-up feature. Forwarding it
+  // would silently DROP the conditioning (the n-seat trainer samples chance
+  // unconditionally), so refuse with the typed shape error instead.
+  if (request.runout.fixed_turn.has_value() || request.runout.fixed_river.has_value())
+    throw unsupported_tree_shape("fixed runout conditioning is not supported by n-seat CFR");
+  // The n-seat walk consumes no SolveMode: it is an external-sampling trainer
+  // by definition. An explicit FullTraversal request would be a mode the
+  // routed model does not have, so refuse rather than substitute silently.
+  if (request.mode == SolveMode::FullTraversal)
+    throw unsupported_tree_shape(
+        "n-seat CFR is an external-sampling trainer only; request ExternalSampling");
+
+  NSeatTrainingResult result = train_nseat(tree, request.ranges, request.iterations, request.seed,
+                                           request.limits.nseat_limits());
+  return SolveResult(std::move(result), tree.action_id());
+}
 
 // The heads-up multistreet CFR, routed behind solve() with the numeric core
 // unchanged. Validates the request describes a two-seat game under the
@@ -17,6 +58,14 @@ SolveResult solve_heads_up(const SolveRequest& request) {
 
   if (def.player_count != 2)
     throw unsupported_tree_shape("heads-up CFR requires a two-seat tree");
+  // HeadsUpRoot is structurally flop-rooted (its board slot is exactly three
+  // cards); a turn- or river-rooted two-seat game cannot be projected without
+  // silently dropping board[3..4]. Refuse the shape loudly; the n-seat route
+  // solves such roots directly.
+  if (!def.preflop && def.board_size != 3)
+    throw unsupported_tree_shape(
+        "heads-up CFR requires a flop-rooted tree (board_size 3); use n-seat CFR for a "
+        "turn- or river-rooted two-seat game");
   // Identity action schedule by AbstractionId, compared to the schedule the
   // tree was built from (never by re-deriving menus from a second default).
   if (tree.action_id() != abstraction::identity_action_id())
@@ -109,6 +158,10 @@ SolveResult solve(const SolveRequest& request) {
       if (def.player_count != 2)
         throw unsupported_tree_shape("heads-up CFR requires a two-seat tree");
       return solve_heads_up(request);
+    case SolverKind::NSeatCfr:
+      // Explicitly selectable at any seat count, including two (conformance
+      // fixtures compare the two routes on one game).
+      return solve_nseat(request);
     case SolverKind::Auto:
       break;
   }
@@ -116,11 +169,14 @@ SolveResult solve(const SolveRequest& request) {
   if (def.variant != poker::RulesVariant::NoLimitHoldem)
     refuse_non_l1("unsupported rules variant");
 
-  // Auto: the heads-up multistreet CFR is the only L1 identity-tree model.
+  // Auto: the two-seat identity tree keeps routing to the heads-up multistreet
+  // CFR bit-for-bit; 3..10-seat identity trees route to the seat-parameterized
+  // MCCFR trainer, which refuses (with the same typed family) any shape it
+  // does not model.
   if (def.player_count == 2)
     return solve_heads_up(request);
 
-  refuse_non_l1("multi-seat trainer (planned for the measured stage)");
+  return solve_nseat(request);
 }
 
 }  // namespace bs::solver
