@@ -1933,8 +1933,11 @@ std::vector<std::vector<WeightedHand>> read_ranges_v2(dt::Db& db, std::size_t pl
   return ranges;
 }
 
-// Like read_states but admits the seat-generic player domain 0..9.
-std::map<std::int64_t, StoredState> read_states_v2(dt::Db& db) {
+// Like read_states but admits the seat-generic player domain 0..9, bounded by
+// the game's actual player_count (RFC 0009 D3: the reader validates
+// player < player_count in C++, since a SQL CHECK is write-time-only and can be
+// stripped from a tampered file).
+std::map<std::int64_t, StoredState> read_states_v2(dt::Db& db, std::size_t player_count) {
   std::map<std::int64_t, StoredState> states;
   dt::Stmt query(db.get(),
                  "SELECT id, player, card0, card1, public_key FROM information_states"
@@ -1954,6 +1957,8 @@ std::map<std::int64_t, StoredState> read_states_v2(dt::Db& db) {
     state.public_key = std::string(query.column_text(4));
     check(player_raw >= 0 && player_raw <= 9, ArtifactErrorKind::InvalidSchema,
           "information state player outside 0..9");
+    check(player_raw < static_cast<std::int64_t>(player_count), ArtifactErrorKind::InvalidSchema,
+          "information state player outside player_count");
     check(card0_raw >= 0 && card0_raw < card1_raw && card1_raw <= 51,
           ArtifactErrorKind::InvalidValue, "information state own cards out of range");
     state.player = static_cast<int>(player_raw);
@@ -1967,7 +1972,7 @@ std::map<std::int64_t, StoredState> read_states_v2(dt::Db& db) {
 // Validates the v2 bounds table, whose dimension is (public_root, seat, combo)
 // rather than v1's responder_combo. The measurements table is byte-identical to
 // v1 and is validated by the shared loop.
-void read_auxiliary_tables_v2(dt::Db& db) {
+void read_auxiliary_tables_v2(dt::Db& db, std::size_t player_count) {
   dt::Stmt bounds_query(db.get(),
                         "SELECT public_root, seat, combo, baseline_cf_mass, normalized_bound"
                         " FROM bounds",
@@ -1977,6 +1982,8 @@ void read_auxiliary_tables_v2(dt::Db& db) {
           "bound public_root is empty");
     const std::int64_t seat = bounds_query.column_i64(1);
     check(seat >= 0 && seat <= 9, ArtifactErrorKind::InvalidValue, "bound seat out of range");
+    check(seat < static_cast<std::int64_t>(player_count), ArtifactErrorKind::InvalidSchema,
+          "bound seat outside player_count");
     const std::int64_t combo = bounds_query.column_i64(2);
     check(combo >= 0 && combo <= 1325, ArtifactErrorKind::InvalidValue, "bound combo out of range");
     if (!bounds_query.column_null(3)) {
@@ -2156,10 +2163,10 @@ LoadedArtifact load_path_v2(OpenedArtifact& opened) {
   auto ranges = read_ranges_v2(db, game.player_count);
   validate_game_v2(game);
 
-  auto states = read_states_v2(db);
+  auto states = read_states_v2(db, game.player_count);
   auto actions = read_actions(db);
   auto training = read_training(db);
-  read_auxiliary_tables_v2(db);
+  read_auxiliary_tables_v2(db, game.player_count);
 
   // Referential integrity independent of stripped foreign keys.
   for (const auto& [key, stored_action] : actions)

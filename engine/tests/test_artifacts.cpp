@@ -1051,6 +1051,37 @@ static int test_roundtrip_v2(const fs::path& dir) {
   const fs::path policy_path = policy_dir / "generation-v2-0001.db";
   CHECK(throws_artifact([&] { (void)publish_policy(path, policy_path, "publish-v2-engine-1"); },
                         ArtifactErrorKind::InvalidArgument));
+
+  // RFC 0009 D3: the reader validates player < player_count in C++, because a
+  // SQL CHECK is write-time-only and can be stripped from a tampered file. A
+  // state whose player is inside the 0..9 digit domain but outside the 3-seat
+  // game is rejected.
+  {
+    const fs::path tampered = dir / "roundtrip-v2-tampered-player.db";
+    fs::copy_file(path, tampered);
+    {
+      RawDb raw(tampered);
+      raw.exec(
+          "UPDATE information_states SET player = 7 WHERE id ="
+          " (SELECT MIN(id) FROM information_states);");
+    }
+    CHECK(
+        throws_artifact([&] { (void)load_artifact(tampered); }, ArtifactErrorKind::InvalidSchema));
+  }
+
+  // The bounds (seat, combo) dimension gets the same player_count bound.
+  {
+    const fs::path tampered = dir / "roundtrip-v2-tampered-seat.db";
+    fs::copy_file(path, tampered);
+    {
+      RawDb raw(tampered);
+      raw.exec(
+          "INSERT INTO bounds (public_root, seat, combo) VALUES"
+          " ('tamper-root', 7, 0);");
+    }
+    CHECK(
+        throws_artifact([&] { (void)load_artifact(tampered); }, ArtifactErrorKind::InvalidSchema));
+  }
   return 0;
 }
 
