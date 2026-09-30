@@ -17,7 +17,9 @@
 #pragma once
 
 #include <array>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/seat_policy.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -55,6 +57,17 @@ inline constexpr const char* kNumericProfileV1 =
     "ieee754-binary64;chips<=9007199254740991;sqlite-real;key-rev1";
 inline constexpr const char* kRulesIdentifierV1 = "rfc0004-heads-up-flop-v1";
 inline constexpr const char* kUtilityIdentifierV1 = "zero-sum-chip-net-v1";
+
+// RFC 0009 D3: schema v2 is the seat-generic profile. The DDL set, key grammar,
+// rules identifier, and numeric profile are all version-keyed; a v1 artifact
+// loads with an unchanged digest and a v2 artifact is rejected by a v1 reader.
+inline constexpr std::uint32_t kArtifactSchemaVersionV2 = 2;
+inline constexpr const char* kNumericProfileV2 =
+    "ieee754-binary64;chips<=9007199254740991;sqlite-real;key-rev2";
+inline constexpr const char* kRulesIdentifierV2 = "rfc0009-unified-flop-v1";
+// The seat-generic trainer's declared algorithm: sampled external-sampling
+// MCCFR with the kFull own-reach-weighted average and splitmix64.
+inline constexpr const char* kDefaultAlgorithmRevisionV2 = "rfc0009-nseat-rev1-sampled-splitmix64";
 
 enum class ArtifactKind { Checkpoint, Policy };
 enum class ValidationState { Unvalidated, Validated, Rejected };
@@ -105,6 +118,15 @@ struct ArtifactManifest {
   std::size_t nodes = 0;
   std::size_t information_sets = 0;
   std::size_t accounted_bytes = 0;
+  // RFC 0009 D3 (schema v2 only): the declared action abstraction and terminal
+  // depth. The v1 writer/reader leave these at their defaults; the v2 writer
+  // derives them from the SeatTrainingResult and the v2 reader reconstructs the
+  // SeatPolicy's action_id from them.
+  std::string abstraction_name;
+  std::uint32_t abstraction_version = 0;
+  std::string abstraction_parameters;
+  std::uint64_t abstraction_digest = 0;
+  poker::TerminalDepth terminal_depth = poker::TerminalDepth::River;
 };
 
 // Raw per-abstract-action training state. The policy stores normalized
@@ -123,14 +145,29 @@ using TrainingRows = std::map<solver::InformationKey, TrainingRow>;
 // carries the reconstructed HeadsUpGame (through result.policy.game()), the
 // immutable policy, counters, seed, and PRNG state. `rows` is empty for a
 // published policy and complete for a checkpoint.
+//
+// RFC 0009 D3 (schema v2): a v2 artifact populates `nseat` instead of `result`
+// and `rows`. The two arms are mutually exclusive — a v1 load leaves `nseat`
+// nullopt and a v2 load leaves `result`/`rows` at their defaults. Callers that
+// need the seat-generic policy dispatch on `nseat.has_value()`.
 struct ArtifactBundle {
   ArtifactManifest manifest;
   solver::TrainingResult result;
   TrainingRows rows;
+  std::optional<solver::SeatTrainingResult> nseat;
 };
 
 struct CheckpointProvenance {
   std::string algorithm_revision = kDefaultAlgorithmRevision;
+  std::string prng_identifier = kSampledPrngIdentifier;
+  std::string engine_revision = kDefaultEngineRevision;
+  ValidationState validation = ValidationState::Unvalidated;
+};
+
+// RFC 0009 D3: provenance for a seat-generic (schema v2) checkpoint. Mirrors
+// CheckpointProvenance with the v2 algorithm default.
+struct SeatCheckpointProvenance {
+  std::string algorithm_revision = kDefaultAlgorithmRevisionV2;
   std::string prng_identifier = kSampledPrngIdentifier;
   std::string engine_revision = kDefaultEngineRevision;
   ValidationState validation = ValidationState::Unvalidated;
@@ -141,6 +178,14 @@ struct CheckpointProvenance {
 // ArtifactError; on failure no readable artifact is left at the path.
 void create_checkpoint(const std::filesystem::path& path, const solver::TrainingResult& result,
                        const TrainingRows& rows, const CheckpointProvenance& provenance = {});
+
+// RFC 0009 D3: create a brand-new schema-v2 checkpoint from a seat-generic
+// training result. The path must not exist. The complete write is one
+// transaction. Throws ArtifactError; on failure no readable artifact is left at
+// the path. Only rooted flop/turn/river games (board_size 3..5) are accepted;
+// a preflop profile is rejected until one ships.
+void create_checkpoint(const std::filesystem::path& path, const solver::SeatTrainingResult& result,
+                       const SeatCheckpointProvenance& provenance = {});
 
 // Replace the mutable training/policy state of an existing checkpoint with the
 // next complete iteration, in one transaction. The full canonical identity
@@ -227,12 +272,23 @@ std::string sha256_file_hex(const std::filesystem::path& path,
 // information_states columns). Public deals are represented by board_ids, so
 // revision-1 events contain only f/x/c/b/r triples; event streets are assigned
 // by the RFC 0004 round-end grammar.
-std::string encode_public_key(const solver::InformationKey& key);
+//
+// `revision` selects the key grammar and has NO default: every caller declares
+// which grammar it writes. Revision 1 is frozen (actor 0..1, board_count 3..5,
+// street 0..2). Revision 2 admits the seat-generic grammar (actor 0..9,
+// board_count in {0,3,4,5} where 0 is the preflop form, street 0..3 with
+// street 3 denoting preflop). Throws ArtifactError(InvalidArgument) on any
+// other revision.
+std::string encode_public_key(const solver::InformationKey& key, std::uint32_t revision);
 
 // Inverse of encode_public_key. `player`, `card0`, and `card1` come from the
 // information_states columns (sorted own combo, 0 <= card0 < card1 < 52).
-// Throws ArtifactError(InvalidSchema) on anything that is not a canonical
-// revision-1 key for the supported heads-up grammar.
-solver::InformationKey decode_public_key(const std::string& text, int player, int card0, int card1);
+// `revision` selects the grammar and has NO default; it must match the
+// artifact's `info_key_revision`. Revision 1 decodes only the frozen heads-up
+// grammar; revision 2 additionally admits seats 0..9 and the preflop form.
+// Throws ArtifactError(InvalidSchema) on anything that is not a canonical key
+// for the selected revision's grammar.
+solver::InformationKey decode_public_key(const std::string& text, std::uint32_t revision,
+                                         int player, int card0, int card1);
 
 }  // namespace bs::artifacts

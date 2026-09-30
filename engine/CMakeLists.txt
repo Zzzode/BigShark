@@ -284,6 +284,7 @@ add_library(bigshark_solver STATIC
   src/gto/solve_projection.cpp
   src/gto/multiway_sampler.cpp
   src/gto/nseat_trainer.cpp
+  src/solver/seat_policy.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
 )
@@ -792,6 +793,13 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_solve_nseat PRIVATE bigshark_solver)
   add_test(NAME solve_nseat COMMAND test_solve_nseat)
+
+  # RFC 0009 W2b: the bucket->concrete seat-policy export and the unified
+  # information-key constructor. Links the solver (which owns seat_policy.cpp)
+  # and the artifacts codec for the revision-2 key round-trip conformance case.
+  add_executable(test_seat_policy tests/test_seat_policy.cpp)
+  target_link_libraries(test_seat_policy PRIVATE bigshark_solver bigshark_artifacts)
+  add_test(NAME seat_policy COMMAND test_seat_policy)
 
   # RFC 0008 stage 4 link-negative guard: links bigshark_tree WITHOUT the
   # solver. The solver LIBRARY is not reachable from L3 by construction (the

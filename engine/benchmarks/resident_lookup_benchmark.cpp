@@ -253,7 +253,8 @@ void collect_queries(const HeadsUpGame& game, std::size_t root, HeadsUpState sta
   }
   if (!have_name)
     return;
-  const std::string name = encode_public_key(information_key(state, name_cards));
+  const std::string name =
+      encode_public_key(information_key(state, name_cards), kArtifactSchemaVersion);
   if (!seen.insert(name).second)
     return;
   for (const WeightedHand& hand : game.ranges[actor]) {

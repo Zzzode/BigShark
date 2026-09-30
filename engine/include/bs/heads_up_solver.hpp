@@ -2,12 +2,14 @@
 
 #include <array>
 #include <bs/abstraction.hpp>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <span>
 #include <vector>
 
 // RFC 0005 artifact storage reconstructs immutable policies from validated
@@ -72,6 +74,20 @@ std::vector<poker::Action> abstract_actions(const poker::HeadsUpState& state,
 
 using InformationKey = std::vector<std::uint64_t>;
 InformationKey information_key(const poker::HeadsUpState& state, std::array<int, 2> own_cards);
+
+// Unified information-key constructor for 2..10 seats (RFC 0009 D3/D4). Builds
+// the SAME layout `information_key` produces for a HeadsUpState —
+// [actor, card0, card1, board_count, board_ids..., (street, seat, type, target)
+// per observed public action] — but from a historyless GameState's components:
+// the acting seat, the hero's two private cards (sorted ascending), the public
+// board as an ordered prefix, and the observed public-action path carried
+// explicitly because GameState stores no history. The resident source and the
+// resolver candidate both use it so an n-seat request and a two-seat request
+// for the same state produce the same key. `cards` must be two distinct cards
+// in 0..51, none on the board; `board` must be 0, 3, 4, or 5 cards.
+InformationKey make_information_key(std::size_t actor, std::array<int, 2> cards,
+                                    std::span<const int> board,
+                                    std::span<const poker::PublicAction> path);
 
 struct PolicyRow {
   std::vector<poker::Action> actions;

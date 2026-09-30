@@ -13,9 +13,14 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <bs/abstract_tree.hpp>
+#include <bs/abstraction.hpp>
 #include <bs/eval.hpp>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/nseat_trainer.hpp>
+#include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <cerrno>
 #include <chrono>
@@ -30,6 +35,7 @@
 #include <map>
 #include <new>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -213,6 +219,132 @@ int compare_policy_exact(const HeadsUpPolicy& expected, const HeadsUpPolicy& act
       if (!same_bits(row.average_weights[i], found->second.average_weights[i]))
         return 1;
     }
+  }
+  return 0;
+}
+
+// --- RFC 0009 W2b schema-v2 seat-generic fixtures ---------------------------
+
+// A 3-seat river-rooted fixture: board_size 5 so the tree has no chance nodes
+// and external sampling covers every action node. Same chip shape as the
+// heads-up fixtures but with three occupied seats, exercising the game_seats
+// table and the seat-generic key grammar (actor 0..2, three-seat event streams
+// whose streets the revision-2 grammar carries explicitly).
+GameDef three_seat_river_def_v2() {
+  GameDef def{};
+  def.player_count = 3;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;
+  def.board = {card("2c"), card("3d"), card("7h"), card("Ks"), card("9c")};
+  def.board_size = 5;
+  return def;
+}
+
+// Two combos per seat, all off the river board and mutually card-distinct.
+// Canonical form: each hand's cards sorted ascending and each seat's range
+// sorted by cards, matching the reader's `ORDER BY player, combo` output (the
+// round-trip canonicalizes range order, so the fixture must already be in the
+// reader's order for a position-by-position comparison).
+std::vector<std::vector<WeightedHand>> three_seat_river_ranges_v2() {
+  return {
+      {{{card("8h"), card("8c")}, 3}, {{card("Ah"), card("Ac")}, 2}},
+      {{{card("8s"), card("8d")}, 7}, {{card("As"), card("Ad")}, 5}},
+      {{{card("Jh"), card("Jc")}, 13}, {{card("Qh"), card("Qc")}, 11}},
+  };
+}
+
+// Trains the 3-seat river fixture and exports a concrete SeatTrainingResult,
+// the v2 writer's domain record.
+SeatTrainingResult trained_seat_result_v2() {
+  const GameDef def = three_seat_river_def_v2();
+  const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+  const auto ranges = three_seat_river_ranges_v2();
+  const NSeatTrainingResult trained =
+      train_nseat(tree, ranges, 200, 20260930, NSeatTrainerLimits{});
+  if (trained.termination != NSeatTerminationPhase::Complete)
+    throw std::runtime_error("seat fixture training did not complete");
+  return export_seat_policy(trained, tree, ranges);
+}
+
+bool same_schedule_v2_exact(const SizeSchedule& a, const SizeSchedule& b) {
+  for (std::size_t s = 0; s < 4; ++s) {
+    if (a[s].bets.size() != b[s].bets.size() || a[s].raises.size() != b[s].raises.size())
+      return false;
+    for (std::size_t i = 0; i < a[s].bets.size(); ++i)
+      if (!same_fraction_exact(a[s].bets[i], b[s].bets[i]))
+        return false;
+    for (std::size_t i = 0; i < a[s].raises.size(); ++i)
+      if (!same_fraction_exact(a[s].raises[i], b[s].raises[i]))
+        return false;
+  }
+  return true;
+}
+
+bool same_ranges_v2_exact(const std::vector<std::vector<WeightedHand>>& a,
+                          const std::vector<std::vector<WeightedHand>>& b) {
+  if (a.size() != b.size())
+    return false;
+  for (std::size_t p = 0; p < a.size(); ++p) {
+    if (a[p].size() != b[p].size())
+      return false;
+    for (std::size_t i = 0; i < a[p].size(); ++i)
+      if (a[p][i].cards != b[p][i].cards || !same_bits(a[p][i].weight, b[p][i].weight))
+        return false;
+  }
+  return true;
+}
+
+// Compare the full seat-generic identity and rows exactly. Two training-time
+// stats are deliberately NOT compared against the export's values because the
+// artifact does not persist them: a row's visits (the actions table has no
+// visits column, so a round-tripped row's visits is 0), and the result's
+// information_sets (the manifest stores the concrete stored-state count,
+// policy.rows().size(), not the trainer's bucket-keyed count; the reader
+// reconstructs that stored count and validates it against the stored states).
+int compare_seat_result_exact(const SeatTrainingResult& expected,
+                              const SeatTrainingResult& actual) {
+  if (!same_game_def(expected.policy.game(), actual.policy.game()))
+    return 1;
+  if (!(expected.policy.action_id() == actual.policy.action_id()))
+    return 1;
+  if (!(expected.action_id == actual.action_id))
+    return 1;
+  if (expected.terminal_depth != actual.terminal_depth)
+    return 1;
+  if (expected.completed_iterations != actual.completed_iterations)
+    return 1;
+  if (expected.seed != actual.seed)
+    return 1;
+  if (expected.prng_state != actual.prng_state)
+    return 1;
+  if (expected.algorithm_revision != actual.algorithm_revision)
+    return 1;
+  if (expected.nodes != actual.nodes)
+    return 1;
+  if (actual.information_sets != expected.policy.rows().size())
+    return 1;
+  if (expected.accounted_bytes != actual.accounted_bytes)
+    return 1;
+  if (!same_schedule_v2_exact(expected.policy.sizes(), actual.policy.sizes()))
+    return 1;
+  if (!same_ranges_v2_exact(expected.policy.ranges(), actual.policy.ranges()))
+    return 1;
+  if (expected.policy.rows().size() != actual.policy.rows().size())
+    return 1;
+  for (const auto& [key, expected_row] : expected.policy.rows()) {
+    const auto found = actual.policy.rows().find(key);
+    if (found == actual.policy.rows().end())
+      return 1;
+    if (expected_row.actions != found->second.actions)
+      return 1;
+    if (expected_row.probabilities.size() != found->second.probabilities.size())
+      return 1;
+    for (std::size_t i = 0; i < expected_row.probabilities.size(); ++i)
+      if (!near(expected_row.probabilities[i], found->second.probabilities[i]))
+        return 1;
   }
   return 0;
 }
@@ -743,9 +875,11 @@ static int test_roundtrip(const fs::path& dir) {
   }
   for (const auto& [key, row] : bundle.result.policy.rows()) {
     (void)row;
-    CHECK(encode_public_key(decode_public_key(encode_public_key(key), static_cast<int>(key[0]),
-                                              static_cast<int>(key[1]),
-                                              static_cast<int>(key[2]))) == encode_public_key(key));
+    CHECK(encode_public_key(decode_public_key(encode_public_key(key, kArtifactSchemaVersion),
+                                              kArtifactSchemaVersion, static_cast<int>(key[0]),
+                                              static_cast<int>(key[1]), static_cast<int>(key[2])),
+                            kArtifactSchemaVersion) ==
+          encode_public_key(key, kArtifactSchemaVersion));
   }
 
   // Independent reader in a forked child process (fresh sqlite handles, no
@@ -795,6 +929,132 @@ static int test_roundtrip(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// test 1b: RFC 0009 W2b schema-v2 seat-generic checkpoint round trip
+// ---------------------------------------------------------------------------
+
+static int test_roundtrip_v2(const fs::path& dir) {
+  const SeatTrainingResult exported = trained_seat_result_v2();
+  CHECK(!exported.policy.rows().empty());
+  CHECK(exported.policy.game().player_count == 3);
+  CHECK(exported.terminal_depth == TerminalDepth::River);
+
+  const fs::path path = dir / "roundtrip-v2-checkpoint.db";
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "roundtrip-v2-engine-1";
+  create_checkpoint(path, exported, provenance);
+  CHECK(throws_artifact([&] { create_checkpoint(path, exported, provenance); },
+                        ArtifactErrorKind::AlreadyExists));
+
+  // Independent schema oracle through a raw connection.
+  {
+    const std::string header = read_file_bytes(path).substr(0, 16);
+    CHECK(header == std::string("SQLite format 3\000", 16));
+    RawDb raw(path, SQLITE_OPEN_READONLY);
+    CHECK(raw.scalar_i64("PRAGMA application_id") == static_cast<std::int64_t>(0x42534754));
+    CHECK(raw.scalar_i64("PRAGMA user_version") == 2);
+    CHECK(raw.scalar_text("PRAGMA journal_mode") == "delete");
+    CHECK(raw.scalar_text("PRAGMA synchronous") == "2");
+
+    sqlite3_stmt* tables = nullptr;
+    CHECK(sqlite3_prepare_v2(raw.db,
+                             "SELECT name, sql FROM sqlite_schema WHERE type='table'"
+                             " ORDER BY name",
+                             -1, &tables, nullptr) == SQLITE_OK);
+    const std::vector<std::string> expected{
+        "actions",  "bounds",       "game",   "game_seats", "information_states",
+        "manifest", "measurements", "ranges", "sizes",      "training"};
+    std::vector<std::string> seen;
+    while (sqlite3_step(tables) == SQLITE_ROW) {
+      const std::string name = reinterpret_cast<const char*>(sqlite3_column_text(tables, 0));
+      const std::string sql = reinterpret_cast<const char*>(sqlite3_column_text(tables, 1));
+      seen.push_back(name);
+      CHECK(sql.size() >= 6 && sql.substr(sql.size() - 6) == "STRICT");
+    }
+    sqlite3_finalize(tables);
+    CHECK(seen == expected);
+
+    std::size_t expected_sizes = 0;
+    for (const auto& street : exported.policy.sizes())
+      expected_sizes += street.bets.size() + street.raises.size();
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM sizes") ==
+          static_cast<std::int64_t>(expected_sizes));
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM ranges") == 6);
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM game_seats") == 3);
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM information_states") ==
+          static_cast<std::int64_t>(exported.policy.rows().size()));
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM training") == 0);
+
+    sqlite3_stmt* sums = nullptr;
+    CHECK(sqlite3_prepare_v2(raw.db,
+                             "SELECT SUM(probability) FROM actions GROUP BY info_id"
+                             " HAVING ABS(SUM(probability) - 1.0) > 1e-12",
+                             -1, &sums, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(sums) == SQLITE_DONE);
+    sqlite3_finalize(sums);
+
+    // Manifest and game identity carry the v2 declarations.
+    CHECK(raw.scalar_i64("SELECT info_key_revision FROM manifest") == 2);
+    CHECK(raw.scalar_text("SELECT numeric_profile FROM manifest") == kNumericProfileV2);
+    CHECK(raw.scalar_i64("SELECT terminal_depth FROM manifest") ==
+          static_cast<std::int64_t>(TerminalDepth::River));
+    CHECK(raw.scalar_i64("SELECT abstraction_version FROM manifest") ==
+          static_cast<std::int64_t>(exported.action_id.version));
+    CHECK(!raw.scalar_text("SELECT abstraction_name FROM manifest").empty());
+    CHECK(raw.scalar_text("SELECT rules_id FROM game") == kRulesIdentifierV2);
+    CHECK(raw.scalar_i64("SELECT player_count FROM game") == 3);
+    CHECK(raw.scalar_i64("SELECT root_street FROM game") == 2);  // board_size 5 -> river
+    CHECK(raw.scalar_i64("SELECT terminal_depth FROM game") ==
+          static_cast<std::int64_t>(TerminalDepth::River));
+    CHECK(raw.scalar_text("SELECT utility_id FROM game") == kUtilityIdentifierV1);
+  }
+
+  // Same-process lossless read.
+  const LoadedArtifact loaded = load_artifact(path);
+  CHECK(loaded.sha256_hex.size() == 64);
+  CHECK(loaded.file_bytes > 0);
+  const auto& bundle = loaded.bundle;
+  CHECK(bundle.manifest.kind == ArtifactKind::Checkpoint);
+  CHECK(bundle.manifest.information_key_revision == 2);
+  CHECK(bundle.manifest.engine_revision == "roundtrip-v2-engine-1");
+  CHECK(bundle.manifest.completed_iterations == exported.completed_iterations);
+  CHECK(bundle.manifest.terminal_depth == TerminalDepth::River);
+  CHECK(bundle.nseat.has_value());
+  // The v1 arm stays default for a v2 file.
+  CHECK(bundle.result.policy.rows().empty());
+  CHECK(bundle.rows.empty());
+  if (compare_seat_result_exact(exported, *bundle.nseat) != 0) {
+    std::printf("v2 roundtrip seat-result comparison failed\n");
+    return 1;
+  }
+  for (const auto& [key, row] : bundle.nseat->policy.rows()) {
+    (void)row;
+    CHECK(encode_public_key(decode_public_key(encode_public_key(key, kArtifactSchemaVersionV2),
+                                              kArtifactSchemaVersionV2, static_cast<int>(key[0]),
+                                              static_cast<int>(key[1]), static_cast<int>(key[2])),
+                            kArtifactSchemaVersionV2) ==
+          encode_public_key(key, kArtifactSchemaVersionV2));
+  }
+
+  // The v2 file is byte-stable: a second write of the same result has the same
+  // SHA-256 (rollback journal mode, deterministic page allocation).
+  const fs::path path2 = dir / "roundtrip-v2-checkpoint-2.db";
+  create_checkpoint(path2, exported, provenance);
+  CHECK(sha256_file_hex(path) == sha256_file_hex(path2));
+
+  // probe_artifact does not yet support schema v2 (the resident path is W2c).
+  CHECK(
+      throws_artifact([&] { (void)probe_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
+
+  // publish_policy does not yet support schema-v2 sources.
+  const fs::path policy_dir = dir / "policy-v2";
+  fs::create_directory(policy_dir);
+  const fs::path policy_path = policy_dir / "generation-v2-0001.db";
+  CHECK(throws_artifact([&] { (void)publish_policy(path, policy_path, "publish-v2-engine-1"); },
+                        ArtifactErrorKind::InvalidArgument));
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // test 2: canonical key oracle (hand-authored bytes + malformed rejection)
 // ---------------------------------------------------------------------------
 
@@ -807,34 +1067,37 @@ static int test_canonical_keys(const fs::path&) {
   auto decode = [&](const std::string& text, int player) {
     auto sorted = own;
     std::sort(sorted.begin(), sorted.end());
-    return decode_public_key(text, player, sorted[0], sorted[1]);
+    return decode_public_key(text, kArtifactSchemaVersion, player, sorted[0], sorted[1]);
   };
 
   const InformationKey k_root = information_key(state, own);
-  CHECK(encode_public_key(k_root) == "0|3,6,21|");
+  CHECK(encode_public_key(k_root, kArtifactSchemaVersion) == "0|3,6,21|");
   CHECK(decode("0|3,6,21|", 0) == k_root);
 
   HeadsUpState after_check = state.after_action(0, {ActionType::Check});
   const InformationKey k_check = information_key(after_check, own);
-  CHECK(encode_public_key(k_check) == "0|3,6,21|0:x:-");
+  CHECK(encode_public_key(k_check, kArtifactSchemaVersion) == "0|3,6,21|0:x:-");
   CHECK(decode("0|3,6,21|0:x:-", 1) == k_check);
 
   HeadsUpState turn_state = after_check.after_action(1, {ActionType::Check}).after_card(turn);
   const InformationKey k_turn = information_key(turn_state, own);
-  CHECK(encode_public_key(k_turn) == "1|3,6,21,29|0:x:-,1:x:-");
+  CHECK(encode_public_key(k_turn, kArtifactSchemaVersion) == "1|3,6,21,29|0:x:-,1:x:-");
   CHECK(decode("1|3,6,21,29|0:x:-,1:x:-", 0) == k_turn);
 
   HeadsUpState river_state = turn_state.after_action(0, {ActionType::Check})
                                  .after_action(1, {ActionType::Check})
                                  .after_card(river);
   const InformationKey k_river = information_key(river_state, own);
-  CHECK(encode_public_key(k_river) == "2|3,6,21,29,24|0:x:-,1:x:-,0:x:-,1:x:-");
+  CHECK(encode_public_key(k_river, kArtifactSchemaVersion) ==
+        "2|3,6,21,29,24|0:x:-,1:x:-,0:x:-,1:x:-");
   CHECK(decode("2|3,6,21,29,24|0:x:-,1:x:-,0:x:-,1:x:-", 0) == k_river);
 
   HeadsUpState after_bet = state.after_action(0, {ActionType::Bet, 2});
-  CHECK(encode_public_key(information_key(after_bet, own)) == "0|3,6,21|0:b:2");
+  CHECK(encode_public_key(information_key(after_bet, own), kArtifactSchemaVersion) ==
+        "0|3,6,21|0:b:2");
   HeadsUpState after_raise = after_bet.after_action(1, {ActionType::Raise, 4});
-  CHECK(encode_public_key(information_key(after_raise, own)) == "0|3,6,21|0:b:2,1:r:4");
+  CHECK(encode_public_key(information_key(after_raise, own), kArtifactSchemaVersion) ==
+        "0|3,6,21|0:b:2,1:r:4");
 
   const std::vector<std::string> malformed{
       "3|3,6,21|",                          // bad street
@@ -855,8 +1118,9 @@ static int test_canonical_keys(const fs::path&) {
     CHECK(throws_artifact([&] { (void)decode(text, 0); }, ArtifactErrorKind::InvalidSchema));
 
   // Own combo shares a board card: rejected even with otherwise valid text.
-  CHECK(throws_artifact([&] { (void)decode_public_key("0|3,6,21|", 0, card("2c"), 51); },
-                        ArtifactErrorKind::InvalidSchema));
+  CHECK(throws_artifact(
+      [&] { (void)decode_public_key("0|3,6,21|", kArtifactSchemaVersion, 0, card("2c"), 51); },
+      ArtifactErrorKind::InvalidSchema));
   return 0;
 }
 
@@ -1152,11 +1416,14 @@ static int test_corruption(const fs::path& dir) {
         throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
   }
   {
+    // A v1 file whose user_version is bumped to 2 is now a *supported* version,
+    // so open_validated selects the schema-v2 DDL set; the v1 stored SQL does
+    // not match it and is rejected as InvalidSchema (wrong-version stored
+    // text), not UnsupportedVersion.
     const fs::path path = scratch("bad-version.db");
     RawDb raw(path);
     raw.exec("PRAGMA user_version=2;");
-    CHECK(
-        throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
+    CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidSchema));
   }
 
   // Page corruption: the b-tree type byte of page 2.
@@ -1730,6 +1997,7 @@ int main() {
   };
   const Case cases[] = {
       {"roundtrip", test_roundtrip},
+      {"roundtrip-v2", test_roundtrip_v2},
       {"canonical-keys", test_canonical_keys},
       {"split-run", test_split_run},
       {"resume-identity", test_resume_identity},

@@ -1558,7 +1558,7 @@ struct ContinuityWalker {
         if (board_card == hand.cards[0] || board_card == hand.cards[1])
           blocked = true;
       if (!blocked)
-        return encode_public_key(information_key(state, hand.cards));
+        return encode_public_key(information_key(state, hand.cards), kArtifactSchemaVersion);
     }
     std::abort();
   }

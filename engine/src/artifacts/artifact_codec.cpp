@@ -62,19 +62,57 @@ std::uint64_t parse_decimal(std::string_view field, const std::string& what) {
   return value;
 }
 
+// The two frozen key grammars. Revision 1 is the heads-up grammar this codec
+// has always emitted; revision 2 widens the seat and street domains for the
+// seat-generic artifact. The street<->board_count mapping is the one place the
+// two genuinely differ beyond a bound: revision 2 admits board_count 0 as the
+// preflop form, which encodes as street token 3.
+struct KeyGrammar {
+  std::uint32_t revision = 0;
+  int max_seat = 0;            // highest legal actor/player index
+  int max_street = 0;          // highest legal street token
+  bool admit_preflop = false;  // board_count 0 <-> street 3
+};
+
+KeyGrammar grammar_for_revision(std::uint32_t revision) {
+  if (revision == 1)
+    return {1, 1, 2, false};
+  if (revision == 2)
+    return {2, 9, 3, true};
+  fail(ArtifactErrorKind::InvalidArgument,
+       "unsupported information key grammar revision " + std::to_string(revision));
+}
+
+// The round-end grammar advances the event street on a call or a check-check.
+// Revision 2 wraps preflop (3) back to flop (0); revision 1 (flop-rooted) and
+// every non-preflop revision-2 street simply increment, so the two-seat route
+// is byte-identical to the historical `++current_street`.
+int advance_event_street(const KeyGrammar& grammar, int street) {
+  if (grammar.admit_preflop && street == 3)
+    return 0;
+  return street + 1;
+}
+
 }  // namespace
 
-std::string encode_public_key(const InformationKey& key) {
+std::string encode_public_key(const InformationKey& key, std::uint32_t revision) {
+  const KeyGrammar grammar = grammar_for_revision(revision);
   if (key.size() < 4)
     fail(ArtifactErrorKind::InvalidArgument, "information key too short");
   const std::uint64_t board_count = key[3];
-  if (board_count < 3 || board_count > 5)
+  const bool board_count_ok = grammar.admit_preflop
+                                  ? (board_count == 0 || (board_count >= 3 && board_count <= 5))
+                                  : (board_count >= 3 && board_count <= 5);
+  if (!board_count_ok)
     fail(ArtifactErrorKind::InvalidArgument, "information key board size out of range");
   if (key.size() < 4 + board_count ||
       (key.size() - 4 - static_cast<std::size_t>(board_count)) % 4 != 0)
     fail(ArtifactErrorKind::InvalidArgument, "malformed information key event vector");
 
-  const int street = static_cast<int>(board_count) - 3;
+  // Revision 2 encodes the preflop form (board_count 0) as street token 3;
+  // every other board_count maps to street = board_count - 3 in both grammars.
+  const int street =
+      (grammar.admit_preflop && board_count == 0) ? 3 : static_cast<int>(board_count) - 3;
   std::string text;
   text += std::to_string(street);
   text.push_back('|');
@@ -92,7 +130,7 @@ std::string encode_public_key(const InformationKey& key) {
     const std::uint64_t actor = key[i + 1];
     const std::uint64_t type = key[i + 2];
     const std::uint64_t target = key[i + 3];
-    if (actor > 1 || type > 4)
+    if (actor > static_cast<std::uint64_t>(grammar.max_seat) || type > 4)
       fail(ArtifactErrorKind::InvalidArgument, "information key event out of range");
     text += std::to_string(actor);
     text.push_back(':');
@@ -103,12 +141,26 @@ std::string encode_public_key(const InformationKey& key) {
       text += std::to_string(target);
     else
       text.push_back('-');
+    if (grammar.revision == 2) {
+      // Revision 2 carries the event's street as a fourth field. Revision 1
+      // reconstructs it with the round-end rule (advance on a call or a
+      // check-check), which is a two-seat rule: with three or more seats a
+      // check-check or a non-final call does not close the round, so the
+      // street cannot be recovered from actor/kind/target alone.
+      const std::uint64_t event_street = key[i];
+      if (event_street > static_cast<std::uint64_t>(grammar.max_street))
+        fail(ArtifactErrorKind::InvalidArgument, "information key event street out of range");
+      text.push_back(':');
+      text += std::to_string(event_street);
+    }
   }
   return text;
 }
 
-InformationKey decode_public_key(const std::string& text, int player, int card0, int card1) {
-  if (player != 0 && player != 1)
+InformationKey decode_public_key(const std::string& text, std::uint32_t revision, int player,
+                                 int card0, int card1) {
+  const KeyGrammar grammar = grammar_for_revision(revision);
+  if (player < 0 || player > grammar.max_seat)
     fail(ArtifactErrorKind::InvalidSchema, "information state player outside seats");
   if (card0 < 0 || card0 >= card1 || card1 > 51)
     fail(ArtifactErrorKind::InvalidSchema, "information state own cards out of range");
@@ -120,12 +172,18 @@ InformationKey decode_public_key(const std::string& text, int player, int card0,
   const auto fields = split(text, '|', 3);
 
   const std::uint64_t street = parse_decimal(fields[0], "street");
-  require_key(street <= 2, "canonical key street out of range");
-  const std::size_t board_count = 3 + static_cast<std::size_t>(street);
+  require_key(street <= static_cast<std::uint64_t>(grammar.max_street),
+              "canonical key street out of range");
+  // Revision 2 admits the preflop form (street token 3, board_count 0); every
+  // other street maps to board_count = 3 + street in both grammars.
+  const bool is_preflop = grammar.admit_preflop && street == 3;
+  const std::size_t board_count = is_preflop ? 0 : 3 + static_cast<std::size_t>(street);
 
   std::vector<std::uint64_t> boards;
   boards.reserve(board_count);
-  {
+  if (board_count == 0) {
+    require_key(fields[1].empty(), "preflop key must have an empty board field");
+  } else {
     std::size_t start = 0;
     for (;;) {
       const auto at = fields[1].find(',', start);
@@ -151,18 +209,25 @@ InformationKey decode_public_key(const std::string& text, int player, int card0,
                      static_cast<std::uint64_t>(card1), static_cast<std::uint64_t>(board_count)};
   key.insert(key.end(), boards.begin(), boards.end());
 
-  int current_street = 0;
+  // Revision 2's preflop form starts event streets at 3 (preflop); every other
+  // key (and all revision-1 keys) is flop-rooted and starts at 0.
+  int current_street = is_preflop ? 3 : 0;
   bool previous_was_check = false;
   bool terminal = false;
+  // Revision 2 carries each event's street explicitly; it must be non-decreasing
+  // (the preflop->flop wrap 3->0 is the one allowed decrease).
+  std::uint64_t prev_event_street = static_cast<std::uint64_t>(current_street);
   if (!fields[2].empty()) {
     std::size_t start = 0;
     for (;;) {
       const auto comma = fields[2].find(',', start);
       const auto triple = comma == std::string_view::npos ? fields[2].substr(start)
                                                           : fields[2].substr(start, comma - start);
-      const auto parts = split(triple, ':', 3);
+      // Revision 2 events carry a fourth street field; revision 1 events do not.
+      const auto parts = split(triple, ':', grammar.revision == 2 ? 4 : 3);
       const std::uint64_t actor = parse_decimal(parts[0], "event actor");
-      require_key(actor <= 1, "event actor outside seats");
+      require_key(actor <= static_cast<std::uint64_t>(grammar.max_seat),
+                  "event actor outside seats");
       require_key(parts[1].size() == 1, "event kind must be one character");
       const char kind = parts[1][0];
       require_key(!terminal, "events present after a fold");
@@ -199,34 +264,56 @@ InformationKey decode_public_key(const std::string& text, int player, int card0,
         target = parse_decimal(parts[2], "event target");
         require_key(target > 0, "aggressive target must be positive");
       }
-      key.push_back(static_cast<std::uint64_t>(current_street));
+
+      std::uint64_t event_street;
+      if (grammar.revision == 2) {
+        // The street is explicit: the round-end reconstruction revision 1 uses
+        // is a two-seat rule and cannot recover it for three or more seats.
+        event_street = parse_decimal(parts[3], "event street");
+        require_key(event_street <= static_cast<std::uint64_t>(grammar.max_street),
+                    "event street out of range");
+        require_key(event_street <= street, "event street exceeds key street");
+        const bool wraps_preflop = prev_event_street == 3 && event_street == 0;
+        require_key(event_street >= prev_event_street || wraps_preflop,
+                    "event streets out of order");
+        prev_event_street = event_street;
+      } else {
+        event_street = static_cast<std::uint64_t>(current_street);
+      }
+      key.push_back(event_street);
       key.push_back(actor);
       key.push_back(static_cast<std::uint64_t>(type));
       key.push_back(target);
 
-      if (type == ActionType::Fold) {
+      if (grammar.revision == 2) {
+        // A fold ends the hand only in heads-up; with three or more seats the
+        // remaining players continue, so revision 2 does not treat a fold as
+        // terminal and applies no round-end reconstruction.
+      } else if (type == ActionType::Fold) {
         terminal = true;
       } else if (type == ActionType::Check) {
         if (previous_was_check) {
-          ++current_street;
+          current_street = advance_event_street(grammar, current_street);
           previous_was_check = false;
         } else {
           previous_was_check = true;
         }
       } else if (type == ActionType::Call) {
-        ++current_street;
+        current_street = advance_event_street(grammar, current_street);
         previous_was_check = false;
       } else {
         previous_was_check = false;
       }
-      require_key(current_street <= static_cast<int>(street), "event street exceeds key street");
+      if (grammar.revision != 2)
+        require_key(current_street <= static_cast<int>(street), "event street exceeds key street");
       if (comma == std::string_view::npos)
         break;
       start = comma + 1;
     }
   }
-  require_key(current_street == static_cast<int>(street),
-              "event round closures do not match key street");
+  if (grammar.revision != 2)
+    require_key(current_street == static_cast<int>(street),
+                "event round closures do not match key street");
   return key;
 }
 
@@ -345,6 +432,21 @@ void PolicyAssembler::set_game(solver::HeadsUpPolicy& policy, const solver::Head
 
 void PolicyAssembler::add_row(solver::HeadsUpPolicy& policy, InformationKey key,
                               solver::PolicyRow row) {
+  policy.rows_.emplace(std::move(key), std::move(row));
+}
+
+void SeatPolicyAssembler::set_identity(solver::SeatPolicy& policy, poker::GameDef game,
+                                       abstraction::SizeSchedule sizes,
+                                       std::vector<std::vector<solver::WeightedHand>> ranges,
+                                       abstraction::AbstractionId action_id) {
+  policy.game_ = std::move(game);
+  policy.sizes_ = std::move(sizes);
+  policy.ranges_ = std::move(ranges);
+  policy.action_id_ = std::move(action_id);
+}
+
+void SeatPolicyAssembler::add_row(solver::SeatPolicy& policy, solver::InformationKey key,
+                                  solver::SeatPolicyRow row) {
   policy.rows_.emplace(std::move(key), std::move(row));
 }
 

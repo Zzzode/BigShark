@@ -254,4 +254,16 @@ class GameState {
   Chips last_full_raise_ = 0;
 };
 
+// One observed public action on the path from the root to a decision node.
+// GameState is historyless (its design notes above), so the resolver and the
+// resident mapper carry this observation log explicitly: it is the only record
+// of which seat did what on which street to reach the current node. `seat` is
+// the acting occupied-seat index; `street` is the street the action closed or
+// occurred on, matching the BettingEvent grammar the information key encodes.
+struct PublicAction {
+  Street street;
+  std::size_t seat;
+  Action action;
+};
+
 }  // namespace bs::poker

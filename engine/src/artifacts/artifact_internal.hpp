@@ -7,6 +7,7 @@
 #include <array>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <cstddef>
 #include <cstdint>
@@ -26,8 +27,9 @@ namespace bs::artifacts::detail {
 // Maps a SQLite primary/extended result code to the artifact error taxonomy.
 ArtifactErrorKind classify_sqlite(int rc);
 
-// Every table is STRICT and created in foreign-key dependency order.
-extern const char* const kSchemaDdl[];
+// The canonical schema DDL sets (kSchemaDdlV1 frozen, kSchemaDdlV2 seat-generic)
+// and the per-version allowed-table sets are private to strategy_artifact.cpp;
+// open_validated selects one by the artifact's user_version.
 
 // A SQLite database connection. All opens enable foreign keys; readers are
 // additionally pinned read-only/query-only/defensive.
@@ -131,6 +133,19 @@ class PolicyAssembler {
   static void set_game(solver::HeadsUpPolicy& policy, const solver::HeadsUpGame& game);
   static void add_row(solver::HeadsUpPolicy& policy, solver::InformationKey key,
                       solver::PolicyRow row);
+};
+
+// The v2 (RFC 0009 D3) analogue of PolicyAssembler: the one production consumer
+// granted access to SeatPolicy's private identity and rows, used by the v2
+// artifact reader to reconstruct an immutable SeatPolicy from a validated file.
+class SeatPolicyAssembler {
+ public:
+  static void set_identity(solver::SeatPolicy& policy, poker::GameDef game,
+                           abstraction::SizeSchedule sizes,
+                           std::vector<std::vector<solver::WeightedHand>> ranges,
+                           abstraction::AbstractionId action_id);
+  static void add_row(solver::SeatPolicy& policy, solver::InformationKey key,
+                      solver::SeatPolicyRow row);
 };
 
 // Applies the checkpoint-writer connection pragmas (rollback journaling and
