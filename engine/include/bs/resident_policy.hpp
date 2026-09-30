@@ -86,10 +86,11 @@ enum class MissReason : std::uint8_t {
   // factor for this combination was zero). A blueprint row for a combination
   // the observer knows the hero cannot hold is never returned.
   ZeroProbabilityHeroCombination,
-  // W2c-ii-a: the matched artifact's root serves a seat count the resident
-  // belief model cannot condition yet (the two-seat ReachModel). The artifact
-  // loads and advertises, and the resolver source still serves it, but a
-  // 3..10-seat belief or hero-decision query misses declared until W2c-ii-b.
+  // W2c-ii-b: the matched artifact's root serves a seat count the resident
+  // belief model cannot condition exactly. Two and three seats are exact; a
+  // 4..10-seat belief or hero-decision query misses declared (a coverage
+  // limitation, not a protocol failure). The artifact loads and advertises,
+  // and the resolver source still serves it.
   SeatCountNotSupported,
 };
 
@@ -150,19 +151,23 @@ struct ResidentRowView {
 
 // Caller-owned fixed storage reused across queries. It contains every buffer
 // a lookup touches, so the warm query path allocates no heap memory. The
-// object is large (about 65 KiB); keep it out of tight stack frames.
+// object is large (about 340 KiB); keep it out of tight stack frames.
 struct ResidentScratch {
   // Per-player per-combo raw public reach (product of observed policy
   // probabilities over the artifact's declared range weights), indexed by
   // bs::comboIndex.
-  std::array<std::array<double, 1326>, 2> raw{};
+  std::array<std::array<double, 1326>, poker::kMaxUnifiedSeats> raw{};
   // Final normalized per-player public marginals, each summing to one.
-  std::array<std::array<double, 1326>, 2> marginal{};
+  std::array<std::array<double, 1326>, poker::kMaxUnifiedSeats> marginal{};
   // Opponent marginal with combinations sharing the actual hero cards
   // removed; written only by a hero decision query.
   std::array<double, 1326> opponent_view{};
   // Per-card summed raw mass, rebuilt while computing joint mass.
-  std::array<std::array<double, 52>, 2> card_mass{};
+  std::array<std::array<double, 52>, poker::kMaxUnifiedSeats> card_mass{};
+  // W2c-ii-b: cached per-seat partner mass J_{-seat}(combo) for the
+  // three-seat belief path, filled by ReachModel::prepare_partner_mass. The
+  // two-seat path answers has_positive_partner in O(1) and leaves this unset.
+  std::array<std::array<double, 1326>, poker::kMaxUnifiedSeats> partner_mass{};
   // Per-observed-action probability scratch for actor combos.
   std::array<double, 1326> action_probability{};
   // Fixed-capacity canonical information key (same layout as
@@ -178,9 +183,11 @@ struct ResidentAnswer {
   std::size_t root_index = 0;
   std::string_view artifact_sha256;
   std::size_t actor = 0;
-  // Public belief: two 1326-entry arrays indexed by bs::comboIndex; each
-  // player's marginal sums to one. Identical for every hero combination.
-  std::array<const std::array<double, 1326>*, 2> public_reach{};
+  // Public belief: per-seat 1326-entry arrays indexed by bs::comboIndex; each
+  // seat's marginal sums to one. Identical for every hero combination. The
+  // first `public_reach_seats` entries are valid (W2c-ii-b: two or three).
+  std::array<const std::array<double, 1326>*, poker::kMaxUnifiedSeats> public_reach{};
+  std::size_t public_reach_seats = 0;
   // Hero decision only: the hero's own policy row and the hero-private
   // opponent belief (opponent combos blocked by hero/board removed).
   ResidentRowView hero_row{};

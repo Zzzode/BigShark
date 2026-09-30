@@ -662,6 +662,58 @@ until W2c-ii-b. The decisions:
    still resolves the "other" seat as `1 - actor` and serves the two-seat
    resolver path until the n-seat gadget (W2c-ii-c).
 
+**D4 implementation decisions recorded at W2c-ii-b (n-seat belief existence
++ hero decision).** W2c-ii-b generalizes the resident belief model from two
+seats to n seats: exact for two (unchanged) and three (the novel
+inclusion-exclusion), a declared coverage miss for four to ten. The decisions:
+
+1. **The per-node belief marginal is exact for two and three seats; four to
+   ten miss declared.** `ReachModel::initialize` accepts a two or three-seat
+   game and returns false otherwise; `public_belief` and `hero_decision`
+   return `MissReason::SeatCountNotSupported` for a four-to-ten-seat artifact,
+   which still loads and advertises (root existence is exact for every seat
+   count). This is a declared coverage limitation, not an infeasibility
+   claim: the n=4 per-node marginal is a measured follow-up, and the enum
+   comment says so.
+2. **The three-seat joint is an exact inclusion-exclusion over card
+   collisions.** The building block is `M(seat, S)`, the mass of `seat`
+   compatible with a set `S` of distinct blocked cards: `total - sum
+   card_mass + sum raw[combo(blocker_i, blocker_j)]`. Triple-and-higher terms
+   vanish because a two-card combo cannot hold three distinct cards, so the
+   formula is exact for any blocker count. The joint is `sum_{c0} raw[0][c0]
+   * sum_{c1~c0} raw[1][c1] * M(2, c0 U c1)`, O(1326^2). A per-seat partner
+   mass `J_{-seat}(c) = sum_{ca~c} raw[a][ca] * M(b, c U ca)` (the other two
+   seats conditioned on `c`) is cached by `prepare_partner_mass` so
+   `has_positive_partner` answers in O(1) and the marginals reuse it.
+3. **The two-seat arithmetic is byte-identical.** The two-seat joint,
+   renormalize fold, `has_positive_partner`, and marginal bodies are preserved
+   verbatim; the three-seat path is a separate dispatch. The golden reach
+   tests pass unchanged, so a two-seat artifact's belief is bit-for-bit the
+   same as before W2c-ii-b.
+4. **`ResidentScratch` and `ResidentAnswer` are seat-generic.** The per-seat
+   buffers (`raw`, `marginal`, `card_mass`, `partner_mass`) are bounded by
+   `poker::kMaxUnifiedSeats` (10); `answer.public_reach` is an array of
+   pointers with a `public_reach_seats` count. The footprint grows to about
+   340 KiB, still caller-owned and heap-free on the warm path.
+5. **No wire protocol change.** The v1 blueprint result carries only the
+   hero row; belief is not on the wire, so W2c-ii-b touches no protobuf or
+   mapper. `hero_decision`'s `opponent_blocked_reach` is a single-seat
+   diagnostic view (the first seat other than the actor); the n-seat resolver
+   gadget (W2c-ii-c) consumes the full joint belief instead.
+
+The independent review (implementer != reviewer) returned APPROVE with two
+non-blocking findings, both addressed in the same change. First, a defensive
+`player >= seat_count_` guard in `prepare_partner_mass_three` and
+`has_positive_partner`: a malformed public-action history can name a seat
+outside the game, which would otherwise overflow the two-element `others`
+array; the resident layer is offline-only with a trusted host, so this is
+hardening rather than a live bug. Second, a bridging fixture
+(`three_seat_bridging_ranges_v2`) pins the pairwise add-back term in
+`M(seat, S)`: seat 2's `AhQd` bridges `Ah` and `Qd` from a disjoint
+(c0, c1) pair, so deleting the add-back drops the joint from 5 to 4 and shifts
+every marginal. A negative control (term removed, test fails; term restored,
+test passes) confirms the fixture is load-bearing.
+
 ### D5. Flop coverage
 
 Coverage is delivered as a gradient, not a promise, and each element is

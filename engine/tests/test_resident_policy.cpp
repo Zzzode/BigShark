@@ -445,6 +445,64 @@ std::vector<std::vector<WeightedHand>> three_seat_flop_ranges_v2() {
   };
 }
 
+// W2c-ii-b collision fixture: two combos per seat, all weight one, with
+// deliberate card collisions across seats so the exact inclusion-exclusion
+// path is exercised (the mutually-distinct fixture above cannot). Board is
+// {2c,3d,7h}; no combo holds a board card. The four card-disjoint joint deals
+// are (seat0, seat1, seat2) = (KhAh, QdAd, QcKc), (KsAs, QhAh, QcKc),
+// (KsAs, QdAd, QhKh), (KsAs, QdAd, QcKc): joint mass 4, and every seat's
+// first combo appears in exactly one deal (marginal 1/4) while its second
+// appears in three (marginal 3/4).
+std::vector<std::vector<WeightedHand>> three_seat_collision_ranges_v2() {
+  return {
+      {{{card("Kh"), card("Ah")}, 1}, {{card("Ks"), card("As")}, 1}},
+      {{{card("Qh"), card("Ah")}, 1}, {{card("Qd"), card("Ad")}, 1}},
+      {{{card("Qh"), card("Kh")}, 1}, {{card("Qc"), card("Kc")}, 1}},
+  };
+}
+
+// W2c-ii-b bridging fixture: seat 2's first combo AhQd bridges two blocked
+// cards (Ah from seat 0's AhKh and Qd from seat 1's QdJd) for the disjoint
+// pair (AhKh, QdJd), so compatible_mass's pairwise add-back is non-zero.
+// Without that add-back AhQd is subtracted twice for that pair and the deal
+// (AhKh, QdJd, 4s5s) vanishes, dropping the joint from 5 to 4. The five
+// card-disjoint deals are (AhKh,QdJd,4s5s), (AhKh,QcJc,4s5s),
+// (AsKs,QdJd,4s5s), (AsKs,QcJc,AhQd), (AsKs,QcJc,4s5s): joint mass 5, with
+// marginals seat0 {2/5, 3/5}, seat1 {2/5, 3/5}, seat2 {1/5, 4/5}. No combo
+// holds a board card from three_seat_flop_def_v2 ({2c,3d,7h}).
+std::vector<std::vector<WeightedHand>> three_seat_bridging_ranges_v2() {
+  return {
+      {{{card("Kh"), card("Ah")}, 1}, {{card("Ks"), card("As")}, 1}},
+      {{{card("Jd"), card("Qd")}, 1}, {{card("Jc"), card("Qc")}, 1}},
+      {{{card("Qd"), card("Ah")}, 1}, {{card("4s"), card("5s")}, 1}},
+  };
+}
+
+// A four-seat flop-rooted v2 game: it loads and advertises, but W2c-ii-b
+// conditions belief exactly only for two and three seats, so a 4-seat belief
+// or hero-decision query misses declared (SeatCountNotSupported).
+GameDef four_seat_flop_def_v2() {
+  GameDef def{};
+  def.player_count = 4;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {2, 2, 2, 2, 0, 0, 0, 0, 0, 0};
+  def.contributions = {1, 1, 1, 1, 0, 0, 0, 0, 0, 0};
+  def.pot = 4;
+  def.board = {card("2c"), card("3d"), card("7h"), 0, 0};
+  def.board_size = 3;
+  return def;
+}
+
+std::vector<std::vector<WeightedHand>> four_seat_flop_ranges_v2() {
+  return {
+      {{{card("8h"), card("8c")}, 1}, {{card("Ah"), card("Ac")}, 1}},
+      {{{card("8s"), card("8d")}, 1}, {{card("As"), card("Ad")}, 1}},
+      {{{card("Jh"), card("Jc")}, 1}, {{card("Qh"), card("Qc")}, 1}},
+      {{{card("Js"), card("Jd")}, 1}, {{card("Qs"), card("Qd")}, 1}},
+  };
+}
+
 // A two-seat turn-rooted v2 game: the resident projection is flop-rooted
 // only, so a turn/river-rooted source is refused as LoadFailed until the
 // state layer generalizes (W2c-ii). The flop-rooted ranges stay off this
@@ -1580,8 +1638,9 @@ static bool test_v2_resident_projection(const fs::path& dir) {
   CHECK(near(row_sum, 1.0, 1e-9));
 
   // Three-seat v2: the load generalizes to the unified view and advertises,
-  // but every resident query misses with SeatCountNotSupported until the
-  // belief path generalizes (W2c-ii-b).
+  // and W2c-ii-b serves its belief and hero-decision queries exactly. The
+  // fixture's combos are all mutually card-distinct, so the root marginals
+  // are just the declared range weights normalized per seat.
   const PublishedV2Fixture three =
       publish_v2(three_seat_flop_def_v2(), three_seat_flop_ranges_v2(), 200, dir, "v2three");
   std::vector<RootLoadResult> three_results;
@@ -1596,12 +1655,39 @@ static bool test_v2_resident_projection(const fs::path& dir) {
   ResidentScratch three_scratch;
   const ResidentAnswer three_belief =
       three_set.public_belief(three_state, three_history, std::nullopt, three_scratch);
-  CHECK(!three_belief.hit);
-  CHECK(three_belief.reason == MissReason::SeatCountNotSupported);
+  CHECK(three_belief.hit);
+  CHECK(three_belief.reason == MissReason::None);
+  CHECK(three_belief.public_reach_seats == 3);
+  // Each seat's marginal normalizes to one and matches the declared weights.
+  {
+    const double expected[3][2] = {
+        {3.0 / 5.0, 2.0 / 5.0}, {7.0 / 12.0, 5.0 / 12.0}, {13.0 / 24.0, 11.0 / 24.0}};
+    const int first[3][2] = {
+        {card("8h"), card("8c")}, {card("8s"), card("8d")}, {card("Jh"), card("Jc")}};
+    const int second[3][2] = {
+        {card("Ah"), card("Ac")}, {card("As"), card("Ad")}, {card("Qh"), card("Qc")}};
+    for (std::size_t seat = 0; seat < 3; ++seat) {
+      double sum = 0.0;
+      for (double mass : *three_belief.public_reach[seat])
+        sum += mass;
+      CHECK(near(sum, 1.0, 1e-9));
+      const int c0 = bs::comboIndex(first[seat][0], first[seat][1]);
+      const int c1 = bs::comboIndex(second[seat][0], second[seat][1]);
+      CHECK(near((*three_belief.public_reach[seat])[c0], expected[seat][0], 1e-9));
+      CHECK(near((*three_belief.public_reach[seat])[c1], expected[seat][1], 1e-9));
+    }
+  }
+
+  // A hero decision at the root returns the seat-1 actor's row (button 0 ->
+  // seat 1 acts first). The hero combo comes from seat 1's declared range.
   const ResidentAnswer three_hero = three_set.hero_decision(
-      three_state, three_history, {card("Ah"), card("Ac")}, std::nullopt, three_scratch);
-  CHECK(!three_hero.hit);
-  CHECK(three_hero.reason == MissReason::SeatCountNotSupported);
+      three_state, three_history, {card("As"), card("Ad")}, std::nullopt, three_scratch);
+  CHECK(three_hero.hit);
+  CHECK(three_hero.hero_row.size > 0);
+  double three_row_sum = 0.0;
+  for (std::size_t i = 0; i < three_hero.hero_row.size; ++i)
+    three_row_sum += three_hero.hero_row.probabilities[i];
+  CHECK(near(three_row_sum, 1.0, 1e-9));
 
   // Two-seat turn-rooted v2: the projection is flop-rooted only, so a
   // turn/river-rooted source is refused as LoadFailed at load.
@@ -1613,6 +1699,134 @@ static bool test_v2_resident_projection(const fs::path& dir) {
   CHECK(turn_results.size() == 1);
   CHECK(turn_results[0].status == RootStatus::LoadFailed);
   CHECK(turn_set.advertised_roots() == 0);
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// W2c-ii-b: three-seat belief with card collisions across seats. The exact
+// inclusion-exclusion path must reproduce hand-computed marginals, and a
+// four-seat artifact must miss declared while still loading and advertising.
+// ---------------------------------------------------------------------------
+
+static bool test_three_seat_belief_collision(const fs::path& dir) {
+  const PublishedV2Fixture fixture = publish_v2(
+      three_seat_flop_def_v2(), three_seat_collision_ranges_v2(), 200, dir, "v2collision");
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet residents = ResidentPolicySet::build(
+      {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
+  CHECK(results.size() == 1);
+  CHECK(results[0].status == RootStatus::Advertised);
+  CHECK(residents.advertised_roots() == 1);
+
+  const GameState state(three_seat_flop_def_v2());
+  const std::vector<PublicAction> history;
+  ResidentScratch scratch;
+  const ResidentAnswer belief = residents.public_belief(state, history, std::nullopt, scratch);
+  CHECK(belief.hit);
+  CHECK(belief.reason == MissReason::None);
+  CHECK(belief.public_reach_seats == 3);
+
+  // Four card-disjoint joint deals, each weight one: every seat's first combo
+  // appears in exactly one deal (marginal 1/4) and its second in three (3/4).
+  const int first[3][2] = {
+      {card("Kh"), card("Ah")}, {card("Qh"), card("Ah")}, {card("Qh"), card("Kh")}};
+  const int second[3][2] = {
+      {card("Ks"), card("As")}, {card("Qd"), card("Ad")}, {card("Qc"), card("Kc")}};
+  for (std::size_t seat = 0; seat < 3; ++seat) {
+    double sum = 0.0;
+    for (double mass : *belief.public_reach[seat])
+      sum += mass;
+    CHECK(near(sum, 1.0, 1e-9));
+    const int c_first = bs::comboIndex(first[seat][0], first[seat][1]);
+    const int c_second = bs::comboIndex(second[seat][0], second[seat][1]);
+    CHECK(near((*belief.public_reach[seat])[c_first], 0.25, 1e-9));
+    CHECK(near((*belief.public_reach[seat])[c_second], 0.75, 1e-9));
+  }
+
+  // A hero decision at the root returns the seat-1 actor's row. The hero combo
+  // {Qh,Ah} shares Ah with seat 0's first combo, so the hero-private opponent
+  // view (seat 0, the first non-actor seat) must have that combo blocked.
+  const ResidentAnswer hero =
+      residents.hero_decision(state, history, {card("Qh"), card("Ah")}, std::nullopt, scratch);
+  CHECK(hero.hit);
+  CHECK(hero.hero_row.size > 0);
+  CHECK(hero.opponent_blocked_reach != nullptr);
+  // Seat 0's KhAh shares Ah with the hero: blocked. Seat 0's KsAs survives.
+  CHECK(hero.opponent_blocked_reach[bs::comboIndex(card("Kh"), card("Ah"))] == 0.0);
+  CHECK(hero.opponent_blocked_reach[bs::comboIndex(card("Ks"), card("As"))] > 0.0);
+
+  return true;
+}
+
+// W2c-ii-b: the pairwise add-back in compatible_mass is load-bearing. Seat 2's
+// AhQd bridges Ah (seat 0's AhKh) and Qd (seat 1's QdJd), so for the disjoint
+// pair (AhKh, QdJd) it is subtracted twice through the per-card masses and
+// must be added back once. A regression that deleted the pairwise loop would
+// drop the joint from 5 to 4 and shift every marginal below.
+static bool test_three_seat_belief_bridging(const fs::path& dir) {
+  const PublishedV2Fixture fixture =
+      publish_v2(three_seat_flop_def_v2(), three_seat_bridging_ranges_v2(), 200, dir, "v2bridging");
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet residents = ResidentPolicySet::build(
+      {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
+  CHECK(results.size() == 1);
+  CHECK(results[0].status == RootStatus::Advertised);
+  CHECK(residents.advertised_roots() == 1);
+
+  const GameState state(three_seat_flop_def_v2());
+  const std::vector<PublicAction> history;
+  ResidentScratch scratch;
+  const ResidentAnswer belief = residents.public_belief(state, history, std::nullopt, scratch);
+  CHECK(belief.hit);
+  CHECK(belief.reason == MissReason::None);
+  CHECK(belief.public_reach_seats == 3);
+
+  // Five card-disjoint deals, each weight one. Seat 2's AhQd is compatible
+  // only with (AsKs, QcJc); its 4s5s is compatible with every pair.
+  const int first[3][2] = {
+      {card("Ah"), card("Kh")}, {card("Qd"), card("Jd")}, {card("Ah"), card("Qd")}};
+  const int second[3][2] = {
+      {card("As"), card("Ks")}, {card("Qc"), card("Jc")}, {card("4s"), card("5s")}};
+  const double expected_first[3] = {2.0 / 5.0, 2.0 / 5.0, 1.0 / 5.0};
+  const double expected_second[3] = {3.0 / 5.0, 3.0 / 5.0, 4.0 / 5.0};
+  for (std::size_t seat = 0; seat < 3; ++seat) {
+    double sum = 0.0;
+    for (double mass : *belief.public_reach[seat])
+      sum += mass;
+    CHECK(near(sum, 1.0, 1e-9));
+    const int c_first = bs::comboIndex(first[seat][0], first[seat][1]);
+    const int c_second = bs::comboIndex(second[seat][0], second[seat][1]);
+    CHECK(near((*belief.public_reach[seat])[c_first], expected_first[seat], 1e-9));
+    CHECK(near((*belief.public_reach[seat])[c_second], expected_second[seat], 1e-9));
+  }
+
+  return true;
+}
+
+static bool test_four_seat_declared_miss(const fs::path& dir) {
+  const PublishedV2Fixture fixture =
+      publish_v2(four_seat_flop_def_v2(), four_seat_flop_ranges_v2(), 200, dir, "v2four");
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet residents = ResidentPolicySet::build(
+      {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
+  // The 4-seat artifact loads and advertises (root existence is exact for
+  // every seat count); only the per-node belief is a declared coverage miss.
+  CHECK(results.size() == 1);
+  CHECK(results[0].status == RootStatus::Advertised);
+  CHECK(residents.advertised_roots() == 1);
+
+  const GameState state(four_seat_flop_def_v2());
+  const std::vector<PublicAction> history;
+  ResidentScratch scratch;
+  const ResidentAnswer belief = residents.public_belief(state, history, std::nullopt, scratch);
+  CHECK(!belief.hit);
+  CHECK(belief.reason == MissReason::SeatCountNotSupported);
+  // Actor is seat 1 (button 0 -> next actor); use a seat-1 combo for the hero.
+  const ResidentAnswer hero =
+      residents.hero_decision(state, history, {card("8s"), card("8d")}, std::nullopt, scratch);
+  CHECK(!hero.hit);
+  CHECK(hero.reason == MissReason::SeatCountNotSupported);
 
   return true;
 }
@@ -2057,6 +2271,9 @@ int main() {
       {"shared combo ranges", test_shared_combo_ranges},
       {"probe api", test_probe_api},
       {"v2 resident projection", test_v2_resident_projection},
+      {"three seat belief collision", test_three_seat_belief_collision},
+      {"three seat belief bridging", test_three_seat_belief_bridging},
+      {"four seat declared miss", test_four_seat_declared_miss},
       {"cross-blocked root", test_cross_blocked_root},
       {"coverage misses", test_misses},
       {"index and continuity", test_index_and_continuity},

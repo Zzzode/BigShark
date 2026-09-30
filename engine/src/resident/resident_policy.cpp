@@ -483,6 +483,9 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
     while (consumed < events.size() && events[consumed].street == streets[street]) {
       const PublicAction& event = events[consumed];
       const std::span<const PublicAction> prefix(events.data(), consumed);
+      // W2c-ii-b: the three-seat has_positive_partner reads the cached partner
+      // mass, which must be rebuilt for this actor after the latest mutation.
+      model.prepare_partner_mass(event.seat);
       const MissReason prob_miss =
           read_action_probabilities(record.index, model, scratch, state, event, prefix);
       if (prob_miss != MissReason::None)
@@ -497,7 +500,10 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
 
   if (!model.write_marginals())
     return MissReason::EmptyJointRange;
-  answer.public_reach = {&scratch.marginal[0], &scratch.marginal[1]};
+  const std::size_t seats = record.game.def.player_count;
+  for (std::size_t seat = 0; seat < seats; ++seat)
+    answer.public_reach[seat] = &scratch.marginal[seat];
+  answer.public_reach_seats = seats;
   return MissReason::None;
 }
 
@@ -518,9 +524,10 @@ ResidentAnswer ResidentPolicySet::public_belief(const GameState& state,
   if (!resolved.record)
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
-  // W2c-ii-a: the belief model is still two-seat; a 3..10-seat artifact loads
-  // and advertises, but its belief query misses declared until W2c-ii-b.
-  if (record.game.def.player_count != 2)
+  // W2c-ii-b: the belief model is exact for two and three seats; a 4..10-seat
+  // artifact loads and advertises, but its per-node belief cannot be conditioned
+  // exactly, so the query misses declared (a coverage limitation).
+  if (record.game.def.player_count > 3)
     return miss_answer(MissReason::SeatCountNotSupported);
   if (!runout_matches(record.game, state))
     return miss_answer(MissReason::RunoutDivergence);
@@ -547,9 +554,9 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   if (!resolved.record)
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
-  // W2c-ii-a: the belief model behind the hero-private view is still
-  // two-seat; a 3..10-seat hero-decision query misses declared until W2c-ii-b.
-  if (record.game.def.player_count != 2)
+  // W2c-ii-b: the belief model behind the hero-private view is exact for two
+  // and three seats; a 4..10-seat hero-decision query misses declared.
+  if (record.game.def.player_count > 3)
     return miss_answer(MissReason::SeatCountNotSupported);
   if (!runout_matches(record.game, state))
     return miss_answer(MissReason::RunoutDivergence);
@@ -596,10 +603,20 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   answer.hero_row.probabilities = compact.probabilities;
 
   // Hero-private opponent belief: blocker removal only, never renormalized
-  // into a relabeled equilibrium range.
+  // into a relabeled equilibrium range. W2c-ii-b: with three seats there are
+  // two opponents; the diagnostic opponent view conditions on the first seat
+  // other than the actor. The n-seat resolver gadget (W2c-ii-c) consumes the
+  // full joint belief instead of this single-seat view.
+  std::size_t opponent = 0;
+  for (std::size_t seat = 0; seat < record.game.def.player_count; ++seat) {
+    if (seat != *state.actor()) {
+      opponent = seat;
+      break;
+    }
+  }
   bool fully_blocked = false;
   ReachModel model(scratch);
-  model.opponent_private_view(1 - *state.actor(), hero_cards, fully_blocked);
+  model.opponent_private_view(opponent, hero_cards, fully_blocked);
   if (fully_blocked)
     return miss_answer(MissReason::OpponentRangeFullyBlocked);
   answer.opponent_blocked_reach = scratch.opponent_view.data();
