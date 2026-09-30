@@ -407,6 +407,23 @@ std::vector<std::vector<WeightedHand>> three_seat_flop_ranges_v2() {
   };
 }
 
+// A two-seat turn-rooted v2 game: the resident projection is flop-rooted
+// only, so a turn/river-rooted source is refused as LoadFailed until the
+// state layer generalizes (W2c-ii). The flop-rooted ranges stay off this
+// board (the fourth card is 9s, absent from every combo).
+GameDef two_seat_turn_def_v2() {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {1, 1, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 2;
+  def.board = {card("2c"), card("3d"), card("7h"), card("9s"), 0};
+  def.board_size = 4;
+  return def;
+}
+
 struct PublishedV2Fixture {
   fs::path policy_path;
   GameDef def;
@@ -1445,6 +1462,18 @@ static bool test_v2_resident_projection(const fs::path& dir) {
   CHECK(three_results.size() == 1);
   CHECK(three_results[0].status == RootStatus::LoadFailed);
   CHECK(three_set.advertised_roots() == 0);
+
+  // Two-seat turn-rooted v2: the projection is flop-rooted only, so a
+  // turn/river-rooted source is refused as LoadFailed just like a 3+-seat
+  // source.
+  const PublishedV2Fixture turn =
+      publish_v2(two_seat_turn_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2turn");
+  std::vector<RootLoadResult> turn_results;
+  ResidentPolicySet turn_set = ResidentPolicySet::build(
+      {{turn.policy_path, parse_sha256(turn.sha256_hex)}}, {}, &turn_results);
+  CHECK(turn_results.size() == 1);
+  CHECK(turn_results[0].status == RootStatus::LoadFailed);
+  CHECK(turn_set.advertised_roots() == 0);
 
   return true;
 }
