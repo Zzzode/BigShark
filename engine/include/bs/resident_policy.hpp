@@ -21,6 +21,7 @@
 #pragma once
 
 #include <array>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/resolver.hpp>
 #include <bs/strategy_artifact.hpp>
@@ -29,9 +30,9 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace bs::resident {
@@ -85,6 +86,11 @@ enum class MissReason : std::uint8_t {
   // factor for this combination was zero). A blueprint row for a combination
   // the observer knows the hero cannot hold is never returned.
   ZeroProbabilityHeroCombination,
+  // W2c-ii-a: the matched artifact's root serves a seat count the resident
+  // belief model cannot condition yet (the two-seat ReachModel). The artifact
+  // loads and advertises, and the resolver source still serves it, but a
+  // 3..10-seat belief or hero-decision query misses declared until W2c-ii-b.
+  SeatCountNotSupported,
 };
 
 const char* to_string(MissReason reason) noexcept;
@@ -207,28 +213,33 @@ class ResidentPolicySet {
   // node. The state is matched by its canonical root identity. When
   // pinned_sha256 is given, only that artifact may answer. No hole-card
   // argument exists by design: the result must be identical for every hero
-  // combination.
-  ResidentAnswer public_belief(const poker::HeadsUpState& state,
+  // combination. `history` is the observed public-action path from the
+  // artifact's flop root to `state` (GameState stores no history).
+  ResidentAnswer public_belief(const poker::GameState& state,
+                               std::span<const poker::PublicAction> history,
                                std::optional<std::string_view> pinned_sha256,
                                ResidentScratch& scratch) const;
 
   // Public belief plus hero-private selection: verify the actual hero combo,
   // return its resident policy row, and produce the blocker-filtered opponent
   // view. Never invents a uniform policy or renormalizes a relabeled range.
-  ResidentAnswer hero_decision(const poker::HeadsUpState& state, std::array<int, 2> hero_cards,
+  ResidentAnswer hero_decision(const poker::GameState& state,
+                               std::span<const poker::PublicAction> history,
+                               std::array<int, 2> hero_cards,
                                std::optional<std::string_view> pinned_sha256,
                                ResidentScratch& scratch) const;
 
   // RFC 0005 Stage 9 offline resolver access. Binds an immutable blueprint
   // source to the advertised record matching `state`'s canonical root (and an
-  // optional pinned digest), exposing the record's HeadsUpGame and ANY
-  // (state, player, own-cards) blueprint row for both players. This is OFF the
-  // warm no-allocation decision path and allocates; it exists only to feed the
-  // bounded resolver. Returns nullptr when no advertised record matches or the
-  // pin does not resolve. The returned source borrows the set's immutable
-  // records and stays valid while the set is alive and unmoved.
+  // optional pinned digest), exposing the record's UnifiedGame and the
+  // (state, history, player, own-cards) blueprint rows the two-seat resolver
+  // path consumes (seats 0..1; the n-seat gadget lands in W2c-ii-c). This is
+  // OFF the warm no-allocation decision path and allocates; it exists only to
+  // feed the bounded resolver. Returns nullptr when no advertised record
+  // matches or the pin does not resolve. The returned source borrows the set's
+  // immutable records and stays valid while the set is alive and unmoved.
   std::unique_ptr<resolver::BlueprintSource> resolver_source(
-      const poker::HeadsUpState& state,
+      const poker::GameState& state, std::span<const poker::PublicAction> history,
       std::optional<std::string_view> pinned_sha256 = std::nullopt) const;
 
   // TU-private record definition lives in resident_policy.cpp; the name is

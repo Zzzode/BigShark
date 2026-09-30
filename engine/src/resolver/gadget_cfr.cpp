@@ -49,14 +49,15 @@ struct GadgetTrainer {
     for (const GadgetDeal& deal : model.deals)
       heroes.insert(deal.hero);
     for (const auto& hero : heroes) {
-      InformationKey key = solver::information_key(model.node, hero);
+      InformationKey key =
+          solver::make_information_key(model.hero, hero, model.node.board(), model.history);
       hero_regret[key].assign(action_count, 0.0);
       hero_sum[key].assign(action_count, 0.0);
     }
   }
 
   InformationKey hero_key(const std::array<int, 2>& cards) const {
-    return solver::information_key(model.node, cards);
+    return solver::make_information_key(model.hero, cards, model.node.board(), model.history);
   }
 
   std::array<std::array<int, 2>, 2> holes(const GadgetDeal& deal) const {

@@ -3,14 +3,17 @@
 #pragma once
 
 #include <array>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/resolver.hpp>
+#include <bs/unified_game.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -21,14 +24,13 @@ namespace bs::resolver::detail {
 using poker::Action;
 using poker::ActionType;
 using poker::Chips;
-using poker::HeadsUpRoot;
-using poker::HeadsUpState;
+using poker::GameState;
 using poker::Phase;
-using poker::Settlement;
+using poker::PublicAction;
 using poker::Street;
-using solver::HeadsUpGame;
 using solver::InformationKey;
 using solver::PolicyRow;
+using solver::UnifiedGame;
 using solver::WeightedHand;
 
 struct RequireFailure : std::invalid_argument {
@@ -113,7 +115,7 @@ inline bool cards_conflict(std::array<int, 2> a, std::array<int, 2> b) {
   return a[0] == b[0] || a[0] == b[1] || a[1] == b[0] || a[1] == b[1];
 }
 
-inline bool hand_blocks_board(const std::array<int, 2>& hand, const std::vector<int>& board) {
+inline bool hand_blocks_board(const std::array<int, 2>& hand, std::span<const int> board) {
   for (int card : board)
     if (card == hand[0] || card == hand[1])
       return true;
@@ -123,7 +125,7 @@ inline bool hand_blocks_board(const std::array<int, 2>& hand, const std::vector<
 // The cards the normal game would offer at a Deal phase for one deal, matching
 // solver::public_cards exactly: a fixed slot is a singleton; otherwise every
 // card not on the board, in either hand, or reserved for a later fixed slot.
-std::vector<int> continuation_cards(const HeadsUpGame& game, const HeadsUpState& state,
+std::vector<int> continuation_cards(const UnifiedGame& game, const GameState& state,
                                     const std::array<std::array<int, 2>, 2>& hands);
 
 // Expected RESPONDER net chip utility of the subtree AFTER the hero's current
@@ -131,7 +133,7 @@ std::vector<int> continuation_cards(const HeadsUpGame& game, const HeadsUpState&
 // engine settlement. An action node anywhere below means the terminal-only
 // precondition was violated; the caller reports ineligibility rather than
 // consulting a heuristic leaf.
-double continuation_utility_responder(const HeadsUpGame& game, const HeadsUpState& after,
+double continuation_utility_responder(const UnifiedGame& game, const GameState& after,
                                       const std::array<std::array<int, 2>, 2>& hands,
                                       std::size_t responder, Budget& budget);
 
@@ -139,7 +141,7 @@ double continuation_utility_responder(const HeadsUpGame& game, const HeadsUpStat
 // actions reaches Folded/Showdown through public cards alone, with no further
 // action by either player. This is the RFC 0005 terminal-only graph property
 // (lines 198-200), evaluated with one exact structural trace per action.
-bool is_terminal_only(const HeadsUpGame& game, const HeadsUpState& node,
+bool is_terminal_only(const UnifiedGame& game, const GameState& node,
                       const std::vector<Action>& node_actions);
 
 }  // namespace bs::resolver::detail

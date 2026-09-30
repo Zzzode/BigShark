@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/range.hpp>
@@ -206,8 +207,46 @@ Published publish_zero_prob(const fs::path& dir) {
           out.sha256_hex, out.file_bytes,    result.information_sets};
 }
 
+// Rebuilds the seat-generic GameState view of a flop-rooted HeadsUpState by
+// replaying its observed public-action log. GameState(player_count == 2)
+// reproduces HeadsUpState field for field, so the cursor and the source agree;
+// this adapter exists only because the resident query path now speaks
+// GameState + PublicAction history.
+struct UnifiedNode {
+  GameState state;
+  std::vector<PublicAction> history;
+};
+
+UnifiedNode to_unified(const HeadsUpState& source) {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = source.root().button;
+  def.big_blind = source.root().big_blind;
+  def.stacks[0] = source.root().stacks[0];
+  def.stacks[1] = source.root().stacks[1];
+  def.contributions[0] = source.root().contributions[0];
+  def.contributions[1] = source.root().contributions[1];
+  def.pot = source.root().pot;
+  def.board[0] = source.root().flop[0];
+  def.board[1] = source.root().flop[1];
+  def.board[2] = source.root().flop[2];
+  def.board_size = 3;
+  GameState cursor(def);
+  std::vector<PublicAction> history;
+  for (const BettingEvent& event : source.history()) {
+    while (cursor.street() < event.street)
+      cursor = cursor.after_card(source.board()[cursor.board().size()]);
+    cursor = cursor.after_action(event.actor, event.action);
+    history.push_back({event.street, event.actor, event.action});
+  }
+  while (cursor.board().size() < source.board().size())
+    cursor = cursor.after_card(source.board()[cursor.board().size()]);
+  return {std::move(cursor), std::move(history)};
+}
+
 struct Query {
-  HeadsUpState state;
+  GameState state;
+  std::vector<PublicAction> history;
   std::array<int, 2> hero;
   std::size_t root;
 };
@@ -257,13 +296,14 @@ void collect_queries(const HeadsUpGame& game, std::size_t root, HeadsUpState sta
       encode_public_key(information_key(state, name_cards), kArtifactSchemaVersion);
   if (!seen.insert(name).second)
     return;
+  const UnifiedNode node = to_unified(state);
   for (const WeightedHand& hand : game.ranges[actor]) {
     bool blocked = false;
     for (int board_card : state.board())
       if (board_card == hand.cards[0] || board_card == hand.cards[1])
         blocked = true;
     if (!blocked)
-      queries.push_back({state, hand.cards, root});
+      queries.push_back({node.state, node.history, hand.cards, root});
   }
   for (const Action& action : abstract_actions(state, game.sizes))
     collect_queries(game, root, state.after_action(actor, action), queries, seen);
@@ -431,6 +471,15 @@ int main() {
   const HeadsUpState small_after_jam_call =
       small_root.after_action(0, {ActionType::Bet, 2}).after_action(1, {ActionType::Call});
 
+  // Pre-built outside every counter region: the resident query path speaks
+  // GameState + PublicAction history, and constructing either inside a timed
+  // loop would allocate in the HARNESS rather than the resident lookup.
+  const UnifiedNode root0_node = to_unified(root0);
+  const UnifiedNode off_amount_node = to_unified(off_amount);
+  const UnifiedNode divergent_node = to_unified(divergent);
+  const UnifiedNode small_root_node = to_unified(small_root);
+  const UnifiedNode small_after_jam_node = to_unified(small_after_jam_call);
+
   constexpr std::size_t kBatch = 100000;
   constexpr std::size_t kMissBatch = 20000;
   std::vector<double> hit_ns;
@@ -449,7 +498,7 @@ int main() {
   {
     ResidentScratch pre;
     for (const Query& query : queries)
-      if (!residents.hero_decision(query.state, query.hero, std::nullopt, pre).hit) {
+      if (!residents.hero_decision(query.state, query.history, query.hero, std::nullopt, pre).hit) {
         std::fprintf(stderr, "warmup uncovered query\n");
         return 2;
       }
@@ -462,7 +511,7 @@ int main() {
     const Query& query = queries[i % distinct_nodes];
     const auto t0 = Clock::now();
     const ResidentAnswer answer =
-        residents.hero_decision(query.state, query.hero, std::nullopt, scratch);
+        residents.hero_decision(query.state, query.history, query.hero, std::nullopt, scratch);
     const auto t1 = Clock::now();
     if (!answer.hit) {
       std::fprintf(stderr, "expected covered hit at iteration %zu: %s\n", i,
@@ -484,35 +533,42 @@ int main() {
     ResidentAnswer answer;
     switch (i % 9) {
       case 0:
-        answer = residents.public_belief(small_root, std::nullopt, scratch);  // unsupported
+        answer = residents.public_belief(small_root_node.state, small_root_node.history,
+                                         std::nullopt, scratch);  // unsupported
         break;
       case 1:
-        answer = residents.public_belief(small_root, good_pin, scratch);  // pin mismatch
+        answer = residents.public_belief(small_root_node.state, small_root_node.history, good_pin,
+                                         scratch);  // pin mismatch
         break;
       case 2:
-        answer = starved.public_belief(root0, std::nullopt, scratch);  // over budget
+        answer = starved.public_belief(root0_node.state, root0_node.history, std::nullopt,
+                                       scratch);  // over budget
         break;
       case 3:
-        answer = residents.public_belief(off_amount, std::nullopt, scratch);  // off-tree amount
+        answer = residents.public_belief(off_amount_node.state, off_amount_node.history,
+                                         std::nullopt, scratch);  // off-tree amount
         break;
       case 4:
-        answer = residents.hero_decision(root0, {card_id("2h"), card_id("2d")}, std::nullopt,
+        answer = residents.hero_decision(root0_node.state, root0_node.history,
+                                         {card_id("2h"), card_id("2d")}, std::nullopt,
                                          scratch);  // untrained combo
         break;
       case 5:
-        answer = residents.hero_decision(root0, {card_id("Ks"), card_id("As")}, std::nullopt,
+        answer = residents.hero_decision(root0_node.state, root0_node.history,
+                                         {card_id("Ks"), card_id("As")}, std::nullopt,
                                          scratch);  // blocked by board
         break;
       case 6:
-        answer = residents.public_belief(divergent, std::nullopt, scratch);  // runout
+        answer = residents.public_belief(divergent_node.state, divergent_node.history, std::nullopt,
+                                         scratch);  // runout
         break;
       case 7:
-        answer =
-            with_small.public_belief(small_after_jam_call, std::nullopt, scratch);  // zero prob
+        answer = with_small.public_belief(small_after_jam_node.state, small_after_jam_node.history,
+                                          std::nullopt, scratch);  // zero prob
         break;
       case 8:
-        answer =
-            residents.public_belief(small_root, std::string_view(bad_pin), scratch);  // bad pin
+        answer = residents.public_belief(small_root_node.state, small_root_node.history,
+                                         std::string_view(bad_pin), scratch);  // bad pin
         break;
     }
     const auto t1 = Clock::now();

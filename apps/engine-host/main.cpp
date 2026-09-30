@@ -67,12 +67,13 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
   bool resolvingAdvertised() const noexcept override { return set_.advertised_roots() > 0; }
 
   bs::v1::V1BlueprintResult blueprintHeroDecision(
-      const bs::poker::HeadsUpState& state, const std::array<int, 2>& hero_cards,
+      const bs::poker::GameState& state, std::span<const bs::poker::PublicAction> history,
+      const std::array<int, 2>& hero_cards,
       std::string_view pinned_sha256) const noexcept override {
     bs::v1::V1BlueprintResult result;
     try {
       const bs::resident::ResidentAnswer answer =
-          set_.hero_decision(state, hero_cards,
+          set_.hero_decision(state, history, hero_cards,
                              pinned_sha256.empty() ? std::optional<std::string_view>{}
                                                    : std::optional<std::string_view>{pinned_sha256},
                              scratch_);
@@ -97,15 +98,17 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
     }
   }
 
-  bs::v1::V1ResolveResult resolvingDecision(const bs::poker::HeadsUpState& state,
+  bs::v1::V1ResolveResult resolvingDecision(const bs::poker::GameState& state,
+                                            std::span<const bs::poker::PublicAction> history,
                                             const std::array<int, 2>& hero_cards,
                                             std::string_view pinned_sha256,
                                             std::uint32_t deadline_ms) const noexcept override {
     bs::v1::V1ResolveResult result;
     try {
-      auto source = set_.resolver_source(
-          state, pinned_sha256.empty() ? std::optional<std::string_view>{}
-                                       : std::optional<std::string_view>{pinned_sha256});
+      auto source = set_.resolver_source(state, history,
+                                         pinned_sha256.empty()
+                                             ? std::optional<std::string_view>{}
+                                             : std::optional<std::string_view>{pinned_sha256});
       if (!source) {
         result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
         result.miss = bs::v1::V1BlueprintMiss::RootNotSupported;
@@ -121,7 +124,7 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
       bool have_baseline = false;
       {
         const bs::resident::ResidentAnswer answer = set_.hero_decision(
-            state, hero_cards,
+            state, history, hero_cards,
             pinned_sha256.empty() ? std::optional<std::string_view>{}
                                   : std::optional<std::string_view>{pinned_sha256},
             scratch_);
@@ -144,8 +147,8 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
       // (they are the cost drivers), from this budget alone; the configured
       // count stays the upper bound. The derivation reads only public inputs,
       // so every counterfactual hero combination derives the identical cap.
-      limits.public_seed = publicSeed(*source, state);
-      resolve_scratch_ = resolver_.resolve(state, *source, limits);
+      limits.public_seed = publicSeed(*source, state, history);
+      resolve_scratch_ = resolver_.resolve(state, history, *source, limits);
 
       const auto baseline = [&]() -> bool {
         if (!have_baseline)
@@ -156,7 +159,8 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
 
       switch (resolve_scratch_.status) {
         case bs::resolver::ResolveStatus::Certified: {
-          const auto key = bs::solver::information_key(state, hero_cards);
+          const auto key =
+              bs::solver::make_information_key(*state.actor(), hero_cards, state.board(), history);
           const auto found = resolve_scratch_.candidate.find(key);
           if (found == resolve_scratch_.candidate.end())
             return {bs::v1::V1ResolveOutcome::DeadlineExceeded,
@@ -200,8 +204,16 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
  private:
   // Deterministic public-context seed (FNV-1a over the digest, root identity,
   // board, and exact public history). It never reads the actual hero hand.
+  //
+  // The mix order and field bytes are frozen: at two seats it is byte-for-byte
+  // the former HeadsUpRoot/HeadsUpState seed (root.flop, the two stacks, the
+  // two contributions, pot, button, board span, then street/actor/type/target
+  // per history event), so a certified two-seat artifact's seed does not move.
+  // GameDef.board carries the flop in its first three ints, and a PublicAction
+  // shares the BettingEvent byte layout for the three mixed fields.
   static std::uint64_t publicSeed(const bs::resolver::BlueprintSource& source,
-                                  const bs::poker::HeadsUpState& state) {
+                                  const bs::poker::GameState& state,
+                                  std::span<const bs::poker::PublicAction> history) {
     std::uint64_t hash = 1469598103934665603ULL;
     auto mix = [&hash](const void* data, std::size_t bytes) {
       const auto* bytes_ptr = static_cast<const unsigned char*>(data);
@@ -212,16 +224,16 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
     };
     const std::string digest(source.artifact_digest());
     mix(digest.data(), digest.size());
-    const auto& root = state.root();
-    mix(root.flop.data(), sizeof(root.flop));
-    mix(root.stacks.data(), sizeof(root.stacks));
-    mix(root.contributions.data(), sizeof(root.contributions));
-    mix(&root.pot, sizeof(root.pot));
-    mix(&root.button, sizeof(root.button));
+    const auto& def = state.def();
+    mix(def.board.data(), 3 * sizeof(int));
+    mix(def.stacks.data(), def.player_count * sizeof(bs::poker::Chips));
+    mix(def.contributions.data(), def.player_count * sizeof(bs::poker::Chips));
+    mix(&def.pot, sizeof(def.pot));
+    mix(&def.button, sizeof(def.button));
     mix(state.board().data(), state.board().size() * sizeof(int));
-    for (const auto& event : state.history()) {
+    for (const auto& event : history) {
       mix(&event.street, sizeof(event.street));
-      mix(&event.actor, sizeof(event.actor));
+      mix(&event.seat, sizeof(event.seat));
       mix(&event.action.type, sizeof(event.action.type));
       mix(&event.action.target_total, sizeof(event.action.target_total));
     }
@@ -259,6 +271,8 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
         return bs::v1::V1BlueprintMiss::OpponentRangeFullyBlocked;
       case MissReason::ZeroProbabilityHeroCombination:
         return bs::v1::V1BlueprintMiss::ZeroProbabilityHeroCombination;
+      case MissReason::SeatCountNotSupported:
+        return bs::v1::V1BlueprintMiss::SeatCountNotSupported;
     }
     return bs::v1::V1BlueprintMiss::OffTree;
   }

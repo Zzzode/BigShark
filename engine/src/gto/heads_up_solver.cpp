@@ -21,6 +21,7 @@ namespace bs::solver {
 namespace {
 using poker::Action;
 using poker::Chips;
+using poker::GameState;
 using poker::HeadsUpState;
 using poker::Phase;
 using Clock = std::chrono::steady_clock;
@@ -551,6 +552,24 @@ std::vector<Action> abstract_actions(const HeadsUpState& state, const SizeSchedu
   // context from this HeadsUpState and delegate the ordered-menu rule. The
   // computation is bit-for-bit the former in-solver function (RFC 0008
   // stage 3 moves the rule, it does not change it).
+  const auto actor = *state.actor();
+  const auto& hero = state.players()[actor];
+  const auto& other = state.players()[1 - actor];
+  abstraction::MenuContext context;
+  context.street = state.street();
+  context.pot = state.pot();
+  context.actor_committed = hero.street_committed;
+  context.opponent_committed = other.street_committed;
+  context.opponent_stack = other.stack;
+  return abstraction::build_action_menu(state.legal(),
+                                        sizes[static_cast<std::size_t>(state.street())], context);
+}
+
+std::vector<Action> abstract_actions(const GameState& state, const SizeSchedule& sizes) {
+  // Seat-generic twin of the HeadsUpState overload (RFC 0009 W2c-ii). At two
+  // seats the opponent is the other seat, so an equivalent state yields the
+  // identical ordered menu. GameState is historyless, which the menu rule does
+  // not consult.
   const auto actor = *state.actor();
   const auto& hero = state.players()[actor];
   const auto& other = state.players()[1 - actor];

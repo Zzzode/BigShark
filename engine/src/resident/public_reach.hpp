@@ -15,6 +15,7 @@
 #include <array>
 #include <bs/range.hpp>
 #include <bs/resident_policy.hpp>
+#include <bs/unified_game.hpp>
 #include <cstddef>
 
 namespace bs::resident {
@@ -27,7 +28,10 @@ class ReachModel {
   // combinations blocked by the root flop, and normalize the legal joint
   // distribution to mass one. Returns false when no positive
   // card-compatible joint deal exists; the scratch is then fail-closed.
-  bool initialize(const solver::HeadsUpGame& game);
+  // W2c-ii-a: the belief model is still two-seat; an n-seat unified game
+  // loads and serves the resolver source, but the resident belief cannot
+  // condition it until W2c-ii-b, so an n-seat game returns false.
+  bool initialize(const solver::UnifiedGame& game);
 
   // Remove every combination holding the dealt public card and renormalize.
   // Returns false when the conditioned joint mass is zero.
@@ -63,10 +67,11 @@ class ReachModel {
   ResidentScratch& scratch_;
 };
 
-// Exact root joint mass: the sum of declared range weights over pairs of
-// combinations that share no card with each other or the ordered root flop.
-// Per-player max normalization is deliberately not applied because the only
-// property tested here, positivity, is invariant under positive rescaling.
-double root_joint_mass(const solver::HeadsUpGame& game);
+// Exact root joint mass: the sum of declared range weights over assignments of
+// one combination per seat that share no card with each other or the ordered
+// root flop. Exact for every seat count by backtracking (most-constrained seat
+// first); per-player max normalization is deliberately not applied because the
+// only property tested here, positivity, is invariant under positive rescaling.
+double root_joint_mass(const solver::UnifiedGame& game);
 
 }  // namespace bs::resident

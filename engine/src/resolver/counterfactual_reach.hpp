@@ -13,10 +13,14 @@
 namespace bs::resolver::detail {
 
 struct ReachModel {
-  HeadsUpState node;
+  GameState node;
+  // Observed public-action path from the flop root to `node`. GameState is
+  // historyless, so the gadget and certifier read it from here to build the
+  // candidate information keys.
+  std::vector<PublicAction> history;
   std::size_t hero = 0;
   std::size_t responder = 1;
-  const HeadsUpGame* game = nullptr;
+  const UnifiedGame* game = nullptr;
   std::vector<Action> node_actions;
 
   // Positive-weight joint deals in deterministic (hero, responder) order.
@@ -41,10 +45,12 @@ struct ReachModel {
   std::vector<std::array<int, 2>> zero_mass_responder;
 };
 
-// Constructs the model. Returns ResolveStatus::Certified on success; any other
-// status names the fail-closed reason and `detail` describes it. Never throws
-// for a coverage/identity failure.
-ResolveStatus build_model(const HeadsUpState& node, const BlueprintSource& blueprint,
-                          Budget& budget, ReachModel& model, std::string& detail);
+// Constructs the model. `history` is the observed public-action path from the
+// blueprint game's flop root to `node`. Returns ResolveStatus::Certified on
+// success; any other status names the fail-closed reason and `detail`
+// describes it. Never throws for a coverage/identity failure.
+ResolveStatus build_model(const GameState& node, std::span<const PublicAction> history,
+                          const BlueprintSource& blueprint, Budget& budget, ReachModel& model,
+                          std::string& detail);
 
 }  // namespace bs::resolver::detail

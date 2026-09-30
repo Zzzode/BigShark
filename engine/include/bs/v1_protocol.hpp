@@ -7,10 +7,12 @@
 #pragma once
 
 #include <array>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <iosfwd>
+#include <span>
 #include <string>
 #include <string_view>
 
@@ -62,8 +64,8 @@ struct EnvelopeResult {
 
 // Why a lookup is not covered, mirrored 1:1 from bs::resident::MissReason for
 // the resident-owned misses plus UnsupportedHandState for a HandState the
-// postflop heads-up reconstructor refuses (non-postflop, multiway, antes,
-// unequal closed-street contributions, unparseable history, an illegal
+// postflop reconstructor refuses (non-postflop, a seat count outside 2..10,
+// antes, unequal matched contributions, unparseable history, an illegal
 // transition, or a card collision). Names intentionally reuse the resident
 // vocabulary so diagnostics stay stable across the seam; the enum itself is
 // protobuf- and resident-independent.
@@ -83,6 +85,11 @@ enum class V1BlueprintMiss : std::uint8_t {
   RunoutDivergence,
   OpponentRangeFullyBlocked,
   ZeroProbabilityHeroCombination,
+  // RFC 0009 W2c-ii-a: the reconstructed root serves a seat count the resident
+  // belief model cannot condition yet (the two-seat ReachModel). The artifact
+  // loads and advertises, but a 3..10-seat belief or hero-decision query
+  // misses declared until the seat-generic belief lands (W2c-ii-b).
+  SeatCountNotSupported,
 };
 
 const char* to_string(V1BlueprintMiss miss) noexcept;
@@ -135,14 +142,15 @@ class V1HostServices {
   // True when at least one resident root was advertised at startup.
   virtual bool blueprintAdvertised() const noexcept = 0;
 
-  // Hero decision lookup at a reconstructed postflop heads-up node. The state
-  // and hero cards are poker-domain values owned by the caller for the call
-  // duration; the implementation reuses its own per-process scratch. The pin
-  // is empty on the wire today (no request field names an artifact yet) and
-  // selects among roots when present.
+  // Hero decision lookup at a reconstructed postflop node. The state, the
+  // observed public-action history (GameState stores no history), and hero
+  // cards are poker-domain values owned by the caller for the call duration;
+  // the implementation reuses its own per-process scratch. The pin is empty on
+  // the wire today (no request field names an artifact yet) and selects among
+  // roots when present.
   virtual V1BlueprintResult blueprintHeroDecision(
-      const bs::poker::HeadsUpState& state, const std::array<int, 2>& hero_cards,
-      std::string_view pinned_sha256) const noexcept = 0;
+      const bs::poker::GameState& state, std::span<const bs::poker::PublicAction> history,
+      const std::array<int, 2>& hero_cards, std::string_view pinned_sha256) const noexcept = 0;
 
   // True when a resolver plus at least one advertised terminal-only root is
   // available, so minor-1 capabilities may advertise SOLVER_MODE_RESOLVING.
@@ -153,11 +161,13 @@ class V1HostServices {
   // time budget in milliseconds. The solve is whole-range and hero-card
   // independent; hero_cards selects only the returned row afterward. Default
   // implementations never resolve.
-  virtual V1ResolveResult resolvingDecision(const bs::poker::HeadsUpState& state,
+  virtual V1ResolveResult resolvingDecision(const bs::poker::GameState& state,
+                                            std::span<const bs::poker::PublicAction> history,
                                             const std::array<int, 2>& hero_cards,
                                             std::string_view pinned_sha256,
                                             std::uint32_t deadline_ms) const noexcept {
     (void)state;
+    (void)history;
     (void)hero_cards;
     (void)pinned_sha256;
     (void)deadline_ms;

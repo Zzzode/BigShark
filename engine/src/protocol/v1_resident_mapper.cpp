@@ -2,7 +2,8 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdint>
+#include <bs/game_definition.hpp>
+#include <bs/heads_up.hpp>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -15,8 +16,12 @@ namespace pv = ::bigshark::engine::v1;
 using poker::Action;
 using poker::ActionType;
 using poker::Chips;
+using poker::GameDef;
+using poker::GameState;
 using poker::HeadsUpRoot;
 using poker::HeadsUpState;
+using poker::PublicAction;
+using poker::Street;
 
 // proto card: (Rank-1)*4 + (Suit-1) into the poker id space rank*4+suit with
 // rank 0..12 (2..A) and suit 0..3 (s,h,d,c).
@@ -24,21 +29,37 @@ int pokerCard(const pv::Card& card) {
   return (static_cast<int>(card.rank()) - 1) * 4 + (static_cast<int>(card.suit()) - 1);
 }
 
-pv::Street wireStreet(poker::Street street) {
+pv::Street wireStreet(Street street) {
   switch (street) {
     // Resident reconstruction is postflop-only; preflop was already handled by
     // the trailing return, but the arm is explicit so the switch is total
     // under the target-wide -Werror=switch.
-    case poker::Street::Preflop:
+    case Street::Preflop:
       return pv::STREET_UNSPECIFIED;
-    case poker::Street::Flop:
+    case Street::Flop:
       return pv::STREET_FLOP;
-    case poker::Street::Turn:
+    case Street::Turn:
       return pv::STREET_TURN;
-    case poker::Street::River:
+    case Street::River:
       return pv::STREET_RIVER;
   }
   return pv::STREET_UNSPECIFIED;
+}
+
+// Inverse of wireStreet for the observed postflop streets. Preflop events are
+// never replayed (they only establish the root pot), so the fallback is
+// unreachable on the replayed path.
+Street pokerStreet(pv::Street street) {
+  switch (street) {
+    case pv::STREET_FLOP:
+      return Street::Flop;
+    case pv::STREET_TURN:
+      return Street::Turn;
+    case pv::STREET_RIVER:
+      return Street::River;
+    default:
+      return Street::Preflop;
+  }
 }
 
 // One validated postflop action in actor space.
@@ -60,15 +81,19 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
   auto fail = [&](V1BlueprintMiss reason) {
     miss = reason;
     out.state.reset();
+    out.history.clear();
+    out.oracle_state.reset();
     return false;
   };
 
-  // ---- Profile gates: postflop, heads-up, no ante/rake/straddle profile. ---
+  // ---- Profile gates: postflop, 2..10 seats, no ante/rake/straddle. --------
   if (state.street() != pv::STREET_FLOP && state.street() != pv::STREET_TURN &&
       state.street() != pv::STREET_RIVER)
     return fail(V1BlueprintMiss::RootNotSupported);
-  if (state.players_size() != 2)
+  if (state.players_size() < static_cast<int>(bs::poker::kMinUnifiedSeats) ||
+      state.players_size() > static_cast<int>(bs::poker::kMaxUnifiedSeats))
     return fail(V1BlueprintMiss::RootNotSupported);
+  const std::size_t seat_count = static_cast<std::size_t>(state.players_size());
   if (state.has_game() && (state.game().ante() != 0 || state.game().button_ante() != 0 ||
                            (state.game().has_straddle() && state.game().straddle().enabled()) ||
                            state.game().has_rake()))
@@ -82,53 +107,58 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
 
   // ---- Player mapping: poker player index equals occupied seat order (lower
   // seat first) and root.button is the button player's index. This matches the
-  // artifact convention: ranges and information keys index the same 0/1
-  // players, and the poker engine opens postflop on 1-button.
+  // artifact convention: ranges and information keys index the same seat
+  // order, and the poker engine opens postflop on the first live seat
+  // clockwise of the button.
   std::vector<const pv::PlayerState*> bySeat;
   for (const pv::PlayerState& player : state.players())
     bySeat.push_back(&player);
   std::sort(bySeat.begin(), bySeat.end(), [](const pv::PlayerState* a, const pv::PlayerState* b) {
     return a->seat() < b->seat();
   });
-  if (bySeat[0]->seat() == bySeat[1]->seat())
-    return fail(V1BlueprintMiss::RootNotSupported);
-  std::array<const pv::PlayerState*, 2> actorPlayer{bySeat[0], bySeat[1]};
-  std::size_t rootButton = 0;
-  if (bySeat[0]->seat() == state.button_seat())
-    rootButton = 0;
-  else if (bySeat[1]->seat() == state.button_seat())
-    rootButton = 1;
-  else
+  for (std::size_t i = 1; i < seat_count; ++i)
+    if (bySeat[i - 1]->seat() == bySeat[i]->seat())
+      return fail(V1BlueprintMiss::RootNotSupported);
+  const std::vector<const pv::PlayerState*> actorPlayer = bySeat;
+  std::optional<std::size_t> rootButton;
+  for (std::size_t i = 0; i < seat_count; ++i)
+    if (actorPlayer[i]->seat() == state.button_seat())
+      rootButton = i;
+  if (!rootButton)
     return fail(V1BlueprintMiss::RootNotSupported);
   std::unordered_map<std::string, std::size_t> actorOf;
-  actorOf.emplace(actorPlayer[0]->player_id(), 0);
-  actorOf.emplace(actorPlayer[1]->player_id(), 1);
+  for (std::size_t i = 0; i < seat_count; ++i)
+    actorOf.emplace(actorPlayer[i]->player_id(), i);
   {
     const auto found = actorOf.find(state.hero_player_id());
     if (found == actorOf.end())
       return fail(V1BlueprintMiss::RootNotSupported);
     out.hero_actor = found->second;
   }
-  if (actorPlayer[0]->status() == pv::PLAYER_STATUS_FOLDED ||
-      actorPlayer[1]->status() == pv::PLAYER_STATUS_FOLDED)
-    return fail(V1BlueprintMiss::RootNotSupported);
+  // A folded seat carries dead money into a pot the equal-matched root cannot
+  // express, so the profile admits live seats only.
+  for (std::size_t i = 0; i < seat_count; ++i)
+    if (actorPlayer[i]->status() == pv::PLAYER_STATUS_FOLDED)
+      return fail(V1BlueprintMiss::RootNotSupported);
   // A postflop decision with any player all-in is outside the resident
   // blueprint profile. The resolver path additionally admits the canonical
-  // terminal-only case in which the OPPONENT is all-in and the acting hero
+  // terminal-only case in which a NON-hero seat is all-in and the acting hero
   // still has a fold/call decision; the hero itself may never be all-in at an
   // action node. The BLUEPRINT gate keeps rejecting every all-in shape.
   const bool hero_all_in = actorPlayer[out.hero_actor]->status() == pv::PLAYER_STATUS_ALL_IN;
-  const bool opponent_all_in =
-      actorPlayer[1 - out.hero_actor]->status() == pv::PLAYER_STATUS_ALL_IN;
-  if (hero_all_in || (opponent_all_in && !allow_facing_all_in))
+  bool other_all_in = false;
+  for (std::size_t i = 0; i < seat_count; ++i)
+    if (i != out.hero_actor && actorPlayer[i]->status() == pv::PLAYER_STATUS_ALL_IN)
+      other_all_in = true;
+  if (hero_all_in || (other_all_in && !allow_facing_all_in))
     return fail(V1BlueprintMiss::RootNotSupported);
 
   // ---- Preflop matched-contribution accounting. The root requires EQUAL
-  // matched contributions; an even pot alone does not prove them equal (a
-  // 15+25 short-stack all-in makes pot 40 from 15/25). Sum the forced
-  // blinds plus the exact voluntary preflop payments and require equality and
-  // pot agreement whenever the full preflop ledger is available.
-  std::array<Chips, 2> preflopContrib{};
+  // matched contributions at every seat; an even pot alone does not prove
+  // them equal (a 15+25 short-stack all-in makes pot 40 from 15/25). Sum the
+  // forced blinds plus the exact voluntary preflop payments and require
+  // equality and pot agreement whenever the full preflop ledger is available.
+  std::vector<Chips> preflopContrib(seat_count, 0);
   for (const pv::ForcedContribution& forced : state.forced_contributions()) {
     const auto it = actorOf.find(forced.player_id());
     if (it != actorOf.end())
@@ -139,7 +169,7 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
   {
     // Street-paid starts at the posted blinds because a raise-to target counts
     // the blind already in front of the actor.
-    std::array<Chips, 2> preflopStreetPaid = preflopContrib;
+    std::vector<Chips> preflopStreetPaid = preflopContrib;
     preflopVoluntaryComplete = true;
     for (const pv::ActionEvent& event : state.action_history()) {
       if (event.street() != pv::STREET_PREFLOP)
@@ -192,8 +222,8 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
   // advisory (platforms report either the total payment or the raise-only
   // increment); the authoritative replay quantity is the exact target total.
   std::vector<PlannedAction> planned;
-  std::array<Chips, 2> paidPostflop{};
-  std::array<Chips, 2> streetPaid{};
+  std::vector<Chips> paidPostflop(seat_count, 0);
+  std::vector<Chips> streetPaid(seat_count, 0);
   pv::Street ledgerStreet = pv::STREET_UNSPECIFIED;
   Chips firstEventPotBefore = 0;
 
@@ -206,7 +236,7 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
     } else if (event.street() != ledgerStreet) {
       if (static_cast<int>(event.street()) < static_cast<int>(ledgerStreet))
         return fail(V1BlueprintMiss::OffTree);
-      streetPaid = {0, 0};
+      std::fill(streetPaid.begin(), streetPaid.end(), Chips{0});
       ledgerStreet = event.street();
     }
 
@@ -230,9 +260,10 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
         paid = event.incremental_amount();
         break;
       case pv::ACTION_TYPE_BET:
-        // A bet opens voluntary commitment on the street: neither player may
-        // have posted postflop chips on this street yet.
-        if (!event.has_target_total() || streetPaid[0] != 0 || streetPaid[1] != 0)
+        // A bet opens voluntary commitment on the street: no seat may have
+        // posted postflop chips on this street yet.
+        if (!event.has_target_total() || std::any_of(streetPaid.begin(), streetPaid.end(),
+                                                     [](Chips posted) { return posted != 0; }))
           return fail(V1BlueprintMiss::OffTree);
         target = event.target_total();
         paid = target;
@@ -260,51 +291,76 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
   if (firstEventPotBefore != 0) {
     flopPot = firstEventPotBefore;
   } else {
-    const Chips paidTotal = paidPostflop[0] + paidPostflop[1];
+    Chips paidTotal = 0;
+    for (Chips paid : paidPostflop)
+      paidTotal += paid;
     if (paidTotal > state.pot().pot_total())
       return fail(V1BlueprintMiss::OffTree);
     flopPot = state.pot().pot_total() - paidTotal;
   }
 
   const Chips bigBlind = state.game().big_blind();
-  if (flopPot == 0 || flopPot % 2 != 0)
+  if (flopPot == 0 || flopPot % static_cast<Chips>(seat_count) != 0)
     return fail(V1BlueprintMiss::RootNotSupported);
-  const Chips matched = flopPot / 2;
+  const Chips matched = flopPot / static_cast<Chips>(seat_count);
   if (matched < bigBlind)
     return fail(V1BlueprintMiss::RootNotSupported);
 
   // Explicit matched contributions. When the complete voluntary preflop
-  // ledger is attributed (every chip move carries its amount), the two
-  // reconstructed totals must be equal AND reconcile exactly with the flop
-  // pot: this rejects even-pot asymmetric shapes such as 15+25=40 that the
-  // flopPot%2 parity check alone cannot catch. Blinds alone with no
-  // attributed voluntary ledger leave the standard even-pot matched
-  // assumption (an unmatched SB completion cannot be distinguished without
-  // the event, and both players are known non-all-in via the status gate).
+  // ledger is attributed (every chip move carries its amount), every seat's
+  // reconstructed total must be equal AND the totals must reconcile exactly
+  // with the flop pot: this rejects even-pot asymmetric shapes such as
+  // 15+25=40 that the flopPot%n parity check alone cannot catch. Blinds alone
+  // with no attributed voluntary ledger leave the standard even-pot matched
+  // assumption (an unmatched completion cannot be distinguished without the
+  // event, and every seat is known non-all-in via the status gate).
   if (preflopVoluntaryComplete && hasPreflopVoluntaryChip) {
-    if (preflopContrib[0] != preflopContrib[1] || preflopContrib[0] + preflopContrib[1] != flopPot)
+    for (std::size_t i = 1; i < seat_count; ++i)
+      if (preflopContrib[i] != preflopContrib[0])
+        return fail(V1BlueprintMiss::RootNotSupported);
+    Chips contribTotal = 0;
+    for (Chips contrib : preflopContrib)
+      contribTotal += contrib;
+    if (contribTotal != flopPot)
       return fail(V1BlueprintMiss::RootNotSupported);
   }
 
-  std::array<Chips, 2> flopStacks{};
-  for (std::size_t actor = 0; actor < 2; ++actor) {
+  std::vector<Chips> flopStacks(seat_count, 0);
+  for (std::size_t actor = 0; actor < seat_count; ++actor) {
     flopStacks[actor] = actorPlayer[actor]->stack() + paidPostflop[actor];
     if (flopStacks[actor] == 0)
       return fail(V1BlueprintMiss::RootNotSupported);
   }
 
-  HeadsUpRoot root;
-  root.flop = flop;
-  root.stacks = flopStacks;
-  root.contributions = {matched, matched};
-  root.pot = flopPot;
-  root.big_blind = bigBlind;
-  root.button = rootButton;
+  GameDef rootDef{};
+  rootDef.player_count = seat_count;
+  rootDef.button = *rootButton;
+  rootDef.big_blind = bigBlind;
+  for (std::size_t actor = 0; actor < seat_count; ++actor) {
+    rootDef.stacks[actor] = flopStacks[actor];
+    rootDef.contributions[actor] = matched;
+  }
+  rootDef.pot = flopPot;
+  rootDef.board = {flop[0], flop[1], flop[2], 0, 0};
+  rootDef.board_size = 3;
 
   // ---- Exact engine replay. Cards are inserted at each dealing boundary and
   // voluntary events are applied by kind and exact target total. Optional
-  // pot_before/stack_after ledger fields are cross-checked when present.
-  HeadsUpState cursor(root);
+  // pot_before/stack_after ledger fields are cross-checked when present. At
+  // two seats the shipped HeadsUpState cursor is replayed in lockstep as the
+  // differential oracle (W2c-ii-a gate 1).
+  GameState cursor(rootDef);
+  std::optional<HeadsUpState> oracle;
+  if (seat_count == 2) {
+    HeadsUpRoot oracleRoot;
+    oracleRoot.flop = flop;
+    oracleRoot.stacks = {flopStacks[0], flopStacks[1]};
+    oracleRoot.contributions = {matched, matched};
+    oracleRoot.pot = flopPot;
+    oracleRoot.big_blind = bigBlind;
+    oracleRoot.button = *rootButton;
+    oracle.emplace(oracleRoot);
+  }
   try {
     pv::Street replayedStreet = pv::STREET_FLOP;
     for (const PlannedAction& planned_action : planned) {
@@ -314,9 +370,12 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
         if (cursor.phase() != bs::poker::Phase::Deal)
           return fail(V1BlueprintMiss::OffTree);
         const std::size_t nextBoard = cursor.board().size();
-        if (nextBoard >= state.board_size())
+        if (nextBoard >= static_cast<std::size_t>(state.board_size()))
           return fail(V1BlueprintMiss::OffTree);
-        cursor = cursor.after_card(pokerCard(state.board(static_cast<int>(nextBoard))));
+        const int card = pokerCard(state.board(static_cast<int>(nextBoard)));
+        cursor = cursor.after_card(card);
+        if (oracle)
+          *oracle = oracle->after_card(card);
         replayedStreet = wireStreet(cursor.street());
       }
       if (cursor.phase() != bs::poker::Phase::Action || !cursor.actor().has_value() ||
@@ -346,9 +405,13 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
           return fail(V1BlueprintMiss::OffTree);
       }
       cursor = cursor.after_action(planned_action.actor, action);
+      if (oracle)
+        *oracle = oracle->after_action(planned_action.actor, action);
       if (planned_action.stackAfter != 0 &&
           cursor.players()[planned_action.actor].stack != planned_action.stackAfter)
         return fail(V1BlueprintMiss::OffTree);
+      out.history.push_back(
+          PublicAction{pokerStreet(planned_action.street), planned_action.actor, action});
     }
 
     // Advance to the current decision street.
@@ -356,9 +419,12 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
       if (cursor.phase() != bs::poker::Phase::Deal)
         return fail(V1BlueprintMiss::OffTree);
       const std::size_t nextBoard = cursor.board().size();
-      if (nextBoard >= state.board_size())
+      if (nextBoard >= static_cast<std::size_t>(state.board_size()))
         return fail(V1BlueprintMiss::OffTree);
-      cursor = cursor.after_card(pokerCard(state.board(static_cast<int>(nextBoard))));
+      const int card = pokerCard(state.board(static_cast<int>(nextBoard)));
+      cursor = cursor.after_card(card);
+      if (oracle)
+        *oracle = oracle->after_card(card);
     }
   } catch (const std::exception&) {
     // An illegal transition or card collision against the exact poker rules is
@@ -376,22 +442,23 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
     return fail(V1BlueprintMiss::OffTree);
   if (cursor.pot() != state.pot().pot_total())
     return fail(V1BlueprintMiss::OffTree);
-  for (std::size_t actor = 0; actor < 2; ++actor) {
+  for (std::size_t actor = 0; actor < seat_count; ++actor) {
     const auto& chips = cursor.players()[actor];
     const pv::PlayerState& player = *actorPlayer[actor];
     if (chips.stack != player.stack() || chips.street_committed != player.street_committed())
       return fail(V1BlueprintMiss::OffTree);
   }
   const Chips due = [&] {
-    const auto& chips = cursor.players();
-    const Chips high = std::max(chips[0].street_committed, chips[1].street_committed);
-    return high - chips[*cursor.actor()].street_committed;
+    Chips high = 0;
+    for (std::size_t actor = 0; actor < seat_count; ++actor)
+      high = std::max(high, cursor.players()[actor].street_committed);
+    return high - cursor.players()[*cursor.actor()].street_committed;
   }();
   if (due != state.to_call())
     return fail(V1BlueprintMiss::OffTree);
 
-  out.root = root;
   out.state = std::move(cursor);
+  out.oracle_state = std::move(oracle);
   out.hero_cards = heroCards;
   miss = V1BlueprintMiss::None;
   return true;

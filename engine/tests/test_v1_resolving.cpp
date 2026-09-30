@@ -4,10 +4,12 @@
 // deadline fallback, unsupported/digest-miss mapping, capabilities, the
 // facing-all-in resolver-only reconstruction, and frozen minor-0 rejection.
 #include <array>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/v1_protocol.hpp>
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -127,7 +129,9 @@ class ResolveFake final : public V1HostServices {
   bool blueprintAdvertised() const noexcept override { return advertised; }
   bool resolvingAdvertised() const noexcept override { return advertised && resolving; }
 
-  V1BlueprintResult blueprintHeroDecision(const bs::poker::HeadsUpState&, const std::array<int, 2>&,
+  V1BlueprintResult blueprintHeroDecision(const bs::poker::GameState&,
+                                          std::span<const bs::poker::PublicAction>,
+                                          const std::array<int, 2>&,
                                           std::string_view) const noexcept override {
     V1BlueprintResult result;
     result.hit = advertised;
@@ -139,8 +143,10 @@ class ResolveFake final : public V1HostServices {
     return result;
   }
 
-  V1ResolveResult resolvingDecision(const bs::poker::HeadsUpState&, const std::array<int, 2>&,
-                                    std::string_view, std::uint32_t) const noexcept override {
+  V1ResolveResult resolvingDecision(const bs::poker::GameState&,
+                                    std::span<const bs::poker::PublicAction>,
+                                    const std::array<int, 2>&, std::string_view,
+                                    std::uint32_t) const noexcept override {
     V1ResolveResult result;
     result.outcome = outcome;
     result.miss = miss;

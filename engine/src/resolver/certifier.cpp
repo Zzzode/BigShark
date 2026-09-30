@@ -15,14 +15,14 @@ namespace {
 // Independently written public-runout expectation for the responder, with its
 // own uniform 1/N chance factors and exact settlement. Mirrors no resolver
 // traversal function.
-double expected_resp_value(const HeadsUpGame& game, const HeadsUpState& state,
+double expected_resp_value(const UnifiedGame& game, const GameState& state,
                            const std::array<std::array<int, 2>, 2>& hands, std::size_t responder,
                            Budget& budget) {
   budget.visit();
   if (state.phase() == Phase::Folded)
-    return static_cast<double>(state.settle_fold().net_utility[responder]);
+    return static_cast<double>(state.settle_fold().chip_utility[responder]);
   if (state.phase() == Phase::Showdown)
-    return static_cast<double>(state.settle_showdown(hands).net_utility[responder]);
+    return static_cast<double>(state.settle_showdown(hands).chip_utility[responder]);
   if (state.phase() != Phase::Deal)
     throw RequireFailure("certifier reached an unexpected action node");
 
@@ -93,7 +93,8 @@ Certification certify_candidate(const ReachModel& model,
       dealt_heroes.insert(deal.hero);
     std::set<std::array<int, 2>> covered;
     for (const auto& hero : dealt_heroes) {
-      const InformationKey key = solver::information_key(model.node, hero);
+      const InformationKey key =
+          solver::make_information_key(model.hero, hero, model.node.board(), model.history);
       if (!candidate.contains(key)) {
         result.status = ResolveStatus::CoverageMiss;
         return result;
@@ -105,21 +106,22 @@ Certification certify_candidate(const ReachModel& model,
       return result;
     }
 
-    const double pot = static_cast<double>(model.node.root().pot);
+    const double pot = static_cast<double>(model.node.def().pot);
     const double tolerance = kCertPotTolerance * pot;
 
     for (const ResponderInfoset& infoset : model.infosets) {
       double weighted = 0;
       for (std::size_t di : infoset.deals) {
         const GadgetDeal& deal = model.deals[di];
-        const InformationKey key = solver::information_key(model.node, deal.hero);
+        const InformationKey key =
+            solver::make_information_key(model.hero, deal.hero, model.node.board(), model.history);
         const PolicyRow& row = candidate.at(key);
         std::array<std::array<int, 2>, 2> hands{};
         hands[model.hero] = deal.hero;
         hands[model.responder] = deal.responder;
         double deal_value = 0;
         for (std::size_t a = 0; a < model.node_actions.size(); ++a) {
-          const HeadsUpState after = model.node.after_action(model.hero, model.node_actions[a]);
+          const GameState after = model.node.after_action(model.hero, model.node_actions[a]);
           deal_value += row.probabilities[a] *
                         expected_resp_value(*model.game, after, hands, model.responder, budget);
         }

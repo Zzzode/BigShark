@@ -6,6 +6,7 @@
 #include <bs/heads_up_solver.hpp>
 #include <bs/range.hpp>
 #include <bs/resident_policy.hpp>
+#include <bs/unified_game.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -21,10 +22,11 @@ namespace bs::resident {
 namespace {
 
 using poker::Action;
-using poker::ActionType;
-using poker::HeadsUpState;
+using poker::GameDef;
+using poker::GameState;
+using poker::PublicAction;
 using poker::Street;
-using solver::HeadsUpGame;
+using solver::UnifiedGame;
 
 constexpr std::size_t kKeyActor = 0;
 constexpr std::size_t kKeyOwn0 = 1;
@@ -32,63 +34,59 @@ constexpr std::size_t kKeyOwn1 = 2;
 constexpr std::size_t kKeyBoardSize = 3;
 constexpr std::size_t kKeyBoard = 4;
 
-// Canonical root identity: ordered flop, stacks, matched contributions, pot,
-// big blind, and button. Range weights and the ordered rational sizing schedule
-// are identical within one advertised artifact and cannot be spoofed by a
-// query; two artifacts sharing a root but differing in those fields are both
-// refused as ambiguous duplicates.
+// Canonical root identity: ordered flop, per-seat stacks, matched
+// contributions, pot, big blind, and button. Range weights and the ordered
+// rational sizing schedule are identical within one advertised artifact and
+// cannot be spoofed by a query; two artifacts sharing a root but differing in
+// those fields are both refused as ambiguous duplicates.
 //
-// Deliberately NOT the solver's root identity. The solver's `same_root`
-// additionally compares `preflop` and `blinds_posted`, and that is not merely a
-// stricter version of this one: the two disagree in BOTH directions on valid
-// roots. Measured over a search of every constructible root in a small profile,
-// the six-field comparison treats two flop roots as the same game when they
-// differ only in `blinds_posted` (which the root documents as ignored unless
-// `preflop` is set, and which this path cannot observe because no artifact
-// column stores it), while the eight-field comparison treats them as different.
-//
-// Neither definition is reachable from the other's caller set today, so the
-// divergence is documented rather than resolved. What decides it is a single
-// shared identity for the unified game definition, which is RFC 0008 stage 1's
-// job; until then the solver's version is the stricter of the two and the
-// artifact path's is the one that can actually be stored and read back.
-bool same_root(const poker::HeadsUpRoot& a, const poker::HeadsUpRoot& b) {
-  return a.flop == b.flop && a.stacks == b.stacks && a.contributions == b.contributions &&
-         a.pot == b.pot && a.big_blind == b.big_blind && a.button == b.button;
+// Deliberately NOT poker::same_game_def, which additionally compares preflop,
+// blinds_posted, ante, variant, and terminal. This mirrors the resolver's
+// documented six-field identity (counterfactual_reach.cpp): the fields the
+// artifact path can actually store and read back. The two disagree in BOTH
+// directions on valid roots (a flop root's blinds_posted is unobservable here),
+// so the divergence is documented rather than silently tightened.
+bool same_root(const GameDef& a, const GameDef& b) {
+  if (a.player_count != b.player_count || a.pot != b.pot || a.big_blind != b.big_blind ||
+      a.button != b.button)
+    return false;
+  if (a.board_size < 3 || b.board_size < 3)
+    return false;
+  for (std::size_t i = 0; i < 3; ++i)
+    if (a.board[i] != b.board[i])
+      return false;
+  for (std::size_t p = 0; p < a.player_count; ++p)
+    if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p])
+      return false;
+  return true;
 }
 
-// Project a two-seat flop-rooted schema-v2 identity onto the resident heads-up
-// view. The in-memory information key layout is identical across revisions
-// (make_information_key and information_key(HeadsUpState) emit the same words
-// for the same state), so the projected game's rows are keyed compatibly and
-// the existing two-seat replay serves them unchanged. Turn/river-rooted and
-// 3+-seat v2 sources are refused until the resident state layer generalizes
-// (RFC 0009 D4, W2c-ii).
-HeadsUpGame project_v2_game(const poker::GameDef& game,
-                            const std::vector<std::vector<solver::WeightedHand>>& ranges,
-                            const abstraction::SizeSchedule& sizes) {
-  if (game.player_count != 2)
-    throw std::invalid_argument("resident path supports only two-seat v2 artifacts; got " +
-                                std::to_string(game.player_count) + " seats");
+// Build the unified solver view of a schema-v2 identity. The in-memory
+// information key layout is identical across revisions (make_information_key
+// and information_key(HeadsUpState) emit the same words for the same state),
+// so the v2 game's rows are keyed compatibly and the resident replay serves
+// them unchanged. W2c-ii-a loads every seat count: the two-seat belief and
+// hero-decision queries miss declared (SeatCountNotSupported) until W2c-ii-b,
+// while the resolver source already serves the unified game. Turn/river-rooted
+// v2 sources stay refused until the resident root generalizes (RFC 0009 D4).
+UnifiedGame build_v2_game(const GameDef& game,
+                          const std::vector<std::vector<solver::WeightedHand>>& ranges,
+                          const abstraction::SizeSchedule& sizes) {
   if (game.board_size != 3)
     throw std::invalid_argument(
         "resident path supports only flop-rooted v2 artifacts; got board_size " +
         std::to_string(game.board_size));
-  HeadsUpGame projected;
-  projected.root.flop = {game.board[0], game.board[1], game.board[2]};
-  projected.root.stacks = {game.stacks[0], game.stacks[1]};
-  projected.root.contributions = {game.contributions[0], game.contributions[1]};
-  projected.root.pot = game.pot;
-  projected.root.big_blind = game.big_blind;
-  projected.root.button = game.button;
-  projected.ranges = {ranges[0], ranges[1]};
-  projected.sizes = sizes;
-  return projected;
+  UnifiedGame built;
+  built.def = game;
+  for (std::size_t seat = 0; seat < game.player_count; ++seat)
+    built.ranges[seat] = ranges[seat];
+  built.sizes = sizes;
+  return built;
 }
 
 // Honest footprint of the immutable game copy kept with an advertised root.
-std::size_t game_resident_bytes(const HeadsUpGame& game) {
-  std::size_t bytes = solver::kGameCopyAccountingBytes;
+std::size_t game_resident_bytes(const UnifiedGame& game) {
+  std::size_t bytes = solver::kUnifiedGameCopyAccountingBytes;
   for (const auto& range : game.ranges)
     bytes += range.capacity() * sizeof(solver::WeightedHand);
   for (const auto& street : game.sizes) {
@@ -99,11 +97,11 @@ std::size_t game_resident_bytes(const HeadsUpGame& game) {
 }
 
 // Fill the canonical information key for one own combination at a history
-// prefix, exactly matching solver::information_key's layout:
+// prefix, exactly matching solver::make_information_key's layout:
 // actor, own0, own1, board size, ordered board, then per event
-// street, actor, action kind, exact target total.
+// street, seat, action kind, exact target total.
 bool fill_key(ResidentScratch& scratch, std::size_t actor, std::array<int, 2> own,
-              std::span<const int> board, std::span<const poker::BettingEvent> events) {
+              std::span<const int> board, std::span<const PublicAction> events) {
   const std::size_t required = kKeyBoard + board.size() + 4 * events.size();
   if (required > scratch.key.size())
     return false;
@@ -114,9 +112,9 @@ bool fill_key(ResidentScratch& scratch, std::size_t actor, std::array<int, 2> ow
   std::size_t word = kKeyBoard;
   for (int card : board)
     scratch.key[word++] = static_cast<std::uint64_t>(card);
-  for (const poker::BettingEvent& event : events) {
+  for (const PublicAction& event : events) {
     scratch.key[word++] = static_cast<std::uint64_t>(event.street);
-    scratch.key[word++] = event.actor;
+    scratch.key[word++] = event.seat;
     scratch.key[word++] = static_cast<std::uint64_t>(event.action.type);
     scratch.key[word++] = event.action.target_total;
   }
@@ -175,6 +173,8 @@ const char* to_string(MissReason reason) noexcept {
       return "empty-joint-range";
     case MissReason::OpponentRangeFullyBlocked:
       return "opponent-range-fully-blocked";
+    case MissReason::SeatCountNotSupported:
+      return "seat-count-not-supported";
   }
   return "unknown";
 }
@@ -197,7 +197,7 @@ const char* to_string(RootStatus status) noexcept {
 
 struct ResidentPolicySet::Record {
   RootLoadResult result{};
-  HeadsUpGame game{};
+  UnifiedGame game{};
   ResidentIndex index{};
   bool advertised = false;
 };
@@ -233,18 +233,18 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
           artifacts::LoadOptions{artifacts::kDefaultMaxArtifactBytes, spec.expected_sha256});
       record.result.sha256_hex = probe.sha256_hex;
       // RFC 0009 D4: a schema-v2 probe carries the seat-generic identity;
-      // project a two-seat flop-rooted source onto the resident heads-up view.
-      // The projection refuses turn/river-rooted and 3+-seat shapes as
-      // LoadFailed until the state layer generalizes (W2c-ii).
+      // build the unified view of every flop-rooted source. A 3..10-seat
+      // source loads and advertises; its belief and hero-decision queries
+      // miss declared until W2c-ii-b. Turn/river-rooted shapes stay refused.
       if (probe.game_def)
-        record.game = project_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
+        record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
       else
-        record.game = std::move(probe.game);
+        record.game = solver::to_unified_game(probe.game);
 
       bool duplicate = false;
       for (const Record& other : set.records_)
         if (other.result.sha256_hex == record.result.sha256_hex ||
-            same_root(other.game.root, record.game.root))
+            same_root(other.game.def, record.game.def))
           duplicate = true;
       if (duplicate) {
         record.result.status = RootStatus::DuplicateRoot;
@@ -276,13 +276,13 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
           load_options.expected_sha256 = spec.expected_sha256;
           artifacts::LoadedArtifact loaded = artifacts::load_artifact(spec.path, load_options);
           if (loaded.bundle.nseat) {
-            // RFC 0009 D4: schema-v2 seat-generic policy. Project the identity
-            // and build the index from the concrete seat-indexed rows.
+            // RFC 0009 D4: schema-v2 seat-generic policy. Build the unified
+            // view and build the index from the concrete seat-indexed rows.
             const auto& policy = loaded.bundle.nseat->policy;
-            record.game = project_v2_game(policy.game(), policy.ranges(), policy.sizes());
+            record.game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
             record.index.build(policy.rows());
           } else {
-            record.game = loaded.bundle.result.policy.game();
+            record.game = solver::to_unified_game(loaded.bundle.result.policy.game());
             record.index.build(loaded.bundle.result.policy.rows());
           }
           record.result.information_sets = record.index.row_count();
@@ -347,8 +347,7 @@ struct ResolvedRoot {
 // Match the query against advertised records, honoring an optional pinned
 // artifact digest.
 ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
-                          const HeadsUpState& state,
-                          std::optional<std::string_view> pinned_sha256) {
+                          const GameState& state, std::optional<std::string_view> pinned_sha256) {
   if (pinned_sha256) {
     const ResidentPolicySet::Record* pinned = nullptr;
     for (const ResidentPolicySet::Record& record : records)
@@ -362,7 +361,7 @@ ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
                                     : MissReason::OverBudgetNotAdvertised;
       return {nullptr, reason};
     }
-    if (!same_root(pinned->game.root, state.root()))
+    if (!same_root(pinned->game.def, state.def()))
       return {nullptr, MissReason::RootIdentityMismatch};
     return {pinned, MissReason::None};
   }
@@ -370,7 +369,7 @@ ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
   const ResidentPolicySet::Record* known = nullptr;
   RootStatus known_status = RootStatus::LoadFailed;
   for (const ResidentPolicySet::Record& record : records) {
-    if (!same_root(record.game.root, state.root()))
+    if (!same_root(record.game.def, state.def()))
       continue;
     if (record.advertised)
       return {&record, MissReason::None};
@@ -389,7 +388,7 @@ ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
 // and a free slot never deals a card reserved for a LATER fixed slot: the
 // trainer's public_cards support excludes every fixed-runout card before any
 // deal, so such a branch is outside the trained tree.
-bool card_in_chance_support(const HeadsUpGame& game, std::size_t slot, int dealt) {
+bool card_in_chance_support(const UnifiedGame& game, std::size_t slot, int dealt) {
   if (game.fixed_runout[slot])
     return dealt == *game.fixed_runout[slot];
   for (std::size_t later = slot + 1; later < game.fixed_runout.size(); ++later)
@@ -400,7 +399,7 @@ bool card_in_chance_support(const HeadsUpGame& game, std::size_t slot, int dealt
 
 // Fixed-runout boards must match HeadsUpPolicy::lookup behavior: a turn or
 // river card that diverges from the artifact's reserved runout is a miss.
-bool runout_matches(const HeadsUpGame& game, const HeadsUpState& state) {
+bool runout_matches(const UnifiedGame& game, const GameState& state) {
   for (std::size_t i = 3; i < state.board().size(); ++i) {
     const auto fixed = game.fixed_runout[i - 3];
     if (fixed && state.board()[i] != *fixed)
@@ -426,14 +425,14 @@ bool locate_action(const CompactRowView& row, const Action& wanted, std::size_t&
 // row in a complete artifact; their factor is left at zero, which matches
 // their zero joint mass.
 MissReason read_action_probabilities(const ResidentIndex& index, const ReachModel& model,
-                                     ResidentScratch& scratch, const HeadsUpState& state,
-                                     const poker::BettingEvent& event,
-                                     std::span<const poker::BettingEvent> prefix) {
+                                     ResidentScratch& scratch, const GameState& state,
+                                     const PublicAction& event,
+                                     std::span<const PublicAction> prefix) {
   // Prefix board size follows the EVENT's street, not the final state.
   const std::size_t prefix_street = static_cast<std::size_t>(event.street);
   const std::size_t prefix_board_size = 3 + prefix_street;
   const std::span<const int> prefix_board(state.board().data(), prefix_board_size);
-  const std::size_t actor = event.actor;
+  const std::size_t actor = event.seat;
 
   scratch.action_probability.fill(0.0);
   for (int combo = 0; combo < N_COMBOS; ++combo) {
@@ -460,13 +459,13 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
 // pointers on success. Public belief is defined at every on-tree public point
 // the observed path reaches, including a dealing boundary or a fold terminal;
 // the caller asks for a hero decision row only at an action node.
-MissReason replay_public_path(const ResidentPolicySet::Record& record, const HeadsUpState& state,
-                              ResidentScratch& scratch, ResidentAnswer& answer) {
+MissReason replay_public_path(const ResidentPolicySet::Record& record, const GameState& state,
+                              std::span<const PublicAction> events, ResidentScratch& scratch,
+                              ResidentAnswer& answer) {
   ReachModel model(scratch);
   if (!model.initialize(record.game))
     return MissReason::EmptyJointRange;
 
-  const auto& events = state.history();
   std::size_t consumed = 0;
   static constexpr std::array<Street, 3> streets{Street::Flop, Street::Turn, Street::River};
   for (std::size_t street = 0; street < streets.size(); ++street) {
@@ -482,13 +481,13 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Hea
       }
     }
     while (consumed < events.size() && events[consumed].street == streets[street]) {
-      const poker::BettingEvent& event = events[consumed];
-      const std::span<const poker::BettingEvent> prefix(events.data(), consumed);
+      const PublicAction& event = events[consumed];
+      const std::span<const PublicAction> prefix(events.data(), consumed);
       const MissReason prob_miss =
           read_action_probabilities(record.index, model, scratch, state, event, prefix);
       if (prob_miss != MissReason::None)
         return prob_miss;
-      if (!model.observe_action(event.actor, scratch.action_probability))
+      if (!model.observe_action(event.seat, scratch.action_probability))
         return MissReason::ZeroProbabilityObservedAction;
       ++consumed;
     }
@@ -511,20 +510,25 @@ ResidentAnswer miss_answer(MissReason reason) {
 
 }  // namespace
 
-ResidentAnswer ResidentPolicySet::public_belief(const HeadsUpState& state,
+ResidentAnswer ResidentPolicySet::public_belief(const GameState& state,
+                                                std::span<const PublicAction> history,
                                                 std::optional<std::string_view> pinned_sha256,
                                                 ResidentScratch& scratch) const {
   const ResolvedRoot resolved = resolve_root(records_, state, pinned_sha256);
   if (!resolved.record)
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
+  // W2c-ii-a: the belief model is still two-seat; a 3..10-seat artifact loads
+  // and advertises, but its belief query misses declared until W2c-ii-b.
+  if (record.game.def.player_count != 2)
+    return miss_answer(MissReason::SeatCountNotSupported);
   if (!runout_matches(record.game, state))
     return miss_answer(MissReason::RunoutDivergence);
 
   ResidentAnswer answer;
   answer.root_index = static_cast<std::size_t>(&record - records_.data());
   answer.artifact_sha256 = record.result.sha256_hex;
-  const MissReason replay_miss = replay_public_path(record, state, scratch, answer);
+  const MissReason replay_miss = replay_public_path(record, state, history, scratch, answer);
   if (replay_miss != MissReason::None)
     return miss_answer(replay_miss);
   if (state.actor())
@@ -534,7 +538,8 @@ ResidentAnswer ResidentPolicySet::public_belief(const HeadsUpState& state,
   return answer;
 }
 
-ResidentAnswer ResidentPolicySet::hero_decision(const HeadsUpState& state,
+ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
+                                                std::span<const PublicAction> history,
                                                 std::array<int, 2> hero_cards,
                                                 std::optional<std::string_view> pinned_sha256,
                                                 ResidentScratch& scratch) const {
@@ -542,6 +547,10 @@ ResidentAnswer ResidentPolicySet::hero_decision(const HeadsUpState& state,
   if (!resolved.record)
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
+  // W2c-ii-a: the belief model behind the hero-private view is still
+  // two-seat; a 3..10-seat hero-decision query misses declared until W2c-ii-b.
+  if (record.game.def.player_count != 2)
+    return miss_answer(MissReason::SeatCountNotSupported);
   if (!runout_matches(record.game, state))
     return miss_answer(MissReason::RunoutDivergence);
 
@@ -559,15 +568,14 @@ ResidentAnswer ResidentPolicySet::hero_decision(const HeadsUpState& state,
   answer.artifact_sha256 = record.result.sha256_hex;
   answer.hero_cards = hero_cards;
 
-  const MissReason replay_miss = replay_public_path(record, state, scratch, answer);
+  const MissReason replay_miss = replay_public_path(record, state, history, scratch, answer);
   if (replay_miss != MissReason::None)
     return miss_answer(replay_miss);
   answer.actor = *state.actor();
 
   // The hero combination's own row at the actual public node.
   const std::span<const int> board(state.board().data(), state.board().size());
-  const std::span<const poker::BettingEvent> events(state.history().data(), state.history().size());
-  if (!fill_key(scratch, *state.actor(), hero_cards, board, events))
+  if (!fill_key(scratch, *state.actor(), hero_cards, board, history))
     return miss_answer(MissReason::OffTree);
   CompactRowView compact;
   if (!record.index.find(std::span<const std::uint64_t>(scratch.key.data(), scratch.key_size),
@@ -610,11 +618,13 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
  public:
   explicit ResidentBlueprintSource(const ResidentPolicySet::Record& record) : record_(&record) {}
 
-  const solver::HeadsUpGame& game() const override { return record_->game; }
+  const solver::UnifiedGame& game() const override { return record_->game; }
 
   std::string_view artifact_digest() const override { return record_->result.sha256_hex; }
 
-  std::optional<resolver::BlueprintRowView> row(const HeadsUpState& state, std::size_t player,
+  std::optional<resolver::BlueprintRowView> row(const GameState& state,
+                                                std::span<const PublicAction> history,
+                                                std::size_t player,
                                                 std::array<int, 2> cards) const override {
     if (player > 1 || !state.actor() || *state.actor() != player)
       return std::nullopt;
@@ -624,7 +634,8 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
     for (int public_card : state.board())
       if (public_card == cards[0] || public_card == cards[1])
         return std::nullopt;
-    const solver::InformationKey key = solver::information_key(state, cards);
+    const solver::InformationKey key =
+        solver::make_information_key(player, cards, state.board(), history);
     CompactRowView compact;
     if (!record_->index.find(std::span<const std::uint64_t>(key.data(), key.size()), compact))
       return std::nullopt;
@@ -642,7 +653,8 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
 }  // namespace
 
 std::unique_ptr<resolver::BlueprintSource> ResidentPolicySet::resolver_source(
-    const HeadsUpState& state, std::optional<std::string_view> pinned_sha256) const {
+    const GameState& state, std::span<const PublicAction> history,
+    std::optional<std::string_view> pinned_sha256) const {
   const ResolvedRoot resolved = resolve_root(records_, state, pinned_sha256);
   if (!resolved.record || !resolved.record->advertised)
     return nullptr;

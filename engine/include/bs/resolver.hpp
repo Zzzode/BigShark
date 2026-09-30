@@ -62,14 +62,17 @@
 
 #include <algorithm>
 #include <array>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/unified_game.hpp>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -107,14 +110,17 @@ struct BlueprintRowView {
 class BlueprintSource {
  public:
   virtual ~BlueprintSource() = default;
-  // The validated artifact game (root identity, declared ranges, sizes,
-  // fixed runout). Must stay valid for the duration of the resolve.
-  virtual const bs::solver::HeadsUpGame& game() const = 0;
+  // The validated artifact game (seat-generic root identity, declared ranges,
+  // sizes, fixed runout). Must stay valid for the duration of the resolve.
+  virtual const bs::solver::UnifiedGame& game() const = 0;
   // 64-lowercase-hex artifact digest used for identity and cache keys.
   virtual std::string_view artifact_digest() const = 0;
-  // Blueprint row at an action state for one player's own two cards. A missing
-  // row is a coverage miss; the resolver never invents a uniform policy.
-  virtual std::optional<BlueprintRowView> row(const bs::poker::HeadsUpState& state,
+  // Blueprint row at an action state for one seat's own two cards. `history`
+  // is the observed public-action path to `state` (the prefix span at the
+  // cursor during a prefix replay). A missing row is a coverage miss; the
+  // resolver never invents a uniform policy.
+  virtual std::optional<BlueprintRowView> row(const bs::poker::GameState& state,
+                                              std::span<const bs::poker::PublicAction> history,
                                               std::size_t player,
                                               std::array<int, 2> cards) const = 0;
 };
@@ -226,9 +232,11 @@ class Resolver {
   // Resolve the terminal-only hero decision at `node` (whose actor is the
   // hero). The blueprint supplies identity, declared ranges, prefix reach, and
   // the current-node baseline. `node` must be a descendant of the blueprint
-  // game's flop root reached through its public history and board.
-  ResolveResult resolve(const bs::poker::HeadsUpState& node, const BlueprintSource& blueprint,
-                        const ResolveLimits& limits) const;
+  // game's flop root reached through `history` (the observed public-action
+  // path from the root to `node`) and its board.
+  ResolveResult resolve(const bs::poker::GameState& node,
+                        std::span<const bs::poker::PublicAction> history,
+                        const BlueprintSource& blueprint, const ResolveLimits& limits) const;
 
   // Drop the in-process certified cache (e.g. on process/session restart).
   void clear_cache() const noexcept;

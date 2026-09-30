@@ -591,6 +591,77 @@ signatures, and the multi-player resolver gadget) to W2c-ii. The decisions:
    refusal is at the resident projection, not the artifact layer: the probe
    and publish succeed for any well-formed v2 artifact.
 
+**D4 implementation decisions recorded at W2c-ii-a (state layer, first
+increment).** W2c-ii-a moves every query surface off `HeadsUpState` onto the
+historyless `poker::GameState` plus an explicit `PublicAction` log, with
+`solver::UnifiedGame` as the stored game type. Three-or-more-seat requests now
+reconstruct, load, and advertise, but miss declared at the resident query
+until W2c-ii-b. The decisions:
+
+1. **`UnifiedGame` is the stored game type.** `UnifiedGame` (a `GameDef`,
+   per-seat weighted ranges, the size schedule, and the fixed runout) replaces
+   `HeadsUpGame` in `BlueprintSource::game()`, the resident records, and the
+   resolver source. `to_unified_game(const HeadsUpGame&)` maps field for
+   field, so a projected v2 game and a v1 game present the same seat-generic
+   view. `kUnifiedGameCopyAccountingBytes` (1024) is the declared copy-cost
+   accounting constant, with a `static_assert` that it bounds `sizeof`.
+2. **The mapper reconstructs `GameState` plus a `PublicAction` log for 2..10
+   seats.** `ReconstructedPostflop` carries `optional<GameState> state`, the
+   observed `history` (one `PublicAction` per replayed voluntary event, in
+   order), the hero cards, the hero actor seat, and - at two seats only - an
+   `oracle_state` holding the shipped `HeadsUpState` reconstruction. The
+   fail-closed profile is unchanged in spirit: postflop, no ante, equal
+   matched contributions, an unparseable history or a rejected transition is
+   a deterministic coverage miss. Because `GameState` stores no history, the
+   log is the only record of which seat did what on which street, and every
+   key builder consumes it explicitly.
+3. **Host-service and blueprint-source signatures gain the history span.**
+   `V1HostServices::blueprintHeroDecision`/`resolvingDecision` take
+   `(const GameState&, span<const PublicAction>, hero_cards, pin[, deadline])`;
+   `BlueprintSource::row` takes `(const GameState&, span<const PublicAction>,
+   player, cards)`. `Resolver::resolve` takes `(node, history, blueprint,
+   limits)` and replays the prefix by walking the log; the gadget, CFR, and
+   certifier internals are untouched - they consume the `ReachModel`, whose
+   `build_model` now assigns `model.history` from the span.
+4. **The resident query path is seat-generic; the two-seat path is
+   behavior-preserving.** `public_belief`, `hero_decision`, and
+   `resolver_source` take `GameState` + history. Canonical root matching
+   compares `GameDef` identity: player count, pot, big blind, button, the
+   flop (board ints 0..2), and per-seat stacks and matched contributions.
+   The two-seat serving path (root projection, public-path replay,
+   hero decision, `ResidentBlueprintSource`) is unchanged in behavior; golden
+   values are preserved (resolver NashConv `4.585e-10`, resident golden
+   tests).
+5. **Three-to-ten-seat artifacts load and advertise, then miss declared.** A
+   3..10-seat artifact probes, publishes, and advertises exactly like a
+   two-seat artifact; the refusal moved from reconstruction to the resident
+   query, which returns `MissReason::SeatCountNotSupported` (mirrored 1:1 as
+   `V1BlueprintMiss::SeatCountNotSupported`) until the seat-generic belief
+   model lands in W2c-ii-b. The resolver source still serves the loaded
+   game; only the conditioned belief/decision query is gated.
+6. **`make_information_key` is the seat-generic key builder; the two-seat key
+   layout is identical.** `make_information_key(actor, cards, board, path)`
+   emits `[actor, card0, card1, board_count, board_ids..., (street, seat,
+   type, target)` per public action], byte-identical to
+   `information_key(HeadsUpState, cards)` for an equivalent state, so
+   two-seat resident indices and certified caches keep their keys. A
+   differential-oracle test asserts the `GameState` reconstruction agrees
+   with the shipped `HeadsUpState` reconstruction field for field at two
+   seats, and a sequence test asserts the replayed `PublicAction` log
+   matches the wire history event for event.
+7. **The public seed mix is frozen at two seats.** `publicSeed` (FNV-1a over
+   digest, root identity, board, and public history) mixes `GameDef` fields
+   in the former order (flop, per-seat stacks, per-seat contributions, pot,
+   button, board span, then street/seat/type/target per history event), so a
+   certified two-seat artifact's seed is byte-for-byte unchanged. A
+   `PublicAction` shares the `BettingEvent` byte layout for the three mixed
+   fields.
+8. **`abstract_actions` gains a `GameState` overload.** At two seats it
+   builds the identical ordered menu (the opponent is the other seat);
+   callers must not assume a single opponent seat at n >= 3 - the overload
+   still resolves the "other" seat as `1 - actor` and serves the two-seat
+   resolver path until the n-seat gadget (W2c-ii-c).
+
 ### D5. Flop coverage
 
 Coverage is delivered as a gradient, not a promise, and each element is

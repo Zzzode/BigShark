@@ -4,9 +4,11 @@
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
 #include <bs/game_definition.hpp>
+#include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/nseat_trainer.hpp>
 #include <bs/seat_policy.hpp>
+#include <bs/unified_game.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
@@ -45,6 +47,35 @@ InformationKey make_information_key(std::size_t actor, std::array<int, 2> cards,
     key.push_back(event.action.target_total);
   }
   return key;
+}
+
+UnifiedGame to_unified_game(const HeadsUpGame& game) {
+  UnifiedGame unified;
+  const poker::HeadsUpRoot& root = game.root;
+  poker::GameDef& def = unified.def;
+  def.player_count = 2;
+  def.button = root.button;
+  def.big_blind = root.big_blind;
+  def.ante = 0;  // the two-seat profile has no ante
+  def.stacks[0] = root.stacks[0];
+  def.stacks[1] = root.stacks[1];
+  def.contributions[0] = root.contributions[0];
+  def.contributions[1] = root.contributions[1];
+  def.pot = root.pot;
+  def.board[0] = root.flop[0];
+  def.board[1] = root.flop[1];
+  def.board[2] = root.flop[2];
+  def.board_size = 3;
+  def.blinds_posted[0] = root.blinds_posted[0];
+  def.blinds_posted[1] = root.blinds_posted[1];
+  def.preflop = root.preflop;
+  def.variant = poker::RulesVariant::NoLimitHoldem;
+  def.terminal = poker::TerminalDepth::River;
+  unified.ranges[0] = game.ranges[0];
+  unified.ranges[1] = game.ranges[1];
+  unified.sizes = game.sizes;
+  unified.fixed_runout = game.fixed_runout;
+  return unified;
 }
 
 namespace {

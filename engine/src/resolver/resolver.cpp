@@ -54,17 +54,21 @@ std::string cache_key(const ReachModel& model, const BlueprintSource& blueprint,
   std::ostringstream out;
   out << kAlgorithmRevision << '|' << kUtilityIdentifier << '|' << blueprint.artifact_digest()
       << '|';
-  const auto& root = model.node.root();
-  for (int card : root.flop)
-    out << card << ',';
-  out << '|' << root.stacks[0] << ',' << root.stacks[1] << '|' << root.contributions[0] << ','
-      << root.contributions[1] << '|' << root.pot << '|' << root.big_blind << '|' << root.button
-      << '|';
+  const auto& def = model.node.def();
+  for (std::size_t i = 0; i < 3; ++i)
+    out << def.board[i] << ',';
+  out << '|';
+  for (std::size_t p = 0; p < def.player_count; ++p)
+    out << def.stacks[p] << ',';
+  out << '|';
+  for (std::size_t p = 0; p < def.player_count; ++p)
+    out << def.contributions[p] << ',';
+  out << '|' << def.pot << '|' << def.big_blind << '|' << def.button << '|';
   for (int card : model.node.board())
     out << card << ',';
   out << '|';
-  for (const auto& event : model.node.history())
-    out << static_cast<int>(event.street) << ':' << event.actor << ':'
+  for (const auto& event : model.history)
+    out << static_cast<int>(event.street) << ':' << event.seat << ':'
         << static_cast<int>(event.action.type) << ':' << event.action.target_total << ';';
   out << '|';
   for (const auto& street : model.game->sizes) {
@@ -111,11 +115,12 @@ void Resolver::clear_cache() const noexcept {
   cache_->key.clear();
 }
 
-ResolveResult Resolver::resolve(const bs::poker::HeadsUpState& node,
+ResolveResult Resolver::resolve(const bs::poker::GameState& node,
+                                std::span<const bs::poker::PublicAction> history,
                                 const BlueprintSource& blueprint,
                                 const ResolveLimits& limits) const {
   ResolveResult result;
-  result.root_pot = static_cast<double>(node.root().pot);
+  result.root_pot = static_cast<double>(node.def().pot);
 
   const auto start = std::chrono::steady_clock::now();
   const auto receipt_deadline = start + limits.time;
@@ -135,7 +140,7 @@ ResolveResult Resolver::resolve(const bs::poker::HeadsUpState& node,
   std::string detail;
   ResolveStatus model_status;
   try {
-    model_status = detail::build_model(node, blueprint, build_budget, model, detail);
+    model_status = detail::build_model(node, history, blueprint, build_budget, model, detail);
   } catch (const std::exception&) {
     result.status = ResolveStatus::InvalidInput;
     return result;

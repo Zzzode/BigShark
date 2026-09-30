@@ -134,9 +134,12 @@ gate is **golden-value preservation plus a differential oracle**:
    independently (`oracleState`, line 203) and compares board/pot/stacks/
    street-committed/actor. Extend it to also reconstruct the new `GameState` +
    `PublicAction` history from the same request and assert the two agree on
-   **phase, street, `legal()`, actor, board, pot, stacks, street-committed, and
-   settle outcomes** (`settle_fold` and `settle_showdown` for a fixed pair of
-   hands). This directly pins the "reproduces `HeadsUpState` exactly" claim,
+   **phase, street, `legal()`, actor, board, pot, stacks, and
+   street-committed**. Settle-outcome equivalence (`settle_fold` and
+   `settle_showdown`) is pinned by the preserved resolver goldens (gate 3),
+   whose certifier and continuation drive `GameState::settle_*` with the
+   identical golden margins, rather than by a separate oracle comparison.
+   This directly pins the "reproduces `HeadsUpState` exactly" claim,
    which currently has no differential test (test_game_definition.cpp:6-8
    excludes `heads_up.hpp`; test_solve_conformance.cpp:340-405 diffs only the
    constructor on two fixtures). After the refactor the resolver's own

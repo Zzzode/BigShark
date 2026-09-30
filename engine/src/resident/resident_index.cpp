@@ -158,7 +158,7 @@ std::size_t ResidentIndex::resident_bytes() const noexcept {
 
 std::size_t ResidentIndex::estimate_bytes(std::size_t row_count, std::size_t action_count,
                                           std::size_t total_key_words,
-                                          const solver::HeadsUpGame& game) {
+                                          const solver::UnifiedGame& game) {
   // build() reserves exactly these amounts, so the compact portion is an
   // equality with the eventual capacity for any root that is fully loaded.
   std::size_t bytes = row_count * 8 + total_key_words * sizeof(std::uint64_t);
@@ -176,7 +176,7 @@ std::size_t ResidentIndex::estimate_bytes(std::size_t row_count, std::size_t act
   // addition cannot move the estimate), a fixed per-vector slack term, and four
   // times the exact element bytes so ordinary geometric growth capacity is
   // always covered. The game copies are tiny relative to the row blobs.
-  bytes += solver::kGameCopyAccountingBytes + 8 * 64;
+  bytes += solver::kUnifiedGameCopyAccountingBytes + 8 * 64;
   for (const auto& range : game.ranges)
     bytes += 4 * range.size() * sizeof(solver::WeightedHand);
   for (const auto& street : game.sizes) {

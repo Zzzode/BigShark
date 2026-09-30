@@ -18,6 +18,7 @@
 #include <bs/resident_policy.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
+#include <bs/unified_game.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -271,6 +272,43 @@ InformationKey key_of(const HeadsUpState& state, std::array<int, 2> own) {
   return information_key(state, own);
 }
 
+// Convert a HeadsUpState node to the unified (GameState, PublicAction history)
+// view. GameState at two seats reproduces HeadsUpState exactly, so the replay
+// cursor and the source agree field for field; the trailing board deal is a
+// no-op when the two already agree (it only matters if the source advanced
+// past an all-in runout, which the decision-node fixtures never do).
+struct UnifiedNode {
+  GameState state;
+  std::vector<PublicAction> history;
+};
+
+UnifiedNode to_unified(const HeadsUpState& source) {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = source.root().button;
+  def.big_blind = source.root().big_blind;
+  def.stacks[0] = source.root().stacks[0];
+  def.stacks[1] = source.root().stacks[1];
+  def.contributions[0] = source.root().contributions[0];
+  def.contributions[1] = source.root().contributions[1];
+  def.pot = source.root().pot;
+  def.board[0] = source.root().flop[0];
+  def.board[1] = source.root().flop[1];
+  def.board[2] = source.root().flop[2];
+  def.board_size = 3;
+  GameState cursor(def);
+  std::vector<PublicAction> history;
+  for (const BettingEvent& event : source.history()) {
+    while (cursor.street() < event.street)
+      cursor = cursor.after_card(source.board()[cursor.board().size()]);
+    cursor = cursor.after_action(event.actor, event.action);
+    history.push_back({event.street, event.actor, event.action});
+  }
+  while (cursor.board().size() < source.board().size())
+    cursor = cursor.after_card(source.board()[cursor.board().size()]);
+  return {std::move(cursor), std::move(history)};
+}
+
 // Publish a hand-authored single-row policy for games the trainer refuses to
 // build (zero or fully cross-blocked joint ranges). Used to prove the
 // resident startup gate rejects validated artifacts that cannot condition.
@@ -471,6 +509,17 @@ static bool test_golden_reach(const fs::path& dir) {
   const HeadsUpState after_jam = root.after_action(0, {ActionType::Bet, 2});
   const HeadsUpState after_jam_call = after_jam.after_action(1, {ActionType::Call});
 
+  const UnifiedNode root_node = to_unified(root);
+  const UnifiedNode after_check_node = to_unified(after_check);
+  const UnifiedNode after_check_check_node = to_unified(after_check_check);
+  const UnifiedNode after_bet_node = to_unified(after_bet);
+  const UnifiedNode after_bet_call_node = to_unified(after_bet_call);
+  const UnifiedNode after_bet_fold_node = to_unified(after_bet_fold);
+  const UnifiedNode after_check_bet_node = to_unified(after_check_bet);
+  const UnifiedNode after_check_jam_node = to_unified(after_check_jam);
+  const UnifiedNode after_jam_node = to_unified(after_jam);
+  const UnifiedNode after_jam_call_node = to_unified(after_jam_call);
+
   Overrides overrides;
   std::array<int, 2> as_ks{card("As"), card("Ks")};
   std::array<int, 2> qh_jh{card("Qh"), card("Jh")};
@@ -520,31 +569,46 @@ static bool test_golden_reach(const fs::path& dir) {
   ResidentScratch scratch;
 
   // Root marginals from weights (2,3) x (5,7): 0.4/0.6 and 5/12,7/12.
-  CHECK(check_golden_marginals(residents.public_belief(root, std::nullopt, scratch), 0.4, 0.6,
-                               5.0 / 12.0, 7.0 / 12.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(root_node.state, root_node.history, std::nullopt, scratch), 0.4, 0.6,
+      5.0 / 12.0, 7.0 / 12.0));
   // A constant check probability for every actor combo leaves the belief.
-  CHECK(check_golden_marginals(residents.public_belief(after_check, std::nullopt, scratch), 0.4,
-                               0.6, 5.0 / 12.0, 7.0 / 12.0));
-  CHECK(check_golden_marginals(residents.public_belief(after_check_check, std::nullopt, scratch),
-                               0.4, 0.6, 5.0 / 12.0, 7.0 / 12.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_check_node.state, after_check_node.history, std::nullopt,
+                              scratch),
+      0.4, 0.6, 5.0 / 12.0, 7.0 / 12.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_check_check_node.state, after_check_check_node.history,
+                              std::nullopt, scratch),
+      0.4, 0.6, 5.0 / 12.0, 7.0 / 12.0));
   // Constant 0.25 bet probability leaves the belief.
-  CHECK(check_golden_marginals(residents.public_belief(after_bet, std::nullopt, scratch), 0.4, 0.6,
-                               5.0 / 12.0, 7.0 / 12.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_bet_node.state, after_bet_node.history, std::nullopt, scratch),
+      0.4, 0.6, 5.0 / 12.0, 7.0 / 12.0));
   // Call: 5/12*0.6 vs 7/12*0.75 -> 4/11 and 7/11.
-  CHECK(check_golden_marginals(residents.public_belief(after_bet_call, std::nullopt, scratch), 0.4,
-                               0.6, 4.0 / 11.0, 7.0 / 11.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_bet_call_node.state, after_bet_call_node.history, std::nullopt,
+                              scratch),
+      0.4, 0.6, 4.0 / 11.0, 7.0 / 11.0));
   // Fold: 5/12*0.2 vs 7/12*0.25 -> 4/11 and 7/11.
-  CHECK(check_golden_marginals(residents.public_belief(after_bet_fold, std::nullopt, scratch), 0.4,
-                               0.6, 4.0 / 11.0, 7.0 / 11.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_bet_fold_node.state, after_bet_fold_node.history, std::nullopt,
+                              scratch),
+      0.4, 0.6, 4.0 / 11.0, 7.0 / 11.0));
   // Seat 1 bet after the check: (5/12*0.25, 7/12*0.5) -> 5/19, 14/19.
-  CHECK(check_golden_marginals(residents.public_belief(after_check_bet, std::nullopt, scratch), 0.4,
-                               0.6, 5.0 / 19.0, 14.0 / 19.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_check_bet_node.state, after_check_bet_node.history,
+                              std::nullopt, scratch),
+      0.4, 0.6, 5.0 / 19.0, 14.0 / 19.0));
   // Seat 1 jam: zero for the second combo, positive for the first: the combo
   // is removed, mass stays positive, so this is a covered belief update.
-  CHECK(check_golden_marginals(residents.public_belief(after_check_jam, std::nullopt, scratch), 0.4,
-                               0.6, 1.0, 0.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_check_jam_node.state, after_check_jam_node.history,
+                              std::nullopt, scratch),
+      0.4, 0.6, 1.0, 0.0));
   // Seat 1 calling the jam is zero probability for every live combo.
-  const ResidentAnswer zero_call = residents.public_belief(after_jam_call, std::nullopt, scratch);
+  const ResidentAnswer zero_call = residents.public_belief(
+      after_jam_call_node.state, after_jam_call_node.history, std::nullopt, scratch);
   CHECK(!zero_call.hit);
   CHECK(zero_call.reason == MissReason::ZeroProbabilityObservedAction);
 
@@ -556,11 +620,13 @@ static bool test_golden_reach(const fs::path& dir) {
   // seat 0 acts; at after_bet seat 1 acts, so each query passes the acting
   // player's own combos.
   const HeadsUpState probe = after_bet;
-  const ResidentAnswer reference = residents.public_belief(probe, std::nullopt, scratch);
+  const UnifiedNode probe_node = to_unified(probe);
+  const ResidentAnswer reference =
+      residents.public_belief(probe_node.state, probe_node.history, std::nullopt, scratch);
   ResidentScratch hero_scratch;
   for (const auto& hero_hand : game.ranges[1]) {
-    const ResidentAnswer hero =
-        residents.hero_decision(probe, hero_hand.cards, std::nullopt, hero_scratch);
+    const ResidentAnswer hero = residents.hero_decision(
+        probe_node.state, probe_node.history, hero_hand.cards, std::nullopt, hero_scratch);
     CHECK(hero.hit);
     for (std::size_t player = 0; player < 2; ++player)
       for (int combo = 0; combo < bs::N_COMBOS; ++combo)
@@ -569,16 +635,16 @@ static bool test_golden_reach(const fs::path& dir) {
 
   // Every advertised hero row still sums to one, at both actors' nodes.
   for (const auto& hero_hand : game.ranges[0]) {
-    const ResidentAnswer hero =
-        residents.hero_decision(root, hero_hand.cards, std::nullopt, hero_scratch);
+    const ResidentAnswer hero = residents.hero_decision(
+        root_node.state, root_node.history, hero_hand.cards, std::nullopt, hero_scratch);
     double sum = 0;
     for (std::size_t i = 0; i < hero.hero_row.size; ++i)
       sum += hero.hero_row.probabilities[i];
     CHECK(near(sum, 1.0));
   }
   for (const auto& hero_hand : game.ranges[1]) {
-    const ResidentAnswer hero =
-        residents.hero_decision(probe, hero_hand.cards, std::nullopt, hero_scratch);
+    const ResidentAnswer hero = residents.hero_decision(
+        probe_node.state, probe_node.history, hero_hand.cards, std::nullopt, hero_scratch);
     double sum = 0;
     for (std::size_t i = 0; i < hero.hero_row.size; ++i)
       sum += hero.hero_row.probabilities[i];
@@ -588,7 +654,8 @@ static bool test_golden_reach(const fs::path& dir) {
   // Hero-private blocker filter: the opponent view removes combos sharing
   // hero cards and is never renormalized. At the root no actions have
   // happened, so every opponent combo carries its root marginal.
-  const ResidentAnswer as_hero = residents.hero_decision(root, as_ks, std::nullopt, hero_scratch);
+  const ResidentAnswer as_hero = residents.hero_decision(root_node.state, root_node.history, as_ks,
+                                                         std::nullopt, hero_scratch);
   CHECK(as_hero.hit);
   double opponent_total = 0;
   for (int combo = 0; combo < bs::N_COMBOS; ++combo) {
@@ -614,6 +681,9 @@ static bool test_chance_filter(const fs::path& dir) {
       root.after_action(0, {ActionType::Check}).after_action(1, {ActionType::Check});
   const HeadsUpState turn_as = checked.after_card(card("As"));
 
+  const UnifiedNode checked_node = to_unified(checked);
+  const UnifiedNode turn_as_node = to_unified(turn_as);
+
   const PublishedFixture fixture = publish_game(game, 1, {}, dir, "free-turn");
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
@@ -623,14 +693,16 @@ static bool test_chance_filter(const fs::path& dir) {
   ResidentScratch scratch;
   // The dealing boundary after check/check already carries the conditioned
   // (here unchanged) public belief.
-  const ResidentAnswer before = residents.public_belief(checked, std::nullopt, scratch);
+  const ResidentAnswer before =
+      residents.public_belief(checked_node.state, checked_node.history, std::nullopt, scratch);
   CHECK(before.hit);
   CHECK(near(reach_of(before, 0, card("As"), card("Ks")), 0.4));
   CHECK(near(reach_of(before, 1, card("Qd"), card("Jd")), 7.0 / 12.0));
 
   // After the As turn, player 0's AsKs combination is removed; player 1's
   // marginals are unchanged.
-  const ResidentAnswer after = residents.public_belief(turn_as, std::nullopt, scratch);
+  const ResidentAnswer after =
+      residents.public_belief(turn_as_node.state, turn_as_node.history, std::nullopt, scratch);
   CHECK(after.hit);
   CHECK(near(reach_of(after, 0, card("As"), card("Ks")), 0.0));
   CHECK(near(reach_of(after, 0, card("Qh"), card("Jh")), 1.0));
@@ -638,8 +710,8 @@ static bool test_chance_filter(const fs::path& dir) {
   CHECK(near(reach_of(after, 1, card("Qd"), card("Jd")), 7.0 / 12.0));
 
   // The blocked hero combination is rejected at the same node.
-  const ResidentAnswer blocked =
-      residents.hero_decision(turn_as, {card("As"), card("Ks")}, std::nullopt, scratch);
+  const ResidentAnswer blocked = residents.hero_decision(
+      turn_as_node.state, turn_as_node.history, {card("As"), card("Ks")}, std::nullopt, scratch);
   CHECK(!blocked.hit);
   CHECK(blocked.reason == MissReason::ComboBlockedByBoard);
   return true;
@@ -771,12 +843,14 @@ static bool test_solver_reach_convention(const fs::path& dir) {
   };
 
   auto compare = [&](const HeadsUpState& state) -> bool {
+    const UnifiedNode node = to_unified(state);
     for (const bool best : {false, true}) {
       const std::vector<double> solver_reach = oracle_reach(state);
 
       // Resident per-deal reach reconstructed from the public raw factors.
       ResidentScratch scratch;
-      const ResidentAnswer answer = residents.public_belief(state, std::nullopt, scratch);
+      const ResidentAnswer answer =
+          residents.public_belief(node.state, node.history, std::nullopt, scratch);
       CHECK(answer.hit);
       std::vector<double> resident_reach(deals.size(), 0.0);
       double resident_mass = 0;
@@ -827,6 +901,7 @@ static bool test_solver_reach_convention(const fs::path& dir) {
   const HeadsUpState free_turn_state = free_root.after_action(0, {ActionType::Check})
                                            .after_action(1, {ActionType::Check})
                                            .after_card(card("As"));
+  const UnifiedNode free_turn_node = to_unified(free_turn_state);
   const std::vector<OracleDeal> free_deals = oracle_deals(free_game);
   for (const bool best : {false, true}) {
     std::vector<double> reach(free_deals.size(), 0.0);
@@ -848,8 +923,8 @@ static bool test_solver_reach_convention(const fs::path& dir) {
       mass += value;
     CHECK(mass > 0);
     ResidentScratch scratch;
-    const ResidentAnswer answer =
-        free_residents.public_belief(free_turn_state, std::nullopt, scratch);
+    const ResidentAnswer answer = free_residents.public_belief(
+        free_turn_node.state, free_turn_node.history, std::nullopt, scratch);
     CHECK(answer.hit);
     std::vector<double> resident_reach(free_deals.size(), 0.0);
     double resident_mass = 0;
@@ -899,8 +974,10 @@ static bool test_cross_blocked_root(const fs::path& dir) {
       total += product;
     }
   const HeadsUpState root(game.root);
+  const UnifiedNode root_node = to_unified(root);
   ResidentScratch scratch;
-  const ResidentAnswer answer = residents.public_belief(root, std::nullopt, scratch);
+  const ResidentAnswer answer =
+      residents.public_belief(root_node.state, root_node.history, std::nullopt, scratch);
   CHECK(answer.hit);
   for (std::size_t i = 0; i < game.ranges[0].size(); ++i)
     CHECK(near((*answer.public_reach[0])[bs::comboIndex(game.ranges[0][i].cards[0],
@@ -912,8 +989,8 @@ static bool test_cross_blocked_root(const fs::path& dir) {
                margin[1][j] / total));
 
   // Hero AcAd removes the opponent AcAs combination through the blocker view.
-  const ResidentAnswer hero =
-      residents.hero_decision(root, {card("Ac"), card("Ad")}, std::nullopt, scratch);
+  const ResidentAnswer hero = residents.hero_decision(
+      root_node.state, root_node.history, {card("Ac"), card("Ad")}, std::nullopt, scratch);
   CHECK(hero.hit);
   CHECK(hero.opponent_blocked_reach[bs::comboIndex(card("Ac"), card("As"))] == 0.0);
   CHECK(hero.opponent_blocked_reach[bs::comboIndex(card("Tc"), card("Td"))] > 0.0);
@@ -938,6 +1015,13 @@ static bool test_street_conditioning(const fs::path& dir) {
   const HeadsUpState river = after_turn_call.after_card(card("8s"));
   const HeadsUpState after_river_jam = river.after_action(0, {ActionType::Bet, 1});
   const HeadsUpState after_river_reply = after_river_jam.after_action(1, {ActionType::Call});
+
+  const UnifiedNode after_bet_node = to_unified(after_bet);
+  const UnifiedNode turn_node = to_unified(turn);
+  const UnifiedNode after_turn_bet_node = to_unified(after_turn_bet);
+  const UnifiedNode after_turn_call_node = to_unified(after_turn_call);
+  const UnifiedNode after_river_jam_node = to_unified(after_river_jam);
+  const UnifiedNode after_river_reply_node = to_unified(after_river_reply);
 
   const std::array<int, 2> as_ks{card("Ks"), card("As")};
   const std::array<int, 2> qh_jh{card("Jh"), card("Qh")};
@@ -972,22 +1056,31 @@ static bool test_street_conditioning(const fs::path& dir) {
   ResidentScratch scratch;
 
   // Flop bet: (0.4*0.25, 0.6*0.3) -> 5/14, 9/14 for player 0.
-  CHECK(check_golden_marginals(residents.public_belief(after_bet, std::nullopt, scratch),
-                               5.0 / 14.0, 9.0 / 14.0, 5.0 / 12.0, 7.0 / 12.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_bet_node.state, after_bet_node.history, std::nullopt, scratch),
+      5.0 / 14.0, 9.0 / 14.0, 5.0 / 12.0, 7.0 / 12.0));
   // Check/check into the turn: check factors (0.5, 0.2) -> 5/8, 3/8.
-  CHECK(check_golden_marginals(residents.public_belief(turn, std::nullopt, scratch), 5.0 / 8.0,
-                               3.0 / 8.0, 5.0 / 12.0, 7.0 / 12.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(turn_node.state, turn_node.history, std::nullopt, scratch), 5.0 / 8.0,
+      3.0 / 8.0, 5.0 / 12.0, 7.0 / 12.0));
   // Turn bet: (5/8*0.25, 3/8*0.4) -> 25/49, 24/49.
-  CHECK(check_golden_marginals(residents.public_belief(after_turn_bet, std::nullopt, scratch),
-                               25.0 / 49.0, 24.0 / 49.0, 5.0 / 12.0, 7.0 / 12.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_turn_bet_node.state, after_turn_bet_node.history, std::nullopt,
+                              scratch),
+      25.0 / 49.0, 24.0 / 49.0, 5.0 / 12.0, 7.0 / 12.0));
   // Turn call: player 1 (0.6, 0.75) -> 4/11, 7/11.
-  CHECK(check_golden_marginals(residents.public_belief(after_turn_call, std::nullopt, scratch),
-                               25.0 / 49.0, 24.0 / 49.0, 4.0 / 11.0, 7.0 / 11.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_turn_call_node.state, after_turn_call_node.history,
+                              std::nullopt, scratch),
+      25.0 / 49.0, 24.0 / 49.0, 4.0 / 11.0, 7.0 / 11.0));
   // River jam: (25/49*0.5, 24/49*0.25) -> 25/37, 12/37.
-  CHECK(check_golden_marginals(residents.public_belief(after_river_jam, std::nullopt, scratch),
-                               25.0 / 37.0, 12.0 / 37.0, 4.0 / 11.0, 7.0 / 11.0));
+  CHECK(check_golden_marginals(
+      residents.public_belief(after_river_jam_node.state, after_river_jam_node.history,
+                              std::nullopt, scratch),
+      25.0 / 37.0, 12.0 / 37.0, 4.0 / 11.0, 7.0 / 11.0));
   // Fold/call reply leaves only QdJd for player 1 (terminal belief).
-  const ResidentAnswer replied = residents.public_belief(after_river_reply, std::nullopt, scratch);
+  const ResidentAnswer replied = residents.public_belief(
+      after_river_reply_node.state, after_river_reply_node.history, std::nullopt, scratch);
   CHECK(replied.hit);
   CHECK(near(reach_of(replied, 0, card("As"), card("Ks")), 25.0 / 37.0));
   CHECK(near(reach_of(replied, 0, card("Qh"), card("Jh")), 12.0 / 37.0));
@@ -1004,13 +1097,16 @@ static bool test_street_conditioning(const fs::path& dir) {
       publish_game(game, 1, never_check, dir, "streets-zero-hero");
   ResidentPolicySet zero_residents = ResidentPolicySet::build(
       {{zero_fixture.policy_path, parse_sha256(zero_fixture.sha256_hex)}}, {}, &results);
-  const ResidentAnswer zero_hero = zero_residents.hero_decision(turn, as_ks, std::nullopt, scratch);
+  const ResidentAnswer zero_hero = zero_residents.hero_decision(turn_node.state, turn_node.history,
+                                                                as_ks, std::nullopt, scratch);
   CHECK(!zero_hero.hit);
   CHECK(zero_hero.reason == MissReason::ZeroProbabilityHeroCombination);
-  const ResidentAnswer live_hero = zero_residents.hero_decision(turn, qh_jh, std::nullopt, scratch);
+  const ResidentAnswer live_hero = zero_residents.hero_decision(turn_node.state, turn_node.history,
+                                                                qh_jh, std::nullopt, scratch);
   CHECK(live_hero.hit);
   // Public belief itself is still well defined and hero-independent.
-  const ResidentAnswer public_after = zero_residents.public_belief(turn, std::nullopt, scratch);
+  const ResidentAnswer public_after =
+      zero_residents.public_belief(turn_node.state, turn_node.history, std::nullopt, scratch);
   CHECK(public_after.hit);
   CHECK(near(reach_of(public_after, 0, card("As"), card("Ks")), 0.0));
   CHECK(near(reach_of(public_after, 0, card("Qh"), card("Jh")), 1.0));
@@ -1044,9 +1140,11 @@ static bool test_orphan_free_chance(const fs::path& dir) {
   const HeadsUpState checked =
       root.after_action(0, {ActionType::Check}).after_action(1, {ActionType::Check});
   const HeadsUpState turn_as = checked.after_card(card("As"));
+  const UnifiedNode turn_as_node = to_unified(turn_as);
 
   ResidentScratch scratch;
-  const ResidentAnswer node = residents.public_belief(turn_as, std::nullopt, scratch);
+  const ResidentAnswer node =
+      residents.public_belief(turn_as_node.state, turn_as_node.history, std::nullopt, scratch);
   CHECK(node.hit);  // the public node is covered despite the orphan
   CHECK(near(reach_of(node, 0, card("Jh"), card("Kc")), 0.0));  // orphan marginal
   CHECK(reach_of(node, 0, card("9s"), card("Ad")) > 0.0);
@@ -1058,20 +1156,28 @@ static bool test_orphan_free_chance(const fs::path& dir) {
 
   // The orphan hero combination has no row on this branch: UntrainedCombo,
   // never a fabricated policy.
-  const ResidentAnswer orphan_hero =
-      residents.hero_decision(turn_as, {card("Jh"), card("Kc")}, std::nullopt, scratch);
+  const ResidentAnswer orphan_hero = residents.hero_decision(
+      turn_as_node.state, turn_as_node.history, {card("Jh"), card("Kc")}, std::nullopt, scratch);
   CHECK(!orphan_hero.hit);
   CHECK(orphan_hero.reason == MissReason::UntrainedCombo);
   // The other hero combinations have rows.
-  CHECK(residents.hero_decision(turn_as, {card("9s"), card("Ad")}, std::nullopt, scratch).hit);
-  CHECK(residents.hero_decision(turn_as, {card("2h"), card("Qc")}, std::nullopt, scratch).hit);
+  CHECK(residents
+            .hero_decision(turn_as_node.state, turn_as_node.history, {card("9s"), card("Ad")},
+                           std::nullopt, scratch)
+            .hit);
+  CHECK(residents
+            .hero_decision(turn_as_node.state, turn_as_node.history, {card("2h"), card("Qc")},
+                           std::nullopt, scratch)
+            .hit);
 
   // The reported defect fires when REPLAYING the orphan actor's observed
   // action on the turn to the opponent's response node: without the orphan
   // gate, read_action_probabilities requires a KcJh row that does not exist
   // and rejects the entire covered node as MissingHistory.
   const HeadsUpState after_turn_check = turn_as.after_action(0, {ActionType::Check});
-  const ResidentAnswer replied = residents.public_belief(after_turn_check, std::nullopt, scratch);
+  const UnifiedNode after_turn_check_node = to_unified(after_turn_check);
+  const ResidentAnswer replied = residents.public_belief(
+      after_turn_check_node.state, after_turn_check_node.history, std::nullopt, scratch);
   CHECK(replied.hit);
   CHECK(near(reach_of(replied, 0, card("Jh"), card("Kc")), 0.0));
   CHECK(reach_of(replied, 0, card("9s"), card("Ad")) > 0.0);
@@ -1079,10 +1185,15 @@ static bool test_orphan_free_chance(const fs::path& dir) {
   // On a different free turn (2s) all three opponents survive, the orphan is
   // no longer orphan, and its row exists and marginal is positive.
   const HeadsUpState turn_2s = checked.after_card(card("2s"));
-  const ResidentAnswer node_2s = residents.public_belief(turn_2s, std::nullopt, scratch);
+  const UnifiedNode turn_2s_node = to_unified(turn_2s);
+  const ResidentAnswer node_2s =
+      residents.public_belief(turn_2s_node.state, turn_2s_node.history, std::nullopt, scratch);
   CHECK(node_2s.hit);
   CHECK(reach_of(node_2s, 0, card("Jh"), card("Kc")) > 0.0);
-  CHECK(residents.hero_decision(turn_2s, {card("Jh"), card("Kc")}, std::nullopt, scratch).hit);
+  CHECK(residents
+            .hero_decision(turn_2s_node.state, turn_2s_node.history, {card("Jh"), card("Kc")},
+                           std::nullopt, scratch)
+            .hit);
   return true;
 }
 
@@ -1126,12 +1237,14 @@ static bool test_empty_joint_artifacts(const fs::path& dir) {
   CHECK(residents.advertised_roots() == 0);
 
   ResidentScratch scratch;
+  const UnifiedNode shared_node = to_unified(HeadsUpState(shared.root));
   const ResidentAnswer shared_answer =
-      residents.public_belief(HeadsUpState(shared.root), std::nullopt, scratch);
+      residents.public_belief(shared_node.state, shared_node.history, std::nullopt, scratch);
   CHECK(!shared_answer.hit);
   CHECK(shared_answer.reason == MissReason::EmptyJointRange);
+  const UnifiedNode zero_node = to_unified(HeadsUpState(zero_weight.root));
   const ResidentAnswer zero_answer =
-      residents.public_belief(HeadsUpState(zero_weight.root), std::nullopt, scratch);
+      residents.public_belief(zero_node.state, zero_node.history, std::nullopt, scratch);
   CHECK(!zero_answer.hit);
   CHECK(zero_answer.reason == MissReason::EmptyJointRange);
 
@@ -1192,11 +1305,14 @@ static bool test_orphan_actor_one(const fs::path& dir) {
   // where the stale player-0 card masses falsely made it look non-orphan.
   const HeadsUpState after_turn_check_check = after_turn_check.after_action(1, {ActionType::Check});
   CHECK(after_turn_check_check.phase() == Phase::Deal);
+  const UnifiedNode after_turn_check_node = to_unified(after_turn_check);
+  const UnifiedNode after_turn_check_check_node = to_unified(after_turn_check_check);
 
   ResidentScratch scratch;
   // The reported defect: replaying player-1's turn check at the covered node.
   const ResidentAnswer node =
-      residents.public_belief(after_turn_check_check, std::nullopt, scratch);
+      residents.public_belief(after_turn_check_check_node.state,
+                              after_turn_check_check_node.history, std::nullopt, scratch);
   CHECK(node.hit);
 
   // The nonuniform player-0 conditioning leaves both live combos positive and
@@ -1211,11 +1327,14 @@ static bool test_orphan_actor_one(const fs::path& dir) {
 
   // The orphan player-1 combination has no row on this branch.
   const ResidentAnswer orphan_hero =
-      residents.hero_decision(after_turn_check, {card("Kh"), card("Qh")}, std::nullopt, scratch);
+      residents.hero_decision(after_turn_check_node.state, after_turn_check_node.history,
+                              {card("Kh"), card("Qh")}, std::nullopt, scratch);
   CHECK(!orphan_hero.hit);
   CHECK(orphan_hero.reason == MissReason::UntrainedCombo);
   // The live player-1 combination has its row.
-  CHECK(residents.hero_decision(after_turn_check, {card("9s"), card("Ts")}, std::nullopt, scratch)
+  CHECK(residents
+            .hero_decision(after_turn_check_node.state, after_turn_check_node.history,
+                           {card("9s"), card("Ts")}, std::nullopt, scratch)
             .hit);
 
   // Representation invariant after folds: player-0 cached card masses stay in
@@ -1249,13 +1368,16 @@ static bool test_free_slot_reserved_card(const fs::path& dir) {
       root.after_action(0, {ActionType::Check}).after_action(1, {ActionType::Check});
   // Free turn dealing the fixed river reservation (8s).
   const HeadsUpState illegal_turn = checked.after_card(card("8s"));
+  const UnifiedNode illegal_turn_node = to_unified(illegal_turn);
   ResidentScratch scratch;
-  const ResidentAnswer answer = residents.public_belief(illegal_turn, std::nullopt, scratch);
+  const ResidentAnswer answer = residents.public_belief(
+      illegal_turn_node.state, illegal_turn_node.history, std::nullopt, scratch);
   CHECK(!answer.hit);
   CHECK(answer.reason == MissReason::OffTree);
   // Hero selection at that node must miss identically.
   const ResidentAnswer hero_answer =
-      residents.hero_decision(illegal_turn, game.ranges[0].front().cards, std::nullopt, scratch);
+      residents.hero_decision(illegal_turn_node.state, illegal_turn_node.history,
+                              game.ranges[0].front().cards, std::nullopt, scratch);
   CHECK(!hero_answer.hit);
   CHECK(hero_answer.reason == MissReason::OffTree);
   return true;
@@ -1299,8 +1421,9 @@ static bool test_shared_combo_ranges(const fs::path& dir) {
     }
   CHECK(total > 0.0);  // exact ratios below use the canonicalized weights
   ResidentScratch scratch;
+  const UnifiedNode root_node = to_unified(HeadsUpState(game.root));
   const ResidentAnswer answer =
-      residents.public_belief(HeadsUpState(game.root), std::nullopt, scratch);
+      residents.public_belief(root_node.state, root_node.history, std::nullopt, scratch);
   CHECK(answer.hit);
   for (int combo = 0; combo < bs::N_COMBOS; ++combo) {
     CHECK(near((*answer.public_reach[0])[combo], expected0[combo] / total));
@@ -1362,18 +1485,19 @@ static bool test_probe_api(const fs::path& dir) {
     ResidentIndex exact_index;
     exact_index.build(deep_policy.rows());
     // Reproduce the resident library's own game-copy measurement.
+    const UnifiedGame unified = to_unified_game(deep_policy.game());
     std::size_t exact_bytes = exact_index.resident_bytes();
-    exact_bytes += sizeof(HeadsUpGame);
-    for (const auto& range : deep_policy.game().ranges)
+    exact_bytes += kUnifiedGameCopyAccountingBytes;
+    for (const auto& range : unified.ranges)
       exact_bytes += range.capacity() * sizeof(WeightedHand);
-    for (const auto& street : deep_policy.game().sizes) {
+    for (const auto& street : unified.sizes) {
       exact_bytes += street.bets.capacity() * sizeof(Fraction);
       exact_bytes += street.raises.capacity() * sizeof(Fraction);
     }
     const std::size_t upper = ResidentIndex::estimate_bytes(
         static_cast<std::size_t>(deep_probe.information_sets),
         static_cast<std::size_t>(deep_probe.action_count),
-        static_cast<std::size_t>(deep_probe.total_key_words), deep_policy.game());
+        static_cast<std::size_t>(deep_probe.total_key_words), unified);
     CHECK(upper >= exact_bytes);
     // Tightness: the bound must not overshoot by a large multiple.
     CHECK(upper <= exact_bytes + deep_probe.information_sets * 40 + 4096);
@@ -1403,12 +1527,14 @@ static bool test_probe_api(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
-// RFC 0009 W2c: schema-v2 two-seat flop-rooted resident projection.
+// RFC 0009 W2c-ii-a: schema-v2 flop-rooted resident projection.
 //
-// The resident data layer projects a two-seat flop-rooted v2 SeatPolicy onto
-// its heads-up view and serves it through the unchanged 2-seat path. A
-// three-seat v2 source is refused by the projection until the state layer
-// generalizes (W2c-ii).
+// The resident data layer projects a flop-rooted v2 SeatPolicy onto the
+// unified GameState view and serves it through the resident query path. A
+// two-seat source answers belief and hero queries; a three-seat source is
+// advertised at load but misses every resident query with
+// SeatCountNotSupported until the belief path generalizes (W2c-ii-b). A
+// turn/river-rooted source is still refused at load (board_size != 3).
 // ---------------------------------------------------------------------------
 
 static bool test_v2_resident_projection(const fs::path& dir) {
@@ -1426,10 +1552,11 @@ static bool test_v2_resident_projection(const fs::path& dir) {
   // The projected root answers a public-belief query at the root. The root
   // actor is the non-button seat (button 0 -> seat 1), matching the GameState
   // opener, so the root decision rows are seat 1's.
-  const HeadsUpRoot root{{card("2c"), card("3d"), card("7h")}, {2, 2}, {1, 1}, 2, 2, 0};
-  const HeadsUpState state(root);
+  const GameState root_state(two_seat_flop_def_v2());
+  const std::vector<PublicAction> root_history;
   ResidentScratch scratch;
-  const ResidentAnswer belief = residents.public_belief(state, std::nullopt, scratch);
+  const ResidentAnswer belief =
+      residents.public_belief(root_state, root_history, std::nullopt, scratch);
   CHECK(belief.hit);
   CHECK(belief.reason == MissReason::None);
   // Each player's marginal normalizes to one, confirming the declared ranges
@@ -1443,8 +1570,8 @@ static bool test_v2_resident_projection(const fs::path& dir) {
 
   // A hero decision at the root returns the seat-1 actor's row.
   ResidentScratch hero_scratch;
-  const ResidentAnswer hero =
-      residents.hero_decision(state, {card("Ac"), card("Kc")}, std::nullopt, hero_scratch);
+  const ResidentAnswer hero = residents.hero_decision(
+      root_state, root_history, {card("Ac"), card("Kc")}, std::nullopt, hero_scratch);
   CHECK(hero.hit);
   CHECK(hero.hero_row.size > 0);
   double row_sum = 0.0;
@@ -1452,20 +1579,32 @@ static bool test_v2_resident_projection(const fs::path& dir) {
     row_sum += hero.hero_row.probabilities[i];
   CHECK(near(row_sum, 1.0, 1e-9));
 
-  // Three-seat v2: the projection refuses it as LoadFailed (W2c-ii owns the
-  // state-layer generalization); it is never advertised.
+  // Three-seat v2: the load generalizes to the unified view and advertises,
+  // but every resident query misses with SeatCountNotSupported until the
+  // belief path generalizes (W2c-ii-b).
   const PublishedV2Fixture three =
       publish_v2(three_seat_flop_def_v2(), three_seat_flop_ranges_v2(), 200, dir, "v2three");
   std::vector<RootLoadResult> three_results;
   ResidentPolicySet three_set = ResidentPolicySet::build(
       {{three.policy_path, parse_sha256(three.sha256_hex)}}, {}, &three_results);
   CHECK(three_results.size() == 1);
-  CHECK(three_results[0].status == RootStatus::LoadFailed);
-  CHECK(three_set.advertised_roots() == 0);
+  CHECK(three_results[0].status == RootStatus::Advertised);
+  CHECK(three_set.advertised_roots() == 1);
+
+  const GameState three_state(three_seat_flop_def_v2());
+  const std::vector<PublicAction> three_history;
+  ResidentScratch three_scratch;
+  const ResidentAnswer three_belief =
+      three_set.public_belief(three_state, three_history, std::nullopt, three_scratch);
+  CHECK(!three_belief.hit);
+  CHECK(three_belief.reason == MissReason::SeatCountNotSupported);
+  const ResidentAnswer three_hero = three_set.hero_decision(
+      three_state, three_history, {card("Ah"), card("Ac")}, std::nullopt, three_scratch);
+  CHECK(!three_hero.hit);
+  CHECK(three_hero.reason == MissReason::SeatCountNotSupported);
 
   // Two-seat turn-rooted v2: the projection is flop-rooted only, so a
-  // turn/river-rooted source is refused as LoadFailed just like a 3+-seat
-  // source.
+  // turn/river-rooted source is refused as LoadFailed at load.
   const PublishedV2Fixture turn =
       publish_v2(two_seat_turn_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2turn");
   std::vector<RootLoadResult> turn_results;
@@ -1500,37 +1639,46 @@ static bool test_misses(const fs::path& dir) {
   ResidentScratch scratch;
   const HeadsUpState golden_root(golden.root);
   const HeadsUpState matrix_root(matrix.root);
+  const UnifiedNode golden_root_node = to_unified(golden_root);
+  const UnifiedNode matrix_root_node = to_unified(matrix_root);
 
   // RootNotSupported: no matrix queries against a golden-only set.
   ResidentPolicySet golden_only = ResidentPolicySet::build(
       {{golden_fixture.policy_path, parse_sha256(golden_fixture.sha256_hex)}}, {}, &results);
-  CHECK(golden_only.public_belief(matrix_root, std::nullopt, scratch).reason ==
-        MissReason::RootNotSupported);
+  CHECK(golden_only
+            .public_belief(matrix_root_node.state, matrix_root_node.history, std::nullopt, scratch)
+            .reason == MissReason::RootNotSupported);
 
   // Pinned digest mismatch.
   const ResidentAnswer mismatch =
-      residents.public_belief(golden_root, std::string_view(matrix_fixture.sha256_hex), scratch);
+      residents.public_belief(golden_root_node.state, golden_root_node.history,
+                              std::string_view(matrix_fixture.sha256_hex), scratch);
   CHECK(!mismatch.hit);
   CHECK(mismatch.reason == MissReason::RootIdentityMismatch);
 
   // Pin to a supported root works.
   const ResidentAnswer pinned =
-      residents.public_belief(matrix_root, std::string_view(matrix_fixture.sha256_hex), scratch);
+      residents.public_belief(matrix_root_node.state, matrix_root_node.history,
+                              std::string_view(matrix_fixture.sha256_hex), scratch);
   CHECK(pinned.hit);
 
   // Unknown digest pin.
-  CHECK(residents.public_belief(matrix_root, std::string_view(std::string(64, 'a')), scratch)
+  CHECK(residents
+            .public_belief(matrix_root_node.state, matrix_root_node.history,
+                           std::string_view(std::string(64, 'a')), scratch)
             .reason == MissReason::RootNotSupported);
 
   // Wrong flop order is a different root.
   HeadsUpRoot permuted = matrix.root;
   std::swap(permuted.flop[0], permuted.flop[1]);
   const HeadsUpState permuted_state(permuted);
-  CHECK(residents.public_belief(permuted_state, std::nullopt, scratch).reason ==
-        MissReason::RootNotSupported);
-  CHECK(
-      residents.public_belief(permuted_state, std::string_view(matrix_fixture.sha256_hex), scratch)
-          .reason == MissReason::RootIdentityMismatch);
+  const UnifiedNode permuted_node = to_unified(permuted_state);
+  CHECK(residents.public_belief(permuted_node.state, permuted_node.history, std::nullopt, scratch)
+            .reason == MissReason::RootNotSupported);
+  CHECK(residents
+            .public_belief(permuted_node.state, permuted_node.history,
+                           std::string_view(matrix_fixture.sha256_hex), scratch)
+            .reason == MissReason::RootIdentityMismatch);
 
   // Runout divergence: turn 2h instead of the fixed 3s.
   {
@@ -1538,7 +1686,9 @@ static bool test_misses(const fs::path& dir) {
         matrix_root.after_action(0, {ActionType::Check}).after_action(1, {ActionType::Check});
     CHECK(state.phase() == Phase::Deal);
     state = state.after_card(card("2h"));
-    const ResidentAnswer answer = residents.public_belief(state, std::nullopt, scratch);
+    const UnifiedNode node = to_unified(state);
+    const ResidentAnswer answer =
+        residents.public_belief(node.state, node.history, std::nullopt, scratch);
     CHECK(!answer.hit);
     CHECK(answer.reason == MissReason::RunoutDivergence);
   }
@@ -1547,7 +1697,9 @@ static bool test_misses(const fs::path& dir) {
   // abstract action set {check, 5, 8, 10}.
   {
     const HeadsUpState off = matrix_root.after_action(0, {ActionType::Bet, 7});
-    const ResidentAnswer answer = residents.public_belief(off, std::nullopt, scratch);
+    const UnifiedNode off_node = to_unified(off);
+    const ResidentAnswer answer =
+        residents.public_belief(off_node.state, off_node.history, std::nullopt, scratch);
     CHECK(!answer.hit);
     CHECK(answer.reason == MissReason::OffTreeAmount);
   }
@@ -1555,7 +1707,8 @@ static bool test_misses(const fs::path& dir) {
   // Untrained hero combination at a covered node.
   {
     const ResidentAnswer answer =
-        residents.hero_decision(matrix_root, {card("2h"), card("2d")}, std::nullopt, scratch);
+        residents.hero_decision(matrix_root_node.state, matrix_root_node.history,
+                                {card("2h"), card("2d")}, std::nullopt, scratch);
     CHECK(!answer.hit);
     CHECK(answer.reason == MissReason::UntrainedCombo);
   }
@@ -1563,7 +1716,8 @@ static bool test_misses(const fs::path& dir) {
   // Hero combo blocked by the public board.
   {
     const ResidentAnswer answer =
-        residents.hero_decision(matrix_root, {card("Ks"), card("As")}, std::nullopt, scratch);
+        residents.hero_decision(matrix_root_node.state, matrix_root_node.history,
+                                {card("Ks"), card("As")}, std::nullopt, scratch);
     CHECK(!answer.hit);
     CHECK(answer.reason == MissReason::ComboBlockedByBoard);
   }
@@ -1592,7 +1746,9 @@ static bool test_misses(const fs::path& dir) {
     CHECK(!failed_results[0].detail.empty());
     CHECK(failed_results[1].status == RootStatus::Advertised);
     CHECK(mixed.advertised_roots() == 1);
-    CHECK(mixed.public_belief(matrix_root, std::nullopt, scratch).hit);
+    CHECK(
+        mixed.public_belief(matrix_root_node.state, matrix_root_node.history, std::nullopt, scratch)
+            .hit);
   }
 
   // Over-budget root: loaded and measured but not advertised.
@@ -1606,8 +1762,10 @@ static bool test_misses(const fs::path& dir) {
     CHECK(budget_results[0].status == RootStatus::OverBudget);
     CHECK(budget_results[0].resident_bytes > 1);
     CHECK(starved.advertised_roots() == 0);
-    CHECK(starved.public_belief(matrix_root, std::nullopt, scratch).reason ==
-          MissReason::OverBudgetNotAdvertised);
+    CHECK(
+        starved
+            .public_belief(matrix_root_node.state, matrix_root_node.history, std::nullopt, scratch)
+            .reason == MissReason::OverBudgetNotAdvertised);
   }
 
   // Fully blocked opponent belief after conditioning: the opponent range has
@@ -1643,14 +1801,16 @@ static bool test_misses(const fs::path& dir) {
         {{blocked_fixture.policy_path, parse_sha256(blocked_fixture.sha256_hex)}}, {}, &results);
     const HeadsUpState blocked_after_bet =
         blocked_after_check.after_action(1, {ActionType::Bet, 1});
-    const ResidentAnswer blocked_answer = blocked_set.hero_decision(
-        blocked_after_bet, {card("Kc"), card("Qc")}, std::nullopt, scratch);
+    const UnifiedNode blocked_after_bet_node = to_unified(blocked_after_bet);
+    const ResidentAnswer blocked_answer =
+        blocked_set.hero_decision(blocked_after_bet_node.state, blocked_after_bet_node.history,
+                                  {card("Kc"), card("Qc")}, std::nullopt, scratch);
     CHECK(!blocked_answer.hit);
     CHECK(blocked_answer.reason == MissReason::OpponentRangeFullyBlocked);
     // Public belief itself remains well defined, independent of hero, and the
     // non-sharing combo has been conditioned to zero.
-    const ResidentAnswer blocked_public =
-        blocked_set.public_belief(blocked_after_bet, std::nullopt, scratch);
+    const ResidentAnswer blocked_public = blocked_set.public_belief(
+        blocked_after_bet_node.state, blocked_after_bet_node.history, std::nullopt, scratch);
     CHECK(blocked_public.hit);
     CHECK(near((*blocked_public.public_reach[1])[bs::comboIndex(card("Jd"), card("Qd"))], 0.0));
   }
@@ -1665,9 +1825,14 @@ static bool test_misses(const fs::path& dir) {
     CHECK(partial_results[0].status == RootStatus::Advertised);
     const HeadsUpState after_check = golden_root.after_action(0, {ActionType::Check});
     const HeadsUpState after_check_bet = after_check.after_action(1, {ActionType::Bet, 1});
-    CHECK(partial_set.public_belief(after_check, std::nullopt, scratch).hit);
-    const ResidentAnswer missing =
-        partial_set.public_belief(after_check_bet, std::nullopt, scratch);
+    const UnifiedNode after_check_node = to_unified(after_check);
+    const UnifiedNode after_check_bet_node = to_unified(after_check_bet);
+    CHECK(
+        partial_set
+            .public_belief(after_check_node.state, after_check_node.history, std::nullopt, scratch)
+            .hit);
+    const ResidentAnswer missing = partial_set.public_belief(
+        after_check_bet_node.state, after_check_bet_node.history, std::nullopt, scratch);
     CHECK(!missing.hit);
     CHECK(missing.reason == MissReason::MissingHistory);
   }

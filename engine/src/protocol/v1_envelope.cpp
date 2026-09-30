@@ -119,7 +119,7 @@ BlueprintLookup lookupBlueprint(const V1HostServices& services,
     return result;
   }
   const V1BlueprintResult answer = services.blueprintHeroDecision(
-      *reconstructed.state, reconstructed.hero_cards, std::string_view{});
+      *reconstructed.state, reconstructed.history, reconstructed.hero_cards, std::string_view{});
   if (!answer.hit) {
     result.miss_detail = to_string(answer.miss);
     return result;
@@ -159,8 +159,9 @@ ResolvingLookup lookupResolving(const V1HostServices& services, const pv::Decisi
     result.miss_detail = to_string(reconstruct_miss);
     return result;
   }
-  const V1ResolveResult resolved = services.resolvingDecision(
-      *reconstructed.state, reconstructed.hero_cards, std::string_view{}, deadline_ms);
+  const V1ResolveResult resolved =
+      services.resolvingDecision(*reconstructed.state, reconstructed.history,
+                                 reconstructed.hero_cards, std::string_view{}, deadline_ms);
   result.outcome = resolved.outcome;
   if (resolved.outcome == V1ResolveOutcome::Unsupported) {
     result.miss_detail = to_string(resolved.miss == V1BlueprintMiss::None ? V1BlueprintMiss::OffTree
@@ -406,6 +407,8 @@ const char* to_string(V1BlueprintMiss miss) noexcept {
       return "opponent-range-fully-blocked";
     case V1BlueprintMiss::ZeroProbabilityHeroCombination:
       return "zero-probability-hero-combination";
+    case V1BlueprintMiss::SeatCountNotSupported:
+      return "seat-count-not-supported";
   }
   return "unknown";
 }
@@ -416,7 +419,9 @@ class NoResidentServices final : public V1HostServices {
  public:
   bool blueprintAdvertised() const noexcept override { return false; }
 
-  V1BlueprintResult blueprintHeroDecision(const bs::poker::HeadsUpState&, const std::array<int, 2>&,
+  V1BlueprintResult blueprintHeroDecision(const bs::poker::GameState&,
+                                          std::span<const bs::poker::PublicAction>,
+                                          const std::array<int, 2>&,
                                           std::string_view) const noexcept override {
     V1BlueprintResult result;
     result.hit = false;

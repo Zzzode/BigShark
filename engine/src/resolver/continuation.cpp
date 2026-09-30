@@ -4,7 +4,7 @@
 
 namespace bs::resolver::detail {
 
-std::vector<int> continuation_cards(const HeadsUpGame& game, const HeadsUpState& state,
+std::vector<int> continuation_cards(const UnifiedGame& game, const GameState& state,
                                     const std::array<std::array<int, 2>, 2>& hands) {
   const std::size_t slot = state.board().size() - 3;
   if (game.fixed_runout[slot])
@@ -29,14 +29,14 @@ namespace {
 
 // Exact expected-value walk over the remaining uniform/fixed public chance.
 // Any ACTION phase below is a terminal-only violation.
-double value_walk(const HeadsUpGame& game, const HeadsUpState& state,
+double value_walk(const UnifiedGame& game, const GameState& state,
                   const std::array<std::array<int, 2>, 2>& hands, std::size_t responder,
                   Budget& budget) {
   budget.visit();
   if (state.phase() == Phase::Folded)
-    return static_cast<double>(state.settle_fold().net_utility[responder]);
+    return static_cast<double>(state.settle_fold().chip_utility[responder]);
   if (state.phase() == Phase::Showdown)
-    return static_cast<double>(state.settle_showdown(hands).net_utility[responder]);
+    return static_cast<double>(state.settle_showdown(hands).chip_utility[responder]);
   if (state.phase() != Phase::Deal)
     throw RequireFailure("continuation is not terminal-only");
   const auto cards = continuation_cards(game, state, hands);
@@ -55,7 +55,7 @@ double value_walk(const HeadsUpGame& game, const HeadsUpState& state,
 // single trace per action is sufficient. At a Deal phase we advance the first
 // card not already on the board (hole-card exclusion changes the chance
 // support and the payoff, not whether another ACTION node appears).
-bool structural_walk(const HeadsUpState& state) {
+bool structural_walk(const GameState& state) {
   if (state.phase() == Phase::Folded || state.phase() == Phase::Showdown)
     return true;
   if (state.phase() != Phase::Deal)
@@ -78,13 +78,13 @@ bool structural_walk(const HeadsUpState& state) {
 
 }  // namespace
 
-double continuation_utility_responder(const HeadsUpGame& game, const HeadsUpState& after,
+double continuation_utility_responder(const UnifiedGame& game, const GameState& after,
                                       const std::array<std::array<int, 2>, 2>& hands,
                                       std::size_t responder, Budget& budget) {
   return value_walk(game, after, hands, responder, budget);
 }
 
-bool is_terminal_only(const HeadsUpGame&, const HeadsUpState& node,
+bool is_terminal_only(const UnifiedGame&, const GameState& node,
                       const std::vector<Action>& node_actions) {
   if (node.phase() != Phase::Action || !node.actor())
     return false;

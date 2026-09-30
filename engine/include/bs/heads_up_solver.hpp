@@ -72,6 +72,14 @@ static_assert(kGameCopyAccountingBytes >= sizeof(HeadsUpGame),
 std::vector<poker::Action> abstract_actions(const poker::HeadsUpState& state,
                                             const SizeSchedule& sizes);
 
+// Seat-generic twin for a historyless GameState (RFC 0009 W2c-ii). At two seats
+// the opponent is the other seat, so for an equivalent state it builds the
+// identical ordered menu. Three-or-more-seat callers must not assume the
+// opponent is a single seat; this overload still resolves the "other" seat as
+// 1-actor and is intended for the two-seat resolver path.
+std::vector<poker::Action> abstract_actions(const poker::GameState& state,
+                                            const SizeSchedule& sizes);
+
 using InformationKey = std::vector<std::uint64_t>;
 InformationKey information_key(const poker::HeadsUpState& state, std::array<int, 2> own_cards);
 

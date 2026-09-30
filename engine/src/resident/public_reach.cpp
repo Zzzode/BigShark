@@ -1,7 +1,9 @@
 #include "public_reach.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <vector>
 
 namespace bs::resident {
 namespace {
@@ -15,27 +17,68 @@ bool combo_holds_card(int combo, int card) {
 
 ReachModel::ReachModel(ResidentScratch& scratch) : scratch_(scratch) {}
 
-double root_joint_mass(const solver::HeadsUpGame& game) {
-  double mass = 0;
-  for (const solver::WeightedHand& a : game.ranges[0])
-    for (const solver::WeightedHand& b : game.ranges[1]) {
-      if (a.weight <= 0 || b.weight <= 0)
-        continue;
-      if (a.cards[0] == b.cards[0] || a.cards[0] == b.cards[1] || a.cards[1] == b.cards[0] ||
-          a.cards[1] == b.cards[1])
-        continue;
-      bool blocked = false;
-      for (int flop_card : game.root.flop)
-        if (flop_card == a.cards[0] || flop_card == a.cards[1] || flop_card == b.cards[0] ||
-            flop_card == b.cards[1])
-          blocked = true;
-      if (!blocked)
-        mass += a.weight * b.weight;
-    }
-  return mass;
+namespace {
+
+// Exact recursive joint mass over one combination per seat, all pairwise
+// card-disjoint and none sharing a root board card. Seats are visited most
+// constrained first (smallest declared range) so the used-card prune cuts
+// earliest. `product` is the weight product of the assignment so far.
+double joint_mass_recurse(const solver::UnifiedGame& game,
+                          const std::array<bool, 52>& board_blocked,
+                          const std::vector<std::size_t>& order, std::size_t depth,
+                          std::array<bool, 52>& used, double product) {
+  if (depth == order.size())
+    return product;
+  const std::size_t seat = order[depth];
+  double total = 0.0;
+  for (const solver::WeightedHand& hand : game.ranges[seat]) {
+    if (hand.weight <= 0)
+      continue;
+    if (board_blocked[static_cast<std::size_t>(hand.cards[0])] ||
+        board_blocked[static_cast<std::size_t>(hand.cards[1])])
+      continue;
+    if (used[static_cast<std::size_t>(hand.cards[0])] ||
+        used[static_cast<std::size_t>(hand.cards[1])])
+      continue;
+    used[static_cast<std::size_t>(hand.cards[0])] = true;
+    used[static_cast<std::size_t>(hand.cards[1])] = true;
+    total += joint_mass_recurse(game, board_blocked, order, depth + 1, used, product * hand.weight);
+    used[static_cast<std::size_t>(hand.cards[0])] = false;
+    used[static_cast<std::size_t>(hand.cards[1])] = false;
+  }
+  return total;
 }
 
-bool ReachModel::initialize(const solver::HeadsUpGame& game) {
+}  // namespace
+
+double root_joint_mass(const solver::UnifiedGame& game) {
+  const std::size_t seats = game.def.player_count;
+  if (seats < bs::poker::kMinUnifiedSeats || seats > bs::poker::kMaxUnifiedSeats)
+    return 0.0;
+  // A seat with an empty declared range contributes no joint deal.
+  for (std::size_t seat = 0; seat < seats; ++seat)
+    if (game.ranges[seat].empty())
+      return 0.0;
+  std::vector<std::size_t> order;
+  order.reserve(seats);
+  for (std::size_t seat = 0; seat < seats; ++seat)
+    order.push_back(seat);
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    return game.ranges[a].size() < game.ranges[b].size();
+  });
+  std::array<bool, 52> board_blocked{};
+  for (std::size_t i = 0; i < game.def.board_size && i < 3; ++i)
+    board_blocked[static_cast<std::size_t>(game.def.board[i])] = true;
+  std::array<bool, 52> used{};
+  return joint_mass_recurse(game, board_blocked, order, 0, used, 1.0);
+}
+
+bool ReachModel::initialize(const solver::UnifiedGame& game) {
+  // W2c-ii-a: the belief model is still two-seat; an n-seat artifact loads and
+  // serves the resolver source, but the resident belief cannot condition it
+  // until W2c-ii-b.
+  if (game.def.player_count != 2)
+    return false;
   for (std::size_t player = 0; player < 2; ++player) {
     scratch_.raw[player].fill(0.0);
     for (const solver::WeightedHand& hand : game.ranges[player]) {
@@ -45,8 +88,8 @@ bool ReachModel::initialize(const solver::HeadsUpGame& game) {
   }
   // Root flop filtering. Declared artifact ranges already exclude board
   // cards, but the belief never trusts that implicitly.
-  for (int flop_card : game.root.flop)
-    if (!observe_card(flop_card))
+  for (std::size_t i = 0; i < game.def.board_size && i < 3; ++i)
+    if (!observe_card(game.def.board[i]))
       return false;
   return renormalize();
 }

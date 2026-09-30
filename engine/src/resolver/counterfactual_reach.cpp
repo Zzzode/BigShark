@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,11 +15,27 @@
 namespace bs::resolver::detail {
 namespace {
 
-using poker::BettingEvent;
+using poker::GameDef;
+using poker::PublicAction;
 
-bool same_root(const HeadsUpRoot& a, const HeadsUpRoot& b) {
-  return a.flop == b.flop && a.stacks == b.stacks && a.contributions == b.contributions &&
-         a.pot == b.pot && a.big_blind == b.big_blind && a.button == b.button;
+// Resident six-field root identity, generalized to a GameDef: the flop cards,
+// the per-seat stacks and closed-street contributions, the pot, the big blind,
+// and the button. Deliberately looser than poker::same_game_def (which also
+// compares preflop/blinds_posted/ante/variant/terminal); the resolver matches
+// the resident's documented identity, not the stricter predicate.
+bool same_root(const GameDef& a, const GameDef& b) {
+  if (a.player_count != b.player_count || a.pot != b.pot || a.big_blind != b.big_blind ||
+      a.button != b.button)
+    return false;
+  if (a.board_size < 3 || b.board_size < 3)
+    return false;
+  for (std::size_t i = 0; i < 3; ++i)
+    if (a.board[i] != b.board[i])
+      return false;
+  for (std::size_t p = 0; p < a.player_count; ++p)
+    if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p])
+      return false;
+  return true;
 }
 
 // Probability of one exact action in a blueprint row; -1 when absent.
@@ -41,20 +58,27 @@ bool valid_distribution(const BlueprintRowView& row) {
 
 }  // namespace
 
-ResolveStatus build_model(const HeadsUpState& node, const BlueprintSource& blueprint,
-                          Budget& budget, ReachModel& model, std::string& detail) {
-  const HeadsUpGame& game = blueprint.game();
+ResolveStatus build_model(const GameState& node, std::span<const PublicAction> history,
+                          const BlueprintSource& blueprint, Budget& budget, ReachModel& model,
+                          std::string& detail) {
+  const UnifiedGame& game = blueprint.game();
   auto fail = [&](ResolveStatus status, const std::string& why) {
     detail = why;
     return status;
   };
 
+  // W2c-ii-a: the state layer is seat-generic, but the resolver gadget and the
+  // independent certifier below are still two-seat (a single hero and the
+  // 1-hero responder). Three-or-more-seat resolves are a later stage.
+  if (game.def.player_count != 2)
+    return fail(ResolveStatus::Ineligible, "resolver supports two seats only");
   if (node.phase() != Phase::Action || !node.actor())
     return fail(ResolveStatus::Ineligible, "resolve node is not an action node");
-  if (!same_root(game.root, node.root()))
+  if (!same_root(game.def, node.def()))
     return fail(ResolveStatus::CoverageMiss, "node root does not match the blueprint game root");
 
   model.node = node;
+  model.history.assign(history.begin(), history.end());
   model.game = &game;
   model.hero = *node.actor();
   model.responder = 1 - model.hero;
@@ -75,7 +99,10 @@ ResolveStatus build_model(const HeadsUpState& node, const BlueprintSource& bluep
 
   // ---- Replay the public path from the flop root to the resolve node, ------
   // validating every blueprint action and accumulating HERO prefix reach only.
-  HeadsUpState cursor(game.root);
+  // GameState is historyless, so the observed path arrives as a PublicAction
+  // span; the blueprint row at each cursor is keyed by the cursor's board plus
+  // the prefix span at that cursor (events 0..i-1).
+  GameState cursor(game.def);
   try {
     auto deal_next = [&](int card) {
       cursor = cursor.after_card(card);
@@ -85,21 +112,23 @@ ResolveStatus build_model(const HeadsUpState& node, const BlueprintSource& bluep
             reach = 0;
     };
 
-    for (const BettingEvent& event : node.history()) {
+    for (std::size_t i = 0; i < history.size(); ++i) {
+      const PublicAction& event = history[i];
       while (cursor.phase() == Phase::Deal) {
         const std::size_t next = cursor.board().size();
         if (next >= node.board().size())
           return fail(ResolveStatus::CoverageMiss, "history runs past the observed board");
         deal_next(node.board()[next]);
       }
-      if (cursor.phase() != Phase::Action || !cursor.actor() || *cursor.actor() != event.actor)
+      if (cursor.phase() != Phase::Action || !cursor.actor() || *cursor.actor() != event.seat)
         return fail(ResolveStatus::CoverageMiss, "replayed history does not reach the actor");
 
-      const std::size_t actor = event.actor;
+      const std::size_t actor = event.seat;
+      const std::span<const PublicAction> prefix(history.data(), i);
       for (const auto& [cards, reach] : prefix_reach[actor]) {
         if (reach == 0)
           continue;
-        const auto view = blueprint.row(cursor, actor, cards);
+        const auto view = blueprint.row(cursor, prefix, actor, cards);
         if (!view)
           return fail(ResolveStatus::CoverageMiss, "missing blueprint prefix row");
         if (view->size == 0 || view->actions == nullptr || view->probabilities == nullptr)
@@ -118,8 +147,19 @@ ResolveStatus build_model(const HeadsUpState& node, const BlueprintSource& bluep
     return fail(ResolveStatus::CoverageMiss, std::string("prefix replay failed: ") + error.what());
   }
 
-  if (cursor.board() != node.board() || cursor.phase() != node.phase() ||
-      !cursor.actor().has_value() || *cursor.actor() != model.hero || cursor.pot() != node.pot())
+  // Element-wise board cross-check: GameState::board() returns a span, so !=
+  // would compare storage, not the cards.
+  const auto cursor_board = cursor.board();
+  const auto node_board = node.board();
+  bool board_matches = cursor_board.size() == node_board.size();
+  if (board_matches)
+    for (std::size_t i = 0; i < cursor_board.size(); ++i)
+      if (cursor_board[i] != node_board[i]) {
+        board_matches = false;
+        break;
+      }
+  if (!board_matches || cursor.phase() != node.phase() || !cursor.actor().has_value() ||
+      *cursor.actor() != model.hero || cursor.pot() != node.pot())
     return fail(ResolveStatus::CoverageMiss, "replayed node disagrees with the observed node");
   for (std::size_t p = 0; p < 2; ++p)
     if (cursor.players()[p].stack != node.players()[p].stack ||
@@ -195,7 +235,7 @@ ResolveStatus build_model(const HeadsUpState& node, const BlueprintSource& bluep
       hands[model.hero] = deal.hero;
       hands[model.responder] = deal.responder;
       for (std::size_t a = 0; a < model.node_actions.size(); ++a) {
-        const HeadsUpState after = node.after_action(model.hero, model.node_actions[a]);
+        const GameState after = node.after_action(model.hero, model.node_actions[a]);
         model.leaf_values[deal_index][a] =
             continuation_utility_responder(game, after, hands, model.responder, budget);
       }
@@ -204,7 +244,7 @@ ResolveStatus build_model(const HeadsUpState& node, const BlueprintSource& bluep
       double weighted_value = 0;
       for (std::size_t deal_index : infoset.deals) {
         const GadgetDeal& deal = model.deals[deal_index];
-        const auto view = blueprint.row(node, model.hero, deal.hero);
+        const auto view = blueprint.row(node, model.history, model.hero, deal.hero);
         if (!view || view->size != model.node_actions.size())
           return fail(ResolveStatus::CoverageMiss, "missing/incompatible hero baseline row");
         if (!valid_distribution(*view))

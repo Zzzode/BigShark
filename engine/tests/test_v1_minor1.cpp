@@ -4,14 +4,15 @@
 // minor-0 byte/call-path identity. Resident lookup is injected through the
 // protobuf-free V1HostServices seam with deterministic fakes; no artifacts or
 // training are involved.
-#include <algorithm>
 #include <array>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/prng.hpp>
 #include <bs/v1_protocol.hpp>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -58,7 +59,9 @@ class FakeServices final : public V1HostServices {
 
   bool blueprintAdvertised() const noexcept override { return advertised; }
 
-  V1BlueprintResult blueprintHeroDecision(const bs::poker::HeadsUpState&, const std::array<int, 2>&,
+  V1BlueprintResult blueprintHeroDecision(const bs::poker::GameState&,
+                                          std::span<const bs::poker::PublicAction>,
+                                          const std::array<int, 2>&,
                                           std::string_view) const noexcept override {
     touched = true;
     V1BlueprintResult result;

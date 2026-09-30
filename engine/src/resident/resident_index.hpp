@@ -13,6 +13,7 @@
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/seat_policy.hpp>  // SeatPolicyRow
+#include <bs/unified_game.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -64,7 +65,7 @@ class ResidentIndex {
   // exactly after the index is built; the pre-gate never accepts a root the
   // exact measurement would refuse.
   static std::size_t estimate_bytes(std::size_t row_count, std::size_t action_count,
-                                    std::size_t total_key_words, const solver::HeadsUpGame& game);
+                                    std::size_t total_key_words, const solver::UnifiedGame& game);
 
   // Test support: iterate stored keys in construction order.
   std::span<const std::uint64_t> key_at(std::size_t row) const;

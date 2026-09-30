@@ -8,9 +8,11 @@
 #include <algorithm>
 #include <array>
 #include <bs/eval.hpp>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/resolver.hpp>
+#include <bs/unified_game.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -18,7 +20,9 @@
 #include <cstdio>
 #include <map>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -58,20 +62,22 @@ using Action = bs::poker::Action;
 class MapBlueprint final : public BlueprintSource {
  public:
   explicit MapBlueprint(
-      HeadsUpGame game,
+      UnifiedGame game,
       std::string digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
       : game_(std::move(game)), digest_(std::move(digest)) {}
 
-  void set_row(const HeadsUpState& state, std::size_t player, std::array<int, 2> cards,
-               std::vector<Action> actions, std::vector<double> probs) {
-    rows_[{information_key(state, cards), player}] = {std::move(actions), std::move(probs)};
+  void set_row(const GameState& state, std::span<const PublicAction> history, std::size_t player,
+               std::array<int, 2> cards, std::vector<Action> actions, std::vector<double> probs) {
+    rows_[{make_information_key(player, cards, state.board(), history), player}] = {
+        std::move(actions), std::move(probs)};
   }
 
-  const HeadsUpGame& game() const override { return game_; }
+  const UnifiedGame& game() const override { return game_; }
   std::string_view artifact_digest() const override { return digest_; }
-  std::optional<BlueprintRowView> row(const HeadsUpState& state, std::size_t player,
-                                      std::array<int, 2> cards) const override {
-    const auto it = rows_.find({information_key(state, cards), player});
+  std::optional<BlueprintRowView> row(const GameState& state, std::span<const PublicAction> history,
+                                      std::size_t player, std::array<int, 2> cards) const override {
+    const auto it =
+        rows_.find({make_information_key(player, cards, state.board(), history), player});
     if (it == rows_.end())
       return std::nullopt;
     return BlueprintRowView{it->second.actions.data(), it->second.probs.data(),
@@ -84,33 +90,47 @@ class MapBlueprint final : public BlueprintSource {
     std::vector<Action> actions;
     std::vector<double> probs;
   };
-  HeadsUpGame game_;
+  UnifiedGame game_;
   std::string digest_;
   std::map<Key, Row> rows_;
 };
 
 struct TinyGame {
   HeadsUpGame game;
-  std::optional<HeadsUpState> node;
+  UnifiedGame unified;
+  // The resolver path is historyless: GameState plus the explicit public-action
+  // path. `hnode` is the same node as a HeadsUpState, kept for the independent
+  // oracle and the information_key identity cross-check.
+  GameState state;
+  std::vector<PublicAction> history;
+  HeadsUpState hnode;
   std::array<int, 2> W{};
   std::array<int, 2> L{};
   std::array<int, 2> O{};
   std::vector<Action> actions;
+
+  explicit TinyGame(HeadsUpGame g)
+      : game(std::move(g)), unified(to_unified_game(game)), state(unified.def), hnode(game.root) {}
 };
 
 TinyGame make_canonical() {
-  TinyGame t;
+  HeadsUpGame game;
+  game.root = {{card("2c"), card("3d"), card("7h")}, {1, 1}, {1, 1}, 2, 1, 1};
+  game.fixed_runout = {card("Js"), card("9c")};
+  TinyGame t(std::move(game));
   t.W = {card("Ac"), card("Ad")};
   t.L = {card("8c"), card("8d")};
   t.O = {card("Qc"), card("Qd")};
   std::sort(t.W.begin(), t.W.end());
   std::sort(t.L.begin(), t.L.end());
   std::sort(t.O.begin(), t.O.end());
-  t.game.root = {{card("2c"), card("3d"), card("7h")}, {1, 1}, {1, 1}, 2, 1, 1};
   t.game.ranges[1] = {{t.W, 1}, {t.L, 1}};
   t.game.ranges[0] = {{t.O, 1}};
-  t.game.fixed_runout = {card("Js"), card("9c")};
-  t.node = HeadsUpState(t.game.root).after_action(0, {ActionType::Bet, 1});
+  t.unified = to_unified_game(t.game);
+  t.state = GameState(t.unified.def);
+  t.state = t.state.after_action(0, {ActionType::Bet, 1});
+  t.history = {{Street::Flop, 0, {ActionType::Bet, 1}}};
+  t.hnode = HeadsUpState(t.game.root).after_action(0, {ActionType::Bet, 1});
   t.actions = {{ActionType::Fold}, {ActionType::Call}};
   return t;
 }
@@ -119,9 +139,9 @@ TinyGame make_canonical() {
 // (fold/call probabilities for W then L) for every declared responder combo.
 void install_prefix(MapBlueprint& bp, const TinyGame& t,
                     const std::vector<std::array<int, 2>>& responder_combos) {
-  const HeadsUpState root(t.game.root);
+  const GameState root_state(t.unified.def);
   for (const auto& r : responder_combos)
-    bp.set_row(root, 0, r, {{ActionType::Check}, {ActionType::Bet, 1}}, {0, 1});
+    bp.set_row(root_state, {}, 0, r, {{ActionType::Check}, {ActionType::Bet, 1}}, {0, 1});
 }
 
 ResolveLimits test_limits(std::uint64_t iterations = 100000) {
@@ -138,8 +158,8 @@ ResolveLimits test_limits(std::uint64_t iterations = 100000) {
 rd::ReachModel build(const TinyGame& t, MapBlueprint& bp, ResolveStatus& status) {
   std::string detail;
   rd::Budget budget(test_limits());
-  rd::ReachModel model{(*t.node)};
-  status = rd::build_model((*t.node), bp, budget, model, detail);
+  rd::ReachModel model{t.state, t.history};
+  status = rd::build_model(t.state, t.history, bp, budget, model, detail);
   if (status != ResolveStatus::Certified)
     std::printf("build_model status=%d detail=%s\n", static_cast<int>(status), detail.c_str());
   return model;
@@ -154,7 +174,7 @@ std::vector<OracleDeal> oracle_deals(const rd::ReachModel& model) {
 
 // Hand-derived canonical checks shared by fixtures.
 int check_canonical_margins(const TinyGame& t, const rd::ReachModel& model) {
-  TerminalOracle oracle((*t.node), oracle_deals(model), t.actions, t.game.fixed_runout);
+  TerminalOracle oracle(t.hnode, oracle_deals(model), t.actions, t.game.fixed_runout);
   CHECK(model.infosets.size() == 1);
   const rd::ResponderInfoset& infoset = model.infosets[0];
   CHECK(infoset.cards == t.O);
@@ -168,11 +188,11 @@ int check_canonical_margins(const TinyGame& t, const rd::ReachModel& model) {
 // whole-range policy has margin 1.5 and must never pass the atomic certifier.
 int test_deceptive_whole_range_rejected() {
   TinyGame t = make_canonical();
-  MapBlueprint bp(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O});
   // Baseline locks the CURRENT node to all-call, centering b(O)=0.
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   ResolveStatus status;
   rd::ReachModel model = build(t, bp, status);
@@ -184,8 +204,8 @@ int test_deceptive_whole_range_rejected() {
   // losing hand. It is exactly one atomic map, so the certifier must see the
   // exploitability of the assembled policy rather than certify per combo.
   std::map<InformationKey, PolicyRow> candidate;
-  candidate.emplace(information_key((*t.node), t.W), PolicyRow{t.actions, {1, 0}});
-  candidate.emplace(information_key((*t.node), t.L), PolicyRow{t.actions, {0, 1}});
+  candidate.emplace(information_key(t.hnode, t.W), PolicyRow{t.actions, {1, 0}});
+  candidate.emplace(information_key(t.hnode, t.L), PolicyRow{t.actions, {0, 1}});
 
   rd::Budget cert_budget(test_limits());
   rd::Certification cert = rd::certify_candidate(model, candidate, test_limits(), cert_budget);
@@ -196,7 +216,7 @@ int test_deceptive_whole_range_rejected() {
   CHECK(near(cert.margins[0].best_response, 1.5));
   CHECK(cert.margins[0].slack > 0.0);
 
-  TerminalOracle oracle((*t.node), oracle_deals(model), t.actions, t.game.fixed_runout);
+  TerminalOracle oracle(t.hnode, oracle_deals(model), t.actions, t.game.fixed_runout);
   bs::resolver_test::HeroStrategy hero{
       {t.W, {1, 0}},
       {t.L, {0, 1}},
@@ -217,17 +237,18 @@ int test_locally_better_globally_worse_rejected() {
     return c;
   }();
   t.game.ranges[0] = {{t.O, 1}, {Rb, 1}};
-  MapBlueprint bp(t.game);
+  t.unified = to_unified_game(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O, Rb});
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});  // baseline all-call
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});  // baseline all-call
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   ResolveStatus status;
   rd::ReachModel model = build(t, bp, status);
   CHECK(status == ResolveStatus::Certified);
   CHECK(model.infosets.size() == 2);
 
-  TerminalOracle oracle((*t.node), oracle_deals(model), t.actions, t.game.fixed_runout);
+  TerminalOracle oracle(t.hnode, oracle_deals(model), t.actions, t.game.fixed_runout);
   // Baseline all-call: O column (-2,+2) -> b(O)=0; Rb column (-2,-2) -> -2.
   bs::resolver_test::BaselineStrategy base{{t.W, {0, 1}}, {t.L, {0, 1}}};
   CHECK(near(oracle.baseline_margin(t.O, base), 0.0));
@@ -240,8 +261,8 @@ int test_locally_better_globally_worse_rejected() {
   // call winners / fold losers: optimal for O, but it makes Rb worse (-0.5 vs
   // its all-call baseline -2).
   std::map<InformationKey, PolicyRow> candidate;
-  candidate.emplace(information_key((*t.node), t.W), PolicyRow{t.actions, {0, 1}});
-  candidate.emplace(information_key((*t.node), t.L), PolicyRow{t.actions, {1, 0}});
+  candidate.emplace(information_key(t.hnode, t.W), PolicyRow{t.actions, {0, 1}});
+  candidate.emplace(information_key(t.hnode, t.L), PolicyRow{t.actions, {1, 0}});
   bs::resolver_test::HeroStrategy hero{{t.W, {0, 1}}, {t.L, {1, 0}}};
   CHECK(near(oracle.candidate_margin(t.O, hero), -0.5));
   CHECK(near(oracle.candidate_margin(Rb, hero), -0.5));
@@ -266,10 +287,10 @@ int test_locally_better_globally_worse_rejected() {
 // independently computed augmented-game NashConv is within 1e-8 root-pot.
 int test_equilibrium_passes_and_converges() {
   TinyGame t = make_canonical();
-  MapBlueprint bp(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O});
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});  // baseline all-call, b(O)=0
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});  // baseline all-call, b(O)=0
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   ResolveStatus status;
   rd::ReachModel model = build(t, bp, status);
@@ -285,8 +306,8 @@ int test_equilibrium_passes_and_converges() {
   CHECK(cert.status == ResolveStatus::Certified);
   CHECK(cert.certified);
 
-  const PolicyRow& wrow = gadget.candidate.at(information_key((*t.node), t.W));
-  const PolicyRow& lrow = gadget.candidate.at(information_key((*t.node), t.L));
+  const PolicyRow& wrow = gadget.candidate.at(information_key(t.hnode, t.W));
+  const PolicyRow& lrow = gadget.candidate.at(information_key(t.hnode, t.L));
   // Equilibrium: call the winner, fold the loser.
   CHECK(wrow.probabilities[1] > 0.9999);
   CHECK(lrow.probabilities[1] < 0.0001);
@@ -295,7 +316,7 @@ int test_equilibrium_passes_and_converges() {
     CHECK(near(margin.best_response, 0.0));
   }
 
-  TerminalOracle oracle((*t.node), oracle_deals(model), t.actions, t.game.fixed_runout);
+  TerminalOracle oracle(t.hnode, oracle_deals(model), t.actions, t.game.fixed_runout);
   bs::resolver_test::HeroStrategy hero;
   bs::resolver_test::ResponderStrategy responder;
   std::map<std::array<int, 2>, double> payoff;
@@ -326,10 +347,11 @@ int test_zero_mass_infoset() {
     return c;
   }();
   t.game.ranges[0] = {{t.O, 1}, {Rz, 1}};
-  MapBlueprint bp(t.game);
+  t.unified = to_unified_game(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O, Rz});
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   ResolveStatus status;
   rd::ReachModel model = build(t, bp, status);
@@ -357,7 +379,7 @@ int test_zero_mass_infoset() {
   }
   CHECK(recorded_zero);
 
-  TerminalOracle oracle((*t.node), oracle_deals(model), t.actions, t.game.fixed_runout);
+  TerminalOracle oracle(t.hnode, oracle_deals(model), t.actions, t.game.fixed_runout);
   CHECK(near(oracle.mass(Rz), 0.0));
   return 0;
 }
@@ -365,17 +387,17 @@ int test_zero_mass_infoset() {
 // (vi) Any resource limit while solving or certifying discards the candidate.
 int test_deadlines_discard() {
   TinyGame t = make_canonical();
-  MapBlueprint bp(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O});
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   Resolver resolver;
   // Solve deadline: the budget cannot pay for even one bounded iteration, so
   // the candidate is discarded before any training happens.
   ResolveLimits solve = test_limits();
   solve.time = std::chrono::milliseconds(1);
-  ResolveResult solve_result = resolver.resolve((*t.node), bp, solve);
+  ResolveResult solve_result = resolver.resolve(t.state, t.history, bp, solve);
   CHECK(solve_result.status == ResolveStatus::SolveDeadline);
   CHECK(solve_result.candidate.empty());
   CHECK(solve_result.completed_iterations == 0);
@@ -386,14 +408,14 @@ int test_deadlines_discard() {
   Resolver resolver2;
   ResolveLimits wall = test_limits();
   wall.time = std::chrono::milliseconds(2);
-  ResolveResult wall_result = resolver2.resolve((*t.node), bp, wall);
+  ResolveResult wall_result = resolver2.resolve(t.state, t.history, bp, wall);
   CHECK(wall_result.candidate.empty());
 
   // Certification deadline: solve completes but the certifier gets one node.
   Resolver resolver3;
   ResolveLimits certify = test_limits(1000);
   certify.certify_max_nodes = 1;
-  ResolveResult cert_result = resolver3.resolve((*t.node), bp, certify);
+  ResolveResult cert_result = resolver3.resolve(t.state, t.history, bp, certify);
   CHECK(cert_result.status == ResolveStatus::CertifyDeadline);
   CHECK(cert_result.candidate.empty());
   return 0;
@@ -402,23 +424,23 @@ int test_deadlines_discard() {
 // (vii) Whole-range, private-independent selection.
 int test_private_independence_and_cache() {
   TinyGame t = make_canonical();
-  MapBlueprint bp(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O});
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   Resolver resolver;
-  ResolveResult first = resolver.resolve((*t.node), bp, test_limits(50000));
+  ResolveResult first = resolver.resolve(t.state, t.history, bp, test_limits(50000));
   CHECK(first.status == ResolveStatus::Certified);
   CHECK(first.candidate.size() == 2);  // the whole range, selected before a hand
   // There is no hero-card argument; both counterfactual rows coexist.
-  CHECK(first.candidate.contains(information_key((*t.node), t.W)));
-  CHECK(first.candidate.contains(information_key((*t.node), t.L)));
+  CHECK(first.candidate.contains(information_key(t.hnode, t.W)));
+  CHECK(first.candidate.contains(information_key(t.hnode, t.L)));
 
   // A different public seed must not move the full-traversal candidate.
   ResolveLimits other_seed = test_limits(50000);
   other_seed.public_seed = 0xabcdef0123456789ULL;
-  ResolveResult second = resolver.resolve((*t.node), bp, other_seed);
+  ResolveResult second = resolver.resolve(t.state, t.history, bp, other_seed);
   CHECK(second.status == ResolveStatus::Certified);
   CHECK(second.candidate.size() == first.candidate.size());
   for (const auto& [key, row] : first.candidate) {
@@ -431,7 +453,7 @@ int test_private_independence_and_cache() {
 
   // A fresh resolver reproduces the identical certified whole-range policy.
   Resolver resolver3;
-  ResolveResult third = resolver3.resolve((*t.node), bp, test_limits(50000));
+  ResolveResult third = resolver3.resolve(t.state, t.history, bp, test_limits(50000));
   CHECK(third.status == ResolveStatus::Certified);
   for (const auto& [key, row] : first.candidate) {
     const auto& match = third.candidate.at(key);
@@ -454,16 +476,20 @@ int test_non_terminal_node_ineligible() {
   game.ranges[0] = {{h0, 1}};
   game.ranges[1] = {{h1, 1}};
   game.fixed_runout = {card("Js"), card("9c")};
+  const UnifiedGame unified = to_unified_game(game);
+  const GameState root_state(unified.def);
   // p0 makes a small bet; p1 faces fold/call/raise and calling leaves stacks.
-  const HeadsUpState node = HeadsUpState(game.root).after_action(0, {ActionType::Bet, 2});
-  MapBlueprint bp(game);
-  bp.set_row(HeadsUpState(game.root), 0, h0, {{ActionType::Check}, {ActionType::Bet, 2}}, {0, 1});
+  const GameState state = root_state.after_action(0, {ActionType::Bet, 2});
+  const std::vector<PublicAction> history{{Street::Flop, 0, {ActionType::Bet, 2}}};
+  const HeadsUpState hnode = HeadsUpState(game.root).after_action(0, {ActionType::Bet, 2});
+  MapBlueprint bp(unified);
+  bp.set_row(root_state, {}, 0, h0, {{ActionType::Check}, {ActionType::Bet, 2}}, {0, 1});
 
   ResolveLimits limits = test_limits(10);
   rd::Budget budget(limits);
-  rd::ReachModel model{node};
+  rd::ReachModel model{state, history};
   std::string detail;
-  const ResolveStatus status = rd::build_model(node, bp, budget, model, detail);
+  const ResolveStatus status = rd::build_model(state, history, bp, budget, model, detail);
   CHECK(status == ResolveStatus::Ineligible);
   return 0;
 }
@@ -485,17 +511,21 @@ int test_hero_combo_without_compatible_opponent() {
   game.ranges[1] = {{h0, 1}, {h1, 1}};
   game.ranges[0] = {{o0, 1}};
   game.fixed_runout = {card("Js"), card("9c")};
-  const HeadsUpState node = HeadsUpState(game.root).after_action(0, {ActionType::Bet, 1});
+  const UnifiedGame unified = to_unified_game(game);
+  const GameState root_state(unified.def);
+  const GameState state = root_state.after_action(0, {ActionType::Bet, 1});
+  const std::vector<PublicAction> history{{Street::Flop, 0, {ActionType::Bet, 1}}};
+  const HeadsUpState hnode = HeadsUpState(game.root).after_action(0, {ActionType::Bet, 1});
   const std::vector<Action> actions{{ActionType::Fold}, {ActionType::Call}};
-  MapBlueprint bp(game);
-  bp.set_row(HeadsUpState(game.root), 0, o0, {{ActionType::Check}, {ActionType::Bet, 1}}, {0, 1});
-  bp.set_row(node, 1, h0, actions, {0, 1});
-  bp.set_row(node, 1, h1, actions, {0, 1});
+  MapBlueprint bp(unified);
+  bp.set_row(root_state, {}, 0, o0, {{ActionType::Check}, {ActionType::Bet, 1}}, {0, 1});
+  bp.set_row(state, history, 1, h0, actions, {0, 1});
+  bp.set_row(state, history, 1, h1, actions, {0, 1});
 
   rd::Budget build_budget(test_limits());
-  rd::ReachModel model{node};
+  rd::ReachModel model{state, history};
   std::string detail;
-  const ResolveStatus status = rd::build_model(node, bp, build_budget, model, detail);
+  const ResolveStatus status = rd::build_model(state, history, bp, build_budget, model, detail);
   CHECK(status == ResolveStatus::Certified);
   // h0 blocks o0 entirely: it is live but carries no deal and no infoset.
   CHECK(model.live_hero.size() == 2);
@@ -520,11 +550,11 @@ int test_hero_combo_without_compatible_opponent() {
 
   // End to end: the whole-range candidate must be published, not discarded.
   Resolver resolver;
-  const ResolveResult result = resolver.resolve(node, bp, test_limits());
+  const ResolveResult result = resolver.resolve(state, history, bp, test_limits());
   CHECK(result.status == ResolveStatus::Certified);
   CHECK(result.candidate.size() == 1);
-  CHECK(result.candidate.contains(information_key(node, h1)));
-  CHECK(!result.candidate.contains(information_key(node, h0)));
+  CHECK(result.candidate.contains(information_key(hnode, h1)));
+  CHECK(!result.candidate.contains(information_key(hnode, h0)));
   return 0;
 }
 
@@ -577,17 +607,17 @@ int test_iteration_cap_scales_with_budget() {
   // End to end: the canonical tiny game derives a cap from its own deal count
   // and still certifies, reproducibly.
   TinyGame t = make_canonical();
-  MapBlueprint bp(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O});
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   ResolveLimits limits = test_limits();
   Resolver resolver;
-  const ResolveResult first = resolver.resolve((*t.node), bp, limits);
+  const ResolveResult first = resolver.resolve(t.state, t.history, bp, limits);
   CHECK(first.status == ResolveStatus::Certified);
   Resolver resolver2;
-  const ResolveResult second = resolver2.resolve((*t.node), bp, limits);
+  const ResolveResult second = resolver2.resolve(t.state, t.history, bp, limits);
   CHECK(second.status == ResolveStatus::Certified);
   CHECK(second.candidate.size() == first.candidate.size());
   CHECK(second.completed_iterations == first.completed_iterations);
@@ -597,7 +627,7 @@ int test_iteration_cap_scales_with_budget() {
   ResolveLimits starved = test_limits();
   starved.time = std::chrono::milliseconds(1);
   Resolver resolver3;
-  const ResolveResult discarded = resolver3.resolve((*t.node), bp, starved);
+  const ResolveResult discarded = resolver3.resolve(t.state, t.history, bp, starved);
   CHECK(discarded.status == ResolveStatus::SolveDeadline);
   CHECK(discarded.candidate.empty());
   CHECK(discarded.completed_iterations == 0);
@@ -611,10 +641,10 @@ int test_iteration_cap_scales_with_budget() {
 // long-budget candidate and its budget would never bound the training work.
 int test_cache_identity_includes_budget() {
   TinyGame t = make_canonical();
-  MapBlueprint bp(t.game);
+  MapBlueprint bp(t.unified);
   install_prefix(bp, t, {t.O});
-  bp.set_row((*t.node), 1, t.W, t.actions, {0, 1});
-  bp.set_row((*t.node), 1, t.L, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.W, t.actions, {0, 1});
+  bp.set_row(t.state, t.history, 1, t.L, t.actions, {0, 1});
 
   // Learn the model's real deal/action counts once, so the expected caps below
   // are the same ones Resolver::resolve derives internally.
@@ -628,7 +658,7 @@ int test_cache_identity_includes_budget() {
   Resolver resolver;
   ResolveLimits long_budget = test_limits();
   long_budget.time = std::chrono::seconds(30);
-  const ResolveResult first = resolver.resolve((*t.node), bp, long_budget);
+  const ResolveResult first = resolver.resolve(t.state, t.history, bp, long_budget);
   CHECK(first.status == ResolveStatus::Certified);
   const std::uint64_t long_cap =
       iteration_cap_for_budget(long_budget.time, long_budget.iterations, deals, actions);
@@ -649,7 +679,7 @@ int test_cache_identity_includes_budget() {
       iteration_cap_for_budget(short_budget.time, short_budget.iterations, deals, actions);
   CHECK(short_cap > 0);
   CHECK(short_cap < long_cap);
-  const ResolveResult second = resolver.resolve((*t.node), bp, short_budget);
+  const ResolveResult second = resolver.resolve(t.state, t.history, bp, short_budget);
   CHECK(second.completed_iterations <= short_cap);
   CHECK(second.completed_iterations != first.completed_iterations);
 
@@ -659,9 +689,9 @@ int test_cache_identity_includes_budget() {
   // 30 s budget keeps the derived cap binding well before the wall clock on
   // every supported build (including sanitized ones).
   Resolver resolver2;
-  const ResolveResult warmup = resolver2.resolve((*t.node), bp, long_budget);
+  const ResolveResult warmup = resolver2.resolve(t.state, t.history, bp, long_budget);
   CHECK(warmup.status == ResolveStatus::Certified);
-  const ResolveResult cached = resolver2.resolve((*t.node), bp, long_budget);
+  const ResolveResult cached = resolver2.resolve(t.state, t.history, bp, long_budget);
   CHECK(cached.status == ResolveStatus::Certified);
   CHECK(cached.candidate.size() == warmup.candidate.size());
   CHECK(cached.completed_iterations == warmup.completed_iterations);
@@ -670,11 +700,11 @@ int test_cache_identity_includes_budget() {
   // safety valve (certify_max_nodes small forces a discard) must not be
   // silently bypassed by a warm entry trained under a generous cap.
   Resolver resolver3;
-  const ResolveResult generous = resolver3.resolve((*t.node), bp, long_budget);
+  const ResolveResult generous = resolver3.resolve(t.state, t.history, bp, long_budget);
   CHECK(generous.status == ResolveStatus::Certified);
   ResolveLimits valved = long_budget;
   valved.certify_max_nodes = 1;
-  const ResolveResult capped = resolver3.resolve((*t.node), bp, valved);
+  const ResolveResult capped = resolver3.resolve(t.state, t.history, bp, valved);
   CHECK(capped.status == ResolveStatus::CertifyDeadline);
   CHECK(capped.candidate.empty());
   return 0;
