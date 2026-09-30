@@ -556,6 +556,41 @@ other live player):
 - `ResolveStatus` keeps its values; the semantic extension is documented at
   the enum and at every consumer.
 
+**D4 implementation decisions recorded at W2c-i (committed 883fc72).** D4 above describes the
+full resolver/resident generalization. The first increment (W2c-i)
+generalizes the resident *data layer* to consume v2 artifacts and defers the
+state layer (the n-seat mapper, n-seat belief, unified host-service
+signatures, and the multi-player resolver gadget) to W2c-ii. The decisions:
+
+1. **Two-seat flop-rooted projection.** A two-seat flop-rooted v2
+   `SeatPolicy` projects onto the existing `HeadsUpGame` view: `GameDef` ->
+   `HeadsUpRoot` (flop, stacks[0..1], contributions[0..1], pot, big_blind,
+   button), `SeatPolicy::ranges()` -> `HeadsUpGame::ranges[0..1]`,
+   `SeatPolicy::sizes()` -> `HeadsUpGame::sizes`, and `fixed_runout` left
+   empty (the v2 n-seat trainer does not build fixed-runout trees). The
+   existing two-seat path (`resolve_root`, `runout_matches`,
+   `replay_public_path`, `hero_decision`, `ResidentBlueprintSource`) is
+   unchanged; it serves the projected game exactly as it serves a v1 game.
+2. **Probe and publish lift their v2 refusal.** `probe_artifact` dispatches on
+   the schema version and, for v2, populates the seat-generic identity
+   (`game_def`/`ranges`/`sizes`) while leaving the v1 `game` arm default.
+   `publish_policy` publishes a v2 checkpoint through `write_all_v2` (v2 has
+   no training table, so one writer serves both checkpoint and policy). The
+   probe's key-aggregate SQL is revision-agnostic: it counts comma-separated
+   events (one comma per event in both revisions) times the four-word
+   in-memory event arity, so it bounds v2 roots unchanged.
+3. **The resident index builds from `SeatPolicyRow`.** The row layout is
+   identical to v1 (`actions` + `probabilities`); the v2 `visits` field is
+   not resident. The in-memory information-key layout is identical for v1 and
+   v2 (four fields per event); the revision distinction is only in the ASCII
+   encoding, so an index built from v2 rows is compatible with the two-seat
+   replay's `fill_key`.
+4. **Refused shapes.** Turn/river-rooted and three-or-more-seat v2 sources
+   are refused by the projection (`std::invalid_argument`, caught as
+   `RootStatus::LoadFailed`) until the state layer generalizes in W2c-ii. The
+   refusal is at the resident projection, not the artifact layer: the probe
+   and publish succeed for any well-formed v2 artifact.
+
 ### D5. Flop coverage
 
 Coverage is delivered as a gradient, not a promise, and each element is
