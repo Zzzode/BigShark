@@ -4,7 +4,7 @@ subject: "Unified Engine Delivery and Live Promotion"
 status: "Accepted"
 authors: "BigShark engine agent"
 created: "2026-09-29"
-updated: "2026-09-29"
+updated: "2026-09-30"
 owners: "Poker, solver, abstraction, artifact boundary, resolver, resident, protocol, engine host, River adapter, benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -471,6 +471,57 @@ Writer and reader land together in both directions, per RFC 0007's rule; the
 standing `user_version = 2` rejection fixture is revised in the same change
 (once v2 is accepted by version, those bytes must instead fail later as
 schema-invalid, and the fixture says which).
+
+**D3 implementation decisions recorded at W2b (committed 54a3cf6, review-fix
+f76d992).** The D3 text above pins the actor digits, `board_count` domain, and
+lexical rules, but leaves the following open. These are the decisions the
+implementation made, recorded here as current (implemented) behavior so the
+contract is not left implicit:
+
+1. **Revision-2 event arity and street semantics.** Revision-2 events carry
+   the street as a fourth field `actor:kind:target:street`
+   (`artifact_codec.cpp` `encode_public_key`/`decode_public_key`). The
+   revision-1 round-end rule (advance the event street on a call or a
+   check-check) is a two-seat rule: with three or more seats a check-check or a
+   non-final call does not close the betting round, so the street cannot be
+   recovered from `actor:kind:target` alone. Revision 2 therefore carries each
+   event's street explicitly, validates it non-decreasing (the preflop-to-flop
+   wrap `3 -> 0` is the one allowed decrease), and does not treat a fold as
+   terminal (a fold ends the hand only heads-up). Revision 1 stays frozen at
+   three fields with the round-end rule. The two-seat revision-2 route is
+   byte-identical to revision 1 for every street the round-end rule covers.
+2. **v2 `information_sets` manifest semantics.** The manifest stores the
+   concrete stored-state count (`SeatPolicy::rows().size()`), not the trainer's
+   bucket-keyed `NSeatTrainingResult::information_sets`. A bucket-keyed trainer
+   row expands to many concrete (node, acting-seat, off-board-combo) rows, so
+   the two counts differ; the manifest records what is actually stored. The
+   reader validates `manifest.information_sets == states.size()`.
+3. **Preflop v2 artifact deferral.** The revision-2 grammar and the v2 DDL
+   admit `root_street = 3` / `board_count = 0` (the preflop form), but the v2
+   reader rejects a preflop root until a preflop profile ships. The v2 writer
+   accepts `board_size` 3..5 only. This is a deferral, not a grammar change:
+   the grammar already admits the form, and a future preflop profile lifts the
+   reader gate without a schema bump.
+4. **`WallClock` / `RunStatus` representation.** The trainer's
+   `NSeatTerminationPhase` has three values (`Complete`, `ResourceLimit`,
+   `WallClock`); the artifact `RunStatus` has two (`Complete`, `ResourceLimit`).
+   The v2 writer maps `WallClock -> ResourceLimit`, and the reader maps anything
+   non-`Complete` to `ResourceLimit`. A wall-clock stop is therefore
+   indistinguishable from a resource-limit stop after round-trip. This is a
+   known lossy coercion; a profile that needs the distinction must extend
+   `RunStatus` (a manifest change, not a schema bump).
+5. **Rules-identifier naming.** `kRulesIdentifierV2 =
+   "rfc0009-unified-flop-v1"` names "flop" but v2 artifacts may be turn- or
+   river-rooted (`root_street` 0..2). The identifier is the profile's
+   rules-family name, not a root-street claim. A future preflop profile must add
+   a distinct identifier rather than reuse this one.
+
+The reader-side `player < player_count` validation this section mandates for
+`ranges.player` and `information_states.player` is implemented for both columns
+and, by the same tampered-file threat model, for `bounds.seat`; a value inside
+the `0..9` SQL CHECK domain but outside the game's `player_count` is rejected
+with `InvalidSchema` (regression tests in `test_artifacts.cpp`
+`test_roundtrip_v2`).
 
 ### D4. Resolver and resident generalization
 
