@@ -8,10 +8,15 @@
 // (HeadsUpSolverDebug::response_value_with_reach).
 #include <algorithm>
 #include <array>
+#include <bs/abstract_tree.hpp>
+#include <bs/abstraction.hpp>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/nseat_trainer.hpp>
 #include <bs/range.hpp>
 #include <bs/resident_policy.hpp>
+#include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <chrono>
 #include <cmath>
@@ -348,6 +353,86 @@ std::vector<OracleDeal> oracle_deals(const HeadsUpGame& game) {
   for (auto& deal : deals)
     deal.probability /= mass;
   return deals;
+}
+
+// --- RFC 0009 W2c schema-v2 resident projection fixtures -------------------
+
+// A two-seat flop-rooted v2 game: the only v2 shape the resident data layer
+// projects onto its heads-up view (RFC 0009 D4). Postflop the non-button
+// seat acts first (HeadsUpState actor = 1 - button), matching the GameState
+// opener, so the root decision rows belong to seat 1.
+GameDef two_seat_flop_def_v2() {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {1, 1, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 2;
+  def.board = {card("2c"), card("3d"), card("7h"), 0, 0};
+  def.board_size = 3;
+  return def;
+}
+
+// Two combos per seat, all off the flop board and mutually card-distinct.
+// Each combo's cards are sorted ascending (a < b) as the nseat trainer
+// requires.
+std::vector<std::vector<WeightedHand>> two_seat_flop_ranges_v2() {
+  return {
+      {{{card("Ks"), card("As")}, 2}, {{card("Jh"), card("Qh")}, 3}},
+      {{{card("Kc"), card("Ac")}, 5}, {{card("Jd"), card("Qd")}, 7}},
+  };
+}
+
+// A three-seat flop-rooted v2 game: the resident projection refuses it
+// (W2c-ii owns the state-layer generalization), so it must never advertise.
+GameDef three_seat_flop_def_v2() {
+  GameDef def{};
+  def.player_count = 3;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {2, 2, 2, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {1, 1, 1, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;
+  def.board = {card("2c"), card("3d"), card("7h"), 0, 0};
+  def.board_size = 3;
+  return def;
+}
+
+std::vector<std::vector<WeightedHand>> three_seat_flop_ranges_v2() {
+  return {
+      {{{card("8h"), card("8c")}, 3}, {{card("Ah"), card("Ac")}, 2}},
+      {{{card("8s"), card("8d")}, 7}, {{card("As"), card("Ad")}, 5}},
+      {{{card("Jh"), card("Jc")}, 13}, {{card("Qh"), card("Qc")}, 11}},
+  };
+}
+
+struct PublishedV2Fixture {
+  fs::path policy_path;
+  GameDef def;
+  std::string sha256_hex;
+};
+
+// Train, checkpoint, and publish a seat-generic v2 policy.
+PublishedV2Fixture publish_v2(const GameDef& def,
+                              const std::vector<std::vector<WeightedHand>>& ranges,
+                              std::uint64_t iterations, const fs::path& dir,
+                              const std::string& name) {
+  const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+  const NSeatTrainingResult trained =
+      train_nseat(tree, ranges, iterations, 20260930, NSeatTrainerLimits{});
+  if (trained.termination != NSeatTerminationPhase::Complete) {
+    std::printf("v2 fixture training did not complete for %s\n", name.c_str());
+    std::abort();
+  }
+  const SeatTrainingResult exported = export_seat_policy(trained, tree, ranges);
+  const fs::path checkpoint = dir / (name + "-v2-checkpoint.db");
+  const fs::path policy_path = dir / (name + "-v2-policy.db");
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "resident-v2-test-1";
+  create_checkpoint(checkpoint, exported, provenance);
+  const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-v2-1");
+  return {policy_path, def, published.sha256_hex};
 }
 
 }  // namespace
@@ -1301,6 +1386,70 @@ static bool test_probe_api(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// RFC 0009 W2c: schema-v2 two-seat flop-rooted resident projection.
+//
+// The resident data layer projects a two-seat flop-rooted v2 SeatPolicy onto
+// its heads-up view and serves it through the unchanged 2-seat path. A
+// three-seat v2 source is refused by the projection until the state layer
+// generalizes (W2c-ii).
+// ---------------------------------------------------------------------------
+
+static bool test_v2_resident_projection(const fs::path& dir) {
+  // Two-seat flop-rooted v2: advertised and served through the projection.
+  const PublishedV2Fixture fixture =
+      publish_v2(two_seat_flop_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2proj");
+
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet residents = ResidentPolicySet::build(
+      {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
+  CHECK(results.size() == 1);
+  CHECK(results[0].status == RootStatus::Advertised);
+  CHECK(residents.advertised_roots() == 1);
+
+  // The projected root answers a public-belief query at the root. The root
+  // actor is the non-button seat (button 0 -> seat 1), matching the GameState
+  // opener, so the root decision rows are seat 1's.
+  const HeadsUpRoot root{{card("2c"), card("3d"), card("7h")}, {2, 2}, {1, 1}, 2, 2, 0};
+  const HeadsUpState state(root);
+  ResidentScratch scratch;
+  const ResidentAnswer belief = residents.public_belief(state, std::nullopt, scratch);
+  CHECK(belief.hit);
+  CHECK(belief.reason == MissReason::None);
+  // Each player's marginal normalizes to one, confirming the declared ranges
+  // flowed through the projection.
+  for (std::size_t player = 0; player < 2; ++player) {
+    double sum = 0.0;
+    for (double mass : *belief.public_reach[player])
+      sum += mass;
+    CHECK(near(sum, 1.0, 1e-9));
+  }
+
+  // A hero decision at the root returns the seat-1 actor's row.
+  ResidentScratch hero_scratch;
+  const ResidentAnswer hero =
+      residents.hero_decision(state, {card("Ac"), card("Kc")}, std::nullopt, hero_scratch);
+  CHECK(hero.hit);
+  CHECK(hero.hero_row.size > 0);
+  double row_sum = 0.0;
+  for (std::size_t i = 0; i < hero.hero_row.size; ++i)
+    row_sum += hero.hero_row.probabilities[i];
+  CHECK(near(row_sum, 1.0, 1e-9));
+
+  // Three-seat v2: the projection refuses it as LoadFailed (W2c-ii owns the
+  // state-layer generalization); it is never advertised.
+  const PublishedV2Fixture three =
+      publish_v2(three_seat_flop_def_v2(), three_seat_flop_ranges_v2(), 200, dir, "v2three");
+  std::vector<RootLoadResult> three_results;
+  ResidentPolicySet three_set = ResidentPolicySet::build(
+      {{three.policy_path, parse_sha256(three.sha256_hex)}}, {}, &three_results);
+  CHECK(three_results.size() == 1);
+  CHECK(three_results[0].status == RootStatus::LoadFailed);
+  CHECK(three_set.advertised_roots() == 0);
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Coverage misses and startup semantics.
 // ---------------------------------------------------------------------------
 
@@ -1713,6 +1862,7 @@ int main() {
       {"free slot reserved card", test_free_slot_reserved_card},
       {"shared combo ranges", test_shared_combo_ranges},
       {"probe api", test_probe_api},
+      {"v2 resident projection", test_v2_resident_projection},
       {"cross-blocked root", test_cross_blocked_root},
       {"coverage misses", test_misses},
       {"index and continuity", test_index_and_continuity},

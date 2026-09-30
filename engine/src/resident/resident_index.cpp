@@ -36,7 +36,8 @@ ResidentIndex::~ResidentIndex() = default;
 ResidentIndex::ResidentIndex(ResidentIndex&&) noexcept = default;
 ResidentIndex& ResidentIndex::operator=(ResidentIndex&&) noexcept = default;
 
-void ResidentIndex::build(const std::map<solver::InformationKey, solver::PolicyRow>& rows) {
+template <class Row>
+void ResidentIndex::build_rows(const std::map<solver::InformationKey, Row>& rows) {
   if (row_count_ != 0)
     throw std::logic_error("resident index is built once");
   row_count_ = rows.size();
@@ -104,6 +105,14 @@ void ResidentIndex::build(const std::map<solver::InformationKey, solver::PolicyR
       slot = (slot + 1) & slot_mask_;
     slots_[slot] = Slot{hash, row_id + 1, 0};
   }
+}
+
+void ResidentIndex::build(const std::map<solver::InformationKey, solver::PolicyRow>& rows) {
+  build_rows(rows);
+}
+
+void ResidentIndex::build(const std::map<solver::InformationKey, solver::SeatPolicyRow>& rows) {
+  build_rows(rows);
 }
 
 std::span<const std::uint64_t> ResidentIndex::key_at(std::size_t row) const {

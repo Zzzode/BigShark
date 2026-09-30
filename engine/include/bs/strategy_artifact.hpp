@@ -17,6 +17,7 @@
 #pragma once
 
 #include <array>
+#include <bs/abstraction.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/seat_policy.hpp>
@@ -232,7 +233,16 @@ LoadedArtifact load_artifact(const std::filesystem::path& path, const LoadOption
 // load_artifact afterward.
 struct ArtifactProbe {
   ArtifactManifest manifest;
+  // Revision-1 identity. Default-constructed for a schema-v2 probe, where the
+  // seat-generic fields below carry the identity instead.
   solver::HeadsUpGame game;
+  // RFC 0009 D4 (schema v2 only): the seat-generic identity. Populated only
+  // for a v2 probe. The resident path projects a two-seat flop-rooted v2
+  // identity onto its heads-up view; turn/river-rooted and 3+-seat v2 sources
+  // are refused there as LoadFailed until the state layer generalizes.
+  std::optional<poker::GameDef> game_def;
+  std::optional<std::vector<std::vector<solver::WeightedHand>>> ranges;
+  std::optional<abstraction::SizeSchedule> sizes;
   std::uint64_t information_sets = 0;
   std::uint64_t action_count = 0;
   // Sum and maximum of stored canonical key lengths in 64-bit words.

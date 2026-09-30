@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <array>
+#include <bs/abstraction.hpp>
+#include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/range.hpp>
@@ -53,6 +55,35 @@ constexpr std::size_t kKeyBoard = 4;
 bool same_root(const poker::HeadsUpRoot& a, const poker::HeadsUpRoot& b) {
   return a.flop == b.flop && a.stacks == b.stacks && a.contributions == b.contributions &&
          a.pot == b.pot && a.big_blind == b.big_blind && a.button == b.button;
+}
+
+// Project a two-seat flop-rooted schema-v2 identity onto the resident heads-up
+// view. The in-memory information key layout is identical across revisions
+// (make_information_key and information_key(HeadsUpState) emit the same words
+// for the same state), so the projected game's rows are keyed compatibly and
+// the existing two-seat replay serves them unchanged. Turn/river-rooted and
+// 3+-seat v2 sources are refused until the resident state layer generalizes
+// (RFC 0009 D4, W2c-ii).
+HeadsUpGame project_v2_game(const poker::GameDef& game,
+                            const std::vector<std::vector<solver::WeightedHand>>& ranges,
+                            const abstraction::SizeSchedule& sizes) {
+  if (game.player_count != 2)
+    throw std::invalid_argument("resident path supports only two-seat v2 artifacts; got " +
+                                std::to_string(game.player_count) + " seats");
+  if (game.board_size != 3)
+    throw std::invalid_argument(
+        "resident path supports only flop-rooted v2 artifacts; got board_size " +
+        std::to_string(game.board_size));
+  HeadsUpGame projected;
+  projected.root.flop = {game.board[0], game.board[1], game.board[2]};
+  projected.root.stacks = {game.stacks[0], game.stacks[1]};
+  projected.root.contributions = {game.contributions[0], game.contributions[1]};
+  projected.root.pot = game.pot;
+  projected.root.big_blind = game.big_blind;
+  projected.root.button = game.button;
+  projected.ranges = {ranges[0], ranges[1]};
+  projected.sizes = sizes;
+  return projected;
 }
 
 // Honest footprint of the immutable game copy kept with an advertised root.
@@ -201,7 +232,14 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
           spec.path,
           artifacts::LoadOptions{artifacts::kDefaultMaxArtifactBytes, spec.expected_sha256});
       record.result.sha256_hex = probe.sha256_hex;
-      record.game = std::move(probe.game);
+      // RFC 0009 D4: a schema-v2 probe carries the seat-generic identity;
+      // project a two-seat flop-rooted source onto the resident heads-up view.
+      // The projection refuses turn/river-rooted and 3+-seat shapes as
+      // LoadFailed until the state layer generalizes (W2c-ii).
+      if (probe.game_def)
+        record.game = project_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
+      else
+        record.game = std::move(probe.game);
 
       bool duplicate = false;
       for (const Record& other : set.records_)
@@ -237,8 +275,16 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
           artifacts::LoadOptions load_options;
           load_options.expected_sha256 = spec.expected_sha256;
           artifacts::LoadedArtifact loaded = artifacts::load_artifact(spec.path, load_options);
-          record.game = loaded.bundle.result.policy.game();
-          record.index.build(loaded.bundle.result.policy.rows());
+          if (loaded.bundle.nseat) {
+            // RFC 0009 D4: schema-v2 seat-generic policy. Project the identity
+            // and build the index from the concrete seat-indexed rows.
+            const auto& policy = loaded.bundle.nseat->policy;
+            record.game = project_v2_game(policy.game(), policy.ranges(), policy.sizes());
+            record.index.build(policy.rows());
+          } else {
+            record.game = loaded.bundle.result.policy.game();
+            record.index.build(loaded.bundle.result.policy.rows());
+          }
           record.result.information_sets = record.index.row_count();
           record.result.probability_count = record.index.probability_count();
           record.result.resident_bytes =

@@ -1041,16 +1041,45 @@ static int test_roundtrip_v2(const fs::path& dir) {
   create_checkpoint(path2, exported, provenance);
   CHECK(sha256_file_hex(path) == sha256_file_hex(path2));
 
-  // probe_artifact does not yet support schema v2 (the resident path is W2c).
-  CHECK(
-      throws_artifact([&] { (void)probe_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
-
-  // publish_policy does not yet support schema-v2 sources.
+  // RFC 0009 W2c: probe_artifact and publish_policy now support schema v2. The
+  // probe carries the seat-generic identity (game_def/ranges/sizes); the
+  // resident projection of a two-seat flop-rooted v2 source onto the heads-up
+  // view is exercised by the resident-policy test, not here.
   const fs::path policy_dir = dir / "policy-v2";
   fs::create_directory(policy_dir);
   const fs::path policy_path = policy_dir / "generation-v2-0001.db";
-  CHECK(throws_artifact([&] { (void)publish_policy(path, policy_path, "publish-v2-engine-1"); },
-                        ArtifactErrorKind::InvalidArgument));
+  const PublishedPolicy published_v2 = publish_policy(path, policy_path, "publish-v2-engine-1");
+  CHECK(published_v2.sha256_hex == sha256_file_hex(policy_path));
+  CHECK(published_v2.file_bytes == fs::file_size(policy_path));
+
+  const ArtifactProbe probe = probe_artifact(policy_path);
+  CHECK(probe.manifest.kind == ArtifactKind::Policy);
+  CHECK(probe.manifest.validation == ValidationState::Validated);
+  CHECK(probe.manifest.information_key_revision == 2);
+  CHECK(probe.game_def.has_value());
+  CHECK(probe.game_def->player_count == 3);
+  CHECK(probe.game_def->board_size == 5);
+  CHECK(probe.ranges.has_value());
+  CHECK(probe.ranges->size() == 3);
+  CHECK(probe.sizes.has_value());
+  CHECK(*probe.sizes == exported.policy.sizes());
+  CHECK(probe.information_sets == exported.policy.rows().size());
+  CHECK(probe.action_count >= probe.information_sets);
+  // The v1 identity arm stays default for a v2 probe.
+  CHECK(probe.game.ranges[0].empty());
+  CHECK(probe.game.ranges[1].empty());
+
+  // The published policy round-trips through the v2 loader with the v1 arm
+  // default.
+  const LoadedArtifact published_loaded =
+      load_artifact(policy_path, LoadOptions{published_v2.file_bytes, published_v2.sha256});
+  CHECK(published_loaded.bundle.manifest.kind == ArtifactKind::Policy);
+  CHECK(published_loaded.bundle.nseat.has_value());
+  CHECK(published_loaded.bundle.result.policy.rows().empty());
+  if (compare_seat_result_exact(exported, *published_loaded.bundle.nseat) != 0) {
+    std::printf("v2 published-policy seat-result comparison failed\n");
+    return 1;
+  }
 
   // RFC 0009 D3: the reader validates player < player_count in C++, because a
   // SQL CHECK is write-time-only and can be stripped from a tampered file. A

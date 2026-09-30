@@ -2395,24 +2395,37 @@ const char* const kProbeKeyAggregateSql =
 
 ArtifactProbe probe_path(const std::filesystem::path& path, const LoadOptions& options) {
   OpenedArtifact opened = open_validated(path, options);
-  // The resident probe reconstructs a heads-up game; schema-v2 seat-generic
-  // sources are not probeable until the resident path generalizes (W2c).
-  check(opened.schema_version == kArtifactSchemaVersion, ArtifactErrorKind::UnsupportedVersion,
-        "probe does not support schema-v2 artifacts yet");
   dt::Db& db = opened.db;
 
   ArtifactProbe probe;
-  probe.manifest = read_manifest(db);
+  if (opened.schema_version == kArtifactSchemaVersionV2) {
+    probe.manifest = read_manifest_v2(db);
+  } else {
+    probe.manifest = read_manifest(db);
+  }
   check(probe.manifest.kind == ArtifactKind::Policy, ArtifactErrorKind::InvalidArgument,
         "resident probe supports published policies only: " + path.string());
   check(probe.manifest.run_status == RunStatus::Complete, ArtifactErrorKind::InvalidArgument,
         "cannot probe a resource-limited policy");
 
-  probe.game = read_game(db);
-  read_sizes(db, probe.game);
-  read_ranges(db, probe.game);
-  validate_game(probe.game);
-  read_auxiliary_tables(db);
+  if (opened.schema_version == kArtifactSchemaVersionV2) {
+    // RFC 0009 D4: materialize the seat-generic identity. The resident path
+    // projects a two-seat flop-rooted v2 source onto its heads-up view; the
+    // probe itself only carries the identity and SQL aggregates.
+    GameDef game = read_game_v2(db);
+    read_game_seats(db, game);
+    probe.sizes = read_sizes_v2(db);
+    probe.ranges = read_ranges_v2(db, game.player_count);
+    validate_game_v2(game);
+    probe.game_def = game;
+    read_auxiliary_tables_v2(db, game.player_count);
+  } else {
+    probe.game = read_game(db);
+    read_sizes(db, probe.game);
+    read_ranges(db, probe.game);
+    validate_game(probe.game);
+    read_auxiliary_tables(db);
+  }
 
   dt::Stmt states(db.get(), "SELECT COUNT(*) FROM information_states", "probe information states");
   check(states.step("probe information states"), ArtifactErrorKind::Corrupt,
@@ -2575,14 +2588,18 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
                                const std::filesystem::path& destination,
                                const std::string& engine_revision) {
   const LoadedArtifact source = load_artifact(checkpoint_path);
-  check(!source.bundle.nseat.has_value(), ArtifactErrorKind::InvalidArgument,
-        "publish_policy does not support schema-v2 seat-generic sources yet");
+  const bool is_v2 = source.bundle.nseat.has_value();
   check(source.bundle.manifest.kind == ArtifactKind::Checkpoint, ArtifactErrorKind::InvalidArgument,
         "publish source must be a checkpoint: " + checkpoint_path.string());
   check(source.bundle.manifest.run_status == RunStatus::Complete,
         ArtifactErrorKind::InvalidArgument, "cannot publish a resource-limited checkpoint");
-  check(!source.bundle.result.policy.rows().empty(), ArtifactErrorKind::InvalidArgument,
-        "cannot publish an empty policy");
+  if (is_v2) {
+    check(!source.bundle.nseat->policy.rows().empty(), ArtifactErrorKind::InvalidArgument,
+          "cannot publish an empty policy");
+  } else {
+    check(!source.bundle.result.policy.rows().empty(), ArtifactErrorKind::InvalidArgument,
+          "cannot publish an empty policy");
+  }
 
   std::error_code ec;
   const std::filesystem::path parent = destination.parent_path();
@@ -2596,13 +2613,25 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
   bool linked = false;
   try {
     open_writer(db, temp.string(), true);
-    CheckpointProvenance provenance;
-    provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;
-    provenance.prng_identifier = source.bundle.manifest.prng_identifier;
-    provenance.engine_revision = engine_revision;
-    ArtifactManifest manifest = manifest_for(source.bundle.result, provenance, ArtifactKind::Policy,
-                                             ValidationState::Validated);
-    write_all(db, manifest, source.bundle.result, source.bundle.rows, false);
+    ArtifactManifest manifest;
+    if (is_v2) {
+      SeatCheckpointProvenance provenance;
+      provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;
+      provenance.prng_identifier = source.bundle.manifest.prng_identifier;
+      provenance.engine_revision = engine_revision;
+      manifest = manifest_for_v2(*source.bundle.nseat, provenance, ArtifactKind::Policy,
+                                 ValidationState::Validated);
+      validate_content_v2(*source.bundle.nseat);
+      write_all_v2(db, manifest, *source.bundle.nseat);
+    } else {
+      CheckpointProvenance provenance;
+      provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;
+      provenance.prng_identifier = source.bundle.manifest.prng_identifier;
+      provenance.engine_revision = engine_revision;
+      manifest = manifest_for(source.bundle.result, provenance, ArtifactKind::Policy,
+                              ValidationState::Validated);
+      write_all(db, manifest, source.bundle.result, source.bundle.rows, false);
+    }
     db.close();
 
     dt::fsync_file(temp);

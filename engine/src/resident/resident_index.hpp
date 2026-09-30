@@ -12,6 +12,7 @@
 #include <array>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/seat_policy.hpp>  // SeatPolicyRow
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -38,6 +39,9 @@ class ResidentIndex {
 
   // Flatten one complete policy's rows into the immutable buffers.
   void build(const std::map<solver::InformationKey, solver::PolicyRow>& rows);
+  // RFC 0009 D4: flatten a schema-v2 seat-generic policy's rows. The row layout
+  // is identical (actions + probabilities); the v2 visits field is not resident.
+  void build(const std::map<solver::InformationKey, solver::SeatPolicyRow>& rows);
 
   // Exact-key lookup. The span is encoded exactly like
   // solver::information_key output. Returns false on a miss; on a hit fills
@@ -81,6 +85,11 @@ class ResidentIndex {
   };
 
   void resolve(const RowRecord& record, CompactRowView& out) const;
+
+  // Shared flattening for the two row types. Only `.actions` and
+  // `.probabilities` are read; the v2 `visits` field is not resident.
+  template <class Row>
+  void build_rows(const std::map<solver::InformationKey, Row>& rows);
 
   std::vector<std::uint8_t> key_blob_;
   std::vector<poker::Action> action_blob_;
