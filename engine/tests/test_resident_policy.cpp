@@ -503,6 +503,48 @@ std::vector<std::vector<WeightedHand>> four_seat_flop_ranges_v2() {
   };
 }
 
+// --- RFC 0009 W4c-ii schema-v3 class-policy resident fixtures --------------
+
+// A two-seat flop-rooted v3 game on a suit-canonical board. {2s, 7h, Kd} has
+// suits {0,1,2} in rank order, so the suit-canonicalization relabel is the
+// identity and the board is its own class representative -- the precondition
+// the v3 writer's board-canonical integrity check enforces.
+GameDef two_seat_flop_canonical_def_v3() {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {1, 1, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 2;
+  def.board = {card("2s"), card("7h"), card("Kd"), 0, 0};
+  def.board_size = 3;
+  return def;
+}
+
+// Same ranks {2,7,K} with suits permuted out of canonical order: {2h, 7s, Kd}
+// has suits {1,0,2}, so the canonical relabel swaps spades and hearts and the
+// board is NOT its own class representative. A v3 artifact trained on the
+// canonical board above must still serve a query rooted at this board.
+GameDef two_seat_flop_noncanonical_def_v3() {
+  GameDef def = two_seat_flop_canonical_def_v3();
+  def.board = {card("2h"), card("7s"), card("Kd"), 0, 0};
+  return def;
+}
+
+// Two combos per seat, all off the {2,7,K} flop and mutually card-distinct,
+// plus a third seat-0 combo holding 9s so the turn-card relabel is
+// discriminating: dealing 9h (which relabels to 9s) must block it, while a
+// no-op relabel would leave 9h != 9s and miss the block. The ranges are
+// expressed in CANONICAL coordinates (the v3 artifact stores the class
+// policy, not a concrete-board policy).
+std::vector<std::vector<WeightedHand>> two_seat_flop_ranges_v3() {
+  return {
+      {{{card("As"), card("Ad")}, 2}, {{card("Ah"), card("Ac")}, 3}, {{card("9s"), card("9c")}, 4}},
+      {{{card("Qs"), card("Qd")}, 5}, {{card("Qh"), card("Qc")}, 7}},
+  };
+}
+
 // A two-seat turn-rooted v2 game: the resident projection is flop-rooted
 // only, so a turn/river-rooted source is refused as LoadFailed until the
 // state layer generalizes (W2c-ii). The flop-rooted ranges stay off this
@@ -526,11 +568,12 @@ struct PublishedV2Fixture {
   std::string sha256_hex;
 };
 
-// Train, checkpoint, and publish a seat-generic v2 policy.
-PublishedV2Fixture publish_v2(const GameDef& def,
-                              const std::vector<std::vector<WeightedHand>>& ranges,
-                              std::uint64_t iterations, const fs::path& dir,
-                              const std::string& name) {
+// Train, checkpoint, and publish a seat-generic v2 policy. W4c-ii: an optional
+// card_id produces a schema-v3 class policy instead.
+PublishedV2Fixture publish_v2(
+    const GameDef& def, const std::vector<std::vector<WeightedHand>>& ranges,
+    std::uint64_t iterations, const fs::path& dir, const std::string& name,
+    std::optional<bs::abstraction::AbstractionId> card_id = std::nullopt) {
   const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
   const NSeatTrainingResult trained =
       train_nseat(tree, ranges, iterations, 20260930, NSeatTrainerLimits{});
@@ -538,7 +581,7 @@ PublishedV2Fixture publish_v2(const GameDef& def,
     std::printf("v2 fixture training did not complete for %s\n", name.c_str());
     std::abort();
   }
-  const SeatTrainingResult exported = export_seat_policy(trained, tree, ranges);
+  const SeatTrainingResult exported = export_seat_policy(trained, tree, ranges, card_id);
   const fs::path checkpoint = dir / (name + "-v2-checkpoint.db");
   const fs::path policy_path = dir / (name + "-v2-policy.db");
   SeatCheckpointProvenance provenance;
@@ -1704,6 +1747,165 @@ static bool test_v2_resident_projection(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// W4c-ii: a schema-v3 class policy (suit canonicalization) is trained on the
+// canonical class representative and serves a query rooted at a non-canonical
+// board of the same class. The resident boundary canonicalizes the query
+// flop, relabels hero/board cards into the artifact's coordinate system, and
+// answers in canonical coordinates. A board from a different class misses
+// declared, and a turn query exercises the turn-card relabel and history
+// replay with a canonical prefix board.
+// ---------------------------------------------------------------------------
+
+static bool test_v3_resident_projection(const fs::path& dir) {
+  // Train and publish a v3 class policy on the canonical board {2s,7h,Kd}.
+  const PublishedV2Fixture fixture =
+      publish_v2(two_seat_flop_canonical_def_v3(), two_seat_flop_ranges_v3(), 200, dir, "v3proj",
+                 bs::abstraction::suit_canonicalization_id());
+
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet residents = ResidentPolicySet::build(
+      {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
+  CHECK(results.size() == 1);
+  CHECK(results[0].status == RootStatus::Advertised);
+  CHECK(residents.advertised_roots() == 1);
+
+  // Query with the non-canonical board {2h,7s,Kd}: it canonicalizes to the
+  // artifact's class representative {2s,7h,Kd}, so the query hits.
+  const GameState noncanon_state(two_seat_flop_noncanonical_def_v3());
+  const std::vector<PublicAction> root_history;
+  ResidentScratch scratch;
+  const ResidentAnswer belief =
+      residents.public_belief(noncanon_state, root_history, std::nullopt, scratch);
+  CHECK(belief.hit);
+  CHECK(belief.reason == MissReason::None);
+  // Each seat's marginal normalizes to one and matches the declared range
+  // weights at the CANONICAL combo indices: the belief model operates in the
+  // artifact's coordinate system, so the relabel is invisible to the caller.
+  // seat0 has three combos (total 9); seat1 has two (total 12).
+  {
+    const double expected0[3] = {2.0 / 9.0, 3.0 / 9.0, 4.0 / 9.0};
+    const int combos0[3][2] = {
+        {card("As"), card("Ad")}, {card("Ah"), card("Ac")}, {card("9s"), card("9c")}};
+    const double expected1[2] = {5.0 / 12.0, 7.0 / 12.0};
+    const int combos1[2][2] = {{card("Qs"), card("Qd")}, {card("Qh"), card("Qc")}};
+    for (std::size_t seat = 0; seat < 2; ++seat) {
+      double sum = 0.0;
+      for (double mass : *belief.public_reach[seat])
+        sum += mass;
+      CHECK(near(sum, 1.0, 1e-9));
+    }
+    for (int k = 0; k < 3; ++k) {
+      const int c = bs::comboIndex(combos0[k][0], combos0[k][1]);
+      CHECK(near((*belief.public_reach[0])[c], expected0[k], 1e-9));
+    }
+    for (int k = 0; k < 2; ++k) {
+      const int c = bs::comboIndex(combos1[k][0], combos1[k][1]);
+      CHECK(near((*belief.public_reach[1])[c], expected1[k], 1e-9));
+    }
+  }
+
+  // A hero decision at the root returns the seat-1 actor's row. The hero's
+  // CONCRETE cards {Qh,Qd} relabel to canonical {Qs,Qd}, which is in seat 1's
+  // declared range; the blocking check stays in concrete coordinates.
+  ResidentScratch hero_scratch;
+  const ResidentAnswer hero = residents.hero_decision(
+      noncanon_state, root_history, {card("Qh"), card("Qd")}, std::nullopt, hero_scratch);
+  CHECK(hero.hit);
+  CHECK(hero.hero_row.size > 0);
+  double row_sum = 0.0;
+  for (std::size_t i = 0; i < hero.hero_row.size; ++i)
+    row_sum += hero.hero_row.probabilities[i];
+  CHECK(near(row_sum, 1.0, 1e-9));
+
+  // The resolver blueprint source also serves the v3 artifact. A
+  // resolver_source over the non-canonical query board returns a row for the
+  // actor's CONCRETE cards {Qh,Qd} (which relabel to canonical {Qs,Qd}),
+  // exercising the v3 branch in ResidentBlueprintSource::row: canonicalize,
+  // hero-card relabel, canonical prefix-board build, and key lookup.
+  {
+    auto source = residents.resolver_source(noncanon_state, root_history, std::nullopt);
+    CHECK(source != nullptr);
+    const auto bp_row = source->row(noncanon_state, root_history, 1, {card("Qh"), card("Qd")});
+    CHECK(bp_row.has_value());
+    CHECK(bp_row->size > 0);
+    double bp_sum = 0.0;
+    for (std::size_t i = 0; i < bp_row->size; ++i)
+      bp_sum += bp_row->probabilities[i];
+    CHECK(near(bp_sum, 1.0, 1e-9));
+    // A hero combo blocked by the concrete board misses (blocking stays in
+    // concrete coordinates).
+    const auto blocked = source->row(noncanon_state, root_history, 1, {card("2h"), card("Qd")});
+    CHECK(!blocked.has_value());
+  }
+
+  // The canonical board itself also hits (identity relabel).
+  const GameState canon_state(two_seat_flop_canonical_def_v3());
+  ResidentScratch canon_scratch;
+  const ResidentAnswer canon_belief =
+      residents.public_belief(canon_state, root_history, std::nullopt, canon_scratch);
+  CHECK(canon_belief.hit);
+  CHECK(canon_belief.reason == MissReason::None);
+
+  // A board from a different class misses declared (RootNotSupported).
+  GameDef other_def = two_seat_flop_noncanonical_def_v3();
+  other_def.board = {card("3s"), card("7h"), card("Kd"), 0, 0};
+  const GameState other_state(other_def);
+  ResidentScratch other_scratch;
+  const ResidentAnswer other =
+      residents.public_belief(other_state, root_history, std::nullopt, other_scratch);
+  CHECK(!other.hit);
+  CHECK(other.reason == MissReason::RootNotSupported);
+
+  // A turn query on the non-canonical board exercises the turn-card relabel
+  // and the history replay with a canonical prefix board. After check/check on
+  // the flop and dealing 9h (which relabels to 9s), the belief conditions
+  // exactly. The relabel is discriminating: seat0's {9s,9c} combo must be
+  // zeroed (9s is now on the canonical board), and the remaining seat0 combos
+  // renormalize to {2/5, 3/5}. A no-op relabel would leave 9h != 9s and fail
+  // to block the combo. The root actor is the non-button seat (button 0 ->
+  // seat 1).
+  const GameState after_seat1_check = noncanon_state.after_action(1, {ActionType::Check});
+  const GameState after_flop_checks = after_seat1_check.after_action(0, {ActionType::Check});
+  const GameState turn_state = after_flop_checks.after_card(card("9h"));
+  const std::vector<PublicAction> turn_history = {
+      {Street::Flop, 1, {ActionType::Check}},
+      {Street::Flop, 0, {ActionType::Check}},
+  };
+  ResidentScratch turn_scratch;
+  const ResidentAnswer turn_belief =
+      residents.public_belief(turn_state, turn_history, std::nullopt, turn_scratch);
+  CHECK(turn_belief.hit);
+  CHECK(turn_belief.reason == MissReason::None);
+  for (std::size_t player = 0; player < 2; ++player) {
+    double sum = 0.0;
+    for (double mass : *turn_belief.public_reach[player])
+      sum += mass;
+    CHECK(near(sum, 1.0, 1e-9));
+  }
+  // The {9s,9c} combo is blocked by the relabeled turn card (9h -> 9s).
+  const int blocked_combo = bs::comboIndex(card("9s"), card("9c"));
+  CHECK(near((*turn_belief.public_reach[0])[blocked_combo], 0.0, 1e-12));
+  // The surviving seat0 combos renormalize over total 5.
+  const int as_ad = bs::comboIndex(card("As"), card("Ad"));
+  const int ah_ac = bs::comboIndex(card("Ah"), card("Ac"));
+  CHECK(near((*turn_belief.public_reach[0])[as_ad], 2.0 / 5.0, 1e-9));
+  CHECK(near((*turn_belief.public_reach[0])[ah_ac], 3.0 / 5.0, 1e-9));
+
+  // The resolver source also serves the turn query: the canonical prefix
+  // board must include the relabeled turn card (9h -> 9s) so the key matches
+  // the artifact's turn rows.
+  {
+    auto source = residents.resolver_source(turn_state, turn_history, std::nullopt);
+    CHECK(source != nullptr);
+    const auto bp_row = source->row(turn_state, turn_history, 1, {card("Qh"), card("Qd")});
+    CHECK(bp_row.has_value());
+    CHECK(bp_row->size > 0);
+  }
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // W2c-ii-b: three-seat belief with card collisions across seats. The exact
 // inclusion-exclusion path must reproduce hand-computed marginals, and a
 // four-seat artifact must miss declared while still loading and advertising.
@@ -2271,6 +2473,7 @@ int main() {
       {"shared combo ranges", test_shared_combo_ranges},
       {"probe api", test_probe_api},
       {"v2 resident projection", test_v2_resident_projection},
+      {"v3 resident projection", test_v3_resident_projection},
       {"three seat belief collision", test_three_seat_belief_collision},
       {"three seat belief bridging", test_three_seat_belief_bridging},
       {"four seat declared miss", test_four_seat_declared_miss},

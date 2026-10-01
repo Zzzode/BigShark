@@ -174,6 +174,16 @@ struct ResidentScratch {
   // solver::information_key).
   std::array<std::uint64_t, 256> key{};
   std::size_t key_size = 0;
+  // RFC 0009 W4c-ii: canonical translation for class-based (v3) artifacts.
+  // canonical_relabel[s] = canonical suit for concrete suit s (identity for
+  // v2). canonical_flop is the artifact's canonical flop board, which equals
+  // the query's flop for v2 and is the class representative for v3.
+  // canonical_board_buf is scratch space for the canonical prefix board used
+  // in key building. All three are set per query at the resident boundary
+  // before any downstream function reads them.
+  std::array<int, 4> canonical_relabel{0, 1, 2, 3};
+  std::array<int, 3> canonical_flop{};
+  std::array<int, 5> canonical_board_buf{};
 };
 
 struct ResidentAnswer {

@@ -46,19 +46,35 @@ constexpr std::size_t kKeyBoard = 4;
 // artifact path can actually store and read back. The two disagree in BOTH
 // directions on valid roots (a flop root's blinds_posted is unobservable here),
 // so the divergence is documented rather than silently tightened.
-bool same_root(const GameDef& a, const GameDef& b) {
+bool same_root(const GameDef& a, const GameDef& b,
+               const std::array<int, 3>* canonical_b = nullptr) {
   if (a.player_count != b.player_count || a.pot != b.pot || a.big_blind != b.big_blind ||
       a.button != b.button)
     return false;
   if (a.board_size < 3 || b.board_size < 3)
     return false;
-  for (std::size_t i = 0; i < 3; ++i)
-    if (a.board[i] != b.board[i])
-      return false;
+  if (canonical_b) {
+    // W4c-ii: the query's flop was canonicalized; compare against the class
+    // representative stored in the record.
+    for (std::size_t i = 0; i < 3; ++i)
+      if (a.board[i] != (*canonical_b)[i])
+        return false;
+  } else {
+    for (std::size_t i = 0; i < 3; ++i)
+      if (a.board[i] != b.board[i])
+        return false;
+  }
   for (std::size_t p = 0; p < a.player_count; ++p)
     if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p])
       return false;
   return true;
+}
+
+// W4c-ii: apply a suit relabel to a card id. relabel[s] = canonical suit, so
+// new_card = rank*4 + relabel[old_suit]. The identity relabel {0,1,2,3} leaves
+// every card unchanged, which is the v2 (exact-board) case.
+int relabel_card(int card, const std::array<int, 4>& relabel) {
+  return (card / 4) * 4 + relabel[static_cast<std::size_t>(card % 4)];
 }
 
 // Build the unified solver view of a schema-v2 identity. The in-memory
@@ -200,6 +216,10 @@ struct ResidentPolicySet::Record {
   UnifiedGame game{};
   ResidentIndex index{};
   bool advertised = false;
+  // RFC 0009 W4c-ii: the declared card abstraction. nullopt marks an
+  // exact-board (v2) artifact; a set id marks a class policy (v3) whose
+  // stored board is the canonical class representative.
+  std::optional<abstraction::AbstractionId> card_abstraction;
 };
 
 ResidentPolicySet::ResidentPolicySet() = default;
@@ -240,6 +260,9 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
         record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
       else
         record.game = solver::to_unified_game(probe.game);
+      // W4c-ii: a v3 probe carries the declared card abstraction; a v2 probe
+      // leaves it at nullopt (exact board).
+      record.card_abstraction = probe.manifest.card_abstraction;
 
       bool duplicate = false;
       for (const Record& other : set.records_)
@@ -281,6 +304,9 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
             const auto& policy = loaded.bundle.nseat->policy;
             record.game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
             record.index.build(policy.rows());
+            // W4c-ii: the v3 reader reconstructs the card abstraction from the
+            // manifest; the v2 reader leaves it at nullopt.
+            record.card_abstraction = loaded.bundle.nseat->card_id;
           } else {
             record.game = solver::to_unified_game(loaded.bundle.result.policy.game());
             record.index.build(loaded.bundle.result.policy.rows());
@@ -344,6 +370,20 @@ struct ResolvedRoot {
   MissReason miss = MissReason::None;
 };
 
+// W4c-ii: the canonical flop of a query against a v3 record, or nullptr for a
+// v2 record (or a query with fewer than three board cards, which same_root
+// then refuses). The storage is caller-owned so the pointer stays valid
+// through the same_root call.
+const std::array<int, 3>* canonical_query_board(const ResidentPolicySet::Record& record,
+                                                const GameDef& query_def,
+                                                std::array<int, 3>& storage) {
+  if (!record.card_abstraction || query_def.board_size < 3)
+    return nullptr;
+  storage =
+      abstraction::canonicalize({query_def.board[0], query_def.board[1], query_def.board[2]}).board;
+  return &storage;
+}
+
 // Match the query against advertised records, honoring an optional pinned
 // artifact digest.
 ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
@@ -361,7 +401,9 @@ ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
                                     : MissReason::OverBudgetNotAdvertised;
       return {nullptr, reason};
     }
-    if (!same_root(pinned->game.def, state.def()))
+    std::array<int, 3> canon_board{};
+    if (!same_root(pinned->game.def, state.def(),
+                   canonical_query_board(*pinned, state.def(), canon_board)))
       return {nullptr, MissReason::RootIdentityMismatch};
     return {pinned, MissReason::None};
   }
@@ -369,7 +411,9 @@ ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
   const ResidentPolicySet::Record* known = nullptr;
   RootStatus known_status = RootStatus::LoadFailed;
   for (const ResidentPolicySet::Record& record : records) {
-    if (!same_root(record.game.def, state.def()))
+    std::array<int, 3> canon_board{};
+    if (!same_root(record.game.def, state.def(),
+                   canonical_query_board(record, state.def(), canon_board)))
       continue;
     if (record.advertised)
       return {&record, MissReason::None};
@@ -399,10 +443,13 @@ bool card_in_chance_support(const UnifiedGame& game, std::size_t slot, int dealt
 
 // Fixed-runout boards must match HeadsUpPolicy::lookup behavior: a turn or
 // river card that diverges from the artifact's reserved runout is a miss.
-bool runout_matches(const UnifiedGame& game, const GameState& state) {
+// W4c-ii: for a v3 record the dealt card is relabeled into canonical
+// coordinates before the comparison.
+bool runout_matches(const UnifiedGame& game, const GameState& state,
+                    const std::array<int, 4>& relabel) {
   for (std::size_t i = 3; i < state.board().size(); ++i) {
     const auto fixed = game.fixed_runout[i - 3];
-    if (fixed && state.board()[i] != *fixed)
+    if (fixed && relabel_card(state.board()[i], relabel) != *fixed)
       return false;
   }
   return true;
@@ -431,7 +478,18 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
   // Prefix board size follows the EVENT's street, not the final state.
   const std::size_t prefix_street = static_cast<std::size_t>(event.street);
   const std::size_t prefix_board_size = 3 + prefix_street;
-  const std::span<const int> prefix_board(state.board().data(), prefix_board_size);
+  // W4c-ii: build the canonical prefix board — the artifact's canonical flop
+  // plus relabeled turn/river cards — so the information key matches the
+  // class-policy rows. For v2 the relabel is the identity and the canonical
+  // flop equals the query flop, so the board is byte-identical to the old
+  // state.board() span.
+  std::size_t canon_size = 0;
+  for (std::size_t i = 0; i < 3 && i < prefix_board_size; ++i)
+    scratch.canonical_board_buf[canon_size++] = scratch.canonical_flop[i];
+  for (std::size_t i = 3; i < prefix_board_size; ++i)
+    scratch.canonical_board_buf[canon_size++] =
+        relabel_card(state.board()[i], scratch.canonical_relabel);
+  const std::span<const int> prefix_board(scratch.canonical_board_buf.data(), canon_size);
   const std::size_t actor = event.seat;
 
   scratch.action_probability.fill(0.0);
@@ -472,7 +530,10 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
     if (street > 0) {
       const std::size_t board_index = 2 + street;  // board[3] turn, board[4] river
       if (state.board().size() > board_index) {
-        const int dealt = state.board()[board_index];
+        // W4c-ii: relabel the dealt card into canonical coordinates so the
+        // belief model (which operates in the artifact's coordinate system)
+        // conditions on the right card.
+        const int dealt = relabel_card(state.board()[board_index], scratch.canonical_relabel);
         const std::size_t slot = street - 1;
         if (!card_in_chance_support(record.game, slot, dealt))
           return MissReason::OffTree;
@@ -529,7 +590,19 @@ ResidentAnswer ResidentPolicySet::public_belief(const GameState& state,
   // exactly, so the query misses declared (a coverage limitation).
   if (record.game.def.player_count > 3)
     return miss_answer(MissReason::SeatCountNotSupported);
-  if (!runout_matches(record.game, state))
+  // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
+  // For v2 the relabel is the identity and the canonical flop equals the query
+  // flop, so every downstream function behaves exactly as before.
+  if (record.card_abstraction) {
+    const auto canon =
+        abstraction::canonicalize({state.board()[0], state.board()[1], state.board()[2]});
+    scratch.canonical_relabel = canon.relabel;
+  } else {
+    scratch.canonical_relabel = {0, 1, 2, 3};
+  }
+  scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
+                            record.game.def.board[2]};
+  if (!runout_matches(record.game, state, scratch.canonical_relabel))
     return miss_answer(MissReason::RunoutDivergence);
 
   ResidentAnswer answer;
@@ -558,7 +631,17 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   // and three seats; a 4..10-seat hero-decision query misses declared.
   if (record.game.def.player_count > 3)
     return miss_answer(MissReason::SeatCountNotSupported);
-  if (!runout_matches(record.game, state))
+  // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
+  if (record.card_abstraction) {
+    const auto canon =
+        abstraction::canonicalize({state.board()[0], state.board()[1], state.board()[2]});
+    scratch.canonical_relabel = canon.relabel;
+  } else {
+    scratch.canonical_relabel = {0, 1, 2, 3};
+  }
+  scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
+                            record.game.def.board[2]};
+  if (!runout_matches(record.game, state, scratch.canonical_relabel))
     return miss_answer(MissReason::RunoutDivergence);
 
   std::sort(hero_cards.begin(), hero_cards.end());
@@ -566,9 +649,18 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
     return miss_answer(MissReason::UntrainedCombo);
   if (state.phase() != poker::Phase::Action || !state.actor())
     return miss_answer(MissReason::MissingHistory);
+  // The blocking check stays in concrete coordinates: it verifies the actual
+  // hero hand does not share a card with the actual board.
   for (int card_on_board : state.board())
     if (card_on_board == hero_cards[0] || card_on_board == hero_cards[1])
       return miss_answer(MissReason::ComboBlockedByBoard);
+
+  // W4c-ii: relabel the hero's hole cards into canonical coordinates for key
+  // building, the raw-reach check, and the opponent-private view. The belief
+  // model operates in the artifact's coordinate system, so the hero combo
+  // index and the opponent blocker removal must use the canonical cards.
+  const std::array<int, 2> canon_hero{relabel_card(hero_cards[0], scratch.canonical_relabel),
+                                      relabel_card(hero_cards[1], scratch.canonical_relabel)};
 
   ResidentAnswer answer;
   answer.root_index = static_cast<std::size_t>(&record - records_.data());
@@ -580,9 +672,17 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
     return miss_answer(replay_miss);
   answer.actor = *state.actor();
 
-  // The hero combination's own row at the actual public node.
-  const std::span<const int> board(state.board().data(), state.board().size());
-  if (!fill_key(scratch, *state.actor(), hero_cards, board, history))
+  // The hero combination's own row at the actual public node. Build the
+  // canonical board (artifact's flop + relabeled turn/river) so the
+  // information key matches the class-policy rows.
+  std::array<int, 5> canon_board_buf{};
+  std::size_t canon_board_size = 0;
+  for (std::size_t i = 0; i < 3 && i < state.board().size(); ++i)
+    canon_board_buf[canon_board_size++] = scratch.canonical_flop[i];
+  for (std::size_t i = 3; i < state.board().size(); ++i)
+    canon_board_buf[canon_board_size++] = relabel_card(state.board()[i], scratch.canonical_relabel);
+  const std::span<const int> canon_board(canon_board_buf.data(), canon_board_size);
+  if (!fill_key(scratch, *state.actor(), canon_hero, canon_board, history))
     return miss_answer(MissReason::OffTree);
   CompactRowView compact;
   if (!record.index.find(std::span<const std::uint64_t>(scratch.key.data(), scratch.key_size),
@@ -595,7 +695,7 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   // this is distinct from the hero-independent ZeroProbabilityObservedAction
   // node miss; the skeptic review confirmed the public belief update itself is
   // mathematically valid in that case.
-  const int hero_combo = comboIndex(hero_cards[0], hero_cards[1]);
+  const int hero_combo = comboIndex(canon_hero[0], canon_hero[1]);
   if (scratch.raw[*state.actor()][hero_combo] == 0.0)
     return miss_answer(MissReason::ZeroProbabilityHeroCombination);
   answer.hero_row.size = compact.count;
@@ -616,7 +716,7 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   }
   bool fully_blocked = false;
   ReachModel model(scratch);
-  model.opponent_private_view(opponent, hero_cards, fully_blocked);
+  model.opponent_private_view(opponent, canon_hero, fully_blocked);
   if (fully_blocked)
     return miss_answer(MissReason::OpponentRangeFullyBlocked);
   answer.opponent_blocked_reach = scratch.opponent_view.data();
@@ -648,11 +748,32 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
     std::sort(cards.begin(), cards.end());
     if (cards[0] < 0 || cards[1] >= 52 || cards[0] == cards[1])
       return std::nullopt;
+    // The blocking check stays in concrete coordinates.
     for (int public_card : state.board())
       if (public_card == cards[0] || public_card == cards[1])
         return std::nullopt;
-    const solver::InformationKey key =
-        solver::make_information_key(player, cards, state.board(), history);
+    // W4c-ii: for a v3 class policy, canonicalize the query board and relabel
+    // the hero's hole cards so the information key matches the artifact's
+    // canonical-coordinate rows. For v2 the relabel is the identity and the
+    // canonical flop equals the query flop, so the key is byte-identical to
+    // the old state.board() path.
+    std::array<int, 4> relabel{0, 1, 2, 3};
+    if (record_->card_abstraction) {
+      const auto canon =
+          abstraction::canonicalize({state.board()[0], state.board()[1], state.board()[2]});
+      relabel = canon.relabel;
+    }
+    const std::array<int, 2> canon_cards{relabel_card(cards[0], relabel),
+                                         relabel_card(cards[1], relabel)};
+    std::array<int, 5> canon_board_buf{};
+    std::size_t canon_board_size = 0;
+    for (std::size_t i = 0; i < 3 && i < state.board().size(); ++i)
+      canon_board_buf[canon_board_size++] = record_->game.def.board[i];
+    for (std::size_t i = 3; i < state.board().size(); ++i)
+      canon_board_buf[canon_board_size++] = relabel_card(state.board()[i], relabel);
+    const solver::InformationKey key = solver::make_information_key(
+        player, canon_cards, std::span<const int>(canon_board_buf.data(), canon_board_size),
+        history);
     CompactRowView compact;
     if (!record_->index.find(std::span<const std::uint64_t>(key.data(), key.size()), compact))
       return std::nullopt;

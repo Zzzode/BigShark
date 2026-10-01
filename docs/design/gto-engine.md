@@ -565,13 +565,31 @@ flowchart LR
 ```
 
 The artifact is a SQLite database with `application_id = 0x42534754` ("BSGT"),
-`user_version = 1`, STRICT tables, foreign keys enforced, prepared statements
-throughout, and a compile/runtime requirement of SQLite 3.37 or newer. Tables:
+STRICT tables, foreign keys enforced, prepared statements throughout, and a
+compile/runtime requirement of SQLite 3.37 or newer. Three schema versions
+coexist; `open_validated` selects the DDL by `user_version`:
+
+- **v1** (`user_version = 1`, frozen): the original two-seat schema. The
+  `game` table carries both stacks/contributions inline; `info_key_revision`
+  is the v1 key grammar.
+- **v2** (`user_version = 2`, RFC 0009 D3): the seat-generic schema. A new
+  `game_seats` table holds per-seat stack/contribution for 2..10 seats, the
+  `game` table gains `player_count`, `root_street`, `ante`, and
+  `terminal_depth`, and the manifest gains `terminal_depth`. The key grammar
+  is `info_key_revision = 2`. A v2 artifact serves one exact board.
+- **v3** (`user_version = 3`, RFC 0009 W4c-i): the seat-generic schema plus a
+  declared card abstraction on the manifest. Only the manifest differs from
+  v2; the nine other table definitions are reused byte-for-byte. A v3
+  artifact serves a board *class*, and its stored flop is the canonical
+  representative under the declared abstraction.
+
+The v2/v3 tables:
 
 | Table | Content |
 | --- | --- |
-| `manifest` | Singleton: artifact kind (`checkpoint`/`policy`), algorithm revision, information-key revision, numeric profile, validation state, engine revision, completed iterations, PRNG identifier, seed and PRNG state (16 lowercase hex digits), run status, node/set/byte counters |
-| `game` | Singleton: rules and utility identifiers, button, big blind, flop, optional fixed turn/river, both stacks and contributions, pot |
+| `manifest` | Singleton: artifact kind (`checkpoint`/`policy`), algorithm revision, information-key revision (2), numeric profile, validation state, engine revision, completed iterations, PRNG identifier, seed and PRNG state (16 lowercase hex digits), run status, node/set/byte counters, action/terminal abstraction declaration, `terminal_depth`, and (v3 only) the card-abstraction declaration: `card_abstraction_name`, `card_abstraction_version`, `card_abstraction_parameters`, `card_abstraction_digest` (16 lowercase hex digits, verified against name/version/parameters) |
+| `game` | Singleton: rules and utility identifiers, player count (2..10), button, big blind, ante, root street, terminal depth, flop (canonical representative for v3), optional fixed turn/river, pot |
+| `game_seats` | `(seat)` primary key: per-seat stack and contribution for 2..10 seats |
 | `sizes` | Ordered `(street, kind, ordinal)` rational bet/raise numerator and denominator |
 | `ranges` | `(player, combo)` primary key, canonical zero-based unordered combo id 0..1325, nonnegative finite REAL weight |
 | `information_states` | Integer id, player, own combo columns, and the canonical ASCII public key; full identity unique |
@@ -702,6 +720,19 @@ root but different range/size identity are both refused as duplicates. A
 fixed turn or river card that differs from the artifact's reserved runout
 misses exactly as `HeadsUpPolicy::lookup` diverges.
 
+For a v3 (class-based) artifact the stored flop is the canonical
+representative of its board class, so the root match is against the query
+flop's canonical form, not the query flop itself. The resident boundary
+computes the suit relabel `canonicalize(query_flop)` once per query and
+applies it at every point a concrete card enters the artifact's coordinate
+system: the root match, the runout comparison, the public-path replay, the
+information-key prefix board, and the hero combo lookup. The blocking check
+and the returned `hero_cards` stay in concrete coordinates. A v2 artifact
+has no card abstraction; its relabel is the identity and the path is
+unchanged. The relabel, the canonical flop, and a canonical prefix-board
+scratch buffer live in `ResidentScratch` alongside the reach and key
+buffers, so the warm query path still allocates no heap memory.
+
 The compact index flattens each artifact `std::map` into four contiguous
 buffers: a key blob (8-byte header plus the canonical key words), an action
 blob, a probability blob, fixed row records, and an open-addressing slot
@@ -712,7 +743,9 @@ wrong row. Action identity is action kind plus the exact street target
 total, never kind alone. Warm lookups perform no SQLite call, no lock, and
 no heap allocation: every buffer a query touches lives in a caller-owned
 `ResidentScratch` (per-player per-combo raw reach, marginals, per-card mass,
-an action-probability scratch, and a fixed 256-word key).
+partner mass, an action-probability scratch, a fixed 256-word key, and the
+v3 canonical-translation buffers: a 4-entry suit relabel, the 3-card
+canonical flop, and a 5-card canonical prefix-board scratch).
 
 Public belief is computed once per public node with no hero hole-card
 input. Starting from the artifact's declared pair of weighted ranges, the
@@ -767,9 +800,9 @@ never renormalized into a relabeled equilibrium range; if every opponent
 combination is blocked the result is `OpponentRangeFullyBlocked`. The
 component never emits a fallback policy, never invents a uniform policy,
 never scales stacks, and exposes no bound or certification symbol on the
-resident lookup itself: artifact v1 leaves the `bounds` and `measurements`
-tables validated and empty, so a resident continuation is advertised for
-blueprint lookup only.
+resident lookup itself: every schema version leaves the `bounds` and
+`measurements` tables validated and empty, so a resident continuation is
+advertised for blueprint lookup only.
 
 ## Bounded Resolving Gadget (RFC 0005 Stage 9)
 
