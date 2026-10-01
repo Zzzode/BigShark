@@ -69,9 +69,9 @@ can return a non-integer that the budget sanitizer pins to 2000 (cosmetic).
 
 | Stage | Scope | Status |
 | --- | --- | --- |
-| W1 | Wiring: root config, v1 enablement, budget, provenance | Approved, pending commit |
-| W2 | Seat-parameterized trainer behind `solve()`; artifact schema v2; resolver/resident generalization (per-seat certification); host service types | Not started |
-| W3 | Promotion + demotion in one change (runner defaults to v1 with roots; minor-2 AUTOMATIC loses the heuristic fallthrough; minor 1 frozen); rollback artifact recorded | Not started |
+| W1 | Wiring: root config, v1 enablement, budget, provenance | Committed (c88dc17) |
+| W2 | Seat-parameterized trainer behind `solve()`; artifact schema v2; resolver/resident generalization (per-seat certification); host service types | Committed (W2a f05a813; W2b 54a3cf6; W2c-i 883fc72; W2c-ii-a ec1fe6c; W2c-ii-b 4ed6630; W2c-ii-c b88c005) |
+| W3 | Promotion + demotion in one change (runner defaults to v1 with roots; minor-2 AUTOMATIC loses the heuristic fallthrough; minor 1 frozen); rollback artifact recorded | Implemented; rollback artifact = commit b88c005 + pre-W3 release binary; independent review pending |
 | W4 | Coverage: suit canonicalization, preflop profile (RFC 0007), first flop library, terminal-only resolving at n >= 2, simulator engine-served tier (D7) | Not started |
 | W5 | Documentation freshness (system overview, design doc corrections, protocol references) | Not started |
 

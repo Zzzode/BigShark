@@ -272,6 +272,25 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
   return respondWithDecision(requestId, mapHeuristicExpandedResponse(request, decision), 1);
 }
 
+// RFC 0009 W3: the operational fallback for a minor-2 AUTOMATIC blueprint
+// miss. Check when legal, else call when legal, else fold - chosen from the
+// supplied legal set only. This is the single definition of the v1 fallback
+// semantics; the chart+heuristic cascade is reachable only via an explicit
+// HEURISTIC request, never as an AUTOMATIC fallthrough.
+bs::Decision operationalFallbackDecision(const bs::Ctx& context) {
+  bs::Decision decision;
+  if (context.legal.has("check")) {
+    decision.action = "check";
+  } else if (context.legal.has("call")) {
+    decision.action = "call";
+    decision.amount = context.legal.call;
+  } else {
+    decision.action = "fold";
+  }
+  decision.reason = "operational-fallback";
+  return decision;
+}
+
 // Negotiated minor 2 decision dispatch (RFC 0008 stage 5). Same mode routing
 // as minor 1; differences are: every success is an expanded_strategy carrying
 // field 11 (never field 10), the heuristic wire source is the source the
@@ -331,29 +350,33 @@ EnvelopeResult handleMinor2Decision(const std::string& requestId,
     } else {
       return blueprintMissResponse(requestId, lookup.miss_detail, 2);
     }
-  } else {
-    // AUTOMATIC may use a resident hit but never a resolve; a miss, or an
-    // explicit HEURISTIC request, runs the sourced policy cascade.
-    if (mode == pv::SOLVER_MODE_AUTOMATIC) {
-      const BlueprintLookup lookup = lookupBlueprint(services, request);
-      if (lookup.hit) {
-        verifyStorageRowComplete(request, lookup.row);
-        achieved = bs::Guarantee::Approximate;
-        complete = mapGuaranteedBlueprintResponse(request, lookup.row);
-      }
+  } else if (mode == pv::SOLVER_MODE_HEURISTIC) {
+    // RFC 0009 W3: an explicit HEURISTIC request still runs the sourced
+    // chart+heuristic cascade. AUTOMATIC no longer reaches it (below).
+    const bs::SourcedDecision answer = bs::decideSourced(context);
+    if (answer.decision.action.empty()) {
+      return respondWithDecision(
+          requestId,
+          errorResponse(pv::ERROR_CODE_NO_DECISION, messageFor(pv::ERROR_CODE_NO_DECISION),
+                        retryableFor(pv::ERROR_CODE_NO_DECISION)),
+          2);
     }
-    if (!complete.has_expanded_strategy()) {
-      const bs::SourcedDecision answer = bs::decideSourced(context);
-      if (answer.decision.action.empty()) {
-        return respondWithDecision(
-            requestId,
-            errorResponse(pv::ERROR_CODE_NO_DECISION, messageFor(pv::ERROR_CODE_NO_DECISION),
-                          retryableFor(pv::ERROR_CODE_NO_DECISION)),
-            2);
-      }
-      verifyHeuristicAnswerComplete(request, answer);
-      achieved = guaranteeFor(answer.source);
-      complete = mapGuaranteedHeuristicResponse(request, answer);
+    verifyHeuristicAnswerComplete(request, answer);
+    achieved = guaranteeFor(answer.source);
+    complete = mapGuaranteedHeuristicResponse(request, answer);
+  } else {
+    // AUTOMATIC: a resident blueprint hit serves; a miss ends at the declared
+    // operational fallback. RFC 0009 W3 demotes the chart+heuristic cascade
+    // from an AUTOMATIC fallthrough to an explicit HEURISTIC-only request, so
+    // a miss never silently runs the parallel strategy.
+    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    if (lookup.hit) {
+      verifyStorageRowComplete(request, lookup.row);
+      achieved = bs::Guarantee::Approximate;
+      complete = mapGuaranteedBlueprintResponse(request, lookup.row);
+    } else {
+      achieved = bs::Guarantee::OperationalFallback;
+      complete = mapOperationalFallbackResponse(request, operationalFallbackDecision(context));
     }
   }
 

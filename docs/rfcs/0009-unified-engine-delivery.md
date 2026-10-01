@@ -911,6 +911,27 @@ Changes to the existing modes, each stated so the diff is auditable:
   the legality-preserving definition; the design document states which surface
   owns which, so "the fallback" is not two behaviors under one name again.
 
+**D6 implementation decisions recorded at W3.** The runner v1-default half
+landed early in W1 (`apps/river-club-agent/main.ts` sets `proto: true` with the
+configured resident roots, so the live path already negotiates minor 2). W3
+adds the C++ demotion in `engine/src/protocol/v1_envelope.cpp`: the minor-2
+`AUTOMATIC` branch now serves a resident blueprint hit and, on a miss, ends at
+the declared operational fallback (`operationalFallbackDecision`, defined once
+in the envelope, mapped by `mapOperationalFallbackResponse` to an
+`operational_fallback` level with an UNSPECIFIED source) — it never reaches
+`bs::decideSourced`. An explicit `SOLVER_MODE_HEURISTIC` request still runs the
+sourced chart+heuristic cascade at `approximate`, preserving the RFC 0008
+stage-6 baseline pin. The minor-1 route (`v1_envelope.cpp` minor-1 dispatch,
+including its `mapHeuristicExpandedResponse` fallthrough) is untouched: minor-1
+bytes and semantics remain the frozen RFC 0005 contract. The forbidden-source
+demotion guard landed in `engine/tests/test_v1_minor2.cpp`: a minor-2
+AUTOMATIC blueprint miss asserts `operational_fallback` + UNSPECIFIED source
+(and the legal check on the flop fixture), an explicit HEURISTIC request on
+the same miss still produces a heuristic source, and a companion minor-1
+assertion pins the unchanged heuristic fallthrough. The rollback artifact was
+recorded before the change: rollback commit `b88c005` plus the pre-W3 release
+binary.
+
 ### D7. The practice simulator served by the same host
 
 A new, small C++ process client target (NDJSON over the existing

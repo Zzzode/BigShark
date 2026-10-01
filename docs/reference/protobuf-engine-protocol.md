@@ -292,8 +292,14 @@ identical (`approximate`) on both minors; only the source tag differs.
 The wire source is declared at the policy routing branch, never inferred
 from the reason text at minor 2. A future or unrecognized `SolverSource`
 fails closed to `operational_fallback` at the boundary; the host decision
-path derives its level from the declared source and no host-produced
-successful minor-2 response ever carries `operational_fallback`. The live
+path derives its level from the declared source. RFC 0009 W3: a minor-2
+AUTOMATIC blueprint miss now ends at the declared operational fallback
+(check, else call, else fold, from the supplied legal set only), tagged
+`operational_fallback` with an UNSPECIFIED source, so a host-produced
+successful minor-2 response CAN carry `operational_fallback` — but only on
+that AUTOMATIC-miss path. An explicit HEURISTIC request still runs the
+sourced chart+heuristic cascade at `approximate`, and a blueprint hit is
+`approximate`; neither is ever `operational_fallback`. The separate live
 operational-fallback surface is the River adapter's local decision when the
 engine binary/transport is unavailable.
 
@@ -670,8 +676,11 @@ follows the same pattern with `negotiateMinor2: true` /
 2 → 1 → 0 and the client settles on the highest minor the host advertises.
 A caller that does not opt in never sends above minor 0. The River adapter
 forces BLUEPRINT only with `EngineConfig.protoBlueprint` against a minor-1+
-client; minor-1/2 AUTOMATIC otherwise tries the resident and transparently
-falls back to the heuristic. At minor 2 the adapter additionally exposes
+client; minor-1 AUTOMATIC otherwise tries the resident and transparently
+falls back to the heuristic (frozen RFC 0005 behavior), while minor-2
+AUTOMATIC tries the resident and, on a miss, ends at the engine's declared
+operational fallback (the RFC 0009 W3 demotion — never the heuristic). At
+minor 2 the adapter additionally exposes
 `ExecutableDecision.guaranteeLevel`, attaches `operational_fallback` to
 every locally produced fallback, journals the level to
 `.runtime/results.log`, and maps an explicit

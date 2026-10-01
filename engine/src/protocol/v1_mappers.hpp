@@ -126,6 +126,14 @@ pv::DecisionResponse mapHeuristicExpandedResponse(const pv::DecisionRequest& req
 pv::DecisionResponse mapGuaranteedHeuristicResponse(const pv::DecisionRequest& request,
                                                     const bs::SourcedDecision& answer);
 
+// RFC 0009 W3: maps the minor-2 AUTOMATIC operational fallback (check, else
+// call, else fold, from the supplied legal set only) into an ExpandedStrategy
+// tagged operational_fallback with an UNSPECIFIED source, so a journal reader
+// can never mistake it for a strategy answer. Field 11 only; field 10 is never
+// set. Legal membership is validated exactly as on the heuristic path.
+pv::DecisionResponse mapOperationalFallbackResponse(const pv::DecisionRequest& request,
+                                                    const bs::Decision& decision);
+
 // Maps a resident blueprint hit into a minor-1 ExpandedStrategy: every row
 // action becomes one ActionPolicy (1..32, verbatim probabilities, target total
 // only on bet/raise, all_in derived from the legal maximum), the sampled

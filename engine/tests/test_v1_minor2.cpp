@@ -663,7 +663,9 @@ int main() {
             "known non-certified sources are approximate");
   }
 
-  // --- No host-produced successful minor-2 answer is operational_fallback --
+  // --- HEURISTIC and BLUEPRINT answers are never operational_fallback ------
+  // (RFC 0009 W3: an AUTOMATIC blueprint miss IS the operational fallback -
+  // see the demotion guard below.)
   {
     FakeServices services;
     pv::DecisionRequest heuristic = flopRequest(pv::SOLVER_MODE_HEURISTIC);
@@ -676,6 +678,44 @@ int main() {
     check(b.decision_response().expanded_strategy().solver().guarantee_level() !=
               "operational_fallback",
           "a blueprint minor-2 answer is never operational_fallback");
+  }
+
+  // --- RFC 0009 W3 demotion guard: minor-2 AUTOMATIC miss is the fallback --
+  // A minor-2 AUTOMATIC blueprint miss ends at the declared operational
+  // fallback (operational_fallback, UNSPECIFIED source), never the
+  // chart+heuristic cascade. The companion minor-1 assertion pins that
+  // minor-1's AUTOMATIC fallthrough is unchanged (still a heuristic source).
+  {
+    FakeServices services;
+    services.miss = V1BlueprintMiss::OffTree;
+    pv::DecisionRequest automatic = flopRequest(pv::SOLVER_MODE_AUTOMATIC);
+    pv::Envelope resp = send(envelopeFor(2, "w3-auto-miss", automatic), services);
+    check(resp.protocol_minor() == 2, "AUTOMATIC miss echoes minor 2");
+    const pv::ExpandedStrategy& es = resp.decision_response().expanded_strategy();
+    check(es.solver().guarantee_level() == "operational_fallback",
+          "minor-2 AUTOMATIC blueprint miss is the operational fallback");
+    check(es.solver().source() == pv::SOLVER_SOURCE_UNSPECIFIED,
+          "minor-2 AUTOMATIC fallback carries no heuristic source");
+    check(es.actions(0).type() == pv::ACTION_TYPE_CHECK,
+          "the fallback takes the legal check on the flop fixture");
+    check(services.blueprintLookups == 1, "AUTOMATIC miss queried the blueprint once");
+    check(services.resolveLookups == 0, "AUTOMATIC miss never invokes the resolver");
+
+    // An explicit HEURISTIC request still runs the sourced cascade on the same
+    // miss.
+    pv::DecisionRequest heuristic = flopRequest(pv::SOLVER_MODE_HEURISTIC);
+    pv::Envelope h = send(envelopeFor(2, "w3-heuristic", heuristic), services);
+    const pv::SolverMetadata& hm = h.decision_response().expanded_strategy().solver();
+    check(hm.guarantee_level() != "operational_fallback" &&
+              hm.source() != pv::SOLVER_SOURCE_UNSPECIFIED,
+          "an explicit HEURISTIC request still runs the sourced cascade on a miss");
+
+    // Minor-1 AUTOMATIC miss keeps its frozen heuristic fallthrough.
+    pv::DecisionRequest minor1 = flopRequest(pv::SOLVER_MODE_AUTOMATIC);
+    pv::Envelope m1 = send(envelopeFor(1, "w3-minor1", minor1), services);
+    const pv::SolverMetadata& m1m = m1.decision_response().expanded_strategy().solver();
+    check(m1m.source() != pv::SOLVER_SOURCE_UNSPECIFIED,
+          "minor-1 AUTOMATIC miss still falls through to the heuristic engine");
   }
 
   if (failures != 0) {

@@ -308,6 +308,51 @@ pv::DecisionResponse mapGuaranteedHeuristicResponse(const pv::DecisionRequest& r
   return response;
 }
 
+// RFC 0009 W3: the minor-2 AUTOMATIC operational fallback. A resident
+// blueprint miss no longer falls through to the chart+heuristic cascade; it
+// ends at this declared fallback (check, else call, else fold, chosen from the
+// supplied legal set only). The source is UNSPECIFIED and the level is
+// operational_fallback, so a journal reader can never mistake the fallback for
+// a strategy answer. Field 11 only; field 10 is never set. Legal membership is
+// validated exactly as on the heuristic path.
+pv::DecisionResponse mapOperationalFallbackResponse(const pv::DecisionRequest& request,
+                                                    const bs::Decision& decision) {
+  const pv::ActionType type = actionType(decision.action);
+  if (type == pv::ACTION_TYPE_UNSPECIFIED || type == pv::ACTION_TYPE_BET ||
+      type == pv::ACTION_TYPE_RAISE)
+    throw MappingError(pv::ERROR_CODE_INTERNAL,
+                       "operational fallback produced a bet/raise or unrecognized action",
+                       /*retryable=*/true);
+
+  if (!actionIsLegal(request.state(), type, 0, /*hasTarget=*/false))
+    throw MappingError(pv::ERROR_CODE_INTERNAL,
+                       "operational fallback action is not a member of the requested legal actions",
+                       /*retryable=*/true);
+
+  pv::DecisionResponse response;
+  pv::ExpandedStrategy* expanded = response.mutable_expanded_strategy();
+
+  pv::ActionPolicy* policy = expanded->add_actions();
+  policy->set_type(type);
+  policy->set_all_in(false);
+  policy->set_probability(1.0);
+
+  if (request.options().include_sampled_action()) {
+    pv::SelectedAction* selected = expanded->mutable_selected_action();
+    selected->set_type(type);
+    selected->set_all_in(false);
+  }
+
+  pv::SolverMetadata* metadata = expanded->mutable_solver();
+  metadata->set_source(pv::SOLVER_SOURCE_UNSPECIFIED);
+  metadata->set_solve_time_us(0);
+  metadata->set_cache_hit(false);
+  metadata->set_reason_code("operational-fallback");
+  metadata->set_diagnostic_reason("operational-fallback");
+  metadata->set_guarantee_level(guaranteeToken(bs::Guarantee::OperationalFallback));
+  return response;
+}
+
 namespace {
 
 // Locates the request legal entry of the given kind, returning nullptr when
