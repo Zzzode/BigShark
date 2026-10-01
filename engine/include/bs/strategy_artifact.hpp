@@ -63,6 +63,7 @@ inline constexpr const char* kUtilityIdentifierV1 = "zero-sum-chip-net-v1";
 // rules identifier, and numeric profile are all version-keyed; a v1 artifact
 // loads with an unchanged digest and a v2 artifact is rejected by a v1 reader.
 inline constexpr std::uint32_t kArtifactSchemaVersionV2 = 2;
+inline constexpr std::uint32_t kArtifactSchemaVersionV3 = 3;
 inline constexpr const char* kNumericProfileV2 =
     "ieee754-binary64;chips<=9007199254740991;sqlite-real;key-rev2";
 inline constexpr const char* kRulesIdentifierV2 = "rfc0009-unified-flop-v1";
@@ -128,6 +129,13 @@ struct ArtifactManifest {
   std::string abstraction_parameters;
   std::uint64_t abstraction_digest = 0;
   poker::TerminalDepth terminal_depth = poker::TerminalDepth::River;
+  // RFC 0009 W4c (schema v3 only): the declared card abstraction. A v2
+  // artifact (exact board) leaves this nullopt; a v3 artifact (class policy)
+  // carries the id under which its stored board is the canonical class
+  // representative. The v2 writer/reader leave this at nullopt; the v3 writer
+  // derives it from the SeatTrainingResult and the v3 reader reconstructs the
+  // SeatPolicy's card_id from it.
+  std::optional<abstraction::AbstractionId> card_abstraction;
 };
 
 // Raw per-abstract-action training state. The policy stores normalized

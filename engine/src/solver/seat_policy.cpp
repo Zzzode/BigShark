@@ -145,7 +145,8 @@ void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
 
 SeatTrainingResult export_seat_policy(const NSeatTrainingResult& result,
                                       const tree::AbstractTree& tree,
-                                      const std::vector<std::vector<WeightedHand>>& ranges) {
+                                      const std::vector<std::vector<WeightedHand>>& ranges,
+                                      std::optional<abstraction::AbstractionId> card_id) {
   if (!poker::same_game_def(result.policy.game(), tree.def()))
     throw std::invalid_argument("export_seat_policy: result and tree disagree on game identity");
   if (result.policy.action_id() != tree.action_id())
@@ -165,12 +166,14 @@ SeatTrainingResult export_seat_policy(const NSeatTrainingResult& result,
   out.prng_state = result.prng_state;
   out.algorithm_revision = result.algorithm_revision;
   out.action_id = result.policy.action_id();
+  out.card_id = card_id;
   out.terminal_depth = result.policy.game().terminal;
 
   out.policy.game_ = tree.def();
   out.policy.sizes_ = tree.action_abstraction().schedule();
   out.policy.ranges_ = ranges;
   out.policy.action_id_ = result.policy.action_id();
+  out.policy.card_id_ = std::move(card_id);
 
   GameState cursor{tree.def()};
   std::vector<PublicAction> path;

@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -143,7 +144,8 @@ class SeatPolicyAssembler {
   static void set_identity(solver::SeatPolicy& policy, poker::GameDef game,
                            abstraction::SizeSchedule sizes,
                            std::vector<std::vector<solver::WeightedHand>> ranges,
-                           abstraction::AbstractionId action_id);
+                           abstraction::AbstractionId action_id,
+                           std::optional<abstraction::AbstractionId> card_id);
   static void add_row(solver::SeatPolicy& policy, solver::InformationKey key,
                       solver::SeatPolicyRow row);
 };

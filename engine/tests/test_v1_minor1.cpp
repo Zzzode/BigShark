@@ -602,8 +602,7 @@ int main() {
     FakeServices services;
     services.actions = {{ActionType::Check}, {ActionType::Bet, 100}};
     services.probabilities = {0.4, 0.7};  // sums to 1.1
-    V1BlueprintRow row{2, services.actions.data(), services.probabilities.data(), services.sha,
-                       {}};
+    V1BlueprintRow row{2, services.actions.data(), services.probabilities.data(), services.sha, {}};
     check(!bs::v1::blueprintRowIsLegal(flopRequest(pv::SOLVER_MODE_BLUEPRINT), row),
           "non-unit distribution rejected");
     services.probabilities = {0.5, -0.5};

@@ -438,11 +438,13 @@ void PolicyAssembler::add_row(solver::HeadsUpPolicy& policy, InformationKey key,
 void SeatPolicyAssembler::set_identity(solver::SeatPolicy& policy, poker::GameDef game,
                                        abstraction::SizeSchedule sizes,
                                        std::vector<std::vector<solver::WeightedHand>> ranges,
-                                       abstraction::AbstractionId action_id) {
+                                       abstraction::AbstractionId action_id,
+                                       std::optional<abstraction::AbstractionId> card_id) {
   policy.game_ = std::move(game);
   policy.sizes_ = std::move(sizes);
   policy.ranges_ = std::move(ranges);
   policy.action_id_ = std::move(action_id);
+  policy.card_id_ = std::move(card_id);
 }
 
 void SeatPolicyAssembler::add_row(solver::SeatPolicy& policy, solver::InformationKey key,

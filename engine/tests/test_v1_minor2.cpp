@@ -602,8 +602,11 @@ int main() {
   // --- Direct mapper vocabulary discipline ---------------------------------
   {
     FakeServices services;
-    V1BlueprintRow row{services.actions.size(), services.actions.data(),
-                       services.probabilities.data(), services.sha, {}};
+    V1BlueprintRow row{services.actions.size(),
+                       services.actions.data(),
+                       services.probabilities.data(),
+                       services.sha,
+                       {}};
     pv::DecisionRequest request = flopRequest(pv::SOLVER_MODE_BLUEPRINT);
     pv::DecisionResponse minor1 = bs::v1::mapBlueprintExpandedResponse(request, row);
     check(minor1.expanded_strategy().solver().has_guarantee() &&

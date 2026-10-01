@@ -754,6 +754,55 @@ const char* const kSchemaDdlV2[] = {
     ") STRICT;",
 };
 
+// RFC 0009 W4c: schema v3 is the seat-generic profile plus a declared card
+// abstraction on the manifest. A v2 artifact serves one exact board; a v3
+// artifact serves a board CLASS, and its stored board is the canonical
+// representative under the declared card abstraction. Only the manifest
+// differs from v2, so the v3 DDL reuses the nine unchanged table definitions
+// by reference (verify_schema_objects compares stored CREATE text
+// byte-for-byte, so the shared statements must stay defined exactly once).
+const char* const kManifestDdlV3 =
+    "CREATE TABLE manifest ("
+    " id INTEGER PRIMARY KEY CHECK (id = 1),"
+    " kind TEXT NOT NULL CHECK (kind IN ('checkpoint','policy')),"
+    " algorithm_revision TEXT NOT NULL,"
+    " info_key_revision INTEGER NOT NULL CHECK (info_key_revision = 2),"
+    " numeric_profile TEXT NOT NULL,"
+    " validation_state TEXT NOT NULL CHECK (validation_state IN"
+    " ('unvalidated','validated','rejected')),"
+    " engine_revision TEXT NOT NULL,"
+    " completed_iterations INTEGER NOT NULL CHECK (completed_iterations >= 0),"
+    " prng_identifier TEXT NOT NULL,"
+    " seed_hex TEXT NOT NULL CHECK (length(seed_hex) = 16),"
+    " prng_state_hex TEXT NOT NULL CHECK (length(prng_state_hex) = 16),"
+    " run_status TEXT NOT NULL CHECK (run_status IN ('complete','resource_limit')),"
+    " nodes INTEGER NOT NULL CHECK (nodes >= 0),"
+    " information_sets INTEGER NOT NULL CHECK (information_sets >= 0),"
+    " accounted_bytes INTEGER NOT NULL CHECK (accounted_bytes >= 0),"
+    " abstraction_name TEXT NOT NULL,"
+    " abstraction_version INTEGER NOT NULL CHECK (abstraction_version >= 0),"
+    " abstraction_parameters TEXT NOT NULL,"
+    " abstraction_digest TEXT NOT NULL CHECK (length(abstraction_digest) = 16),"
+    " terminal_depth INTEGER NOT NULL CHECK (terminal_depth IN (0,1)),"
+    " card_abstraction_name TEXT NOT NULL,"
+    " card_abstraction_version INTEGER NOT NULL CHECK (card_abstraction_version >= 0),"
+    " card_abstraction_parameters TEXT NOT NULL,"
+    " card_abstraction_digest TEXT NOT NULL CHECK (length(card_abstraction_digest) = 16)"
+    ") STRICT;";
+
+const char* const kSchemaDdlV3[] = {
+    kManifestDdlV3,
+    kSchemaDdlV2[1],  // game
+    kSchemaDdlV2[2],  // game_seats
+    kSchemaDdlV2[3],  // sizes
+    kSchemaDdlV2[4],  // ranges
+    kSchemaDdlV2[5],  // information_states
+    kSchemaDdlV2[6],  // actions
+    kSchemaDdlV2[7],  // training
+    kSchemaDdlV2[8],  // bounds
+    kSchemaDdlV2[9],  // measurements
+};
+
 void open_writer(dt::Db& db, const std::string& path, bool create) {
   int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX;
   if (create)
@@ -1038,6 +1087,15 @@ void write_schema_v2(dt::Db& db) {
   db.exec(ddl, "create schema");
 }
 
+void write_schema_v3(dt::Db& db) {
+  std::string ddl;
+  for (const char* statement : kSchemaDdlV3) {
+    ddl += statement;
+    ddl.push_back('\n');
+  }
+  db.exec(ddl, "create schema");
+}
+
 // Validates the GameDef identity the v2 writer persists. The v2 profile stores
 // rooted flop/turn/river games only: a rooted board carries 3..5 cards, no
 // blinds are posted at the root (the GameState constructor seats the declared
@@ -1157,6 +1215,8 @@ ArtifactManifest manifest_for_v2(const SeatTrainingResult& result,
   manifest.abstraction_parameters = result.action_id.parameters;
   manifest.abstraction_digest = result.action_id.digest;
   manifest.terminal_depth = result.terminal_depth;
+  // The v2 writer ignores this (no card columns); the v3 writer persists it.
+  manifest.card_abstraction = result.card_id;
   return manifest;
 }
 
@@ -1189,6 +1249,49 @@ void insert_manifest_v2(dt::Db& db, const ArtifactManifest& manifest) {
   insert.bind_text(i++, manifest.abstraction_parameters);
   insert.bind_text(i++, dt::u64_to_hex(manifest.abstraction_digest));
   insert.bind_i64(i++, static_cast<std::int64_t>(manifest.terminal_depth));
+  (void)insert.step("insert manifest");
+}
+
+// RFC 0009 W4c: the v3 manifest insert adds the four card-abstraction columns.
+// The caller (write_all_v3) guarantees card_abstraction is present.
+void insert_manifest_v3(dt::Db& db, const ArtifactManifest& manifest) {
+  check(manifest.card_abstraction.has_value(), ArtifactErrorKind::InvalidArgument,
+        "schema-v3 manifest requires a card abstraction");
+  dt::Stmt insert(db.get(),
+                  "INSERT INTO manifest (id, kind, algorithm_revision, info_key_revision,"
+                  " numeric_profile, validation_state, engine_revision, completed_iterations,"
+                  " prng_identifier, seed_hex, prng_state_hex, run_status, nodes,"
+                  " information_sets, accounted_bytes, abstraction_name, abstraction_version,"
+                  " abstraction_parameters, abstraction_digest, terminal_depth,"
+                  " card_abstraction_name, card_abstraction_version, card_abstraction_parameters,"
+                  " card_abstraction_digest) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                  " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  "insert manifest");
+  int i = 1;
+  insert.bind_text(i++, kind_text(manifest.kind));
+  insert.bind_text(i++, manifest.algorithm_revision);
+  insert.bind_i64(i++, static_cast<std::int64_t>(manifest.information_key_revision));
+  insert.bind_text(i++, manifest.numeric_profile);
+  insert.bind_text(i++, validation_text(manifest.validation));
+  insert.bind_text(i++, manifest.engine_revision);
+  insert.bind_u64_chips(i++, manifest.completed_iterations);
+  insert.bind_text(i++, manifest.prng_identifier);
+  insert.bind_text(i++, dt::u64_to_hex(manifest.seed));
+  insert.bind_text(i++, dt::u64_to_hex(manifest.prng_state));
+  insert.bind_text(i++, run_status_text(manifest.run_status));
+  insert.bind_u64_chips(i++, manifest.nodes);
+  insert.bind_u64_chips(i++, manifest.information_sets);
+  insert.bind_u64_chips(i++, manifest.accounted_bytes);
+  insert.bind_text(i++, manifest.abstraction_name);
+  insert.bind_i64(i++, static_cast<std::int64_t>(manifest.abstraction_version));
+  insert.bind_text(i++, manifest.abstraction_parameters);
+  insert.bind_text(i++, dt::u64_to_hex(manifest.abstraction_digest));
+  insert.bind_i64(i++, static_cast<std::int64_t>(manifest.terminal_depth));
+  const abstraction::AbstractionId& card = *manifest.card_abstraction;
+  insert.bind_text(i++, card.name);
+  insert.bind_i64(i++, static_cast<std::int64_t>(card.version));
+  insert.bind_text(i++, card.parameters);
+  insert.bind_text(i++, dt::u64_to_hex(card.digest));
   (void)insert.step("insert manifest");
 }
 
@@ -1331,6 +1434,35 @@ void write_all_v2(dt::Db& db, const ArtifactManifest& manifest, const SeatTraini
   } catch (...) {
     // See write_all: an I/O failure may already have auto-rolled the
     // transaction back; never mask the original error with a failed ROLLBACK.
+    if (rollback_best_effort) {
+      try {
+        db.exec("ROLLBACK;", "rollback failed write");
+      } catch (...) {
+      }
+    }
+    throw;
+  }
+}
+
+// RFC 0009 W4c: the v3 write transaction. Identical to v2 except the schema
+// version, the DDL set, and the manifest insert (which carries the card
+// abstraction). The game/seats/sizes/ranges/policy inserts are shared.
+void write_all_v3(dt::Db& db, const ArtifactManifest& manifest, const SeatTrainingResult& result) {
+  db.exec("BEGIN IMMEDIATE;", "begin write");
+  bool rollback_best_effort = true;
+  try {
+    db.exec("PRAGMA application_id = 1112754004;", "set application id");
+    db.exec("PRAGMA user_version = 3;", "set schema version");
+    write_schema_v3(db);
+    insert_manifest_v3(db, manifest);
+    insert_game_v2(db, result.policy.game());
+    insert_game_seats(db, result.policy.game());
+    insert_sizes_v2(db, result.policy.sizes());
+    insert_ranges_v2(db, result.policy.ranges(), result.policy.game().player_count);
+    insert_policy_v2(db, result);
+    db.exec("COMMIT;", "commit write");
+    rollback_best_effort = false;
+  } catch (...) {
     if (rollback_best_effort) {
       try {
         db.exec("ROLLBACK;", "rollback failed write");
@@ -1756,6 +1888,93 @@ ArtifactManifest read_manifest_v2(dt::Db& db) {
   return manifest;
 }
 
+// RFC 0009 W4c: the v3 manifest reader. Identical to v2 plus the four
+// card-abstraction columns, reconstructed into an AbstractionId whose digest
+// is verified against the stored name/version/parameters.
+ArtifactManifest read_manifest_v3(dt::Db& db) {
+  dt::Stmt query(db.get(),
+                 "SELECT kind, algorithm_revision, info_key_revision, numeric_profile,"
+                 " validation_state, engine_revision, completed_iterations, prng_identifier,"
+                 " seed_hex, prng_state_hex, run_status, nodes, information_sets,"
+                 " accounted_bytes, abstraction_name, abstraction_version,"
+                 " abstraction_parameters, abstraction_digest, terminal_depth,"
+                 " card_abstraction_name, card_abstraction_version, card_abstraction_parameters,"
+                 " card_abstraction_digest FROM manifest",
+                 "read manifest");
+  if (!query.step("read manifest"))
+    fail(ArtifactErrorKind::InvalidSchema, "manifest table is empty");
+  ArtifactManifest manifest;
+  int i = 0;
+  manifest.kind = kind_from_text(query.column_text(i++));
+  manifest.algorithm_revision = std::string(query.column_text(i++));
+  const std::int64_t info_key_revision_raw = query.column_i64(i++);
+  check(info_key_revision_raw == static_cast<std::int64_t>(kArtifactSchemaVersionV2),
+        ArtifactErrorKind::UnsupportedVersion, "unsupported information-key revision");
+  manifest.information_key_revision = static_cast<std::uint32_t>(info_key_revision_raw);
+  manifest.numeric_profile = std::string(query.column_text(i++));
+  check(manifest.numeric_profile == kNumericProfileV2, ArtifactErrorKind::UnsupportedVersion,
+        "unsupported numeric profile: " + manifest.numeric_profile);
+  manifest.validation = validation_from_text(query.column_text(i++));
+  manifest.engine_revision = std::string(query.column_text(i++));
+  manifest.completed_iterations =
+      static_cast<std::uint64_t>(read_bounded_i64(query, i++, "completed_iterations"));
+  manifest.prng_identifier = std::string(query.column_text(i++));
+  check(manifest.prng_identifier == kSampledPrngIdentifier ||
+            manifest.prng_identifier == kFullTraversalPrngIdentifier,
+        ArtifactErrorKind::UnsupportedVersion,
+        "unsupported PRNG identifier: " + manifest.prng_identifier);
+  const std::string_view seed_hex = query.column_text(i++);
+  const std::string_view state_hex = query.column_text(i++);
+  check(dt::is_hex_word(seed_hex) && dt::is_hex_word(state_hex), ArtifactErrorKind::InvalidSchema,
+        "PRNG words must be 16 lowercase hex digits");
+  manifest.seed = dt::hex_to_u64(seed_hex);
+  manifest.prng_state = dt::hex_to_u64(state_hex);
+  manifest.run_status = run_status_from_text(query.column_text(i++));
+  manifest.nodes = static_cast<std::size_t>(read_bounded_i64(query, i++, "nodes"));
+  manifest.information_sets =
+      static_cast<std::size_t>(read_bounded_i64(query, i++, "information_sets"));
+  manifest.accounted_bytes =
+      static_cast<std::size_t>(read_bounded_i64(query, i++, "accounted_bytes"));
+  manifest.abstraction_name = std::string(query.column_text(i++));
+  check(!manifest.abstraction_name.empty(), ArtifactErrorKind::InvalidSchema,
+        "abstraction_name is empty");
+  const std::int64_t abstraction_version_raw = query.column_i64(i++);
+  check(abstraction_version_raw >= 0, ArtifactErrorKind::InvalidSchema,
+        "abstraction_version must be nonnegative");
+  manifest.abstraction_version = static_cast<std::uint32_t>(abstraction_version_raw);
+  manifest.abstraction_parameters = std::string(query.column_text(i++));
+  const std::string_view digest_hex = query.column_text(i++);
+  check(dt::is_hex_word(digest_hex), ArtifactErrorKind::InvalidSchema,
+        "abstraction_digest must be 16 lowercase hex digits");
+  manifest.abstraction_digest = dt::hex_to_u64(digest_hex);
+  const std::int64_t terminal_depth_raw = query.column_i64(i++);
+  check(terminal_depth_raw == 0 || terminal_depth_raw == 1, ArtifactErrorKind::InvalidSchema,
+        "terminal_depth must be 0 (river) or 1 (flop)");
+  manifest.terminal_depth = static_cast<poker::TerminalDepth>(terminal_depth_raw);
+  // v3 card-abstraction identity.
+  abstraction::AbstractionId card;
+  card.name = std::string(query.column_text(i++));
+  check(!card.name.empty(), ArtifactErrorKind::InvalidSchema, "card_abstraction_name is empty");
+  const std::int64_t card_version_raw = query.column_i64(i++);
+  check(card_version_raw >= 0, ArtifactErrorKind::InvalidSchema,
+        "card_abstraction_version must be nonnegative");
+  card.version = static_cast<std::uint32_t>(card_version_raw);
+  card.parameters = std::string(query.column_text(i++));
+  const std::string_view card_digest_hex = query.column_text(i++);
+  check(dt::is_hex_word(card_digest_hex), ArtifactErrorKind::InvalidSchema,
+        "card_abstraction_digest must be 16 lowercase hex digits");
+  card.digest = dt::hex_to_u64(card_digest_hex);
+  check(abstraction::abstraction_digest(card.name, card.version, card.parameters) == card.digest,
+        ArtifactErrorKind::InvalidSchema,
+        "card_abstraction_digest does not match name/version/parameters");
+  manifest.card_abstraction = std::move(card);
+  check(!manifest.algorithm_revision.empty() && !manifest.engine_revision.empty(),
+        ArtifactErrorKind::InvalidSchema, "manifest revision strings are empty");
+  check(!query.step("read manifest"), ArtifactErrorKind::InvalidSchema,
+        "manifest table is not a singleton");
+  return manifest;
+}
+
 // Reconstructs the GameDef identity from the seat-generic game row and the
 // game_seats child table. The reader reconstructs blinds_posted=0 and
 // preflop=false (the writer requires both), so same_game_def round-trips
@@ -2039,6 +2258,9 @@ const std::set<std::string> kAllowedTablesV2{
 
 const SchemaSet kSchemaV1{kSchemaDdlV1, kAllowedTablesV1, "v1"};
 const SchemaSet kSchemaV2{kSchemaDdlV2, kAllowedTablesV2, "v2"};
+// RFC 0009 W4c: v3 shares v2's table set; only the manifest DDL differs.
+const std::set<std::string> kAllowedTablesV3 = kAllowedTablesV2;
+const SchemaSet kSchemaV3{kSchemaDdlV3, kAllowedTablesV3, "v3"};
 
 void verify_schema_objects(dt::Db& db, const SchemaSet& schema) {
   // The stored CREATE text must be byte-identical to the DDL this writer
@@ -2137,6 +2359,8 @@ OpenedArtifact open_validated(const std::filesystem::path& path, const LoadOptio
     schema = &kSchemaV1;
   else if (user_version == static_cast<std::int64_t>(kArtifactSchemaVersionV2))
     schema = &kSchemaV2;
+  else if (user_version == static_cast<std::int64_t>(kArtifactSchemaVersionV3))
+    schema = &kSchemaV3;
   else
     fail(ArtifactErrorKind::UnsupportedVersion,
          "unsupported artifact schema user_version " + std::to_string(user_version));
@@ -2204,7 +2428,8 @@ LoadedArtifact load_path_v2(OpenedArtifact& opened) {
   // string is the authoritative record.
   result.algorithm_revision = solver::kNSeatAlgorithmRevision;
 
-  dt::SeatPolicyAssembler::set_identity(result.policy, game, sizes, ranges, result.action_id);
+  dt::SeatPolicyAssembler::set_identity(result.policy, game, sizes, ranges, result.action_id,
+                                        std::nullopt);
 
   for (const auto& [id, state] : states) {
     InformationKey key = decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player,
@@ -2246,10 +2471,111 @@ LoadedArtifact load_path_v2(OpenedArtifact& opened) {
   return loaded;
 }
 
+// Schema v3 is schema v2 plus the card-abstraction declaration on the
+// manifest; every other table and every reconstruction step is identical.
+LoadedArtifact load_path_v3(OpenedArtifact& opened) {
+  dt::Db& db = opened.db;
+  const Sha256Digest digest = opened.digest;
+  const std::uint64_t file_bytes = opened.file_bytes;
+
+  ArtifactManifest manifest = read_manifest_v3(db);
+  GameDef game = read_game_v2(db);
+  read_game_seats(db, game);
+  SizeSchedule sizes = read_sizes_v2(db);
+  auto ranges = read_ranges_v2(db, game.player_count);
+  validate_game_v2(game);
+
+  auto states = read_states_v2(db, game.player_count);
+  auto actions = read_actions(db);
+  auto training = read_training(db);
+  read_auxiliary_tables_v2(db, game.player_count);
+
+  // Referential integrity independent of stripped foreign keys.
+  for (const auto& [key, stored_action] : actions)
+    check(states.contains(key.first), ArtifactErrorKind::InvalidSchema,
+          "action row references a missing information state");
+  for (const auto& [id, state] : states) {
+    (void)state;
+    check(actions.lower_bound({id, 0}) != actions.end() &&
+              actions.lower_bound({id, 0})->first.first == id,
+          ArtifactErrorKind::InvalidSchema,
+          "information state has no actions after referential validation");
+  }
+
+  // Reconstruct information keys from the canonical text and player column.
+  for (const auto& [id, state] : states) {
+    (void)decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player, state.card0,
+                            state.card1);
+  }
+
+  SeatTrainingResult result;
+  result.completed_iterations = manifest.completed_iterations;
+  result.seed = manifest.seed;
+  result.prng_state = manifest.prng_state;
+  result.termination = manifest.run_status == RunStatus::Complete
+                           ? NSeatTerminationPhase::Complete
+                           : NSeatTerminationPhase::ResourceLimit;
+  result.nodes = manifest.nodes;
+  result.information_sets = manifest.information_sets;
+  result.accounted_bytes = manifest.accounted_bytes;
+  result.action_id = {manifest.abstraction_name, manifest.abstraction_version,
+                      manifest.abstraction_parameters, manifest.abstraction_digest};
+  result.card_id = manifest.card_abstraction;
+  result.terminal_depth = manifest.terminal_depth;
+  // The uint32 algorithm_revision is the trainer's revision; the manifest
+  // carries the string identifier. Reconstruct the current revision; the
+  // string is the authoritative record.
+  result.algorithm_revision = solver::kNSeatAlgorithmRevision;
+
+  dt::SeatPolicyAssembler::set_identity(result.policy, game, sizes, ranges, result.action_id,
+                                        result.card_id);
+
+  for (const auto& [id, state] : states) {
+    InformationKey key = decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player,
+                                           state.card0, state.card1);
+    solver::SeatPolicyRow row;
+    for (auto it = actions.lower_bound({id, 0}); it != actions.end() && it->first.first == id;
+         ++it) {
+      const StoredAction& stored = it->second;
+      Action action{dt::action_kind_from_id(stored.kind), stored.target.value_or(0)};
+      row.actions.push_back(action);
+      row.probabilities.push_back(stored.probability);
+    }
+    check(!row.actions.empty(), ArtifactErrorKind::InvalidSchema,
+          "information state has no actions");
+    validate_probabilities_local(row.probabilities, "information state " + std::to_string(id));
+    dt::SeatPolicyAssembler::add_row(result.policy, key, std::move(row));
+  }
+
+  // The v3 writer never writes training rows; a v3 file carrying them is
+  // malformed regardless of kind.
+  check(training.empty(), ArtifactErrorKind::InvalidSchema,
+        "schema-v3 artifact must not carry training rows");
+  if (manifest.kind == ArtifactKind::Policy) {
+    check(manifest.validation == ValidationState::Validated, ArtifactErrorKind::InvalidSchema,
+          "published policy must be validated");
+  }
+  check(result.information_sets == states.size(), ArtifactErrorKind::InvalidSchema,
+        "manifest information_sets disagrees with stored state count");
+
+  ArtifactBundle bundle;
+  bundle.manifest = std::move(manifest);
+  bundle.nseat = std::move(result);
+
+  LoadedArtifact loaded;
+  loaded.bundle = std::move(bundle);
+  loaded.sha256 = digest;
+  loaded.sha256_hex = dt::to_hex(digest);
+  loaded.file_bytes = file_bytes;
+  return loaded;
+}
+
 LoadedArtifact load_path(const std::filesystem::path& path, const LoadOptions& options) {
   OpenedArtifact opened = open_validated(path, options);
   if (opened.schema_version == kArtifactSchemaVersionV2)
     return load_path_v2(opened);
+  if (opened.schema_version == kArtifactSchemaVersionV3)
+    return load_path_v3(opened);
   dt::Db& db = opened.db;
   const Sha256Digest digest = opened.digest;
   const std::uint64_t file_bytes = opened.file_bytes;
@@ -2400,6 +2726,8 @@ ArtifactProbe probe_path(const std::filesystem::path& path, const LoadOptions& o
   ArtifactProbe probe;
   if (opened.schema_version == kArtifactSchemaVersionV2) {
     probe.manifest = read_manifest_v2(db);
+  } else if (opened.schema_version == kArtifactSchemaVersionV3) {
+    probe.manifest = read_manifest_v3(db);
   } else {
     probe.manifest = read_manifest(db);
   }
@@ -2408,10 +2736,12 @@ ArtifactProbe probe_path(const std::filesystem::path& path, const LoadOptions& o
   check(probe.manifest.run_status == RunStatus::Complete, ArtifactErrorKind::InvalidArgument,
         "cannot probe a resource-limited policy");
 
-  if (opened.schema_version == kArtifactSchemaVersionV2) {
+  if (opened.schema_version == kArtifactSchemaVersionV2 ||
+      opened.schema_version == kArtifactSchemaVersionV3) {
     // RFC 0009 D4: materialize the seat-generic identity. The resident path
-    // projects a two-seat flop-rooted v2 source onto its heads-up view; the
-    // probe itself only carries the identity and SQL aggregates.
+    // projects a two-seat flop-rooted v2/v3 source onto its heads-up view; the
+    // probe itself only carries the identity and SQL aggregates. Schema v3
+    // differs from v2 only in the manifest, already read above.
     GameDef game = read_game_v2(db);
     read_game_seats(db, game);
     probe.sizes = read_sizes_v2(db);
@@ -2495,7 +2825,28 @@ void create_checkpoint(const std::filesystem::path& path, const SeatTrainingResu
   dt::Db db;
   open_writer(db, path.string(), true);
   try {
-    write_all_v2(db, manifest, result);
+    if (result.card_id.has_value()) {
+      // A class policy (schema v3). Verify the declared id is self-consistent
+      // and, for the suit-canonicalization card abstraction, that the stored
+      // board is already the canonical class representative -- the resident
+      // layer canonicalizes a query into these coordinates, so a
+      // non-canonical stored board would serve the wrong class.
+      const abstraction::AbstractionId& card = *result.card_id;
+      check(
+          abstraction::abstraction_digest(card.name, card.version, card.parameters) == card.digest,
+          ArtifactErrorKind::InvalidArgument,
+          "card abstraction digest does not match its name/version/parameters");
+      if (card == abstraction::suit_canonicalization_id()) {
+        const GameDef& game = result.policy.game();
+        const std::array<int, 3> flop{game.board[0], game.board[1], game.board[2]};
+        const abstraction::CanonicalBoard canonical = abstraction::canonicalize(flop);
+        check(canonical.board == flop, ArtifactErrorKind::InvalidArgument,
+              "suit-canonical class policy must store the canonical board representative");
+      }
+      write_all_v3(db, manifest, result);
+    } else {
+      write_all_v2(db, manifest, result);
+    }
   } catch (...) {
     db.close();
     std::error_code ec;
@@ -2588,12 +2939,12 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
                                const std::filesystem::path& destination,
                                const std::string& engine_revision) {
   const LoadedArtifact source = load_artifact(checkpoint_path);
-  const bool is_v2 = source.bundle.nseat.has_value();
+  const bool is_seat = source.bundle.nseat.has_value();
   check(source.bundle.manifest.kind == ArtifactKind::Checkpoint, ArtifactErrorKind::InvalidArgument,
         "publish source must be a checkpoint: " + checkpoint_path.string());
   check(source.bundle.manifest.run_status == RunStatus::Complete,
         ArtifactErrorKind::InvalidArgument, "cannot publish a resource-limited checkpoint");
-  if (is_v2) {
+  if (is_seat) {
     check(!source.bundle.nseat->policy.rows().empty(), ArtifactErrorKind::InvalidArgument,
           "cannot publish an empty policy");
   } else {
@@ -2614,7 +2965,7 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
   try {
     open_writer(db, temp.string(), true);
     ArtifactManifest manifest;
-    if (is_v2) {
+    if (is_seat) {
       SeatCheckpointProvenance provenance;
       provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;
       provenance.prng_identifier = source.bundle.manifest.prng_identifier;
@@ -2622,7 +2973,13 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
       manifest = manifest_for_v2(*source.bundle.nseat, provenance, ArtifactKind::Policy,
                                  ValidationState::Validated);
       validate_content_v2(*source.bundle.nseat);
-      write_all_v2(db, manifest, *source.bundle.nseat);
+      // A declared card abstraction marks a schema-v3 source; the manifest
+      // already carries the card fields (manifest_for_v2 copies them), so only
+      // the writer dispatches.
+      if (source.bundle.nseat->card_id.has_value())
+        write_all_v3(db, manifest, *source.bundle.nseat);
+      else
+        write_all_v2(db, manifest, *source.bundle.nseat);
     } else {
       CheckpointProvenance provenance;
       provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;

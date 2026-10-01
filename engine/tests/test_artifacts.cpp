@@ -269,6 +269,60 @@ SeatTrainingResult trained_seat_result_v2() {
   return export_seat_policy(trained, tree, ranges);
 }
 
+// --- RFC 0009 W4c schema-v3 card-abstraction fixtures ----------------------
+
+// A two-seat flop-rooted fixture on a suit-canonical board. {2s, 7h, Kd} has
+// suits {0,1,2} in rank order, so the suit-canonicalization relabel is the
+// identity and the board is its own class representative -- the precondition
+// the v3 writer's board-canonical integrity check enforces.
+GameDef two_seat_flop_canonical_def_v3() {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {1, 1, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 2;
+  def.board = {card("2s"), card("7h"), card("Kd"), 0, 0};
+  def.board_size = 3;
+  return def;
+}
+
+// Same ranks {2,7,K} with suits permuted out of canonical order: {2h, 7s, Kd}
+// has suits {1,0,2}, so the canonical relabel swaps spades and hearts and the
+// board is NOT its own class representative.
+GameDef two_seat_flop_noncanonical_def_v3() {
+  GameDef def = two_seat_flop_canonical_def_v3();
+  def.board = {card("2h"), card("7s"), card("Kd"), 0, 0};
+  return def;
+}
+
+// Two combos per seat, all off the {2,7,K} flop and mutually card-distinct.
+// Canonical form: each hand's cards sorted ascending and each seat's range
+// sorted by combo id, matching the reader's `ORDER BY player, combo` output
+// (the round-trip canonicalizes range order, so the fixture must already be in
+// the reader's order for a position-by-position comparison).
+std::vector<std::vector<WeightedHand>> two_seat_flop_ranges_v3() {
+  return {
+      {{{card("As"), card("Ad")}, 2}, {{card("Ah"), card("Ac")}, 3}},
+      {{{card("Qs"), card("Qd")}, 5}, {{card("Qh"), card("Qc")}, 7}},
+  };
+}
+
+// Trains the two-seat canonical flop fixture and exports a concrete
+// SeatTrainingResult under the suit-canonicalization card abstraction, the v3
+// writer's domain record.
+SeatTrainingResult trained_seat_result_v3() {
+  const GameDef def = two_seat_flop_canonical_def_v3();
+  const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+  const auto ranges = two_seat_flop_ranges_v3();
+  const NSeatTrainingResult trained =
+      train_nseat(tree, ranges, 200, 20261001, NSeatTrainerLimits{});
+  if (trained.termination != NSeatTerminationPhase::Complete)
+    throw std::runtime_error("v3 seat fixture training did not complete");
+  return export_seat_policy(trained, tree, ranges, bs::abstraction::suit_canonicalization_id());
+}
+
 bool same_schedule_v2_exact(const SizeSchedule& a, const SizeSchedule& b) {
   for (std::size_t s = 0; s < 4; ++s) {
     if (a[s].bets.size() != b[s].bets.size() || a[s].raises.size() != b[s].raises.size())
@@ -1110,6 +1164,140 @@ static int test_roundtrip_v2(const fs::path& dir) {
     }
     CHECK(
         throws_artifact([&] { (void)load_artifact(tampered); }, ArtifactErrorKind::InvalidSchema));
+  }
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// test 1c: RFC 0009 W4c schema-v3 card-abstraction checkpoint round trip
+// ---------------------------------------------------------------------------
+
+static int test_roundtrip_v3(const fs::path& dir) {
+  const SeatTrainingResult exported = trained_seat_result_v3();
+  CHECK(!exported.policy.rows().empty());
+  CHECK(exported.policy.game().player_count == 2);
+  CHECK(exported.card_id.has_value());
+  CHECK(exported.card_id == bs::abstraction::suit_canonicalization_id());
+  CHECK(exported.policy.card_id() == bs::abstraction::suit_canonicalization_id());
+  // The stored flop is the canonical class representative.
+  const std::array<int, 3> flop{exported.policy.game().board[0], exported.policy.game().board[1],
+                                exported.policy.game().board[2]};
+  CHECK(bs::abstraction::canonicalize(flop).board == flop);
+
+  const fs::path path = dir / "roundtrip-v3-checkpoint.db";
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "roundtrip-v3-engine-1";
+  create_checkpoint(path, exported, provenance);
+  CHECK(throws_artifact([&] { create_checkpoint(path, exported, provenance); },
+                        ArtifactErrorKind::AlreadyExists));
+
+  // Independent schema oracle through a raw connection.
+  {
+    RawDb raw(path, SQLITE_OPEN_READONLY);
+    CHECK(raw.scalar_i64("PRAGMA application_id") == static_cast<std::int64_t>(0x42534754));
+    CHECK(raw.scalar_i64("PRAGMA user_version") == 3);
+    CHECK(raw.scalar_text("SELECT card_abstraction_name FROM manifest") == exported.card_id->name);
+    CHECK(raw.scalar_i64("SELECT card_abstraction_version FROM manifest") ==
+          static_cast<std::int64_t>(exported.card_id->version));
+    CHECK(raw.scalar_text("SELECT card_abstraction_parameters FROM manifest") ==
+          exported.card_id->parameters);
+    CHECK(raw.scalar_text("SELECT card_abstraction_digest FROM manifest") ==
+          bs::artifacts::detail::u64_to_hex(exported.card_id->digest));
+    // The v2 action-abstraction columns are still present and correct.
+    CHECK(raw.scalar_i64("SELECT abstraction_version FROM manifest") ==
+          static_cast<std::int64_t>(exported.action_id.version));
+    CHECK(raw.scalar_i64("SELECT terminal_depth FROM manifest") ==
+          static_cast<std::int64_t>(TerminalDepth::River));
+    // The v3 manifest has exactly the v2 table set plus the four card columns.
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM pragma_table_info('manifest')") == 24);
+  }
+
+  // Same-process lossless read.
+  const LoadedArtifact loaded = load_artifact(path);
+  CHECK(loaded.sha256_hex.size() == 64);
+  const auto& bundle = loaded.bundle;
+  CHECK(bundle.manifest.kind == ArtifactKind::Checkpoint);
+  CHECK(bundle.manifest.information_key_revision == 2);
+  CHECK(bundle.manifest.engine_revision == "roundtrip-v3-engine-1");
+  CHECK(bundle.manifest.card_abstraction.has_value());
+  CHECK(bundle.manifest.card_abstraction == bs::abstraction::suit_canonicalization_id());
+  CHECK(bundle.nseat.has_value());
+  CHECK(bundle.nseat->card_id.has_value());
+  CHECK(bundle.nseat->card_id == bs::abstraction::suit_canonicalization_id());
+  CHECK(bundle.nseat->policy.card_id() == bs::abstraction::suit_canonicalization_id());
+  // The v1 arm stays default for a v3 file.
+  CHECK(bundle.result.policy.rows().empty());
+  CHECK(bundle.rows.empty());
+  if (compare_seat_result_exact(exported, *bundle.nseat) != 0) {
+    std::printf("v3 roundtrip seat-result comparison failed\n");
+    return 1;
+  }
+
+  // Byte-stability: a second write of the same result has the same SHA-256.
+  const fs::path path2 = dir / "roundtrip-v3-checkpoint-2.db";
+  create_checkpoint(path2, exported, provenance);
+  CHECK(sha256_file_hex(path) == sha256_file_hex(path2));
+
+  // Probe and publish expose the card abstraction.
+  const fs::path policy_dir = dir / "policy-v3";
+  fs::create_directory(policy_dir);
+  const fs::path policy_path = policy_dir / "generation-v3-0001.db";
+  const PublishedPolicy published_v3 = publish_policy(path, policy_path, "publish-v3-engine-1");
+  CHECK(published_v3.sha256_hex == sha256_file_hex(policy_path));
+  CHECK(published_v3.file_bytes == fs::file_size(policy_path));
+
+  const ArtifactProbe probe = probe_artifact(policy_path);
+  CHECK(probe.manifest.kind == ArtifactKind::Policy);
+  CHECK(probe.manifest.validation == ValidationState::Validated);
+  CHECK(probe.manifest.card_abstraction.has_value());
+  CHECK(probe.manifest.card_abstraction == bs::abstraction::suit_canonicalization_id());
+  CHECK(probe.game_def.has_value());
+  CHECK(probe.game_def->player_count == 2);
+  CHECK(probe.game_def->board_size == 3);
+  CHECK(probe.ranges.has_value());
+  CHECK(probe.ranges->size() == 2);
+  CHECK(probe.sizes.has_value());
+  CHECK(probe.information_sets == exported.policy.rows().size());
+
+  // The published policy round-trips through the v3 loader.
+  const LoadedArtifact published_loaded =
+      load_artifact(policy_path, LoadOptions{published_v3.file_bytes, published_v3.sha256});
+  CHECK(published_loaded.bundle.manifest.kind == ArtifactKind::Policy);
+  CHECK(published_loaded.bundle.nseat.has_value());
+  CHECK(published_loaded.bundle.nseat->card_id == bs::abstraction::suit_canonicalization_id());
+  if (compare_seat_result_exact(exported, *published_loaded.bundle.nseat) != 0) {
+    std::printf("v3 published-policy seat-result comparison failed\n");
+    return 1;
+  }
+
+  // Digest verification: a tampered card_abstraction_digest is rejected.
+  {
+    const fs::path tampered = dir / "roundtrip-v3-tampered-digest.db";
+    fs::copy_file(path, tampered);
+    {
+      RawDb raw(tampered);
+      raw.exec("UPDATE manifest SET card_abstraction_digest = '0000000000000000';");
+    }
+    CHECK(
+        throws_artifact([&] { (void)load_artifact(tampered); }, ArtifactErrorKind::InvalidSchema));
+  }
+
+  // Board-canonical integrity: a class policy trained on a non-canonical board
+  // but declaring suit-canonicalization is rejected at create time.
+  {
+    const GameDef bad_def = two_seat_flop_noncanonical_def_v3();
+    const std::array<int, 3> bad_flop{bad_def.board[0], bad_def.board[1], bad_def.board[2]};
+    CHECK(bs::abstraction::canonicalize(bad_flop).board != bad_flop);
+    const bs::tree::AbstractTree tree(bad_def, bs::abstraction::ActionAbstraction::identity());
+    const auto ranges = two_seat_flop_ranges_v3();
+    const NSeatTrainingResult trained =
+        train_nseat(tree, ranges, 200, 20261001, NSeatTrainerLimits{});
+    CHECK(trained.termination == NSeatTerminationPhase::Complete);
+    const SeatTrainingResult bad_export =
+        export_seat_policy(trained, tree, ranges, bs::abstraction::suit_canonicalization_id());
+    const fs::path bad_path = dir / "roundtrip-v3-noncanonical.db";
+    CHECK(throws_artifact([&] { create_checkpoint(bad_path, bad_export, provenance); },
+                          ArtifactErrorKind::InvalidArgument));
   }
   return 0;
 }
@@ -2058,6 +2246,7 @@ int main() {
   const Case cases[] = {
       {"roundtrip", test_roundtrip},
       {"roundtrip-v2", test_roundtrip_v2},
+      {"roundtrip-v3", test_roundtrip_v3},
       {"canonical-keys", test_canonical_keys},
       {"split-run", test_split_run},
       {"resume-identity", test_resume_identity},

@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <vector>
 
 // RFC 0009 D3 artifact storage reconstructs an immutable SeatPolicy from a v2
@@ -64,12 +65,22 @@ class SeatPolicy {
   const abstraction::SizeSchedule& sizes() const noexcept { return sizes_; }
   const std::vector<std::vector<WeightedHand>>& ranges() const noexcept { return ranges_; }
   const abstraction::AbstractionId& action_id() const noexcept { return action_id_; }
+  // RFC 0009 W4c: the declared card abstraction under which this policy was
+  // trained. nullopt marks an exact-board policy (schema v2): the stored board
+  // is the one concrete flop the policy serves. A set id marks a class policy
+  // (schema v3): the stored board is the canonical representative of its class
+  // and the resident layer canonicalizes a query into those coordinates before
+  // lookup. The artifact writer verifies the stored board is already canonical
+  // for the suit-canonicalization id; for any other id it records the
+  // declaration verbatim.
+  const std::optional<abstraction::AbstractionId>& card_id() const noexcept { return card_id_; }
   const std::map<InformationKey, SeatPolicyRow>& rows() const noexcept { return rows_; }
 
  private:
-  friend SeatTrainingResult export_seat_policy(
-      const NSeatTrainingResult& result, const tree::AbstractTree& tree,
-      const std::vector<std::vector<WeightedHand>>& ranges);
+  friend SeatTrainingResult export_seat_policy(const NSeatTrainingResult& result,
+                                               const tree::AbstractTree& tree,
+                                               const std::vector<std::vector<WeightedHand>>& ranges,
+                                               std::optional<abstraction::AbstractionId> card_id);
   // The artifact reader (RFC 0009 D3) reconstructs a SeatPolicy from a v2 file;
   // it is the one production consumer granted write access, mirroring
   // PolicyAssembler's relationship to HeadsUpPolicy.
@@ -78,6 +89,7 @@ class SeatPolicy {
   abstraction::SizeSchedule sizes_{};
   std::vector<std::vector<WeightedHand>> ranges_{};
   abstraction::AbstractionId action_id_{};
+  std::optional<abstraction::AbstractionId> card_id_{};
   std::map<InformationKey, SeatPolicyRow> rows_;
 };
 
@@ -96,6 +108,10 @@ struct SeatTrainingResult {
   std::uint64_t prng_state = 0;
   std::uint32_t algorithm_revision = kNSeatAlgorithmRevision;
   abstraction::AbstractionId action_id{};
+  // The declared card abstraction (see SeatPolicy::card_id). The v2 writer
+  // persists a nullopt value as a schema-v2 artifact; a set value is persisted
+  // as schema v3.
+  std::optional<abstraction::AbstractionId> card_id{};
   poker::TerminalDepth terminal_depth = poker::TerminalDepth::River;
   SeatPolicy policy;
 };
@@ -117,8 +133,17 @@ struct SeatTrainingResult {
 // result type does not store ranges -- they are a training input). Throws
 // std::invalid_argument if the tree and result disagree on game identity or
 // action abstraction, or if a tree/result invariant is violated.
-SeatTrainingResult export_seat_policy(const NSeatTrainingResult& result,
-                                      const tree::AbstractTree& tree,
-                                      const std::vector<std::vector<WeightedHand>>& ranges);
+//
+// RFC 0009 W4c: `card_id` declares the card abstraction under which the
+// training board was chosen. The default nullopt marks an exact-board policy
+// (persisted as schema v2). A caller that canonicalized the training root
+// passes the matching id (e.g. `suit_canonicalization_id()`) so the artifact
+// self-describes as a class policy (persisted as schema v3). The caller is
+// responsible for having trained on the canonical representative; the v3
+// writer enforces this for the suit-canonicalization id.
+SeatTrainingResult export_seat_policy(
+    const NSeatTrainingResult& result, const tree::AbstractTree& tree,
+    const std::vector<std::vector<WeightedHand>>& ranges,
+    std::optional<abstraction::AbstractionId> card_id = std::nullopt);
 
 }  // namespace bs::solver

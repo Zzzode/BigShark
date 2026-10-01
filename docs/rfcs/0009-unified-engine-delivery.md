@@ -523,6 +523,45 @@ the `0..9` SQL CHECK domain but outside the game's `player_count` is rejected
 with `InvalidSchema` (regression tests in `test_artifacts.cpp`
 `test_roundtrip_v2`).
 
+**D3 schema v3 (W4c-i): the card-abstraction declaration.** A class policy
+(section 5, "Precomputed flop libraries") must be distinguishable at load time
+from an exact-board policy: the resident layer canonicalizes a query into the
+class's coordinates only when the artifact declares the card abstraction under
+which its stored board is the canonical representative. The declaration cannot
+be retrofitted onto schema v2, because `verify_schema_objects` compares stored
+CREATE text byte-for-byte against the canonical DDL: adding NOT NULL columns to
+the v2 manifest would invalidate every existing v2 artifact. The clean path is
+a new `user_version = 3`:
+
+- `user_version = 3`; `information_key_revision = 2` (unchanged - the key
+  grammar does not change).
+- The `manifest` gains four NOT NULL columns: `card_abstraction_name`,
+  `card_abstraction_version`, `card_abstraction_parameters`,
+  `card_abstraction_digest` (16 lowercase hex digits, the same shape as the
+  action-abstraction digest). The reader reconstructs an
+  `abstraction::AbstractionId` and verifies
+  `abstraction_digest(name, version, parameters) == digest`, rejecting a
+  mismatch with `InvalidSchema`.
+- Only the manifest differs from v2. The nine other table definitions are
+  reused by reference (`kSchemaDdlV3[1..9]` alias `kSchemaDdlV2[1..9]`), so the
+  shared statements stay defined exactly once and the byte-identical DDL check
+  still holds for both versions. The v3 allowed-table set is v2's.
+- A v2 artifact (exact board) leaves `card_abstraction` at `nullopt`; a v3
+  artifact (class policy) carries the id. The writer dispatches on
+  `SeatTrainingResult::card_id.has_value()`: a set id writes v3, a nullopt
+  writes v2. `create_checkpoint` and `publish_policy` both dispatch this way;
+  `load_path`, `probe_path`, and `open_validated` dispatch on
+  `user_version == 3`.
+- **Board-canonical integrity.** For the suit-canonicalization card
+  abstraction, the v3 writer verifies the stored flop is already the canonical
+  class representative (`canonicalize({board[0],board[1],board[2]}).board ==
+  {board[0],board[1],board[2]}`), rejecting a non-canonical stored board with
+  `InvalidArgument`. A non-canonical stored board would serve the wrong class,
+  because the resident layer canonicalizes a query into the stored coordinates
+  before lookup. For any other card-abstraction id the writer records the
+  declaration verbatim; the canonical-representative invariant is the
+  declaring abstraction's responsibility.
+
 ### D4. Resolver and resident generalization
 
 The resolver's model generalizes from (hero, responder) to (hero, one seat per
@@ -863,10 +902,12 @@ independently useful:
    contract applies, and the policy-derived reach export). This is what makes
    preflop playable from a policy instead of a chart, at every seat count.
 3. **Precomputed flop libraries.** Offline training publishes per-class
-   flop-rooted artifacts (D3's v2 format) - the resident set loads them as
-   ordinary roots, and the lookup path resolves a concrete board to its class
-   and its artifact by declaration, never by inference. Library size, class
-   selection, and storage budget are stage-level measurements.
+   flop-rooted artifacts (D3's schema v3, which carries the card-abstraction
+   declaration that makes a class policy distinguishable at load time) - the
+   resident set loads them as ordinary roots, and the lookup path resolves a
+   concrete board to its class and its artifact by declaration, never by
+   inference. Library size, class selection, and storage budget are
+   stage-level measurements.
 4. **Terminal-only on-demand resolving.** The existing terminal-only gadget
    (D4), which is the cheapest correct way to cover a spot no library entry
    covers.
