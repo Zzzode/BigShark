@@ -602,7 +602,8 @@ int main() {
     FakeServices services;
     services.actions = {{ActionType::Check}, {ActionType::Bet, 100}};
     services.probabilities = {0.4, 0.7};  // sums to 1.1
-    V1BlueprintRow row{2, services.actions.data(), services.probabilities.data(), services.sha};
+    V1BlueprintRow row{2, services.actions.data(), services.probabilities.data(), services.sha,
+                       {}};
     check(!bs::v1::blueprintRowIsLegal(flopRequest(pv::SOLVER_MODE_BLUEPRINT), row),
           "non-unit distribution rejected");
     services.probabilities = {0.5, -0.5};
@@ -610,10 +611,10 @@ int main() {
           "negative probability rejected");
     std::vector<Action> many(33, Action{ActionType::Check});
     std::vector<double> flat(33, 1.0 / 33.0);
-    V1BlueprintRow big{33, many.data(), flat.data(), services.sha};
+    V1BlueprintRow big{33, many.data(), flat.data(), services.sha, {}};
     check(!bs::v1::blueprintRowIsLegal(flopRequest(pv::SOLVER_MODE_BLUEPRINT), big),
           "distribution above 32 actions rejected");
-    V1BlueprintRow empty{0, nullptr, nullptr, services.sha};
+    V1BlueprintRow empty{0, nullptr, nullptr, services.sha, {}};
     check(!bs::v1::blueprintRowIsLegal(flopRequest(pv::SOLVER_MODE_BLUEPRINT), empty),
           "empty distribution rejected");
   }

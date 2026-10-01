@@ -167,8 +167,11 @@ rd::ReachModel build(const TinyGame& t, MapBlueprint& bp, ResolveStatus& status)
 
 std::vector<OracleDeal> oracle_deals(const rd::ReachModel& model) {
   std::vector<OracleDeal> out;
+  // The oracle is two-seat-specific (hero=1, responder=0); the responder is the
+  // one non-hero seat.
+  const std::size_t responder = model.hero == 0 ? 1 : 0;
   for (const rd::GadgetDeal& deal : model.deals)
-    out.push_back({deal.hero, deal.responder, deal.weight});
+    out.push_back({deal.hands[model.hero], deal.hands[responder], deal.weight});
   return out;
 }
 
@@ -176,7 +179,7 @@ std::vector<OracleDeal> oracle_deals(const rd::ReachModel& model) {
 int check_canonical_margins(const TinyGame& t, const rd::ReachModel& model) {
   TerminalOracle oracle(t.hnode, oracle_deals(model), t.actions, t.game.fixed_runout);
   CHECK(model.infosets.size() == 1);
-  const rd::ResponderInfoset& infoset = model.infosets[0];
+  const rd::SeatInfoset& infoset = model.infosets[0];
   CHECK(infoset.cards == t.O);
   // Each of W/L pairs with O once at weight 1 -> m(O)=2, unnormalized.
   CHECK(near(infoset.mass, 2.0));
@@ -273,7 +276,7 @@ int test_locally_better_globally_worse_rejected() {
   CHECK(cert.status == ResolveStatus::CertificationRejected);
   bool found_worse = false;
   for (const auto& margin : cert.margins) {
-    if (margin.responder_cards == Rb) {
+    if (margin.cards == Rb) {
       found_worse = true;
       CHECK(near(margin.candidate, -0.5));
       CHECK(margin.slack > 0.0);  // -0.5 > -2
@@ -322,7 +325,7 @@ int test_equilibrium_passes_and_converges() {
   std::map<std::array<int, 2>, double> payoff;
   hero[t.W] = wrow.probabilities;
   hero[t.L] = lrow.probabilities;
-  const auto terminate = gadget.terminate.at(t.O);
+  const auto terminate = gadget.terminate.at(GadgetKey{0, t.O});
   responder[t.O] = terminate;
   payoff[t.O] = model.infosets[0].baseline;
   const auto report = oracle.nash_conv(responder, hero, payoff);
@@ -357,10 +360,10 @@ int test_zero_mass_infoset() {
   rd::ReachModel model = build(t, bp, status);
   CHECK(status == ResolveStatus::Certified);
   CHECK(model.infosets.size() == 1);
-  CHECK(model.zero_mass_responder.size() == 1);
-  CHECK(model.zero_mass_responder[0] == Rz);
+  CHECK(model.zero_mass[0].size() == 1);
+  CHECK(model.zero_mass[0][0] == Rz);
   for (const rd::GadgetDeal& deal : model.deals)
-    CHECK(deal.responder != Rz);
+    CHECK(deal.hands[0] != Rz);
 
   rd::Budget solve_budget(test_limits());
   rd::GadgetOutput gadget = rd::run_gadget_cfr(model, test_limits(20000), solve_budget);
@@ -370,7 +373,7 @@ int test_zero_mass_infoset() {
   CHECK(cert.status == ResolveStatus::Certified);
   bool recorded_zero = false;
   for (const auto& margin : cert.margins) {
-    if (margin.responder_cards == Rz) {
+    if (margin.cards == Rz) {
       recorded_zero = true;
       CHECK(!margin.positive_mass);
       CHECK(margin.mass == 0.0);
@@ -530,7 +533,7 @@ int test_hero_combo_without_compatible_opponent() {
   // h0 blocks o0 entirely: it is live but carries no deal and no infoset.
   CHECK(model.live_hero.size() == 2);
   CHECK(model.deals.size() == 1);
-  CHECK(model.deals[0].hero == h1);
+  CHECK(model.deals[0].hands[model.hero] == h1);
   CHECK(model.infosets.size() == 1);
 
   // The gadget trains only the dealt hero combo; the certifier must accept the
@@ -570,35 +573,37 @@ int test_iteration_cap_scales_with_budget() {
   constexpr std::size_t deals = 100;
   constexpr std::size_t actions = 2;
   const std::uint64_t tiny =
-      iteration_cap_for_budget(std::chrono::milliseconds(10), configured, deals, actions);
+      iteration_cap_for_budget(std::chrono::milliseconds(10), configured, deals, actions, 2);
   const std::uint64_t small =
-      iteration_cap_for_budget(std::chrono::milliseconds(100), configured, deals, actions);
+      iteration_cap_for_budget(std::chrono::milliseconds(100), configured, deals, actions, 2);
   const std::uint64_t large =
-      iteration_cap_for_budget(std::chrono::milliseconds(1000), configured, deals, actions);
+      iteration_cap_for_budget(std::chrono::milliseconds(1000), configured, deals, actions, 2);
   CHECK(tiny < small);
   CHECK(small < large);
   CHECK(large <= configured);
   // The configured cap is an upper bound, never exceeded.
-  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(600000), configured, deals, actions) ==
-        configured);
+  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(600000), configured, deals, actions,
+                                 2) == configured);
   // Repeated derivation is identical (no clock or hand dependence).
-  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(100), configured, deals, actions) ==
+  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(100), configured, deals, actions, 2) ==
         small);
   // A budget whose reserve consumes it entirely yields a zero cap, never a
   // negative or wrap-around value.
-  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(1), configured, deals, actions) == 0);
-  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(0), configured, deals, actions) == 0);
+  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(1), configured, deals, actions, 2) == 0);
+  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(0), configured, deals, actions, 2) == 0);
   // Degenerate shapes yield zero rather than dividing by a zero cost.
-  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(100), configured, 0, actions) == 0);
-  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(100), configured, deals, 0) == 0);
+  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(100), configured, 0, actions, 2) == 0);
+  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(100), configured, deals, 0, 2) == 0);
+  CHECK(iteration_cap_for_budget(std::chrono::milliseconds(100), configured, deals, actions, 0) ==
+        0);
 
   // The cost driver is deals x actions: at a fixed budget, a wider range or a
   // larger action menu gets a strictly smaller cap, which is what makes the
   // cap binding on the profiles the wall clock would otherwise govern.
   const auto budget = std::chrono::milliseconds(1000);
-  const std::uint64_t narrow = iteration_cap_for_budget(budget, configured, 10, actions);
-  const std::uint64_t wide = iteration_cap_for_budget(budget, configured, 1000, actions);
-  const std::uint64_t wide_more_actions = iteration_cap_for_budget(budget, configured, 1000, 8);
+  const std::uint64_t narrow = iteration_cap_for_budget(budget, configured, 10, actions, 2);
+  const std::uint64_t wide = iteration_cap_for_budget(budget, configured, 1000, actions, 2);
+  const std::uint64_t wide_more_actions = iteration_cap_for_budget(budget, configured, 1000, 8, 2);
   CHECK(wide < narrow);
   CHECK(wide_more_actions < wide);
   // Linear in deals: 100x the deals at a fixed budget gives 1/100 the cap.
@@ -660,8 +665,8 @@ int test_cache_identity_includes_budget() {
   long_budget.time = std::chrono::seconds(30);
   const ResolveResult first = resolver.resolve(t.state, t.history, bp, long_budget);
   CHECK(first.status == ResolveStatus::Certified);
-  const std::uint64_t long_cap =
-      iteration_cap_for_budget(long_budget.time, long_budget.iterations, deals, actions);
+  const std::uint64_t long_cap = iteration_cap_for_budget(long_budget.time, long_budget.iterations,
+                                                          deals, actions, model.seat_count);
   // The cap is an upper bound, not a promise: a slow (sanitized) build may stop
   // earlier on the wall clock. Only the bound is asserted here.
   CHECK(first.completed_iterations <= long_cap);
@@ -675,8 +680,8 @@ int test_cache_identity_includes_budget() {
   // early on the wall clock, so only the bound and the non-reuse are asserted.
   ResolveLimits short_budget = test_limits();
   short_budget.time = std::chrono::milliseconds(200);
-  const std::uint64_t short_cap =
-      iteration_cap_for_budget(short_budget.time, short_budget.iterations, deals, actions);
+  const std::uint64_t short_cap = iteration_cap_for_budget(
+      short_budget.time, short_budget.iterations, deals, actions, model.seat_count);
   CHECK(short_cap > 0);
   CHECK(short_cap < long_cap);
   const ResolveResult second = resolver.resolve(t.state, t.history, bp, short_budget);
@@ -710,6 +715,194 @@ int test_cache_identity_includes_budget() {
   return 0;
 }
 
+// RFC 0009 W2c-ii-c: a three-seat terminal-only resolving gadget. The field is
+// the separable sum of the two non-hero seats (seat0 QQ, seat1 TT), each owning
+// one -x infoset. The hero (seat2) holds AA (winner) or 88 (loser) and faces a
+// single Fold/Call decision after seat0 jams and seat1 calls. Both hero actions
+// are terminal-only: a call runs out three ways, a fold leaves seat0 vs seat1
+// to run out. The fixed runout {Js, 9c} makes every leaf value an exact rational.
+//
+// Hand-derived chip utilities (net, zero-sum; each seat has 2 behind and 2 in):
+//   deal (AA, QQ, TT):  Fold -> hero -2, seat0 +6, seat1 -4
+//                       Call -> hero +8, seat0 -4, seat1 -4  (hero wins)
+//   deal (88, QQ, TT):  Fold -> hero -2, seat0 +6, seat1 -4
+//                       Call -> hero -4, seat0 +8, seat1 -4  (seat0 wins)
+// All-call baseline: b_0(QQ) = (-4 + 8)/2 = 2.0, b_1(TT) = -4.0.
+struct ThreeSeatGame {
+  UnifiedGame unified;
+  GameState state;
+  std::vector<PublicAction> history;
+  std::array<int, 2> AA{};
+  std::array<int, 2> EE{};
+  std::array<int, 2> QQ{};
+  std::array<int, 2> TT{};
+  std::vector<Action> actions;
+
+  explicit ThreeSeatGame(const GameDef& def) : state(def) {}
+};
+
+ThreeSeatGame make_three_seat() {
+  GameDef def{};
+  def.player_count = 3;
+  def.button = 2;
+  def.big_blind = 2;
+  def.stacks = {2, 2, 2, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {2, 2, 2, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 6;  // 3+ seats: pot == dead money + antes + posted blinds
+  def.board = {card("2c"), card("3d"), card("7h"), 0, 0};
+  def.board_size = 3;
+  def.preflop = false;
+  ThreeSeatGame g(def);
+  g.unified.def = def;
+  g.AA = {card("Ac"), card("Ad")};
+  g.EE = {card("8c"), card("8d")};
+  g.QQ = {card("Qc"), card("Qd")};
+  g.TT = {card("Tc"), card("Td")};
+  std::sort(g.AA.begin(), g.AA.end());
+  std::sort(g.EE.begin(), g.EE.end());
+  std::sort(g.QQ.begin(), g.QQ.end());
+  std::sort(g.TT.begin(), g.TT.end());
+  g.unified.ranges[0] = {{g.QQ, 1}};
+  g.unified.ranges[1] = {{g.TT, 1}};
+  g.unified.ranges[2] = {{g.AA, 1}, {g.EE, 1}};
+  g.unified.fixed_runout = {card("Js"), card("9c")};
+  // seat0 jams (all-in), seat1 calls (all-in); hero seat2 faces Fold/Call.
+  const GameState after_bet = g.state.after_action(0, {ActionType::Bet, 2});
+  g.state = after_bet.after_action(1, {ActionType::Call});
+  g.history = {{Street::Flop, 0, {ActionType::Bet, 2}}, {Street::Flop, 1, {ActionType::Call}}};
+  g.actions = {{ActionType::Fold}, {ActionType::Call}};
+  return g;
+}
+
+// Installs the two prefix rows (seat0 jams, seat1 calls) and the all-call hero
+// baseline at the node, centering b_0(QQ)=2.0 and b_1(TT)=-4.0.
+void install_three_seat_prefix(MapBlueprint& bp, const ThreeSeatGame& g) {
+  const GameState root_state(g.unified.def);
+  const GameState after_bet = root_state.after_action(0, {ActionType::Bet, 2});
+  const std::vector<PublicAction> bet_prefix{{Street::Flop, 0, {ActionType::Bet, 2}}};
+  bp.set_row(root_state, {}, 0, g.QQ, {{ActionType::Check}, {ActionType::Bet, 2}}, {0, 1});
+  bp.set_row(after_bet, bet_prefix, 1, g.TT, {{ActionType::Fold}, {ActionType::Call}}, {0, 1});
+  bp.set_row(g.state, g.history, 2, g.AA, g.actions, {0, 1});
+  bp.set_row(g.state, g.history, 2, g.EE, g.actions, {0, 1});
+}
+
+// (W2c-ii-c) The three-seat gadget equilibrium candidate passes PER-SEAT
+// unilateral non-regression for BOTH non-hero seats and reports seat_count 3.
+int test_three_seat_equilibrium_passes() {
+  ThreeSeatGame g = make_three_seat();
+  MapBlueprint bp(g.unified);
+  install_three_seat_prefix(bp, g);
+
+  std::string detail;
+  rd::Budget build_budget(test_limits());
+  rd::ReachModel model{g.state, g.history};
+  const ResolveStatus status = rd::build_model(g.state, g.history, bp, build_budget, model, detail);
+  CHECK(status == ResolveStatus::Certified);
+  CHECK(model.seat_count == 3);
+  CHECK(model.hero == 2);
+  CHECK(model.node_actions == g.actions);  // {Fold, Call}
+  // Two joint deals (AA/88 x QQ x TT), each feeding both non-hero infosets.
+  CHECK(model.deals.size() == 2);
+  CHECK(model.infosets.size() == 2);
+  CHECK(near(model.total_mass, 2.0));
+
+  rd::Budget solve_budget(test_limits());
+  rd::GadgetOutput gadget = rd::run_gadget_cfr(model, test_limits(100000), solve_budget);
+  CHECK(gadget.status == ResolveStatus::Certified);
+
+  const InformationKey aa_key =
+      make_information_key(model.hero, g.AA, model.node.board(), model.history);
+  const InformationKey ee_key =
+      make_information_key(model.hero, g.EE, model.node.board(), model.history);
+  const PolicyRow& aa_row = gadget.candidate.at(aa_key);
+  const PolicyRow& ee_row = gadget.candidate.at(ee_key);
+  // Equilibrium: call the winner, fold the loser.
+  CHECK(aa_row.probabilities[1] > 0.9999);
+  CHECK(ee_row.probabilities[1] < 0.0001);
+
+  rd::Budget cert_budget(test_limits());
+  rd::Certification cert =
+      rd::certify_candidate(model, gadget.candidate, test_limits(), cert_budget);
+  CHECK(cert.status == ResolveStatus::Certified);
+  CHECK(cert.certified);
+  CHECK(cert.margins.size() == 2);
+  for (const auto& margin : cert.margins) {
+    CHECK(margin.positive_mass);
+    CHECK(margin.slack <= 0.0);
+    if (margin.seat == 0) {
+      CHECK(margin.cards == g.QQ);
+      CHECK(near(margin.mass, 2.0));
+      CHECK(near(margin.baseline, 2.0, 1e-9));
+      CHECK(near(margin.candidate, 1.0, 1e-9));
+      CHECK(near(margin.best_response, 2.0, 1e-9));
+    } else {
+      CHECK(margin.seat == 1);
+      CHECK(margin.cards == g.TT);
+      CHECK(near(margin.mass, 2.0));
+      CHECK(near(margin.baseline, -4.0, 1e-9));
+      CHECK(near(margin.candidate, -4.0, 1e-9));
+      CHECK(near(margin.best_response, -4.0, 1e-9));
+    }
+  }
+
+  // End to end: the resolver reports seat_count 3, the condition under which
+  // the host attaches the multiway diagnostic token.
+  Resolver resolver;
+  const ResolveResult result = resolver.resolve(g.state, g.history, bp, test_limits());
+  CHECK(result.status == ResolveStatus::Certified);
+  CHECK(result.seat_count == 3);
+  CHECK(result.candidate.size() == 2);
+  return 0;
+}
+
+// (W2c-ii-c) A deceptive candidate (fold the winner AA, call the loser 88)
+// raises seat0's locked-continuation value to 7.0, well above the 2.0 baseline,
+// so seat0's unilateral non-regression bound FAILS while seat1's (which loses
+// every pot either way) still passes. The per-seat certifier REJECTS it. This
+// is the multiway analogue of the two-seat deceptive test: the rejection is
+// per-seat, not a two-player equilibrium bound.
+int test_three_seat_per_seat_rejection() {
+  ThreeSeatGame g = make_three_seat();
+  MapBlueprint bp(g.unified);
+  install_three_seat_prefix(bp, g);
+
+  std::string detail;
+  rd::Budget build_budget(test_limits());
+  rd::ReachModel model{g.state, g.history};
+  const ResolveStatus status = rd::build_model(g.state, g.history, bp, build_budget, model, detail);
+  CHECK(status == ResolveStatus::Certified);
+
+  // Deceptive candidate: fold the winner (AA), call the loser (88).
+  const InformationKey aa_key =
+      make_information_key(model.hero, g.AA, model.node.board(), model.history);
+  const InformationKey ee_key =
+      make_information_key(model.hero, g.EE, model.node.board(), model.history);
+  std::map<InformationKey, PolicyRow> candidate;
+  candidate[aa_key] = {model.node_actions, {1.0, 0.0}};  // AA -> fold
+  candidate[ee_key] = {model.node_actions, {0.0, 1.0}};  // 88 -> call
+
+  rd::Budget cert_budget(test_limits());
+  rd::Certification cert = rd::certify_candidate(model, candidate, test_limits(), cert_budget);
+  CHECK(cert.status == ResolveStatus::CertificationRejected);
+  CHECK(!cert.certified);
+  CHECK(cert.margins.size() == 2);
+  for (const auto& margin : cert.margins) {
+    if (margin.seat == 0) {
+      CHECK(margin.cards == g.QQ);
+      CHECK(near(margin.baseline, 2.0, 1e-9));
+      CHECK(near(margin.candidate, 7.0, 1e-9));
+      CHECK(margin.slack > 0.0);
+    } else {
+      CHECK(margin.seat == 1);
+      CHECK(margin.cards == g.TT);
+      CHECK(near(margin.baseline, -4.0, 1e-9));
+      CHECK(near(margin.candidate, -4.0, 1e-9));
+      CHECK(margin.slack <= 0.0);
+    }
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -724,6 +917,8 @@ int main() {
     CHECK(test_hero_combo_without_compatible_opponent() == 0);
     CHECK(test_iteration_cap_scales_with_budget() == 0);
     CHECK(test_cache_identity_includes_budget() == 0);
+    CHECK(test_three_seat_equilibrium_passes() == 0);
+    CHECK(test_three_seat_per_seat_rejection() == 0);
   } catch (const std::exception& error) {
     std::printf("Unexpected resolver exception: %s\n", error.what());
     return 1;

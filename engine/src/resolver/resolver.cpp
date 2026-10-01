@@ -150,6 +150,7 @@ ResolveResult Resolver::resolve(const bs::poker::GameState& node,
     return result;
   }
   result.node_actions = model.node_actions;
+  result.seat_count = model.seat_count;
 
   // Derive the budget-bounded iteration cap HERE, before the cache lookup: the
   // cost driver is the joint-deal count times the ordered-action count, known
@@ -161,8 +162,9 @@ ResolveResult Resolver::resolve(const bs::poker::GameState& node,
   // identical cap. A zero cap means the budget cannot pay for one bounded
   // iteration: discard rather than publish an untrained candidate.
   ResolveLimits solve_limits = limits;
-  solve_limits.iterations = iteration_cap_for_budget(limits.time, limits.iterations,
-                                                     model.deals.size(), model.node_actions.size());
+  solve_limits.iterations =
+      iteration_cap_for_budget(limits.time, limits.iterations, model.deals.size(),
+                               model.node_actions.size(), model.seat_count);
   if (solve_limits.iterations == 0) {
     result.status = ResolveStatus::SolveDeadline;
     return result;
@@ -218,8 +220,7 @@ ResolveResult Resolver::resolve(const bs::poker::GameState& node,
   }
 
   result.candidate = std::move(gadget.candidate);
-  for (const auto& [cards, tc] : gadget.terminate)
-    result.gadget_terminate.emplace(cards, tc);
+  result.gadget_terminate = std::move(gadget.terminate);
   result.status = ResolveStatus::Certified;
 
   {

@@ -572,15 +572,28 @@ std::vector<Action> abstract_actions(const GameState& state, const SizeSchedule&
   // not consult.
   const auto actor = *state.actor();
   const auto& hero = state.players()[actor];
-  const auto& other = state.players()[1 - actor];
-  abstraction::MenuContext context;
+  abstraction::MultiwayMenuContext context;
   context.street = state.street();
   context.pot = state.pot();
   context.actor_committed = hero.street_committed;
-  context.opponent_committed = other.street_committed;
-  context.opponent_stack = other.stack;
-  return abstraction::build_action_menu(state.legal(),
-                                        sizes[static_cast<std::size_t>(state.street())], context);
+  // Deepest cover across every other live, non-folded seat (RFC 0009
+  // W2c-ii-c): the maximum street total such a seat can reach. At two seats
+  // the max has one term and matches the heads-up single-opponent total, so
+  // the identity path and digest do not move.
+  Chips cover = 0;
+  for (std::size_t seat : state.live_players()) {
+    if (seat == actor)
+      continue;
+    const auto& other = state.players()[seat];
+    Chips total = other.street_committed;
+    if (other.stack > std::numeric_limits<Chips>::max() - total)
+      throw std::overflow_error("cover sum overflow");
+    total += other.stack;
+    cover = std::max(cover, total);
+  }
+  context.cover = cover;
+  return abstraction::build_multiway_action_menu(
+      state.legal(), sizes[static_cast<std::size_t>(state.street())], context);
 }
 
 InformationKey information_key(const HeadsUpState& state, std::array<int, 2> own) {

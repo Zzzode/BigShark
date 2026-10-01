@@ -466,6 +466,11 @@ pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
     metadata->set_guarantee_level(guaranteeToken(minor2_level));
   else
     metadata->set_guarantee(std::string(minor1_guarantee));
+  // A multiway (3-seat) certified row carries a diagnostic token identifying
+  // its per-seat unilateral non-regression semantics; a two-seat row leaves
+  // the field unset so the frozen two-seat wire bytes are unchanged.
+  if (!row.diagnostic.empty())
+    metadata->set_diagnostic_reason(std::string(row.diagnostic));
   return response;
 }
 

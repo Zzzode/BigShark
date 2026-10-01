@@ -102,6 +102,12 @@ struct V1BlueprintRow {
   const bs::poker::Action* actions = nullptr;
   const double* probabilities = nullptr;
   std::string_view artifact_sha256;
+  // Optional diagnostic token attached to a certified resolving row. A
+  // multiway (3-seat) certification carries
+  // resolver::kMultiwayCertificationToken to identify the per-seat unilateral
+  // non-regression semantics; a two-seat row leaves it empty so the frozen
+  // two-seat wire bytes are unchanged.
+  std::string_view diagnostic;
 };
 
 struct V1BlueprintResult {

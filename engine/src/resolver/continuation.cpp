@@ -5,7 +5,7 @@
 namespace bs::resolver::detail {
 
 std::vector<int> continuation_cards(const UnifiedGame& game, const GameState& state,
-                                    const std::array<std::array<int, 2>, 2>& hands) {
+                                    std::span<const std::array<int, 2>> hands) {
   const std::size_t slot = state.board().size() - 3;
   if (game.fixed_runout[slot])
     return {*game.fixed_runout[slot]};
@@ -27,26 +27,49 @@ std::vector<int> continuation_cards(const UnifiedGame& game, const GameState& st
 
 namespace {
 
-// Exact expected-value walk over the remaining uniform/fixed public chance.
-// Any ACTION phase below is a terminal-only violation.
-double value_walk(const UnifiedGame& game, const GameState& state,
-                  const std::array<std::array<int, 2>, 2>& hands, std::size_t responder,
-                  Budget& budget) {
+// Exact expected-value walk over the remaining uniform/fixed public chance,
+// writing every seat's expected net chip utility into `utility` (indexed by
+// seat). Any ACTION phase below is a terminal-only violation. At a showdown
+// the holes span is indexed by LIVE POSITION (live_players ascending), while
+// the returned chip_utility is indexed by seat, so each seat's value is read
+// back by its seat index.
+void value_walk(const UnifiedGame& game, const GameState& state,
+                std::span<const std::array<int, 2>> hands, std::span<double> utility,
+                Budget& budget) {
   budget.visit();
-  if (state.phase() == Phase::Folded)
-    return static_cast<double>(state.settle_fold().chip_utility[responder]);
-  if (state.phase() == Phase::Showdown)
-    return static_cast<double>(state.settle_showdown(hands).chip_utility[responder]);
+  if (state.phase() == Phase::Folded) {
+    const auto settle = state.settle_fold();
+    for (std::size_t seat = 0; seat < utility.size(); ++seat)
+      utility[seat] = static_cast<double>(settle.chip_utility[seat]);
+    return;
+  }
+  if (state.phase() == Phase::Showdown) {
+    std::array<std::array<int, 2>, poker::kMaxUnifiedSeats> live_holes{};
+    std::size_t live_count = 0;
+    for (std::size_t seat : state.live_players())
+      live_holes[live_count++] = hands[seat];
+    const auto settle =
+        state.settle_showdown(std::span<const std::array<int, 2>>(live_holes.data(), live_count));
+    for (std::size_t seat = 0; seat < utility.size(); ++seat)
+      utility[seat] = static_cast<double>(settle.chip_utility[seat]);
+    return;
+  }
   if (state.phase() != Phase::Deal)
     throw RequireFailure("continuation is not terminal-only");
   const auto cards = continuation_cards(game, state, hands);
   if (cards.empty())
     throw RequireFailure("continuation has no legal public card");
   const double each = 1.0 / static_cast<double>(cards.size());
-  double total = 0;
-  for (int card : cards)
-    total += each * value_walk(game, state.after_card(card), hands, responder, budget);
-  return total;
+  std::array<double, poker::kMaxUnifiedSeats> total{};
+  for (int card : cards) {
+    std::array<double, poker::kMaxUnifiedSeats> child{};
+    value_walk(game, state.after_card(card), hands, std::span<double>(child.data(), utility.size()),
+               budget);
+    for (std::size_t seat = 0; seat < utility.size(); ++seat)
+      total[seat] += each * child[seat];
+  }
+  for (std::size_t seat = 0; seat < utility.size(); ++seat)
+    utility[seat] = total[seat];
 }
 
 // Structural terminal-only probe. After the hero's current action the game can
@@ -78,10 +101,10 @@ bool structural_walk(const GameState& state) {
 
 }  // namespace
 
-double continuation_utility_responder(const UnifiedGame& game, const GameState& after,
-                                      const std::array<std::array<int, 2>, 2>& hands,
-                                      std::size_t responder, Budget& budget) {
-  return value_walk(game, after, hands, responder, budget);
+void continuation_utility_all_seats(const UnifiedGame& game, const GameState& after,
+                                    std::span<const std::array<int, 2>> hands,
+                                    std::span<double> utility, Budget& budget) {
+  value_walk(game, after, hands, utility, budget);
 }
 
 bool is_terminal_only(const UnifiedGame&, const GameState& node,

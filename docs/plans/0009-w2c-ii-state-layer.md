@@ -1,12 +1,13 @@
 # RFC 0009 W2c-ii — State Layer Generalization (Plan, rev 2)
 
-Status: Proposed, pending independent review. Rev 2 addresses the independent
-review's REQUEST-CHANGES (two blocking, two non-blocking, one nit). Implements
-RFC 0009 D4 (the resolver/resident generalization) on top of W2c-i (committed
-883fc72), which generalized the resident *data layer* to consume v2
-`SeatPolicy` artifacts via a two-seat flop-rooted projection. W2c-ii generalizes
-the *state layer* so a 3..10-seat request reconstructs, loads, and serves
-through the same engine.
+Status: Implemented and independently reviewed (all three sub-stages). W2c-ii-a
+committed ec1fe6c, W2c-ii-b committed 4ed6630, W2c-ii-c committed 2f318df. Rev 2
+addressed the independent review's REQUEST-CHANGES (two blocking, two
+non-blocking, one nit). Implements RFC 0009 D4 (the resolver/resident
+generalization) on top of W2c-i (committed 883fc72), which generalized the
+resident *data layer* to consume v2 `SeatPolicy` artifacts via a two-seat
+flop-rooted projection. W2c-ii generalizes the *state layer* so a 3..10-seat
+request reconstructs, loads, and serves through the same engine.
 
 Rev 2 changes from rev 1:
 

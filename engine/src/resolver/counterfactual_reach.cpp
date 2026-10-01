@@ -67,11 +67,13 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
     return status;
   };
 
-  // W2c-ii-a: the state layer is seat-generic, but the resolver gadget and the
-  // independent certifier below are still two-seat (a single hero and the
-  // 1-hero responder). Three-or-more-seat resolves are a later stage.
-  if (game.def.player_count != 2)
-    return fail(ResolveStatus::Ineligible, "resolver supports two seats only");
+  // W2c-ii-c: the resolver gadget is hero-vs-field. The field is the separable
+  // sum of every non-hero seat, each owning its own -x infoset, so the gadget
+  // and the per-seat certifier support two and three seats. Four-or-more-seat
+  // resolves stay a later stage (the resident belief model is likewise exact
+  // for two and three seats only).
+  if (game.def.player_count < 2 || game.def.player_count > 3)
+    return fail(ResolveStatus::Ineligible, "resolver supports two or three seats only");
   if (node.phase() != Phase::Action || !node.actor())
     return fail(ResolveStatus::Ineligible, "resolve node is not an action node");
   if (!same_root(game.def, node.def()))
@@ -81,12 +83,12 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
   model.history.assign(history.begin(), history.end());
   model.game = &game;
   model.hero = *node.actor();
-  model.responder = 1 - model.hero;
+  model.seat_count = game.def.player_count;
 
   // Declared, sorted per-combo weights and live per-combo prefix reach.
-  std::map<std::array<int, 2>, double> declared[2];
-  std::map<std::array<int, 2>, double> prefix_reach[2];
-  for (std::size_t p = 0; p < 2; ++p) {
+  std::array<std::map<std::array<int, 2>, double>, poker::kMaxUnifiedSeats> declared;
+  std::array<std::map<std::array<int, 2>, double>, poker::kMaxUnifiedSeats> prefix_reach;
+  for (std::size_t p = 0; p < model.seat_count; ++p) {
     for (const WeightedHand& hand : game.ranges[p]) {
       auto cards = hand.cards;
       std::sort(cards.begin(), cards.end());
@@ -106,7 +108,7 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
   try {
     auto deal_next = [&](int card) {
       cursor = cursor.after_card(card);
-      for (std::size_t p = 0; p < 2; ++p)
+      for (std::size_t p = 0; p < model.seat_count; ++p)
         for (auto& [cards, reach] : prefix_reach[p])
           if (cards[0] == card || cards[1] == card)
             reach = 0;
@@ -161,7 +163,7 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
   if (!board_matches || cursor.phase() != node.phase() || !cursor.actor().has_value() ||
       *cursor.actor() != model.hero || cursor.pot() != node.pot())
     return fail(ResolveStatus::CoverageMiss, "replayed node disagrees with the observed node");
-  for (std::size_t p = 0; p < 2; ++p)
+  for (std::size_t p = 0; p < model.seat_count; ++p)
     if (cursor.players()[p].stack != node.players()[p].stack ||
         cursor.players()[p].street_committed != node.players()[p].street_committed)
       return fail(ResolveStatus::CoverageMiss, "replayed chip state disagrees with the node");
@@ -170,13 +172,12 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
   if (model.node_actions.empty())
     return fail(ResolveStatus::Ineligible, "resolve node offers no action");
 
-  // Declared, board-unblocked combination lists.
-  for (std::size_t p = 0; p < 2; ++p) {
-    auto& sink = p == model.hero ? model.hero_declared : model.responder_declared;
+  // Declared, board-unblocked combination lists per seat.
+  for (std::size_t p = 0; p < model.seat_count; ++p) {
     for (const auto& [cards, weight] : declared[p]) {
       (void)weight;
       if (!hand_blocks_board(cards, node.board()))
-        sink.push_back(cards);
+        model.seat_declared[p].push_back(cards);
     }
   }
   for (const auto& [cards, reach] : prefix_reach[model.hero])
@@ -195,56 +196,98 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
   if (!terminal)
     return fail(ResolveStatus::Ineligible, "node is not terminal-only");
 
-  // ---- Counterfactual weights and responder -x infosets. -------------------
-  std::map<std::array<int, 2>, std::size_t> infoset_index;
-  for (const auto& hero_cards : model.live_hero) {
-    const double hero_weight = declared[model.hero].at(hero_cards);
-    const double hero_prefix = prefix_reach[model.hero].at(hero_cards);
-    for (const auto& responder_cards : model.responder_declared) {
-      if (cards_conflict(hero_cards, responder_cards))
-        continue;
-      const double responder_weight = declared[model.responder].at(responder_cards);
-      const double weight = hero_weight * responder_weight * hero_prefix;
-      if (!std::isfinite(weight) || weight <= 0)
-        return fail(ResolveStatus::InvalidInput, "non-finite counterfactual weight");
+  // ---- Counterfactual weights and per-seat -x infosets. --------------------
+  // The hero's holding is the outermost enumeration dimension; the non-hero
+  // seats ascend inside it. Each non-hero seat owns one -x infoset keyed by
+  // (seat, cards). The hero prefix reach is folded into the weight LAST,
+  // matching the frozen two-seat floating-point association.
+  std::map<GadgetKey, std::size_t> infoset_index;
+  std::array<std::array<int, 2>, poker::kMaxUnifiedSeats> joint{};
+  std::vector<std::size_t> others;
+  for (std::size_t s = 0; s < model.seat_count; ++s)
+    if (s != model.hero)
+      others.push_back(s);
 
-      auto [it, inserted] = infoset_index.emplace(responder_cards, model.infosets.size());
-      if (inserted)
-        model.infosets.push_back(ResponderInfoset{responder_cards, 0, 0, {}});
-      ResponderInfoset& infoset = model.infosets[it->second];
-      infoset.mass += weight;
-      infoset.deals.push_back(model.deals.size());
-      model.deals.push_back(GadgetDeal{hero_cards, responder_cards, weight});
+  ResolveStatus enum_status = ResolveStatus::Certified;
+  auto enumerate = [&](auto&& self, std::size_t depth, double running) -> void {
+    if (enum_status != ResolveStatus::Certified)
+      return;
+    if (depth == others.size()) {
+      const double hero_prefix = prefix_reach[model.hero].at(joint[model.hero]);
+      const double weight = running * hero_prefix;
+      if (!std::isfinite(weight) || weight <= 0) {
+        enum_status = ResolveStatus::InvalidInput;
+        detail = "non-finite counterfactual weight";
+        return;
+      }
+      const std::size_t deal_index = model.deals.size();
+      model.deals.push_back(GadgetDeal{joint, weight});
+      for (std::size_t s : others) {
+        const GadgetKey key{s, joint[s]};
+        auto [it, inserted] = infoset_index.emplace(key, model.infosets.size());
+        if (inserted)
+          model.infosets.push_back(SeatInfoset{s, joint[s], 0, 0, {}});
+        SeatInfoset& infoset = model.infosets[it->second];
+        infoset.mass += weight;
+        infoset.deals.push_back(deal_index);
+      }
+      return;
     }
+    const std::size_t s = others[depth];
+    for (const auto& cards : model.seat_declared[s]) {
+      bool conflicts = cards_conflict(cards, joint[model.hero]);
+      for (std::size_t k = 0; k < depth && !conflicts; ++k)
+        conflicts = cards_conflict(cards, joint[others[k]]);
+      if (conflicts)
+        continue;
+      joint[s] = cards;
+      self(self, depth + 1, running * declared[s].at(cards));
+    }
+  };
+
+  for (const auto& hero_cards : model.live_hero) {
+    joint[model.hero] = hero_cards;
+    enumerate(enumerate, 0, declared[model.hero].at(hero_cards));
+    if (enum_status != ResolveStatus::Certified)
+      return enum_status;
   }
+  if (enum_status != ResolveStatus::Certified)
+    return enum_status;
+
+  // Each joint deal contributes its weight to (seat_count - 1) per-seat
+  // infosets, so the infoset-mass sum over-counts the deal-weight total by that
+  // factor; the chance normalization needs the deal-weight total. At two seats
+  // the factor is one and the association is the frozen one.
   for (const auto& infoset : model.infosets)
     model.total_mass += infoset.mass;
-  for (const auto& cards : model.responder_declared)
-    if (!infoset_index.contains(cards))
-      model.zero_mass_responder.push_back(cards);
+  model.total_mass /= static_cast<double>(model.seat_count - 1);
+  for (std::size_t s : others)
+    for (const auto& cards : model.seat_declared[s])
+      if (!infoset_index.contains(GadgetKey{s, cards}))
+        model.zero_mass[s].push_back(cards);
   if (model.total_mass <= 0 || !std::isfinite(model.total_mass))
     return fail(ResolveStatus::CoverageMiss, "no positive counterfactual mass at the node");
 
-  // ---- Constant terminal payoff matrix and baseline margins b(I). ----------
+  // ---- Constant terminal payoff matrix and baseline margins b_s(I). --------
   try {
-    model.leaf_values.assign(model.deals.size(),
-                             std::vector<double>(model.node_actions.size(), 0.0));
+    model.leaf_values.assign(
+        model.deals.size(),
+        std::vector<std::array<double, poker::kMaxUnifiedSeats>>(model.node_actions.size()));
     for (std::size_t deal_index = 0; deal_index < model.deals.size(); ++deal_index) {
       const GadgetDeal& deal = model.deals[deal_index];
-      std::array<std::array<int, 2>, 2> hands{};
-      hands[model.hero] = deal.hero;
-      hands[model.responder] = deal.responder;
       for (std::size_t a = 0; a < model.node_actions.size(); ++a) {
         const GameState after = node.after_action(model.hero, model.node_actions[a]);
-        model.leaf_values[deal_index][a] =
-            continuation_utility_responder(game, after, hands, model.responder, budget);
+        continuation_utility_all_seats(
+            game, after, std::span<const std::array<int, 2>>(deal.hands.data(), model.seat_count),
+            std::span<double>(model.leaf_values[deal_index][a].data(), model.seat_count), budget);
       }
     }
-    for (ResponderInfoset& infoset : model.infosets) {
+    for (SeatInfoset& infoset : model.infosets) {
+      const std::size_t s = infoset.seat;
       double weighted_value = 0;
       for (std::size_t deal_index : infoset.deals) {
         const GadgetDeal& deal = model.deals[deal_index];
-        const auto view = blueprint.row(node, model.history, model.hero, deal.hero);
+        const auto view = blueprint.row(node, model.history, model.hero, deal.hands[model.hero]);
         if (!view || view->size != model.node_actions.size())
           return fail(ResolveStatus::CoverageMiss, "missing/incompatible hero baseline row");
         if (!valid_distribution(*view))
@@ -255,7 +298,7 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
         }
         double deal_value = 0;
         for (std::size_t a = 0; a < model.node_actions.size(); ++a)
-          deal_value += view->probabilities[a] * model.leaf_values[deal_index][a];
+          deal_value += view->probabilities[a] * model.leaf_values[deal_index][a][s];
         weighted_value += deal.weight * deal_value;
       }
       infoset.baseline = weighted_value / infoset.mass;

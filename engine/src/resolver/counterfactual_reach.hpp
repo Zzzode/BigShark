@@ -19,30 +19,33 @@ struct ReachModel {
   // candidate information keys.
   std::vector<PublicAction> history;
   std::size_t hero = 0;
-  std::size_t responder = 1;
+  std::size_t seat_count = 0;
   const UnifiedGame* game = nullptr;
-  std::vector<Action> node_actions;
+  std::vector<Action> node_actions{};
 
-  // Positive-weight joint deals in deterministic (hero, responder) order.
-  std::vector<GadgetDeal> deals;
-  // Constant terminal payoff matrix, parallel to deals: the exact expected
-  // RESPONDER net chip utility for each ordered node action, averaged over the
-  // remaining public chance. Terminal-only continuation makes these constants
-  // (there is no in-subtree decision), so the gadget CFR reads them rather than
-  // re-walking settlement on every visit. The independent certifier does NOT
-  // use this cache; it re-enumerates the runout itself.
-  std::vector<std::vector<double>> leaf_values;
+  // Positive-weight joint deals in deterministic order: the hero's holding is
+  // the outermost enumeration dimension, then the non-hero seats ascending.
+  std::vector<GadgetDeal> deals{};
+  // Constant terminal payoff matrix, parallel to deals and node actions: the
+  // exact expected net chip utility for every seat, indexed [deal][action]
+  // [seat]. Terminal-only continuation makes these constants (there is no
+  // in-subtree decision), so the gadget CFR reads them rather than re-walking
+  // settlement on every visit. The independent certifier does NOT use this
+  // cache; it re-enumerates the runout itself.
+  std::vector<std::vector<std::array<double, poker::kMaxUnifiedSeats>>> leaf_values{};
   double total_mass = 0;
 
-  // Positive-mass responder -x infosets in sorted-card order.
-  std::vector<ResponderInfoset> infosets;
-  // Declared, board-unblocked combinations (for the terminal graph check).
-  std::vector<std::array<int, 2>> hero_declared;
-  std::vector<std::array<int, 2>> responder_declared;
+  // Positive-mass non-hero "-x" infosets in first-appearance order, each
+  // tagged with its seat index.
+  std::vector<SeatInfoset> infosets{};
+  // Declared, board-unblocked combinations per seat (for the terminal graph
+  // check and zero-mass accounting).
+  std::array<std::vector<std::array<int, 2>>, poker::kMaxUnifiedSeats> seat_declared{};
   // Hero combos with positive prefix reach at the node (candidate support).
-  std::vector<std::array<int, 2>> live_hero;
-  // Declared, unblocked responder combos whose counterfactual mass is zero.
-  std::vector<std::array<int, 2>> zero_mass_responder;
+  std::vector<std::array<int, 2>> live_hero{};
+  // Declared, unblocked combos of each non-hero seat whose counterfactual
+  // mass is zero (indexed by seat; only non-hero seats are populated).
+  std::array<std::vector<std::array<int, 2>>, poker::kMaxUnifiedSeats> zero_mass{};
 };
 
 // Constructs the model. `history` is the observed public-action path from the

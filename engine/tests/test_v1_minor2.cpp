@@ -603,7 +603,7 @@ int main() {
   {
     FakeServices services;
     V1BlueprintRow row{services.actions.size(), services.actions.data(),
-                       services.probabilities.data(), services.sha};
+                       services.probabilities.data(), services.sha, {}};
     pv::DecisionRequest request = flopRequest(pv::SOLVER_MODE_BLUEPRINT);
     pv::DecisionResponse minor1 = bs::v1::mapBlueprintExpandedResponse(request, row);
     check(minor1.expanded_strategy().solver().has_guarantee() &&
@@ -618,6 +618,21 @@ int main() {
     check(certified.expanded_strategy().solver().source() == pv::SOLVER_SOURCE_RESOLVING &&
               certified.expanded_strategy().solver().guarantee_level() == "certified_bound",
           "certified mapper pins RESOLVING/certified_bound");
+    // RFC 0009 W2c-ii-c: a multiway (3-seat) certified row carries its
+    // diagnostic token on the wire (the string is bs::resolver::
+    // kMultiwayCertificationToken, pinned here as a wire contract); a
+    // two-seat row leaves diagnostic_reason unset so the frozen bytes are
+    // unchanged.
+    V1BlueprintRow multiway{services.actions.size(), services.actions.data(),
+                            services.probabilities.data(), services.sha,
+                            "multiway-certified:per-seat-unilateral-non-regression"};
+    pv::DecisionResponse mw = bs::v1::mapGuaranteedCertifiedResponse(request, multiway);
+    check(mw.expanded_strategy().solver().has_diagnostic_reason() &&
+              mw.expanded_strategy().solver().diagnostic_reason() ==
+                  "multiway-certified:per-seat-unilateral-non-regression",
+          "multiway certified row carries the per-seat non-regression diagnostic token");
+    check(!certified.expanded_strategy().solver().has_diagnostic_reason(),
+          "two-seat certified row leaves diagnostic_reason unset");
 
     bs::SourcedDecision heuristic{{"check", 0, "check SDV/giveup", -1.0, -1.0},
                                   bs::DecisionSource::PostflopHeuristic};

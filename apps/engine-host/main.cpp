@@ -172,6 +172,12 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
           result.row.actions = found->second.actions.data();
           result.row.probabilities = found->second.probabilities.data();
           result.row.artifact_sha256 = source->artifact_digest();
+          // A multiway (3-seat) certification is a per-seat unilateral
+          // non-regression bound, not a two-player equilibrium bound. The
+          // diagnostic token carries that distinction on the wire; a two-seat
+          // resolve leaves it empty so the frozen two-seat bytes are unchanged.
+          if (resolve_scratch_.seat_count >= 3)
+            result.row.diagnostic = bs::resolver::kMultiwayCertificationToken;
           return result;
         }
         case bs::resolver::ResolveStatus::SolveDeadline:

@@ -714,6 +714,91 @@ hardening rather than a live bug. Second, a bridging fixture
 every marginal. A negative control (term removed, test fails; term restored,
 test passes) confirms the fixture is load-bearing.
 
+**D4 implementation decisions recorded at W2c-ii-c (n-seat resolver gadget
++ per-seat certification).** W2c-ii-c generalizes the resolving gadget from
+heads-up (hero + one responder) to hero-vs-field (hero + one `-x` infoset per
+non-hero seat). The counterfactual-reach layer still serves two or three seats
+declared (W2c-ii-b), so the resolver serves 2..3 seats and refuses 4..10 with
+`ResolveStatus::Ineligible` (the resident belief layer's own 4..10 refusal is
+the separate `SeatCountNotSupported` miss, returned before the resolver is
+reached); the gadget, certifier, and wire path are seat-generic.
+The decisions:
+
+1. **The hero-vs-field gadget is zero-sum; its equilibrium condition IS
+   per-seat unilateral non-regression.** The field is the separable sum of
+   every non-hero seat, so each seat's `-x` terminate/continue choice is
+   independent and the augmented game stays zero-sum hero-vs-field. At a
+   gadget equilibrium `continue_s <= b_s` for every seat s, which is exactly
+   the per-seat unilateral non-regression condition. This is NOT a multi-player
+   Nash claim; it is a hero-vs-field zero-sum equilibrium whose equilibrium
+   condition is the per-seat bound.
+
+2. **Per-seat certification, not a two-player bound.** The independent
+   certifier recomputes each non-hero seat's best response against the WHOLE
+   candidate: `BR_s(c) = max(b_s(c), (sum_{d: s holds c} w(d) C^cand_s(d)) /
+   m_s(c))`, accepting only when `BR_s(c) <= b_s(c) + 1e-9 * root_pot` for
+   every positive-mass infoset of EVERY non-hero seat. The wire level stays
+   `certified_bound` only when EVERY seat's bound passes; a single seat's
+   failure rejects the whole candidate. At two seats this reduces exactly to
+   the RFC 0005 responder bound, and the two-seat golden values are preserved
+   bit-for-bit (the seat-index traverser loop is proven identical to the
+   two-seat code at n=2).
+
+3. **The diagnostic token carries the multiway semantics.** A 3-seat certified
+   resolve carries `kMultiwayCertificationToken` on the wire via
+   `SolverMetadata.diagnostic_reason` (proto field 8). A two-seat resolve
+   leaves it empty so the frozen two-seat wire bytes are unchanged. The
+   guarantee level stays `certified_bound`; the per-seat vs two-player
+   distinction rides the token, not the level enum, so the guarantee ladder is
+   untouched.
+
+4. **The iteration cap scales with seat count.** `iteration_cap_for_budget`
+   takes `seats` and computes `units = deals * (actions + 1) * seats` (one
+   traverser sweep per seat). Every input is public, so every counterfactual
+   hero combination derives the identical cap and cache identity.
+
+5. **GadgetKey and MarginRecord are seat-tagged.** The `-x` infoset key is
+   `(seat, cards)`; `MarginRecord` carries `seat` and `cards`;
+   `gadget_terminate` is keyed by `GadgetKey`. The per-seat declared/prefix
+   reach and joint-deal enumeration replace the single-responder model, with
+   `total_mass /= (seat_count - 1)`.
+
+6. **The 3-seat test fixture and FP tolerance.** A terminal-only 3-seat
+   flop-rooted game (button=2, BB=2, stacks/contributions {2,2,2}, pot=6,
+   board 2c3d7h, fixed runout Js9c): seat0 (QQ) jams, seat1 (TT) calls, hero
+   (AA/88) faces Fold/Call. Hand-derived leaf values give b_0(QQ)=2.0 and
+   b_1(TT)=-4.0. The gadget equilibrium (AA calls, 88 folds; seat0 terminates
+   purely, seat1 mixes 0.5/0.5) passes per-seat certification; a deceptive
+   candidate (AA folds, 88 calls) fails on seat0 only. Value assertions use
+   `near(..., 1e-9)`, ten times tighter than the `1e-9 * root_pot`
+   certification gate but loose enough to absorb the 3-seat pipeline's ~6e-10
+   floating-point deviation from the exact rationals.
+
+7. **The resident hero-decision guard and the action menu are seat-generic.**
+   The `resident_policy.cpp` guard lifts from `player > 1` to
+   `player >= player_count` (with an actor check) so a 3-seat hero at seat 2 is
+   served. `heads_up_solver.cpp`'s `abstract_actions` replaces the
+   `players()[1 - actor]` responder lookup with a deepest-cover loop over
+   `live_players()` plus `build_multiway_action_menu`, so the gadget builds a
+   legal action menu for any seat count.
+
+The independent review (implementer != reviewer) returned APPROVE with four
+non-blocking findings, three addressed in the same change. First, the
+`ResolveStatus::Certified` enumerator comment now states the per-seat
+unilateral non-regression semantics at three seats (and that it is not a
+multi-player equilibrium claim), so the enum is never read as the two-player
+meaning. Second, this record's refusal prose names
+`ResolveStatus::Ineligible` for the resolver's own 4..10 refusal, distinct
+from the resident belief layer's `SeatCountNotSupported` miss returned before
+the resolver is reached. Third, a wire test pins the diagnostic token: a
+3-seat certified row carries
+`multiway-certified:per-seat-unilateral-non-regression` on
+`SolverMetadata.diagnostic_reason`, and a two-seat row leaves the field
+unset so the frozen bytes are unchanged. The fourth finding is advisory:
+`leaf_values` is `deals x actions x 10` doubles, which is fine for the
+offline, budget-bounded 2..3-seat resolver but would warrant a cap if 4..10-seat
+support is added; no action is taken now.
+
 ### D5. Flop coverage
 
 Coverage is delivered as a gradient, not a promise, and each element is

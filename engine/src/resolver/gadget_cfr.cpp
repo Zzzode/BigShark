@@ -27,27 +27,29 @@ struct GadgetTrainer {
   const ReachModel& model;
   Budget& budget;
   const std::size_t action_count;
+  const std::size_t seat_count;
 
-  std::map<std::array<int, 2>, std::vector<double>> gadget_regret;
-  std::map<std::array<int, 2>, std::vector<double>> gadget_sum;
+  std::map<GadgetKey, std::vector<double>> gadget_regret;
+  std::map<GadgetKey, std::vector<double>> gadget_sum;
   std::map<InformationKey, std::vector<double>> hero_regret;
   std::map<InformationKey, std::vector<double>> hero_sum;
-  std::map<std::array<int, 2>, std::size_t> baseline_index;
+  std::map<GadgetKey, std::size_t> baseline_index;
 
-  std::set<std::array<int, 2>> averaged_gadget;
+  std::set<GadgetKey> averaged_gadget;
   std::set<InformationKey> averaged_hero;
 
   GadgetTrainer(const ReachModel& m, Budget& b)
-      : model(m), budget(b), action_count(m.node_actions.size()) {
+      : model(m), budget(b), action_count(m.node_actions.size()), seat_count(m.seat_count) {
     for (std::size_t i = 0; i < model.infosets.size(); ++i) {
-      const auto& cards = model.infosets[i].cards;
-      baseline_index[cards] = i;
-      gadget_regret[cards].assign(2, 0.0);
-      gadget_sum[cards].assign(2, 0.0);
+      const SeatInfoset& infoset = model.infosets[i];
+      const GadgetKey key{infoset.seat, infoset.cards};
+      baseline_index[key] = i;
+      gadget_regret[key].assign(2, 0.0);
+      gadget_sum[key].assign(2, 0.0);
     }
     std::set<std::array<int, 2>> heroes;
     for (const GadgetDeal& deal : model.deals)
-      heroes.insert(deal.hero);
+      heroes.insert(deal.hands[model.hero]);
     for (const auto& hero : heroes) {
       InformationKey key =
           solver::make_information_key(model.hero, hero, model.node.board(), model.history);
@@ -60,71 +62,72 @@ struct GadgetTrainer {
     return solver::make_information_key(model.hero, cards, model.node.board(), model.history);
   }
 
-  std::array<std::array<int, 2>, 2> holes(const GadgetDeal& deal) const {
-    std::array<std::array<int, 2>, 2> hands{};
-    hands[model.hero] = deal.hero;
-    hands[model.responder] = deal.responder;
-    return hands;
-  }
+  // One traverser sweep over every joint deal. The gadget is hero-vs-field:
+  // the field is the separable sum of the non-hero seats, each owning one -x
+  // infoset. For a deal the hero's strategy sigma_h and every non-hero seat's
+  // -x strategy sigma_s are read first; then C_s = sum_a sigma_h[a] * U_s(leaf
+  // a) is each seat's locked-continuation value. The hero's regret is the SUM
+  // over non-hero seats of cont_s * (C_s - U_s(a)); a non-hero seat's regret is
+  // its own TERMINATE/CONTINUE margin against b_s. The kSimple average is
+  // updated once per infoset per sweep with own reach 1. See the header comment
+  // for the normalization and the per-seat non-regression semantics.
+  void sweep(std::size_t traverser, double iter_weight) {
+    const bool hero_traverser = (traverser == model.hero);
+    for (std::size_t deal_index = 0; deal_index < model.deals.size(); ++deal_index) {
+      const GadgetDeal& deal = model.deals[deal_index];
+      for (std::size_t n = 0; n < seat_count; ++n)
+        budget.visit();
+      const double chance = deal.weight / model.total_mass;
+      const InformationKey hkey = hero_key(deal.hands[model.hero]);
+      const std::vector<double> sigma_h = regret_matching(hero_regret[hkey]);
 
-  // RESPONDER-chip leaf utility for one hero action from the constant payoff
-  // matrix (terminal-only continuation has no in-subtree decision).
-  double leaf(std::size_t deal_index, std::size_t a) const {
-    return model.leaf_values[deal_index][a];
-  }
-
-  double walk_hero(std::size_t deal_index, std::size_t traverser, std::array<double, 2> reach,
-                   double chance, double iter_weight) {
-    const GadgetDeal& deal = model.deals[deal_index];
-    budget.visit();
-    const InformationKey key = hero_key(deal.hero);
-    const std::vector<double> sigma = regret_matching(hero_regret[key]);
-    std::vector<double> child(action_count);
-    double value = 0;
-    const double sign = traverser == model.responder ? 1.0 : -1.0;
-    for (std::size_t a = 0; a < action_count; ++a) {
-      child[a] = sign * leaf(deal_index, a);
-      value += sigma[a] * child[a];
-    }
-    if (traverser == model.hero) {
-      auto& regret = hero_regret[key];
-      for (std::size_t a = 0; a < action_count; ++a)
-        regret[a] += iter_weight * chance * reach[model.responder] * (child[a] - value);
-      if (averaged_hero.insert(key).second) {
-        auto& sum = hero_sum[key];
+      // Per-seat -x strategy and locked-continuation value C_s under sigma_h,
+      // computed for every non-hero seat so the hero's regret (a sum over
+      // seats) and any seat's regret share the identical values.
+      std::array<std::vector<double>, poker::kMaxUnifiedSeats> sigma_s{};
+      std::array<double, poker::kMaxUnifiedSeats> C_s{};
+      for (std::size_t s = 0; s < seat_count; ++s) {
+        if (s == model.hero)
+          continue;
+        const GadgetKey gkey{s, deal.hands[s]};
+        sigma_s[s] = regret_matching(gadget_regret[gkey]);
+        double c = 0;
         for (std::size_t a = 0; a < action_count; ++a)
-          sum[a] += iter_weight * reach[model.hero] * sigma[a];
+          c += sigma_h[a] * model.leaf_values[deal_index][a][s];
+        C_s[s] = c;
       }
-    }
-    return value;
-  }
 
-  double walk_gadget(std::size_t deal_index, std::size_t traverser, std::array<double, 2> reach,
-                     double chance, double iter_weight) {
-    const GadgetDeal& deal = model.deals[deal_index];
-    budget.visit();
-    const auto& cards = deal.responder;
-    const double baseline = model.infosets[baseline_index.at(cards)].baseline;
-    const std::vector<double> sigma = regret_matching(gadget_regret[cards]);
-    const double sign = traverser == model.responder ? 1.0 : -1.0;
-    std::array<double, 2> child{};
-    // a=0 TERMINATE (constant centered margin), a=1 CONTINUE into hero node.
-    child[0] = sign * baseline;
-    auto continued_reach = reach;
-    continued_reach[model.responder] *= sigma[1];
-    child[1] = walk_hero(deal_index, traverser, continued_reach, chance, iter_weight);
-    const double value = sigma[0] * child[0] + sigma[1] * child[1];
-    if (traverser == model.responder) {
-      auto& regret = gadget_regret[cards];
-      for (std::size_t a = 0; a < 2; ++a)
-        regret[a] += iter_weight * chance * reach[model.hero] * (child[a] - value);
-      if (averaged_gadget.insert(cards).second) {
-        auto& sum = gadget_sum[cards];
-        for (std::size_t a = 0; a < 2; ++a)
-          sum[a] += iter_weight * reach[model.responder] * sigma[a];
+      if (hero_traverser) {
+        auto& regret = hero_regret[hkey];
+        for (std::size_t s = 0; s < seat_count; ++s) {
+          if (s == model.hero)
+            continue;
+          const double cont_s = sigma_s[s][1];
+          for (std::size_t a = 0; a < action_count; ++a)
+            regret[a] +=
+                ((iter_weight * chance) * cont_s) * (C_s[s] - model.leaf_values[deal_index][a][s]);
+        }
+        if (averaged_hero.insert(hkey).second) {
+          auto& sum = hero_sum[hkey];
+          for (std::size_t a = 0; a < action_count; ++a)
+            sum[a] += iter_weight * 1.0 * sigma_h[a];
+        }
+      } else {
+        const std::size_t t = traverser;
+        const GadgetKey gkey{t, deal.hands[t]};
+        const SeatInfoset& infoset = model.infosets[baseline_index.at(gkey)];
+        const double b_t = infoset.baseline;
+        const double v_t = sigma_s[t][0] * b_t + sigma_s[t][1] * C_s[t];
+        auto& regret = gadget_regret[gkey];
+        regret[0] += (iter_weight * chance) * 1.0 * (b_t - v_t);
+        regret[1] += (iter_weight * chance) * 1.0 * (C_s[t] - v_t);
+        if (averaged_gadget.insert(gkey).second) {
+          auto& sum = gadget_sum[gkey];
+          sum[0] += iter_weight * 1.0 * sigma_s[t][0];
+          sum[1] += iter_weight * 1.0 * sigma_s[t][1];
+        }
       }
     }
-    return value;
   }
 
   GadgetOutput finish(std::uint64_t completed) {
@@ -139,9 +142,9 @@ struct GadgetTrainer {
       row.probabilities = regret_matching(sum);
       output.candidate.emplace(key, std::move(row));
     }
-    for (const auto& [cards, sum] : gadget_sum) {
+    for (const auto& [key, sum] : gadget_sum) {
       double total = sum[0] + sum[1];
-      output.terminate[cards] = {sum[0] / total, sum[1] / total};
+      output.terminate[key] = {sum[0] / total, sum[1] / total};
     }
     return output;
   }
@@ -158,13 +161,10 @@ GadgetOutput run_gadget_cfr(const ReachModel& model, const ResolveLimits& limits
     for (std::uint64_t iteration = 0; iteration < limits.iterations; ++iteration) {
       // Linear CFR weight: 1-based iteration index t.
       const double iter_weight = static_cast<double>(iteration + 1);
-      for (std::size_t traverser = 0; traverser < 2; ++traverser) {
+      for (std::size_t traverser = 0; traverser < model.seat_count; ++traverser) {
         trainer.averaged_gadget.clear();
         trainer.averaged_hero.clear();
-        for (std::size_t deal_index = 0; deal_index < model.deals.size(); ++deal_index) {
-          const double chance = model.deals[deal_index].weight / model.total_mass;
-          (void)trainer.walk_gadget(deal_index, traverser, {1.0, 1.0}, chance, iter_weight);
-        }
+        trainer.sweep(traverser, iter_weight);
       }
       ++completed;
     }

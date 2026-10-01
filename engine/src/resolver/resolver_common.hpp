@@ -91,19 +91,21 @@ struct SplitMix64 {
   }
 };
 
-// One weighted joint private deal at the resolve node. Weight is the
-// UNNORMALIZED counterfactual weight w(hero,responder); zero-weight pairs are
-// not represented as deals.
+// One weighted joint private deal at the resolve node: one hand per seat,
+// pairwise card-disjoint and none blocking the board. Weight is the
+// UNNORMALIZED counterfactual weight prod_s rangeW[s](cards_s) *
+// pi^prefix_hero; zero-weight deals are not represented. Only indices
+// [0, seat_count) carry meaning; the rest stay zero-initialized.
 struct GadgetDeal {
-  std::array<int, 2> hero{};
-  std::array<int, 2> responder{};
+  std::array<std::array<int, 2>, poker::kMaxUnifiedSeats> hands{};
   double weight = 0;
 };
 
-// A responder "-x" gadget infoset: the responder's own sorted cards, its total
-// counterfactual mass, the centered baseline margin, and the weighted deals
-// that share the infoset (each a distinct hero holding).
-struct ResponderInfoset {
+// A non-hero seat's "-x" gadget infoset: the seat index, the seat's own
+// sorted cards, its total counterfactual mass, the centered baseline margin,
+// and the weighted deals that share the infoset (each a distinct joint deal).
+struct SeatInfoset {
+  std::size_t seat = 0;
   std::array<int, 2> cards{};
   double mass = 0;
   double baseline = 0;
@@ -124,18 +126,20 @@ inline bool hand_blocks_board(const std::array<int, 2>& hand, std::span<const in
 
 // The cards the normal game would offer at a Deal phase for one deal, matching
 // solver::public_cards exactly: a fixed slot is a singleton; otherwise every
-// card not on the board, in either hand, or reserved for a later fixed slot.
+// card not on the board, in any live hand, or reserved for a later fixed slot.
+// `hands` is indexed by seat and sized to the game's player count.
 std::vector<int> continuation_cards(const UnifiedGame& game, const GameState& state,
-                                    const std::array<std::array<int, 2>, 2>& hands);
+                                    std::span<const std::array<int, 2>> hands);
 
-// Expected RESPONDER net chip utility of the subtree AFTER the hero's current
-// action, averaging only the remaining public chance. Fold/showdown use exact
-// engine settlement. An action node anywhere below means the terminal-only
+// Expected net chip utility of the subtree AFTER the hero's current action,
+// averaging only the remaining public chance, written into `utility` indexed
+// by seat (sized to the game's player count). Fold/showdown use exact engine
+// settlement. An action node anywhere below means the terminal-only
 // precondition was violated; the caller reports ineligibility rather than
 // consulting a heuristic leaf.
-double continuation_utility_responder(const UnifiedGame& game, const GameState& after,
-                                      const std::array<std::array<int, 2>, 2>& hands,
-                                      std::size_t responder, Budget& budget);
+void continuation_utility_all_seats(const UnifiedGame& game, const GameState& after,
+                                    std::span<const std::array<int, 2>> hands,
+                                    std::span<double> utility, Budget& budget);
 
 // True when every branch below `node` under the node's ordered abstract
 // actions reaches Folded/Showdown through public cards alone, with no further

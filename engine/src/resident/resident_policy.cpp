@@ -643,7 +643,7 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
                                                 std::span<const PublicAction> history,
                                                 std::size_t player,
                                                 std::array<int, 2> cards) const override {
-    if (player > 1 || !state.actor() || *state.actor() != player)
+    if (player >= record_->game.def.player_count || !state.actor() || *state.actor() != player)
       return std::nullopt;
     std::sort(cards.begin(), cards.end());
     if (cards[0] < 0 || cards[1] >= 52 || cards[0] == cards[1])
