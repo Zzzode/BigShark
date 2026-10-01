@@ -816,6 +816,14 @@ independently useful:
    exactly the encoding-order trap this definition avoids.) A relabeling is
    a permutation of the 4 suits applied to every card; `relabel` is returned
    as the four-suit mapping itself, never as an index into the enumeration.
+   When several permutations achieve the minimum (symmetric boards), the
+   lexicographically smallest relabel among minimizers wins: the map is total
+   and idempotent (a canonical board keeps the identity relabel), and the
+   tie-break is serialized into the AbstractionId parameters. Errata: the
+   token's equivalence is one-directional - same token implies the same
+   hand-strength relationship to the board, never asserted in the converse;
+   its measured merge behavior is test evidence, pinned per board and per
+   class (1,755 classes; 1,419,366 per-class token rows).
    It lives in `bigshark_abstraction` beside the card bucketing, carries its
    own `AbstractionId`, and is applied at exactly two boundaries: at
    build/training time a concrete flop is folded onto its class representative,

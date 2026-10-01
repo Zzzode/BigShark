@@ -9,6 +9,7 @@
 #include <bs/range.hpp>
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <numeric>
 #include <set>
 #include <stdexcept>
@@ -667,12 +668,282 @@ int test_declared_only_coarse_menu() {
 
 }  // namespace
 
+// Suit-isomorphic flop canonicalization (RFC 0009 D5.1).
+namespace {
+
+// Apply a suit relabel to a card id, keeping its rank.
+int relabel_card(int card_id, const std::array<int, 4>& relabel) {
+  return (card_id / 4) * 4 + relabel[card_id % 4];
+}
+
+// All 22,100 flops fold onto 1,755 isomorphism classes. For every board the
+// returned relabel is a permutation that achieves the component-wise minimum
+// over all 24 suit permutations, the canonical board is invariant under every
+// relabeling of the input (orbit invariance), and canonicalize is idempotent
+// with the identity relabel.
+int test_canonicalize_classes() {
+  std::array<std::array<int, 4>, 24> perms{};
+  {
+    std::array<int, 4> p{0, 1, 2, 3};
+    int n = 0;
+    do {
+      perms[n++] = p;
+    } while (std::next_permutation(p.begin(), p.end()));
+    CHECK(n == 24);
+  }
+  std::set<std::array<int, 3>> classes;
+  long boards = 0;
+  for (int a = 0; a < 52; ++a)
+    for (int b = a + 1; b < 52; ++b)
+      for (int c = b + 1; c < 52; ++c) {
+        const std::array<int, 3> board{a, b, c};
+        const CanonicalBoard canon = canonicalize(board);
+        ++boards;
+        classes.insert(canon.board);
+        // The relabel is a permutation of suits 0..3.
+        std::array<int, 4> sorted = canon.relabel;
+        std::sort(sorted.begin(), sorted.end());
+        CHECK((sorted == std::array<int, 4>{0, 1, 2, 3}));
+        // It achieves the minimum: its own sorted key is the canonical board,
+        // and no permutation produces a smaller key.
+        std::array<int, 3> own{};
+        for (int i = 0; i < 3; ++i)
+          own[i] = relabel_card(board[i], canon.relabel);
+        std::sort(own.begin(), own.end());
+        CHECK(own == canon.board);
+        for (const auto& p : perms) {
+          std::array<int, 3> key{};
+          for (int i = 0; i < 3; ++i)
+            key[i] = relabel_card(board[i], p);
+          std::sort(key.begin(), key.end());
+          CHECK(canon.board <= key);
+        }
+        // Idempotence: a canonical board keeps itself with identity relabel.
+        const CanonicalBoard again = canonicalize(canon.board);
+        CHECK(again.board == canon.board);
+        CHECK((again.relabel == std::array<int, 4>{0, 1, 2, 3}));
+        // Orbit invariance: every suit relabeling of the input folds onto
+        // the same class representative.
+        for (const auto& p : perms) {
+          std::array<int, 3> shifted{};
+          for (int i = 0; i < 3; ++i)
+            shifted[i] = relabel_card(board[i], p);
+          CHECK(canonicalize(shifted).board == canon.board);
+        }
+      }
+  CHECK(boards == 22100);
+  CHECK(classes.size() == 1755);  // the pinned isomorphism-class count
+  return 0;
+}
+
+// Degenerate boards pin the declared tie-break: rainbow (three distinct
+// ranks in three suits), paired, monotone, and two-tone.
+int test_canonicalize_fixtures() {
+  struct Fixture {
+    std::array<int, 3> board;
+    std::array<int, 3> want_board;
+    std::array<int, 4> want_relabel;
+  };
+  const std::array<Fixture, 4> fixtures{{
+      {{{card("Ks"), card("Qd"), card("7c")}}, {{20, 41, 46}}, {{2, 3, 1, 0}}},
+      {{{card("Ks"), card("Kd"), card("7c")}}, {{20, 45, 46}}, {{1, 3, 2, 0}}},
+      {{{card("Ks"), card("Qs"), card("7s")}}, {{20, 40, 44}}, {{0, 1, 2, 3}}},
+      {{{card("Ks"), card("Kd"), card("7d")}}, {{20, 44, 45}}, {{1, 2, 0, 3}}},
+  }};
+  for (const Fixture& f : fixtures) {
+    const CanonicalBoard canon = canonicalize(f.board);
+    CHECK(canon.board == f.want_board);
+    CHECK(canon.relabel == f.want_relabel);
+  }
+  // Out-of-range and duplicate cards fail closed.
+  for (const std::array<int, 3>& bad :
+       {std::array<int, 3>{-1, 1, 2}, std::array<int, 3>{52, 1, 2}, std::array<int, 3>{1, 1, 2}}) {
+    bool rejected = false;
+    try {
+      (void)canonicalize(bad);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    CHECK(rejected);
+  }
+  return 0;
+}
+
+// The own-card token round-trips over every enumerated (board, holding) pair:
+// the token computed from the concrete holding equals the token of the
+// relabeled holding under the identity, and inverting the relabel recovers
+// the holding. Canonicalization preserves made-hand strength: the relabeled
+// holding on the canonical board scores exactly what the concrete holding
+// scores on the concrete board (a suit permutation renames both together).
+// The token's merge behavior is pinned exactly: per-board distinct-token
+// counts and the per-class union size, which is the flop-library row count.
+int test_own_card_token_roundtrip() {
+  const std::array<int, 4> identity{0, 1, 2, 3};
+  const auto token_less = [](const OwnCardToken& x, const OwnCardToken& y) {
+    if (x.ranks != y.ranks)
+      return x.ranks < y.ranks;
+    return x.suit_mult < y.suit_mult;
+  };
+  // Group the 22,100 boards by their canonical class.
+  std::map<std::array<int, 3>, std::vector<std::array<int, 3>>> by_class;
+  for (int a = 0; a < 52; ++a)
+    for (int b = a + 1; b < 52; ++b)
+      for (int c = b + 1; c < 52; ++c) {
+        const std::array<int, 3> board{a, b, c};
+        by_class[canonicalize(board).board].push_back(board);
+      }
+  CHECK(by_class.size() == 1755);
+
+  long long total_pairs = 0;
+  long long total_rows = 0;
+  std::map<int, long> per_board_dist;
+  for (const auto& [cboard, boards] : by_class) {
+    const std::vector<int> cboard_vec{cboard.begin(), cboard.end()};
+    std::vector<OwnCardToken> class_tokens;
+    for (const std::array<int, 3>& board : boards) {
+      const CanonicalBoard canon = canonicalize(board);
+      CHECK(canon.board == cboard);
+      std::array<int, 4> inverse{};
+      for (int s = 0; s < 4; ++s)
+        inverse[canon.relabel[s]] = s;
+      const std::vector<int> board_vec{board.begin(), board.end()};
+      std::vector<OwnCardToken> board_tokens;
+      for (int h0 = 0; h0 < 52; ++h0) {
+        if (h0 == board[0] || h0 == board[1] || h0 == board[2])
+          continue;
+        for (int h1 = h0 + 1; h1 < 52; ++h1) {
+          if (h1 == board[0] || h1 == board[1] || h1 == board[2])
+            continue;
+          const std::array<int, 2> holding{h0, h1};
+          const OwnCardToken token = own_card_token(holding, canon.relabel);
+          ++total_pairs;
+          // The multiplicity vector always sums to two.
+          CHECK(token.suit_mult[0] + token.suit_mult[1] + token.suit_mult[2] + token.suit_mult[3] ==
+                2);
+          // Round-trip: the token is a function of the canonical holding, so
+          // the concrete holding under the class relabel and the canonical
+          // holding under the identity mint the same token.
+          const std::array<int, 2> canonical_holding{relabel_card(h0, canon.relabel),
+                                                     relabel_card(h1, canon.relabel)};
+          CHECK(own_card_token(canonical_holding, identity) == token);
+          // Invert: the inverse relabel recovers the concrete holding.
+          std::array<int, 2> recovered{relabel_card(canonical_holding[0], inverse),
+                                       relabel_card(canonical_holding[1], inverse)};
+          std::sort(recovered.begin(), recovered.end());
+          CHECK(recovered == holding);
+          // Strength preservation: relabeling board and holding together
+          // cannot change made-hand strength.
+          CHECK(strength_bucket(holding, board_vec) ==
+                strength_bucket(canonical_holding, cboard_vec));
+          board_tokens.push_back(token);
+          class_tokens.push_back(token);
+        }
+      }
+      std::sort(board_tokens.begin(), board_tokens.end(), token_less);
+      board_tokens.erase(std::unique(board_tokens.begin(), board_tokens.end()), board_tokens.end());
+      per_board_dist[static_cast<int>(board_tokens.size())]++;
+    }
+    std::sort(class_tokens.begin(), class_tokens.end(), token_less);
+    class_tokens.erase(std::unique(class_tokens.begin(), class_tokens.end()), class_tokens.end());
+    total_rows += static_cast<long long>(class_tokens.size());
+  }
+  CHECK(total_pairs == 25989600);
+  // Pinned merge behavior: per-board distinct-token counts. Trips boards
+  // (52) merge the most; rainbow unpaired boards (6,864) the least.
+  const std::map<int, long> want_dist{{780, 52},   {801, 1872},  {802, 1872},
+                                      {807, 1144}, {811, 10296}, {813, 6864}};
+  CHECK(per_board_dist == want_dist);
+  // Pinned per-class union: the flop-library row count over all 1,755
+  // classes, measured now so W4c's storage budget starts from a known number.
+  // Boards in the same class share most tokens, so the union is far below the
+  // 17,895,072 distinct (concrete-board, token) rows.
+  CHECK(total_rows == 1419366);
+  return 0;
+}
+
+// Pinned own-card tokens on the fixture boards, including the tie-break
+// interaction: on the paired board the two kings' suits tie on the minimum,
+// and holdings in the two tied suits land in different slots.
+int test_own_card_token_fixtures() {
+  const std::array<int, 4> identity{0, 1, 2, 3};
+  struct Case {
+    std::array<int, 2> holding;
+    std::array<int, 2> ranks;
+    std::array<int, 4> mult;
+  };
+  // Rainbow Ks Qd 7c, relabel [2,3,1,0]: s->2, h->3, d->1, c->0.
+  const CanonicalBoard rainbow = canonicalize({card("Ks"), card("Qd"), card("7c")});
+  CHECK((rainbow.relabel == std::array<int, 4>{2, 3, 1, 0}));
+  const std::array<Case, 4> rainbow_cases{{
+      {{{card("As"), card("Jh")}}, {{9, 12}}, {{0, 0, 1, 1}}},
+      {{{card("As"), card("Js")}}, {{9, 12}}, {{0, 0, 2, 0}}},
+      {{{card("Ad"), card("Jc")}}, {{9, 12}}, {{1, 1, 0, 0}}},
+      {{{card("Ah"), card("Jc")}}, {{9, 12}}, {{1, 0, 0, 1}}},
+  }};
+  for (const Case& c : rainbow_cases) {
+    const OwnCardToken token = own_card_token(c.holding, rainbow.relabel);
+    CHECK(token.ranks == c.ranks);
+    CHECK(token.suit_mult == c.mult);
+    const std::array<int, 2> canonical_holding{relabel_card(c.holding[0], rainbow.relabel),
+                                               relabel_card(c.holding[1], rainbow.relabel)};
+    CHECK(own_card_token(canonical_holding, identity) == token);
+  }
+  // Paired Ks Kd 7c, relabel [1,3,2,0]: s->1, h->3, d->2, c->0.
+  const CanonicalBoard paired = canonicalize({card("Ks"), card("Kd"), card("7c")});
+  CHECK((paired.relabel == std::array<int, 4>{1, 3, 2, 0}));
+  const std::array<Case, 2> paired_cases{{
+      {{{card("As"), card("Js")}}, {{9, 12}}, {{0, 2, 0, 0}}},
+      {{{card("Ad"), card("Jd")}}, {{9, 12}}, {{0, 0, 2, 0}}},
+  }};
+  for (const Case& c : paired_cases) {
+    const OwnCardToken token = own_card_token(c.holding, paired.relabel);
+    CHECK(token.ranks == c.ranks);
+    CHECK(token.suit_mult == c.mult);
+  }
+  // Bad holdings and malformed relabels fail closed.
+  for (const std::array<int, 2>& bad : {std::array<int, 2>{52, 1}, std::array<int, 2>{1, 1}}) {
+    bool rejected = false;
+    try {
+      (void)own_card_token(bad, identity);
+    } catch (const std::invalid_argument&) {
+      rejected = true;
+    }
+    CHECK(rejected);
+  }
+  bool rejected_relabel = false;
+  try {
+    (void)own_card_token({{1, 2}}, {{0, 0, 1, 2}});
+  } catch (const std::invalid_argument&) {
+    rejected_relabel = true;
+  }
+  CHECK(rejected_relabel);
+  return 0;
+}
+
+// The declared identity: distinct name, golden digest, and no collision with
+// the other abstraction ids.
+int test_suit_canonicalization_id() {
+  const AbstractionId id = suit_canonicalization_id();
+  CHECK(id.name == "suit-canonical-v1");
+  CHECK(id.version == 1);
+  CHECK(id.digest == abstraction_digest(id.name, id.version, id.parameters));
+  // Golden digest: any change to the comparison order, tie-break, or token
+  // shape changes the canonical parameters and thus the digest.
+  CHECK(id.digest == 0xaf83bd016a92d2d6ULL);
+  CHECK(id.digest != identity_action_id().digest);
+  CHECK(id.digest != card_abstraction_id(CardBucketKind::Identity).digest);
+  CHECK(id.digest != card_abstraction_id(CardBucketKind::CategoryTiersV1).digest);
+  return 0;
+}
+
+}  // namespace
+
 int main() {
   struct Case {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 8> cases{{
+  const std::array<Case, 13> cases{{
       {"action_menu_math", test_action_menu_math},
       {"fraction_validation", test_fraction_validation},
       {"identity_and_typed_refusal", test_identity_and_typed_refusal},
@@ -681,6 +952,11 @@ int main() {
       {"multiway_cover_cap", test_multiway_cover_cap},
       {"declared_schedule_is_reduced", test_declared_schedule_is_reduced},
       {"declared_only_coarse_menu", test_declared_only_coarse_menu},
+      {"canonicalize_classes", test_canonicalize_classes},
+      {"canonicalize_fixtures", test_canonicalize_fixtures},
+      {"own_card_token_roundtrip", test_own_card_token_roundtrip},
+      {"own_card_token_fixtures", test_own_card_token_fixtures},
+      {"suit_canonicalization_id", test_suit_canonicalization_id},
   }};
   int failures = 0;
   for (const Case& item : cases) {

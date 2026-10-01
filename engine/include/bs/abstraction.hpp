@@ -254,4 +254,53 @@ std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<
 std::uint32_t card_bucket(CardBucketKind kind, const std::array<int, 2>& hole,
                           const std::vector<int>& board);
 
+// Suit-isomorphic flop canonicalization (RFC 0009 D5.1). A concrete 3-card
+// flop folds onto its isomorphism class: the canonical representative is the
+// component-wise minimum, over the 24 suit permutations, of the board's key —
+// the (rank, suit) pairs sorted by rank first and suit second. A card id is
+// rank*4+suit, already rank-major, so sorting ids is exactly that order and
+// the key is never a string (the encoding's "10" vs "9" text order cannot
+// leak in). `relabel` is the permutation itself, never an index into the
+// enumeration: relabel[s] is the canonical suit that concrete suit s maps to.
+// Symmetric boards tie on the minimum; the lexicographically smallest
+// relabel among minimizers wins, so the map is total and deterministic. This
+// reduces the 22,100 flops to 1,755 isomorphism classes.
+struct CanonicalBoard {
+  std::array<int, 3> board{};
+  std::array<int, 4> relabel{};
+  bool operator==(const CanonicalBoard&) const = default;
+};
+
+// The information token for a holding under a class policy: the sorted rank
+// pair plus the four-slot vector of own-suit multiplicities across canonical
+// suits 0..3 (slot i counts the holding's cards whose relabeled suit is i,
+// zero included). The vector always has length four and sums to two, so the
+// map is total. The token is the identity a class policy keys its rows on;
+// like every card abstraction it is deliberately coarser than the exact game
+// (its measured merge rate is test evidence, never a claimed zero), and it is
+// also finer than the board's stabilizer orbits, so a class policy carries
+// separate rows for suit-symmetric spots — a coverage property, not a
+// correctness one.
+struct OwnCardToken {
+  std::array<int, 2> ranks{};
+  std::array<int, 4> suit_mult{};
+  bool operator==(const OwnCardToken&) const = default;
+};
+
+// Fold a concrete flop onto its class. Card ids must be 0..51 and distinct;
+// anything else fails closed.
+CanonicalBoard canonicalize(const std::array<int, 3>& board);
+
+// Re-express a concrete holding under a class relabel: ranks unchanged, suits
+// mapped through `relabel`, then the multiplicity vector over canonical
+// suits 0..3. The holding must be two distinct card ids 0..51 and `relabel`
+// must be a permutation of 0..3; a malformed relabel would silently merge or
+// drop suit slots, so it is rejected.
+OwnCardToken own_card_token(const std::array<int, 2>& holding, const std::array<int, 4>& relabel);
+
+// The declared identity of the suit-canonicalization map. Its parameters
+// serialize the comparison order, the tie-break, and the token shape, so any
+// future change to any of them moves the digest.
+AbstractionId suit_canonicalization_id();
+
 }  // namespace bs::abstraction

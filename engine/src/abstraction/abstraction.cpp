@@ -277,4 +277,73 @@ std::uint32_t card_bucket(CardBucketKind kind, const std::array<int, 2>& hole,
   return score;
 }
 
+CanonicalBoard canonicalize(const std::array<int, 3>& board) {
+  for (int card : board) {
+    if (card < 0 || card >= 52)
+      throw std::invalid_argument("canonicalize requires card ids 0..51");
+  }
+  if (board[0] == board[1] || board[0] == board[2] || board[1] == board[2])
+    throw std::invalid_argument("canonicalize requires three distinct cards");
+  // The board key under a suit permutation: each card's suit remapped through
+  // the permutation, then sorted by (rank, suit). Sorting card ids is exactly
+  // that order because id = rank*4+suit is rank-major.
+  auto key = [&](const std::array<int, 4>& perm) {
+    std::array<int, 3> mapped{};
+    for (int i = 0; i < 3; ++i)
+      mapped[i] = (board[i] / 4) * 4 + perm[board[i] % 4];
+    std::sort(mapped.begin(), mapped.end());
+    return mapped;
+  };
+  // Enumerate the 24 permutations in lexicographic order, keeping the first
+  // that achieves the minimum key: identity is the lexicographically smallest
+  // permutation, so among minimizers the smallest relabel wins, and a board
+  // already in canonical form keeps the identity relabel (idempotence).
+  std::array<int, 4> best_perm{0, 1, 2, 3};
+  std::array<int, 3> best_key = key(best_perm);
+  std::array<int, 4> perm{0, 1, 2, 3};
+  while (std::next_permutation(perm.begin(), perm.end())) {
+    const std::array<int, 3> candidate = key(perm);
+    if (candidate < best_key) {
+      best_key = candidate;
+      best_perm = perm;
+    }
+  }
+  CanonicalBoard result;
+  result.board = best_key;
+  result.relabel = best_perm;
+  return result;
+}
+
+OwnCardToken own_card_token(const std::array<int, 2>& holding, const std::array<int, 4>& relabel) {
+  for (int card : holding) {
+    if (card < 0 || card >= 52)
+      throw std::invalid_argument("own_card_token requires card ids 0..51");
+  }
+  if (holding[0] == holding[1])
+    throw std::invalid_argument("own_card_token requires two distinct cards");
+  std::array<int, 4> sorted_relabel = relabel;
+  std::sort(sorted_relabel.begin(), sorted_relabel.end());
+  if (sorted_relabel != std::array<int, 4>{0, 1, 2, 3})
+    throw std::invalid_argument("own_card_token relabel must permute suits 0..3");
+  OwnCardToken token;
+  std::array<int, 2> ranks{holding[0] / 4, holding[1] / 4};
+  std::sort(ranks.begin(), ranks.end());
+  token.ranks = ranks;
+  token.suit_mult.fill(0);
+  for (int card : holding)
+    ++token.suit_mult[relabel[card % 4]];
+  return token;
+}
+
+AbstractionId suit_canonicalization_id() {
+  AbstractionId id;
+  id.name = "suit-canonical-v1";
+  id.version = 1;
+  id.parameters =
+      "key=rank-major-sorted-tuple;min=component-wise-over-24-suit-permutations;"
+      "tie-break=lex-smallest-relabel;token=sorted-rank-pair+4-slot-multiplicity";
+  id.digest = abstraction_digest(id.name, id.version, id.parameters);
+  return id;
+}
+
 }  // namespace bs::abstraction
