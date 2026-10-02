@@ -297,11 +297,18 @@ AUTOMATIC blueprint miss now ends at the declared operational fallback
 (check, else call, else fold, from the supplied legal set only), tagged
 `operational_fallback` with an UNSPECIFIED source, so a host-produced
 successful minor-2 response CAN carry `operational_fallback` — but only on
-that AUTOMATIC-miss path. An explicit HEURISTIC request still runs the
-sourced chart+heuristic cascade at `approximate`, and a blueprint hit is
-`approximate`; neither is ever `operational_fallback`. The separate live
-operational-fallback surface is the River adapter's local decision when the
-engine binary/transport is unavailable.
+that AUTOMATIC-miss path. RFC 0009 W4d: on a minor-2 AUTOMATIC blueprint
+miss the host now tries terminal-only resolving (when the spot is eligible
+and a resolver root is advertised) before the operational fallback. A
+certified resolve serves at `certified_bound` with the RESOLVING source; a
+deadline baseline serves at `approximate` with the BLUEPRINT source. Any
+resolver miss (not advertised, spot not eligible, deadline exceeded,
+unsupported seat count) falls through to the operational fallback. An
+explicit HEURISTIC request still runs the sourced chart+heuristic cascade
+at `approximate`, and a blueprint hit is `approximate`; neither is ever
+`operational_fallback`. The separate live operational-fallback surface is
+the River adapter's local decision when the engine binary/transport is
+unavailable.
 
 ### Request floor and error code 9
 
@@ -678,7 +685,8 @@ A caller that does not opt in never sends above minor 0. The River adapter
 forces BLUEPRINT only with `EngineConfig.protoBlueprint` against a minor-1+
 client; minor-1 AUTOMATIC otherwise tries the resident and transparently
 falls back to the heuristic (frozen RFC 0005 behavior), while minor-2
-AUTOMATIC tries the resident and, on a miss, ends at the engine's declared
+AUTOMATIC tries the resident, then terminal-only resolving on a blueprint
+miss (RFC 0009 W4d), and on a resolver miss ends at the engine's declared
 operational fallback (the RFC 0009 W3 demotion — never the heuristic). At
 minor 2 the adapter additionally exposes
 `ExecutableDecision.guaranteeLevel`, attaches `operational_fallback` to

@@ -981,6 +981,28 @@ assertion pins the unchanged heuristic fallthrough. The rollback artifact was
 recorded before the change: rollback commit `b88c005` plus the pre-W3 release
 binary.
 
+**D6 implementation decisions recorded at W4d.** W4d wires the resolver into
+the minor-2 `AUTOMATIC` branch on a blueprint miss, implementing the D6
+flowchart's RS step. The branch now serves a resident blueprint hit; on a miss
+it calls `lookupResolving` (the same function the forced `SOLVER_MODE_RESOLVING`
+mode uses, with the same `min(solve_time_budget_ms, 120000)` deadline) before
+the declared operational fallback. A certified resolve serves at
+`certified_bound` with the RESOLVING source; a deadline baseline serves at
+`approximate` with the BLUEPRINT source — both mapped through the same
+`mapGuaranteedCertifiedResponse` / `mapGuaranteedDeadlineResponse` functions as
+the forced path, so the wire shape is identical regardless of which mode
+triggered the resolve. Any resolver miss (not advertised, spot not eligible,
+deadline exceeded without a baseline, unsupported seat count) falls through to
+the operational fallback. The resolver's 2..3-seat bound is inherited
+unchanged: the resident belief layer refuses `player_count > 3` and the
+resolver gadget refuses 4..10 with `ResolveStatus::Ineligible`, so a 4+-seat
+AUTOMATIC miss reaches the fallback exactly as it did in W3. The W3 demotion
+guard test was updated to assert the resolver is tried once on a miss
+(`resolveLookups == 1`) and that an `Unsupported` outcome still reaches the
+operational fallback; new tests pin the certified-hit, deadline-baseline-hit,
+and resolver-not-advertised paths, including floor interaction (a certified
+floor passes on a certified resolve, refuses a deadline baseline with code 9).
+
 ### D7. The practice simulator served by the same host
 
 A new, small C++ process client target (NDJSON over the existing

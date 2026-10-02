@@ -365,18 +365,37 @@ EnvelopeResult handleMinor2Decision(const std::string& requestId,
     achieved = guaranteeFor(answer.source);
     complete = mapGuaranteedHeuristicResponse(request, answer);
   } else {
-    // AUTOMATIC: a resident blueprint hit serves; a miss ends at the declared
-    // operational fallback. RFC 0009 W3 demotes the chart+heuristic cascade
-    // from an AUTOMATIC fallthrough to an explicit HEURISTIC-only request, so
-    // a miss never silently runs the parallel strategy.
+    // AUTOMATIC: a resident blueprint hit serves; a miss tries terminal-only
+    // resolving (RFC 0009 W4d) before the declared operational fallback. The
+    // resolver is best-effort — any miss (not advertised, spot not eligible,
+    // deadline exceeded without a baseline) ends at the operational fallback.
+    // RFC 0009 W3 demotes the chart+heuristic cascade from an AUTOMATIC
+    // fallthrough to an explicit HEURISTIC-only request, so a miss never
+    // silently runs the parallel strategy.
     const BlueprintLookup lookup = lookupBlueprint(services, request);
     if (lookup.hit) {
       verifyStorageRowComplete(request, lookup.row);
       achieved = bs::Guarantee::Approximate;
       complete = mapGuaranteedBlueprintResponse(request, lookup.row);
     } else {
-      achieved = bs::Guarantee::OperationalFallback;
-      complete = mapOperationalFallbackResponse(request, operationalFallbackDecision(context));
+      const std::uint32_t deadline_ms = static_cast<std::uint32_t>(
+          std::min<std::uint64_t>(request.options().solve_time_budget_ms(), 120000));
+      const ResolvingLookup resolved = lookupResolving(services, request, deadline_ms);
+      if (resolved.answered) {
+        verifyStorageRowComplete(request, resolved.row);
+        if (resolved.outcome == V1ResolveOutcome::Certified) {
+          achieved = bs::Guarantee::CertifiedBound;
+          complete = mapGuaranteedCertifiedResponse(request, resolved.row);
+        } else {
+          // DeadlineBlueprint: a complete validated baseline row tagged with
+          // the BLUEPRINT source, exactly like the forced path.
+          achieved = bs::Guarantee::Approximate;
+          complete = mapGuaranteedDeadlineResponse(request, resolved.row);
+        }
+      } else {
+        achieved = bs::Guarantee::OperationalFallback;
+        complete = mapOperationalFallbackResponse(request, operationalFallbackDecision(context));
+      }
     }
   }
 

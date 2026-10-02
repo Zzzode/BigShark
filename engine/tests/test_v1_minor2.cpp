@@ -683,26 +683,29 @@ int main() {
           "a blueprint minor-2 answer is never operational_fallback");
   }
 
-  // --- RFC 0009 W3 demotion guard: minor-2 AUTOMATIC miss is the fallback --
-  // A minor-2 AUTOMATIC blueprint miss ends at the declared operational
-  // fallback (operational_fallback, UNSPECIFIED source), never the
-  // chart+heuristic cascade. The companion minor-1 assertion pins that
-  // minor-1's AUTOMATIC fallthrough is unchanged (still a heuristic source).
+  // --- RFC 0009 W3 demotion guard + W4d resolver-on-miss ------------------
+  // A minor-2 AUTOMATIC blueprint miss tries terminal-only resolving (W4d)
+  // before ending at the declared operational fallback. When the resolver is
+  // advertised but cannot resolve, the fallback still serves
+  // (operational_fallback, UNSPECIFIED source), never the chart+heuristic
+  // cascade. The companion minor-1 assertion pins that minor-1's AUTOMATIC
+  // fallthrough is unchanged (still a heuristic source).
   {
     FakeServices services;
     services.miss = V1BlueprintMiss::OffTree;
+    services.outcome = V1ResolveOutcome::Unsupported;  // resolver tried, misses
     pv::DecisionRequest automatic = flopRequest(pv::SOLVER_MODE_AUTOMATIC);
     pv::Envelope resp = send(envelopeFor(2, "w3-auto-miss", automatic), services);
     check(resp.protocol_minor() == 2, "AUTOMATIC miss echoes minor 2");
     const pv::ExpandedStrategy& es = resp.decision_response().expanded_strategy();
     check(es.solver().guarantee_level() == "operational_fallback",
-          "minor-2 AUTOMATIC blueprint miss is the operational fallback");
+          "minor-2 AUTOMATIC blueprint+resolver miss is the operational fallback");
     check(es.solver().source() == pv::SOLVER_SOURCE_UNSPECIFIED,
           "minor-2 AUTOMATIC fallback carries no heuristic source");
     check(es.actions(0).type() == pv::ACTION_TYPE_CHECK,
           "the fallback takes the legal check on the flop fixture");
     check(services.blueprintLookups == 1, "AUTOMATIC miss queried the blueprint once");
-    check(services.resolveLookups == 0, "AUTOMATIC miss never invokes the resolver");
+    check(services.resolveLookups == 1, "AUTOMATIC miss tried the resolver once (W4d)");
 
     // An explicit HEURISTIC request still runs the sourced cascade on the same
     // miss.
@@ -719,6 +722,87 @@ int main() {
     const pv::SolverMetadata& m1m = m1.decision_response().expanded_strategy().solver();
     check(m1m.source() != pv::SOLVER_SOURCE_UNSPECIFIED,
           "minor-1 AUTOMATIC miss still falls through to the heuristic engine");
+  }
+
+  // --- W4d: AUTOMATIC blueprint miss -> resolver Certified serves ----------
+  // On a blueprint miss the AUTOMATIC path tries terminal-only resolving. A
+  // certified resolve serves at certified_bound with the RESOLVING source,
+  // exactly like the forced RESOLVING mode. The resolveRequest fixture is a
+  // facing-all-in flop snapshot that the resolver reconstruction admits.
+  {
+    FakeServices services;
+    services.actions = {{ActionType::Fold}, {ActionType::Call}};
+    services.probabilities = {0.3, 0.7};
+    services.outcome = V1ResolveOutcome::Certified;
+    pv::DecisionRequest request = resolveRequest(pv::SOLVER_MODE_AUTOMATIC);
+    pv::Envelope resp = send(envelopeFor(2, "w4d-auto-cert", request), services);
+    check(resp.protocol_minor() == 2, "AUTOMATIC resolve echoes minor 2");
+    const pv::SolverMetadata& s = resp.decision_response().expanded_strategy().solver();
+    check(resp.decision_response().has_expanded_strategy(),
+          "AUTOMATIC resolver certified serves an expanded strategy");
+    check(s.source() == pv::SOLVER_SOURCE_RESOLVING,
+          "AUTOMATIC resolver certified carries the RESOLVING source");
+    check(s.guarantee_level() == "certified_bound",
+          "AUTOMATIC resolver certified earns certified_bound");
+    check(!s.has_guarantee(), "AUTOMATIC resolver row never sets field 10");
+    check(s.has_artifact_sha256(), "AUTOMATIC resolver row keeps the field-9 digest");
+    check(!s.cache_hit() && s.reason_code() == "resolving",
+          "AUTOMATIC resolver certified is no cache hit and is reason-coded resolving");
+    check(services.resolveLookups == 1, "AUTOMATIC resolver certified invoked the resolver once");
+
+    // A certified floor passes on the AUTOMATIC resolver path.
+    pv::DecisionRequest high = resolveRequest(pv::SOLVER_MODE_AUTOMATIC);
+    high.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_CERTIFIED_BOUND);
+    pv::Envelope served = send(envelopeFor(2, "w4d-auto-cert-floor", high), services);
+    check(served.decision_response().has_expanded_strategy(),
+          "AUTOMATIC resolver certified meets a certified floor");
+  }
+
+  // --- W4d: AUTOMATIC blueprint miss -> resolver DeadlineBlueprint ---------
+  // A resolver that completes with a baseline row (but no certification)
+  // serves at approximate with the BLUEPRINT source, exactly like the forced
+  // RESOLVING mode's deadline baseline.
+  {
+    FakeServices services;
+    services.actions = {{ActionType::Fold}, {ActionType::Call}};
+    services.probabilities = {0.3, 0.7};
+    services.outcome = V1ResolveOutcome::DeadlineBlueprint;
+    pv::DecisionRequest request = resolveRequest(pv::SOLVER_MODE_AUTOMATIC);
+    pv::Envelope resp = send(envelopeFor(2, "w4d-auto-deadline", request), services);
+    check(resp.protocol_minor() == 2, "AUTOMATIC deadline baseline echoes minor 2");
+    const pv::SolverMetadata& s = resp.decision_response().expanded_strategy().solver();
+    check(resp.decision_response().has_expanded_strategy(),
+          "AUTOMATIC resolver deadline baseline serves an expanded strategy");
+    check(s.source() == pv::SOLVER_SOURCE_BLUEPRINT && s.cache_hit() &&
+              s.guarantee_level() == "approximate" && !s.has_guarantee(),
+          "AUTOMATIC resolver deadline baseline is BLUEPRINT/cache-hit/approximate");
+    check(services.resolveLookups == 1, "AUTOMATIC deadline baseline invoked the resolver once");
+
+    // A certified floor refuses the approximate baseline with code 9.
+    pv::DecisionRequest high = resolveRequest(pv::SOLVER_MODE_AUTOMATIC);
+    high.mutable_options()->set_minimum_guarantee(pv::GUARANTEE_LEVEL_CERTIFIED_BOUND);
+    pv::Envelope refused = send(envelopeFor(2, "w4d-auto-deadline-floor", high), services);
+    check(refused.decision_response().has_error() &&
+              refused.decision_response().error().code() == pv::ERROR_CODE_GUARANTEE_BELOW_REQUEST,
+          "AUTOMATIC resolver baseline below a certified floor is code 9");
+  }
+
+  // --- W4d: AUTOMATIC blueprint miss -> resolver not advertised -----------
+  // When no resolver root is advertised the AUTOMATIC path skips the resolver
+  // entirely and reaches the operational fallback without invoking it.
+  {
+    FakeServices services;
+    services.miss = V1BlueprintMiss::OffTree;
+    services.resolvingOn = false;
+    pv::DecisionRequest request = flopRequest(pv::SOLVER_MODE_AUTOMATIC);
+    pv::Envelope resp = send(envelopeFor(2, "w4d-auto-no-resolver", request), services);
+    check(resp.protocol_minor() == 2, "AUTOMATIC no-resolver echoes minor 2");
+    const pv::SolverMetadata& s = resp.decision_response().expanded_strategy().solver();
+    check(s.guarantee_level() == "operational_fallback" &&
+              s.source() == pv::SOLVER_SOURCE_UNSPECIFIED,
+          "AUTOMATIC miss with no resolver is the operational fallback");
+    check(services.resolveLookups == 0,
+          "AUTOMATIC with an unadvertised resolver never invokes it");
   }
 
   if (failures != 0) {
