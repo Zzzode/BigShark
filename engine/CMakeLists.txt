@@ -201,6 +201,21 @@ target_link_libraries(bigshark_resident
   PUBLIC bigshark_resolver
 )
 
+# RFC 0009 W4c-iii: offline flop class library builder. Trains and publishes
+# per-class flop-rooted schema-v3 artifacts (D5's precomputed flop libraries).
+# Offline solver-side tooling: it links the solver and artifact libraries but
+# never the service, host, or protocol targets.
+add_library(bigshark_flop_library STATIC
+  src/flop_library/flop_library.cpp
+)
+target_include_directories(bigshark_flop_library
+  PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(bigshark_flop_library
+  PUBLIC bigshark_artifacts
+)
+
 
 # Vendored OpenSpiel is private to the solver target.
 add_subdirectory(third_party/open_spiel EXCLUDE_FROM_ALL)
@@ -436,6 +451,16 @@ add_custom_target(benchmark-resident-lookup
   DEPENDS bigshark-resident-lookup-benchmark
   COMMENT "Running the RFC 0005 Stage 6 resident lookup benchmark"
   USES_TERMINAL
+)
+
+# RFC 0009 W4c-iii: offline flop class library builder leaf. Trains and
+# publishes per-class flop-rooted schema-v3 artifacts plus a manifest with
+# honest coverage and storage measurements. Manual target, NOT a CTest.
+add_executable(bigshark-flop-library-builder
+  benchmarks/flop_library_builder.cpp
+)
+target_link_libraries(bigshark-flop-library-builder PRIVATE
+  bigshark_flop_library
 )
 
 # RFC 0005 Stage 9 bounded-resolve microbenchmark. Tiny fixed-runout terminal
@@ -882,6 +907,15 @@ if(BUILD_TESTING)
     bigshark_resident
   )
   add_test(NAME resident COMMAND test_resident_policy)
+
+  # RFC 0009 W4c-iii: flop class library builder. Trains and publishes
+  # schema-v3 class artifacts; verifies the enumeration, declared range,
+  # coverage counter, and manifest honesty.
+  add_executable(test_flop_library tests/test_flop_library.cpp)
+  target_link_libraries(test_flop_library PRIVATE
+    bigshark_flop_library
+  )
+  add_test(NAME flop_library COMMAND test_flop_library)
 
   # RFC 0005 Stage 9 bounded resolver and independent certification. Internal
   # resolver headers are included only to drive the whitebox fixtures; the

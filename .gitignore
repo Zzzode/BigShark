@@ -56,3 +56,7 @@ CMakeUserPresets.json
 # Local stage-6 measurement evidence (raw driver CSVs/artifacts; summaries go
 # in docs/plans, not here)
 artifacts/stage6/
+
+# Local flop class library builds (per-class schema-v3 artifacts and manifest;
+# the measurements are summarized in docs/design/gto-engine.md)
+artifacts/flop-library/

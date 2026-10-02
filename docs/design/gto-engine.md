@@ -59,6 +59,7 @@ flowchart TD
 | `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response. The fractional size schedule types and the ordered action menu now live in `bigshark_abstraction`; this target re-exports the types unchanged and delegates `abstract_actions` to the lifted builder. As of stage 4 its only unified entry point is `solve()`; the direct trainer remains the bit-for-bit reference that conformance pins against, not a second strategy |
 | `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
 | `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 offline resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup; unwired and offline in this stage |
+| `include/bs/flop_library.hpp`, `src/flop_library/` | RFC 0009 W4c-iii offline flop class library builder: enumerates the 1,755 suit-isomorphic canonical classes, trains and publishes a per-class schema-v3 artifact with a declared premium range, and writes an honest coverage/storage manifest. Links `bigshark_artifacts` PUBLIC; offline only, linked by nothing on a decision path |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
 | `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..10-player ledger (widened from 2..6 in RFC 0008 stage 2) |
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
@@ -803,6 +804,70 @@ never scales stacks, and exposes no bound or certification symbol on the
 resident lookup itself: every schema version leaves the `bounds` and
 `measurements` tables validated and empty, so a resident continuation is
 advertised for blueprint lookup only.
+
+## Flop Class Library Builder (RFC 0009 W4c-iii)
+
+The offline `bigshark_flop_library` static library builds the first trained
+class library: per-class flop-rooted schema-v3 artifacts that the resident
+layer (above) loads as ordinary roots. Its public surface is
+`include/bs/flop_library.hpp`, implemented under `src/flop_library/`. It links
+`bigshark_artifacts` PUBLIC (which brings the solver and trainer) and is linked
+by nothing on a decision path: only the `bigshark-flop-library-builder`
+offline executable and its test link it.
+
+```mermaid
+flowchart LR
+  Builder[bigshark-flop-library-builder] --> FlopLib[bigshark_flop_library]
+  FlopLib --> Artifacts[bigshark_artifacts]
+  Artifacts --> Solver[bigshark_solver trainer]
+  FlopLib --> Abstraction[bigshark_abstraction canonicalization]
+```
+
+The builder enumerates all C(52,3) = 22,100 concrete flops, canonicalizes each
+through `abstraction::canonicalize`, and deduplicates to the 1,755 canonical
+classes (W4a). For each of the first N classes (by canonical board-id order) it
+constructs a two-seat flop-rooted `GameDef` (stack and contribution are
+declared parameters), filters the declared range to off-board combos, builds
+the `AbstractTree`, trains with the n-seat MCCFR trainer, and exports a
+schema-v3 artifact with the suit-canonicalization `AbstractionId` as its card
+abstraction. Each artifact is checkpointed, published (SHA-256), and probed;
+the checkpoint is removed so the directory holds only immutable policies.
+
+The declared first-library range is a fixed premium set: AA, KK, QQ, JJ (24
+combos) plus AKs (4) and AKo (12) — 40 combos total, weight 1.0, used for every
+seat. Board-overlapping combos are filtered per class at build time.
+
+The manifest (`manifest.json`) records the honest measurements: the class
+count, the covered-flop count (of 22,100), the per-class stored-row count and
+SHA-256, and the total storage in bytes. Coverage is measured, never estimated:
+`count_covered_flops` enumerates all 22,100 concrete flops and counts those
+whose canonical class is in the library.
+
+**First library measurements (2026-10-02).** Four classes, 1,000 iterations
+each, stack 4 / contribution 2 (SPR 1), seed 20261002:
+
+| Class | Canonical board | Stored rows | Artifact bytes |
+| --- | --- | --- | --- |
+| 0 | {0, 1, 2} | 2,557,771 | 565,047,296 |
+| 1 | {0, 1, 4} | 2,765,197 | 613,621,760 |
+| 2 | {0, 1, 6} | 2,792,667 | 617,242,624 |
+| 3 | {0, 1, 8} | 2,687,010 | 593,313,792 |
+
+Coverage: 40 of 22,100 flops (0.181%). Total storage: 2,389,225,472 bytes
+(~2.23 GiB).
+
+The per-class storage is dominated by the full chance tree: a River-terminal
+game materializes every turn card (45) and every river card (44) — 1,980
+runout paths per action path — and the export emits a concrete policy row for
+every (seat, combo, action-node) triple across all of them. The trainer itself
+visits only 4,966–5,680 information sets per class; the ~2.6M stored rows are
+the concrete expansion. A flop-terminal profile would eliminate the turn/river
+chance branching and reduce this by orders of magnitude, but
+`TerminalDepth::Flop` is rejected by `GameDef::validate` ("flop-terminal games
+are RFC 0007's stage, not this one") and is out of scope for this stage. The
+measurements above are the honest cost of the River-terminal shape; the class
+selection and storage budget for a larger library are decided by these
+measured costs, not estimated.
 
 ## Bounded Resolving Gadget (RFC 0005 Stage 9)
 
