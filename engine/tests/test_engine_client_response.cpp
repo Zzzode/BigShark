@@ -245,6 +245,39 @@ void test_sampler_first_bucket_always_wins() {
   CHECK(result.action == (Action{ActionType::Fold}));
 }
 
+// Golden seed->bucket vectors computed by an independent Python SplitMix64
+// implementation (not the codebase's bs::SplitMix64). If the protocol sampler
+// drifts, these hard-coded expectations fail even when expected_bucket()
+// shares the same bug.
+void test_sampler_golden_vectors() {
+  // Distribution: fold=0.3, call=0.5, raise=0.2 (sum=1.0).
+  // Golden buckets: seed 1->1(call), 42->1(call), 777->1(call),
+  //                 12345->2(raise), 0xDEADBEEF->1(call).
+  struct Golden {
+    std::uint64_t seed;
+    ActionType type;
+    std::uint64_t target;  // 0 for non-aggressive
+  };
+  const Golden goldens[] = {
+      {1, ActionType::Call, 0},
+      {42, ActionType::Call, 0},
+      {777, ActionType::Call, 0},
+      {12345, ActionType::Raise, 350},
+      {0xDEADBEEFULL, ActionType::Call, 0},
+  };
+  for (const auto& g : goldens) {
+    auto response = sampled_response(
+        {{pv::ACTION_TYPE_FOLD, 0.3}, {pv::ACTION_TYPE_CALL, 0.5}, {pv::ACTION_TYPE_RAISE, 0.2}},
+        350);
+    auto result = map_decision_response(response, facing_bet(), g.seed);
+    CHECK(!result.fell_back);
+    if (g.target > 0)
+      CHECK(result.action == (Action{g.type, g.target}));
+    else
+      CHECK(result.action == (Action{g.type}));
+  }
+}
+
 // ---- expanded_strategy path (minor 1/2) ------------------------------------
 
 void test_expanded_strategy_selected_action() {
@@ -398,6 +431,7 @@ int main() {
   test_sampler_parity_multiple_seeds();
   test_sampler_clamps_to_last_positive();
   test_sampler_first_bucket_always_wins();
+  test_sampler_golden_vectors();
   test_expanded_strategy_selected_action();
   test_expanded_strategy_sampled();
   test_engine_error_falls_back();

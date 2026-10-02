@@ -483,6 +483,93 @@ cannot tear down a persistent coprocess.
   the running length against the 1 MiB limit before allocating the single
   payload buffer, so an oversize declaration never allocates the payload.
 
+## C++ Process Client (RFC 0009 W4e)
+
+The offline practice simulator's `engine` difficulty tier uses a C++ process
+client (`bigshark_engine_client`, `engine/src/engine_client/`) that spawns a
+`bigshark-engine --serve-proto` subprocess and speaks the framed protocol over
+stdin/stdout pipes. It is a leaf-side library: it links only
+`bigshark_protocol` (generated protobuf), `bigshark_poker`, and the
+`bigshark_behavior` interface. It must not link `bigshark_v1_protocol` (which
+would drag in the service, policy, solver, and resident layers); the
+configure-time offline guard enforces this by construction.
+
+### Frame codec
+
+The client re-implements the server's canonical ULEB128 codec (mirroring
+`engine/src/protocol/v1_frame_stream.cpp`, which it must not link):
+`encode_frame` (varint + payload, max 1 MiB), `read_frame` (`poll`-based read
+with deadline, EINTR retry, partial-read handling, max 5 prefix bytes,
+overlong and zero-length rejection, single allocation), and `write_frame`
+(full write with EINTR/partial-write handling). `SIGPIPE` is set to `SIG_IGN`
+once at process start so a closed pipe returns `EPIPE` rather than killing the
+client.
+
+### Process lifecycle
+
+`EngineProcess` spawns the engine with two `pipe()` calls (stdin
+parent→child, stdout child→parent), `fork()` + `dup2()` + `execv()`. The
+parent keeps the write end of stdin and the read end of stdout. `round_trip`
+writes one envelope frame and reads one response frame with a configurable
+timeout (default 30 000 ms). On timeout the client kills the process with
+`SIGKILL` (the engine may be wedged in a solve); the next decision lazily
+respawns it. `stop()` tries `SIGTERM` first (2 s wait), then `SIGKILL`.
+
+### Handshake
+
+The client sends `GetCapabilities` at protocol minor 2 first. On
+`UNSUPPORTED_PROTOCOL` or any failure it retries at minor 0. Both fail →
+`start()` returns false and every subsequent decision falls back. A minor-2
+success confirms the resident blueprint → terminal-only resolver → labeled
+operational fallback chain (RFC 0009 W3/W4d). A minor-0 success degrades to
+the heuristic-only `AUTOMATIC` path. The client captures
+`engine_build_version`, `solver_modes`, `maximum_solve_time_ms`, and
+`maximum_request_bytes` from the capabilities response.
+
+### Decision request builder
+
+`build_decision_request` converts a live `GameState` + hero seat + hole cards
++ `HandLog` into a `pv::DecisionRequest`. The `HandLog` records only
+`{seat, action}`; `pot_before`, `stack_after`, and `all_in` are reconstructed
+by replaying the deterministic poker machine from the root state through the
+logged actions, advancing board cards at dealing boundaries. A cheap
+invariant check after replay (pot, street, per-seat stack vs. live state)
+throws on mismatch — the policy catches it as a fallback.
+
+The preflop aggressive verb convention is critical: the unified engine types
+preflop aggression as `Bet`, but the server vocabulary is `raise`. The client
+maps preflop `Bet`/`Raise` → `ACTION_TYPE_RAISE` in both `legal_actions` and
+`action_history`, and maps an aggressive response back through
+`legal.aggressive->type` (never blindly to `Raise`).
+
+### Response mapper
+
+`map_decision_response` extracts the action from a `DecisionResponse`:
+- `error` oneof → fallback with reason `"engine error <code>: <message>"`.
+- `strategy` (minor 0) or `expanded_strategy` (minor 1/2): if
+  `selected_action` is present use it; otherwise sample from the distribution
+  using the engine's documented sampler (SplitMix64 seeded
+  `decision_seed XOR 0x425356312d73616d`, top 53 bits → `[0,1)`, first CDF
+  bucket strictly greater than the draw, clamp to last positive bucket).
+- Type mapping: `FOLD`/`CHECK`/`CALL` direct; `BET`/`RAISE` with
+  `target_total` → `Action{legal.aggressive->type, target_total}`. Missing
+  `target_total` on aggressive → fallback.
+- Defense in depth: `legal.contains(action)` fails → fallback
+  `"illegal engine action"`.
+- Fallback (single definition): check if legal, else call if legal, else fold.
+
+### EngineServedPolicy
+
+`EngineServedPolicy` is a `BehaviorPolicy` adapter. `distribution()` is
+`const`; transport and stats are `mutable` (single-threaded synchronous use
+only). It increments the decision counter, ensures the engine process is
+started (lazy respawn after crash), builds and sends the request, maps the
+response, and records latency (min/max/total in microseconds) on success. On
+any failure it increments the matching classified counter (timeout, engine
+error, protocol error) and returns the fallback action. The stats surface is
+printed at simulator shutdown: decisions, served, fallbacks (timeouts, engine
+errors, protocol errors, restarts), and latency avg/min/max.
+
 ## C++ Protocol Boundary
 
 The public boundary header `engine/include/bs/v1_protocol.hpp` exposes the

@@ -3,7 +3,7 @@
 // Speaks the v1 framed protobuf protocol on stdin/stdout. Behavior is
 // controlled by environment variables so the test can point EngineClientConfig
 // at this binary and drive specific failure modes:
-//   SCRIPTED_ENGINE_MODE         "serve" (default) | "timeout" | "crash"
+//   SCRIPTED_ENGINE_MODE         "serve" (default) | "timeout" | "crash" | "error"
 //   SCRIPTED_ENGINE_ACTION       "call" (default) | "fold" | "check"
 //   SCRIPTED_ENGINE_CRASH_AFTER  int, decisions served before exit (default 1)
 //
@@ -117,6 +117,20 @@ int main() {
       if (mode == "crash" && decisions_seen > static_cast<std::uint64_t>(crash_after)) {
         // Exit abruptly; the client sees EOF on the next read.
         _exit(1);
+      }
+
+      if (mode == "error") {
+        // Respond with an EngineError to exercise the engine-error stats path.
+        pv::Envelope response;
+        response.set_protocol_minor(envelope.protocol_minor());
+        response.set_request_id("d-response");
+        pv::DecisionResponse* dr = response.mutable_decision_response();
+        pv::EngineError* err = dr->mutable_error();
+        err->set_code(pv::ERROR_CODE_INTERNAL);
+        err->set_message("scripted engine error");
+        err->set_retryable(false);
+        write_envelope(response);
+        continue;
       }
 
       pv::Envelope response;

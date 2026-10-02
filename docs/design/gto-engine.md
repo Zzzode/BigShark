@@ -973,6 +973,14 @@ collide on one key and serve each other's candidate. The baseline row used for
 deadline fallback is taken first, inside the same receipt-anchored window,
 rather than untimed after the solver consumed the budget.
 
+The offline practice simulator's `engine` difficulty tier (RFC 0009 W4e) is a
+process-boundary consumer of this pipeline: it spawns `bigshark-engine
+--serve-proto` and forwards bot decisions over the v1 framed protocol, so a
+practice bot plays the resident blueprint → terminal-only resolver → labeled
+operational fallback chain. See [the practice-table
+doc](../development/practice-table.md) and [the protobuf protocol
+reference](../reference/protobuf-engine-protocol.md#c-process-client-rfc-0009-w4e).
+
 ## Multiway Rules (RFC 0006 Stage 13)
 
 `bs::poker::MultiwayState` is the 3..6-player no-limit rules sibling of

@@ -41,7 +41,6 @@ struct EngineProcess::Impl {
   std::uint32_t minor = 0;
   pv::GetCapabilitiesResponse caps;
   std::uint64_t request_counter = 0;
-  bool sigpipe_installed = false;
   TransactError last_error = TransactError::None;
 
   ~Impl() { stop(); }
@@ -68,6 +67,8 @@ struct EngineProcess::Impl {
 
     if (child == 0) {
       // Child: wire pipes to stdin/stdout, close unused ends, exec.
+      // Safe from fd-collision with 0/1/2: the leaf CLI keeps stdin/stdout/
+      // stderr open for its whole lifetime, so pipe() always returns fds >= 3.
       ::dup2(in_pipe[0], STDIN_FILENO);
       ::dup2(out_pipe[1], STDOUT_FILENO);
       ::close(in_pipe[0]);
@@ -78,9 +79,9 @@ struct EngineProcess::Impl {
       std::vector<std::string> args;
       args.push_back(config.engine_path);
       args.push_back("--serve-proto");
-      if (!config.resident_root.empty()) {
+      for (const auto& root : config.resident_roots) {
         args.push_back("--resident-root");
-        args.push_back(config.resident_root);
+        args.push_back(root);
       }
       std::vector<char*> argv;
       argv.reserve(args.size() + 1);
@@ -131,13 +132,23 @@ struct EngineProcess::Impl {
     ::kill(pid, SIGTERM);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     int status = 0;
+    bool reaped = false;
     while (std::chrono::steady_clock::now() < deadline) {
       const pid_t rc = ::waitpid(pid, &status, WNOHANG);
-      if (rc == pid)
+      if (rc == pid) {
+        reaped = true;
         break;
+      }
+      if (rc < 0 && errno == ECHILD) {
+        // The child was already reaped (e.g. by a signal handler); the PID
+        // may have been recycled. Treat as done so the SIGKILL fallback
+        // below does not signal an unrelated process.
+        reaped = true;
+        break;
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    if (pid > 0) {
+    if (!reaped && pid > 0) {
       ::kill(pid, SIGKILL);
       ::waitpid(pid, &status, 0);
     }
@@ -192,6 +203,10 @@ struct EngineProcess::Impl {
           break;
         default:
           last_error = TransactError::MalformedFrame;
+          // A bad varint or oversize payload desyncs the byte stream (the
+          // offending bytes are still in the pipe); kill so the next
+          // decision respawns a clean process.
+          kill();
           break;
       }
       return nullptr;
@@ -200,6 +215,9 @@ struct EngineProcess::Impl {
     auto response = std::make_unique<pv::Envelope>();
     if (!response->ParseFromString(response_frame)) {
       last_error = TransactError::MalformedFrame;
+      // A frame that reads cleanly but is not a valid Envelope indicates a
+      // protocol desync; kill so the next decision respawns a clean process.
+      kill();
       return nullptr;
     }
     return response;

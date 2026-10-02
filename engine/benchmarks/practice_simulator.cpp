@@ -266,7 +266,7 @@ struct Args {
   std::uint64_t seed = 0;
   // Engine tier (--difficulty engine).
   std::string engine_path = "bin/bigshark-engine";
-  std::string resident_root;  // "<path>=<sha256>"; empty = no resident roots
+  std::vector<std::string> resident_roots;  // "<path>=<sha256>"; empty = none
   std::uint32_t solve_budget_ms = 1000;
   std::uint32_t engine_timeout_ms = 30000;
 };
@@ -312,7 +312,7 @@ int main(int argc, char** argv) {
       } else if (arg == "--engine-path")
         args.engine_path = next();
       else if (arg == "--resident-root")
-        args.resident_root = next();
+        args.resident_roots.push_back(next());
       else if (arg == "--solve-budget-ms")
         args.solve_budget_ms = static_cast<std::uint32_t>(std::stoul(next()));
       else if (arg == "--engine-timeout-ms")
@@ -366,7 +366,7 @@ int main(int argc, char** argv) {
   if (args.difficulty == PracticeDifficulty::Engine) {
     bs::engine_client::EngineClientConfig ec;
     ec.engine_path = args.engine_path;
-    ec.resident_root = args.resident_root;
+    ec.resident_roots = args.resident_roots;
     ec.solve_budget_ms = args.solve_budget_ms;
     ec.timeout_ms = args.engine_timeout_ms;
     auto policy = std::make_unique<bs::engine_client::EngineServedPolicy>(ec);

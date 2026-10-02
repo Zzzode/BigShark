@@ -39,10 +39,10 @@ namespace bs::engine_client {
 struct EngineClientConfig {
   // Path to the bigshark-engine binary.
   std::string engine_path = "bin/bigshark-engine";
-  // Resident root specification: "<path>=<sha256>". Empty means no resident
+  // Resident root specifications: "<path>=<sha256>". Empty means no resident
   // roots are advertised (the engine serves the labeled operational fallback
   // at minor 2).
-  std::string resident_root;
+  std::vector<std::string> resident_roots;
   // Per-decision IPC timeout in milliseconds. A timeout kills the engine
   // process; the next decision lazily respawns it.
   std::uint32_t timeout_ms = 30000;

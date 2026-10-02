@@ -801,8 +801,7 @@ int main() {
     check(s.guarantee_level() == "operational_fallback" &&
               s.source() == pv::SOLVER_SOURCE_UNSPECIFIED,
           "AUTOMATIC miss with no resolver is the operational fallback");
-    check(services.resolveLookups == 0,
-          "AUTOMATIC with an unadvertised resolver never invokes it");
+    check(services.resolveLookups == 0, "AUTOMATIC with an unadvertised resolver never invokes it");
   }
 
   if (failures != 0) {

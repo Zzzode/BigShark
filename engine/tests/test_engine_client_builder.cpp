@@ -313,7 +313,8 @@ void test_history_aggressive_carries_target() {
   GameState root = heads_up_preflop_root();
   const LegalActions legal = root.legal();
   if (!legal.aggressive) {
-    CHECK(true);  // no aggression available at this root; nothing to pin
+    std::fprintf(stderr, "FAIL: preflop root has no aggressive action; test precondition broken\n");
+    ++failures;
     return;
   }
   // Use the engine's own legal aggressive verb and minimum target so the
@@ -324,9 +325,9 @@ void test_history_aggressive_carries_target() {
   log.preflop.push_back(LoggedAction{0, Action{type, target}});
   GameState s = root.after_action(0, Action{type, target});
   if (s.phase() != Phase::Action || !s.actor() || *s.actor() != 1) {
-    // The raise may have ended the street or moved the actor unexpectedly;
-    // only assert the history when the continuation is the expected one.
-    CHECK(true);
+    std::fprintf(stderr,
+                 "FAIL: preflop raise did not leave BB as actor; test precondition broken\n");
+    ++failures;
     return;
   }
   const pv::DecisionRequest req = build_decision_request(

@@ -1014,6 +1014,17 @@ if(BUILD_TESTING)
   add_dependencies(test_engine_client_policy scripted_engine)
   add_test(NAME engine_client_policy COMMAND test_engine_client_policy)
 
+  # Live integration test: spawns the real bigshark-engine binary and exercises
+  # the full client stack (handshake, one heads-up decision, fallback path).
+  add_executable(test_engine_client_live tests/test_engine_client_live.cpp)
+  target_link_libraries(test_engine_client_live PRIVATE
+    bigshark_engine_client bigshark_poker bigshark_protocol)
+  target_include_directories(test_engine_client_live PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(test_engine_client_live PRIVATE
+    ENGINE_PATH="$<TARGET_FILE:bigshark-engine>")
+  add_dependencies(test_engine_client_live bigshark-engine)
+  add_test(NAME engine_client_live COMMAND test_engine_client_live)
+
   foreach(test_name gto multistreet_ref)
     add_executable(test_${test_name} tests/test_${test_name}.cpp)
     target_link_libraries(test_${test_name} PRIVATE bigshark_solver)

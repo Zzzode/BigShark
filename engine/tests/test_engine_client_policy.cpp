@@ -240,24 +240,25 @@ void test_unreachable_engine_falls_back() {
 // ---- Engine error fallback ---------------------------------------------------------------
 
 void test_engine_error_falls_back() {
-  // The scripted engine always serves a selected_action, so to test the
-  // engine-error path we verify the stats classification indirectly: a
-  // malformed response (no strategy or error) is a protocol error, while an
-  // EngineError is an engine error. This is covered by the response mapper
-  // unit tests; here we just confirm the policy compiles and links with the
-  // full stats surface.
-  set_scripted_mode("serve", "fold");
+  // The scripted engine responds with an EngineError; the policy must fall
+  // back and classify the fallback as engine_errors (not protocol_errors).
+  set_scripted_mode("error");
   EngineServedPolicy policy(config_with_timeout(30000));
   CHECK(policy.start());
 
   GameState state = heads_up_preflop_root();
   const std::size_t seat = *state.actor();
   const Action action = decide(policy, state, seat, 42);
-  CHECK(action == (Action{ActionType::Fold}));
+  // Fallback: check not legal, call legal -> call.
+  CHECK(action == (Action{ActionType::Call}));
 
   const EngineServedStats s = policy.stats();
-  CHECK(s.served == 1);
-  CHECK(s.fallbacks == 0);
+  CHECK(s.decisions == 1);
+  CHECK(s.served == 0);
+  CHECK(s.fallbacks == 1);
+  CHECK(s.engine_errors == 1);
+  CHECK(s.protocol_errors == 0);
+  CHECK(s.timeouts == 0);
   clear_scripted_mode();
 }
 
