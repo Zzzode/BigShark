@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 namespace {
@@ -337,6 +338,97 @@ void test_seeded_reproducibility() {
   check(a != c, "a different seed changes the outcomes");
 }
 
+// A deterministic passive bot policy: check when free, otherwise call,
+// otherwise fold. Mirrors passive_human but as a BehaviorPolicy so it can be
+// injected through set_bot().
+class PassivePolicy : public BehaviorPolicy {
+ public:
+  std::vector<PolicyAction> distribution(const GameState& state, std::size_t, HoleCards,
+                                         const PolicyContext&) const override {
+    const LegalActions legal = state.legal();
+    Action chosen;
+    if (legal.check)
+      chosen = Action{ActionType::Check, 0};
+    else if (legal.call)
+      chosen = Action{ActionType::Call, 0};
+    else
+      chosen = Action{ActionType::Fold, 0};
+    return {{chosen, 1.0}};
+  }
+};
+
+void test_engine_tier_requires_set_bot() {
+  PracticeConfig cfg;
+  cfg.seats = 2;
+  cfg.difficulty = PracticeDifficulty::Engine;
+  cfg.rng_seed = 1;
+  PracticeTable table(cfg, passive_human);
+  bool threw = false;
+  try {
+    (void)table.play_hand(nullptr);
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    check(std::string(e.what()).find("set_bot") != std::string::npos,
+          "Engine-tier error names set_bot as the remedy");
+  }
+  check(threw, "Engine tier without set_bot throws before the first bot decision");
+}
+
+void test_set_bot_rejects_bad_arguments() {
+  PracticeConfig cfg;
+  cfg.seats = 2;
+  cfg.difficulty = PracticeDifficulty::Engine;
+  cfg.rng_seed = 1;
+  PracticeTable table(cfg, passive_human);
+
+  bool threw_human = false;
+  try {
+    table.set_bot(0, std::make_unique<PassivePolicy>());
+  } catch (const std::invalid_argument&) {
+    threw_human = true;
+  }
+  check(threw_human, "set_bot rejects the human seat");
+
+  bool threw_null = false;
+  try {
+    table.set_bot(1, nullptr);
+  } catch (const std::invalid_argument&) {
+    threw_null = true;
+  }
+  check(threw_null, "set_bot rejects a null bot");
+
+  bool threw_range = false;
+  try {
+    table.set_bot(2, std::make_unique<PassivePolicy>());
+  } catch (const std::invalid_argument&) {
+    threw_range = true;
+  }
+  check(threw_range, "set_bot rejects an out-of-table seat");
+}
+
+void test_engine_tier_with_injected_policy() {
+  // A scripted policy injected through set_bot must complete full hands that
+  // stay exactly zero-sum, across several seeds and both fold/showdown
+  // outcomes.
+  for (std::uint64_t seed = 1; seed <= 30; ++seed) {
+    PracticeConfig cfg;
+    cfg.seats = 2;
+    cfg.difficulty = PracticeDifficulty::Engine;
+    cfg.rng_seed = seed;
+    PracticeTable table(cfg, passive_human);
+    table.set_bot(1, std::make_unique<PassivePolicy>());
+    Recorder rec;
+    for (std::size_t h = 0; h < 5; ++h) {
+      const std::array<double, 10> u = table.play_hand(&rec);
+      check(std::abs(sum_n(u, 2)) < 1e-9, "engine-tier hand stays zero-sum");
+      rec.hand_boundary();
+    }
+    double session_sum = table.session_result(0) + table.session_result(1);
+    check(std::abs(session_sum) < 1e-9, "engine-tier session P/L is zero-sum");
+  }
+  check(true, "engine tier with injected policy completes hands");
+}
+
 }  // namespace
 
 int main() {
@@ -347,6 +439,9 @@ int main() {
   test_illegal_human_action_throws();
   test_bad_configuration_throws();
   test_seeded_reproducibility();
+  test_engine_tier_requires_set_bot();
+  test_set_bot_rejects_bad_arguments();
+  test_engine_tier_with_injected_policy();
   if (failures) {
     std::printf("STAGE 6 PRACTICE TABLE FAILED: %d\n", failures);
     return 1;

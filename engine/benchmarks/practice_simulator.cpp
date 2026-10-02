@@ -15,6 +15,7 @@
 // `b TARGET`, `r TARGET`); `q` ends the session.
 #include <array>
 #include <bs/behavior_policy.hpp>
+#include <bs/engine_client/engine_client.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/stage6/adapter.hpp>
 #include <bs/stage6/practice_table.hpp>
@@ -42,6 +43,8 @@ const char* difficulty_name(PracticeDifficulty d) {
       return "easy (uniform random over the action menu)";
     case PracticeDifficulty::Medium:
       return "medium (pinned charts + equity heuristic, ABC poker; not GTO)";
+    case PracticeDifficulty::Engine:
+      return "engine (served by a local bigshark-engine process; a descriptive label, not GTO)";
   }
   return "unknown";
 }
@@ -261,12 +264,19 @@ struct Args {
   std::size_t hands = 0;  // 0 = until quit
   PracticeDifficulty difficulty = PracticeDifficulty::Medium;
   std::uint64_t seed = 0;
+  // Engine tier (--difficulty engine).
+  std::string engine_path = "bin/bigshark-engine";
+  std::string resident_root;  // "<path>=<sha256>"; empty = no resident roots
+  std::uint32_t solve_budget_ms = 1000;
+  std::uint32_t engine_timeout_ms = 30000;
 };
 
 void usage() {
   std::printf(
-      "usage: bigshark-practice [--seats 2..10] [--difficulty easy|medium]\n"
-      "                        [--stack-bb N] [--hands N] [--seed S]\n");
+      "usage: bigshark-practice [--seats 2..10] [--difficulty easy|medium|engine]\n"
+      "                        [--stack-bb N] [--hands N] [--seed S]\n"
+      "                        [--engine-path PATH] [--resident-root PATH=SHA256]\n"
+      "                        [--solve-budget-ms N] [--engine-timeout-ms N]\n");
 }
 
 }  // namespace
@@ -295,9 +305,19 @@ int main(int argc, char** argv) {
           args.difficulty = PracticeDifficulty::Easy;
         else if (d == "medium")
           args.difficulty = PracticeDifficulty::Medium;
+        else if (d == "engine")
+          args.difficulty = PracticeDifficulty::Engine;
         else
-          throw std::runtime_error("unknown --difficulty '" + d + "' (want easy|medium)");
-      } else if (arg == "--help" || arg == "-h") {
+          throw std::runtime_error("unknown --difficulty '" + d + "' (want easy|medium|engine)");
+      } else if (arg == "--engine-path")
+        args.engine_path = next();
+      else if (arg == "--resident-root")
+        args.resident_root = next();
+      else if (arg == "--solve-budget-ms")
+        args.solve_budget_ms = static_cast<std::uint32_t>(std::stoul(next()));
+      else if (arg == "--engine-timeout-ms")
+        args.engine_timeout_ms = static_cast<std::uint32_t>(std::stoul(next()));
+      else if (arg == "--help" || arg == "-h") {
         usage();
         return 0;
       } else
@@ -310,6 +330,10 @@ int main(int argc, char** argv) {
   }
   if (args.seats < 2 || args.seats > 10 || args.stack_bb == 0) {
     std::fprintf(stderr, "seats must be 2..10 and --stack-bb positive\n");
+    return 2;
+  }
+  if (args.difficulty == PracticeDifficulty::Engine && args.seats != 2) {
+    std::fprintf(stderr, "the engine tier is heads-up only in this stage; use --seats 2\n");
     return 2;
   }
 
@@ -336,6 +360,33 @@ int main(int argc, char** argv) {
         return a;
       });
 
+  // Engine tier: inject an EngineServedPolicy into the bot seat. The table
+  // takes ownership; the raw pointer is valid until the table is destroyed.
+  bs::engine_client::EngineServedPolicy* engine_policy = nullptr;
+  if (args.difficulty == PracticeDifficulty::Engine) {
+    bs::engine_client::EngineClientConfig ec;
+    ec.engine_path = args.engine_path;
+    ec.resident_root = args.resident_root;
+    ec.solve_budget_ms = args.solve_budget_ms;
+    ec.timeout_ms = args.engine_timeout_ms;
+    auto policy = std::make_unique<bs::engine_client::EngineServedPolicy>(ec);
+    engine_policy = policy.get();
+    table.set_bot(1, std::move(policy));
+    if (engine_policy->start()) {
+      std::printf(
+          "Engine tier: protocol minor %u, build %s, resident pipeline %s, "
+          "solve budget %u ms.\n",
+          engine_policy->negotiated_minor(), engine_policy->engine_version().c_str(),
+          engine_policy->resident_pipeline_advertised() ? "available" : "not advertised",
+          args.solve_budget_ms);
+    } else {
+      std::printf(
+          "Engine tier: WARNING engine unreachable (%s); every bot decision "
+          "will fall back to check/call/fold.\n",
+          args.engine_path.c_str());
+    }
+  }
+
   for (std::size_t h = 0; args.hands == 0 || h < args.hands; ++h) {
     try {
       (void)table.play_hand(&observer);
@@ -350,6 +401,23 @@ int main(int argc, char** argv) {
     std::printf("Session after %zu hand(s): %+.1f bb\n", table.hands_played(), result_bb);
     if (quit)
       break;
+  }
+
+  if (engine_policy) {
+    const bs::engine_client::EngineServedStats s = engine_policy->stats();
+    const double avg = s.served > 0 ? static_cast<double>(s.total_latency_us) / s.served : 0.0;
+    std::printf(
+        "\nEngine tier: %llu decisions, %llu served, %llu fallbacks "
+        "(%llu timeouts, %llu engine errors, %llu protocol errors, %llu restarts); "
+        "latency avg/min/max = %.0f/%llu/%llu us over %llu served decisions.\n",
+        static_cast<unsigned long long>(s.decisions), static_cast<unsigned long long>(s.served),
+        static_cast<unsigned long long>(s.fallbacks), static_cast<unsigned long long>(s.timeouts),
+        static_cast<unsigned long long>(s.engine_errors),
+        static_cast<unsigned long long>(s.protocol_errors),
+        static_cast<unsigned long long>(s.restarts), avg,
+        static_cast<unsigned long long>(s.min_latency_us),
+        static_cast<unsigned long long>(s.max_latency_us),
+        static_cast<unsigned long long>(s.served));
   }
 
   std::printf("\nFinal session result: %+.1f bb over %zu hands. Thanks for practicing.\n",

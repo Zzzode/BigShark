@@ -137,6 +137,10 @@ std::unique_ptr<BehaviorPolicy> make_practice_bot(PracticeDifficulty difficulty)
       return std::make_unique<UniformBehaviorPolicy>();
     case PracticeDifficulty::Medium:
       return std::make_unique<BaselineBehaviorPolicy>();
+    case PracticeDifficulty::Engine:
+      // The Engine tier leaves bot seats null; the caller injects a policy
+      // via PracticeTable::set_bot().
+      return nullptr;
   }
   throw std::invalid_argument("unknown practice difficulty");
 }
@@ -215,6 +219,16 @@ std::vector<int> PracticeTable::revealed_board() const {
   return out;
 }
 
+void PracticeTable::set_bot(std::size_t seat, std::unique_ptr<BehaviorPolicy> bot) {
+  if (seat >= impl_->cfg.seats)
+    throw std::invalid_argument("practice table: set_bot seat is outside the table");
+  if (seat == impl_->cfg.human_seat)
+    throw std::invalid_argument("practice table: set_bot cannot replace the human seat");
+  if (!bot)
+    throw std::invalid_argument("practice table: set_bot requires a non-null bot");
+  impl_->bots[seat] = std::move(bot);
+}
+
 std::array<double, 10> PracticeTable::play_hand(PracticeObserver* observer) {
   const std::size_t n = impl_->cfg.seats;
   const std::size_t human = impl_->cfg.human_seat;
@@ -246,6 +260,9 @@ std::array<double, 10> PracticeTable::play_hand(PracticeObserver* observer) {
         if (is_human) {
           chosen = impl_->human(state, seat, deal.holes[seat], *this);
         } else {
+          if (!impl_->bots[seat])
+            throw std::runtime_error(
+                "practice table: Engine tier requires set_bot before play_hand");
           PolicyContext ctx;
           ctx.hand_log = &log;
           ctx.decision_seed = decision_seed(hand_id, decisions);

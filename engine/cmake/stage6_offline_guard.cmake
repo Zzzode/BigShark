@@ -23,6 +23,7 @@ set(_stage6_forbidden_prefixes
   "bigshark_behavior"
   "bigshark_stage6"
   "bigshark_practice"
+  "bigshark_engine_client"
 )
 
 # Returns the transitive set of linkable CMake targets reachable from `root`
@@ -77,6 +78,44 @@ foreach(_protected IN LISTS _stage6_protected_targets)
     endforeach()
   endforeach()
 endforeach()
+
+# RFC 0009 W4e: directional closure checks for the engine-served practice tier.
+# The bigshark_engine_client library is the process-client that speaks the v1
+# framed contract to a separate bigshark-engine process. It must stay offline
+# (no service/protocol/policy/solver/resident in its closure) and the practice
+# CORE library must not link it (only the bigshark-practice leaf joins them).
+set(_engine_client_forbidden
+  bigshark_stage6_eval
+  bigshark_practice
+  bigshark_service
+  bigshark_v1_protocol
+  bigshark_v0_protocol
+  bigshark_policy
+  bigshark_solver
+  bigshark_resident
+)
+if(TARGET bigshark_practice)
+  _bs_stage6_link_closure(bigshark_practice)
+  get_property(_practice_closure GLOBAL PROPERTY "_bs_stage6_closure_bigshark_practice")
+  if("bigshark_engine_client" IN_LIST _practice_closure)
+    message(FATAL_ERROR
+      "RFC 0009 W4e boundary violated: bigshark_practice links "
+      "bigshark_engine_client. The practice core library stays offline; only "
+      "the bigshark-practice leaf executable may join the engine client.")
+  endif()
+endif()
+if(TARGET bigshark_engine_client)
+  _bs_stage6_link_closure(bigshark_engine_client)
+  get_property(_client_closure GLOBAL PROPERTY "_bs_stage6_closure_bigshark_engine_client")
+  foreach(_forbidden IN LISTS _engine_client_forbidden)
+    if("${_forbidden}" IN_LIST _client_closure)
+      message(FATAL_ERROR
+        "RFC 0009 W4e boundary violated: bigshark_engine_client links "
+        "'${_forbidden}'. The engine client is an offline process-client that "
+        "links only bigshark_behavior, bigshark_poker, and bigshark_protocol.")
+    endif()
+  endforeach()
+endif()
 
 # Build-time resolved-include guard: no service/protocol source may pull in
 # bs/behavior_policy.hpp or any bs/stage6/* header, by any spelling that

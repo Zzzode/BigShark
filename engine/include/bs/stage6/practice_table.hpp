@@ -72,6 +72,10 @@ struct PracticeObserver {
 enum class PracticeDifficulty {
   Easy,    // declared-menu uniform random bot: loose, passive/aggressive random
   Medium,  // pinned preflop charts + postflop Monte-Carlo heuristic (ABC poker)
+  Engine,  // engine-served tier: a local bigshark-engine process decides through
+           // the v1 framed contract; a descriptive label, never "GTO". The
+           // PracticeTable leaves Engine bot seats null; the caller must inject
+           // a policy via set_bot() before the first hand.
 };
 
 struct PracticeConfig {
@@ -111,6 +115,12 @@ class PracticeTable {
   // are never exposed before the showdown, and unrevealed board cards stay
   // hidden. Between hands it retains the previous hand's completed board.
   std::vector<int> revealed_board() const;
+
+  // Replaces the bot at `seat` with a caller-owned policy. Used by the
+  // Engine-served tier to inject an EngineServedPolicy without
+  // bigshark_practice knowing the client type. Throws std::invalid_argument
+  // on an out-of-range seat, the human seat, or a null bot.
+  void set_bot(std::size_t seat, std::unique_ptr<BehaviorPolicy> bot);
 
  private:
   struct Impl;
