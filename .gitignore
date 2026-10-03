@@ -60,3 +60,7 @@ artifacts/stage6/
 # Local flop class library builds (per-class schema-v3 artifacts and manifest;
 # the measurements are summarized in docs/design/gto-engine.md)
 artifacts/flop-library/
+
+# Local preflop profile builds (schema-v2 artifacts and manifest; the
+# measurements are summarized in docs/design/gto-engine.md)
+artifacts/preflop-profile/

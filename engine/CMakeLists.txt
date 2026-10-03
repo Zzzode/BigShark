@@ -300,6 +300,7 @@ add_library(bigshark_solver STATIC
   src/gto/multiway_sampler.cpp
   src/gto/nseat_trainer.cpp
   src/gto/frontier_table.cpp
+  src/gto/equity_frontier.cpp
   src/gto/continuation_range.cpp
   src/solver/seat_policy.cpp
   src/gto/river_game.cc
@@ -463,6 +464,17 @@ add_executable(bigshark-flop-library-builder
 )
 target_link_libraries(bigshark-flop-library-builder PRIVATE
   bigshark_flop_library
+)
+
+# RFC 0009 W4b: offline preflop profile builder. Trains a full-range (1,326
+# combos/seat) heads-up preflop flop-terminal profile at a declared stack
+# depth and publishes a schema-v2 artifact. Manual target, NOT a CTest.
+add_executable(bigshark-preflop-profile-builder
+  benchmarks/preflop_profile_builder.cpp
+)
+target_link_libraries(bigshark-preflop-profile-builder PRIVATE
+  bigshark_solver
+  bigshark_artifacts
 )
 
 # RFC 0005 Stage 9 bounded-resolve microbenchmark. Tiny fixed-runout terminal

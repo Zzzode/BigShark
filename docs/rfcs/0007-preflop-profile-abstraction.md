@@ -4,7 +4,7 @@ subject: "Preflop Profile Abstraction and Artifact Coexistence"
 status: "Accepted"
 authors: "BigShark engine agent"
 created: "2026-09-18"
-updated: "2026-09-18"
+updated: "2026-10-03"
 owners: "Poker, solver, artifact boundary, benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -201,6 +201,25 @@ full-range profile (all 1,326 combos/seat, 100 BB, flop-terminal) also trains
 to completion: 5,326 tree nodes (1,776 action), 85,605 information sets,
 78,614,144 accounted bytes (~75 MB), 0.53 s. Both fit well within the
 default 1 GiB byte cap.
+
+**Implementation update: EquityFrontierEvaluator + published artifact
+(2026-10-03).** The `EquityFrontierEvaluator` (`engine/include/bs/
+equity_frontier.hpp`) is the first production alternative to
+`DeclaredFrontierTable`. It computes exact all-in-at-flop equity by
+enumerating all C(45,2) = 990 turn/river combos and returns equity × pot −
+contributed as the expected net chip delta, with per-(flop, hands) caching.
+This makes full-range training feasible: a `DeclaredFrontierTable` would
+need ~1.9 billion entries (22,100 flops × C(1326,2) joint deals), which is
+infeasible, while the equity evaluator requires zero pre-computation.
+
+A full-range 100 BB profile trained with 100,000 iterations is published at
+`artifacts/preflop-profile/` (schema v2, `rules_id =
+"rfc0009-unified-preflop-v1"`): 126,317 information sets, 1,025,584 stored
+rows, 266 MB file, 111.6 s wall. The offline builder is
+`bigshark-preflop-profile-builder` (usage: `<output-dir> [iterations]
+[stack-bb]`). The profile is a declared-profile coverage result, not a
+full-game GTO solution; the all-in-at-flop frontier approximation ignores
+postflop betting.
 
 ## Design Principles
 

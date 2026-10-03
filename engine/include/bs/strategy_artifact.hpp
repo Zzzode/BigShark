@@ -194,8 +194,9 @@ void create_checkpoint(const std::filesystem::path& path, const solver::Training
 // RFC 0009 D3: create a brand-new schema-v2 checkpoint from a seat-generic
 // training result. The path must not exist. The complete write is one
 // transaction. Throws ArtifactError; on failure no readable artifact is left at
-// the path. Only rooted flop/turn/river games (board_size 3..5) are accepted;
-// a preflop profile is rejected until one ships.
+// the path. Rooted flop/turn/river games (board_size 3..5) and heads-up
+// preflop flop-terminal games (board_size 0, preflop, terminal=Flop, RFC
+// 0007) are accepted.
 void create_checkpoint(const std::filesystem::path& path, const solver::SeatTrainingResult& result,
                        const SeatCheckpointProvenance& provenance = {});
 

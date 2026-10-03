@@ -265,7 +265,8 @@ This change delivers the preflop RULES and their independent native tests
 
 RFC 0007 (W4b) subsequently delivered the bounded preflop profile:
 `TerminalDepth::Flop` game termination, `Phase::Frontier` frontier leaves,
-the frontier evaluator contract (option A: declared table), n-seat trainer
+the frontier evaluator contract (option A: declared table, plus the
+`EquityFrontierEvaluator` exact-equity alternative), n-seat trainer
 flop-terminal support, preflop artifact persistence (rules_id
 `rfc0009-unified-preflop-v1`), resident-layer preflop support, and
 continuation-range export. The declared small profile (6 combos/seat,
@@ -1125,11 +1126,12 @@ equilibrium.
 ### Trained heads-up preflop profile (RFC 0007 / W4b)
 
 A trained heads-up preflop profile is available as an offline artifact. It
-uses `TerminalDepth::Flop` game termination with frontier leaves valued by a
-declared evaluator (option A: declared frontier table). The profile trains
-the n-seat MCCFR trainer on a flop-terminal game and exports policy-derived
-continuation ranges (`PolicyReachRangePair`) for every flop reached with
-positive probability.
+uses `TerminalDepth::Flop` game termination with frontier leaves valued by
+the `EquityFrontierEvaluator` (exact all-in-at-flop equity: enumerates all
+C(45,2) = 990 turn/river combos, returns equity × pot − contributed as the
+expected net chip delta). The profile trains the n-seat MCCFR trainer on a
+flop-terminal game and exports policy-derived continuation ranges
+(`PolicyReachRangePair`) for every flop reached with positive probability.
 
 The virtual flop deal (`NodeKind::FlopDeal` leaf) replaces the 3-level chance
 subtree (52×51×50 = 132,600 frontier leaves per preflop line) with a single
@@ -1145,8 +1147,16 @@ completion at 25 BB: 670 tree nodes, 922 information sets (abstracted by
 exported. The full-range profile (all 1,326 combos/seat) trains to completion
 at 100 BB: 5,326 tree nodes (1,776 action), 85,605 information sets,
 78,614,144 accounted bytes (~75 MB), 0.53s wall. Both fit well within the
-default 1 GiB byte cap. The profile is a declared-profile coverage result,
-not a full-game GTO solution.
+default 1 GiB byte cap.
+
+A full-range 100 BB profile trained with 100,000 iterations and the
+`EquityFrontierEvaluator` is published at `artifacts/preflop-profile/`
+(schema v2, `rules_id = "rfc0009-unified-preflop-v1"`): 126,317 information
+sets, 1,025,584 stored rows, 266 MB file, 111.6s wall. The offline builder
+is `bigshark-preflop-profile-builder` (usage: `<output-dir> [iterations]
+[stack-bb]`). The profile is a declared-profile coverage result, not a
+full-game GTO solution; the all-in-at-flop frontier approximation ignores
+postflop betting.
 
 ## Flop and Turn Policy
 
