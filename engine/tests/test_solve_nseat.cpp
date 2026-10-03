@@ -361,6 +361,10 @@ double oracle_walk(OracleCtx& ctx, const GameState& state, std::size_t node_inde
     }
     case Phase::Action:
       break;
+    case Phase::Frontier:
+      // RFC 0007: the oracle does not evaluate flop-terminal games; the
+      // trainer's frontier support is tested separately.
+      throw std::runtime_error("oracle does not support frontier leaves");
   }
   const std::size_t actor = *state.actor();
   const std::vector<Action>& menu = node.actions;

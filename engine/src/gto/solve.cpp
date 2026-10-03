@@ -30,8 +30,12 @@ SolveResult solve_nseat(const SolveRequest& request) {
   // The unabstracted legal game is unbounded, so every tree root this route
   // accepts is a postflop root (the card abstraction is defined on a complete
   // flop); a preflop tree also cannot materialize under any sane node cap.
+  // RFC 0007 flop-terminal preflop roots are trained through train_nseat
+  // directly with a FrontierEvaluator, not through this solve() route.
   if (def.board_size < 3 || def.board_size > 5)
-    throw unsupported_tree_shape("n-seat CFR requires a postflop root");
+    throw unsupported_tree_shape(
+        "n-seat CFR requires a postflop root; flop-terminal preflop games use "
+        "train_nseat with a frontier evaluator");
   // Fixed runout conditioning is a stage-4 heads-up feature. Forwarding it
   // would silently DROP the conditioning (the n-seat trainer samples chance
   // unconditionally), so refuse with the typed shape error instead.

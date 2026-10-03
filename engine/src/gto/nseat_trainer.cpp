@@ -18,6 +18,7 @@
 //     std::map never invalidates references to other elements.
 #include <algorithm>
 #include <array>
+#include <bs/frontier.hpp>
 #include <bs/multiway_sampler.hpp>
 #include <bs/nseat_trainer.hpp>
 #include <chrono>
@@ -218,6 +219,7 @@ struct SweepContext {
   const NSeatTrainerLimits* limits = nullptr;
   SplitMix64* action_rng = nullptr;
   SplitMix64* chance_rng = nullptr;
+  const gto::FrontierEvaluator* frontier = nullptr;  // RFC 0007: flop-terminal
   std::size_t depth = 0;
 };
 
@@ -264,7 +266,9 @@ struct DepthGuard {
 // The traverser's exact utility at one terminal, asserting exact chip
 // conservation across the whole table exactly as the stage-6 trainer does: a
 // fold leaf reads the L3 payload's stored chip_utility; a showdown leaf
-// settles the concrete live holdings through the L1 rules.
+// settles the concrete live holdings through the L1 rules; a frontier leaf
+// (RFC 0007 flop-terminal) evaluates the continuation through the declared
+// frontier evaluator.
 double terminal_utility(SweepContext& ctx, const GameState& state, std::size_t node_index) {
   const TreeNode& node = ctx.tree->node(node_index);
   if (!node.is_terminal())
@@ -281,6 +285,25 @@ double terminal_utility(SweepContext& ctx, const GameState& state, std::size_t n
     if (sum != 0)
       throw std::runtime_error("nseat trainer terminal settlement is not zero-sum");
     return static_cast<double>(payload.chip_utility[ctx.traverser]);
+  }
+  if (state.phase() == Phase::Frontier) {
+    // RFC 0007: the frontier leaf's value is supplied by the declared frontier
+    // evaluator, not by the rules' showdown. The evaluator sees the joint deal
+    // and the flop board; it must not condition on the acting player's own
+    // holding (the contract is documented in bs/frontier.hpp).
+    if (ctx.frontier == nullptr)
+      throw std::runtime_error(
+          "nseat trainer reached a frontier leaf without a frontier evaluator");
+    if (payload.folded)
+      throw std::runtime_error("nseat trainer frontier terminal does not match the tree leaf");
+    const std::vector<int> flop(state.board().begin(), state.board().end());
+    std::vector<std::array<int, 2>> hands(state.player_count());
+    for (std::size_t seat = 0; seat < state.player_count(); ++seat)
+      hands[seat] = (*ctx.holes)[seat];
+    const std::vector<double> values = ctx.frontier->evaluate(flop, hands, payload);
+    if (values.size() != state.player_count())
+      throw std::runtime_error("nseat trainer frontier evaluator returned the wrong seat count");
+    return values[ctx.traverser];
   }
   if (state.phase() != Phase::Showdown)
     throw std::runtime_error("nseat trainer terminal reached a non-terminal game state");
@@ -391,6 +414,7 @@ double walk(SweepContext& ctx, const GameState& state, std::size_t node_index, d
   switch (state.phase()) {
     case Phase::Folded:
     case Phase::Showdown:
+    case Phase::Frontier:
       return terminal_utility(ctx, state, node_index);
     case Phase::Deal:
       return walk_chance(ctx, state, node_index, own_reach);
@@ -407,7 +431,8 @@ void run_sweep(const AbstractTree& tree,
                const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
                const std::vector<int>& root_board, std::size_t traverser,
                NSeatTraversalStreams& streams, std::map<NSeatInformationKey, NSeatRawRow>& table,
-               std::size_t& retained_bytes, std::size_t& visits, const NSeatTrainerLimits& limits) {
+               std::size_t& retained_bytes, std::size_t& visits, const NSeatTrainerLimits& limits,
+               const gto::FrontierEvaluator* frontier) {
   const MultiwayDeal deal = sample_scalable_joint_deal(ranges, root_board, streams.joint_deal);
   if (deal.hands.size() != ranges.size())
     throw std::runtime_error("nseat trainer joint deal has the wrong seat count");
@@ -426,6 +451,7 @@ void run_sweep(const AbstractTree& tree,
   ctx.limits = &limits;
   ctx.action_rng = &streams.opponent_action;
   ctx.chance_rng = &streams.chance_card;
+  ctx.frontier = frontier;
   ctx.depth = 0;
   // The same deterministic root construction the L3 builder used for node 0.
   const GameState root(tree.def());
@@ -457,8 +483,21 @@ void validate_request(const AbstractTree& tree,
     throw std::invalid_argument("nseat trainer supports 2..10 seats");
   if (tree.action_id() != abstraction::identity_action_id())
     throw std::invalid_argument("nseat trainer solves only the identity action abstraction");
-  if (def.board_size < 3 || def.board_size > 5)
-    throw std::invalid_argument("nseat trainer requires a postflop root (3..5 public cards)");
+  if (def.board_size < 3 || def.board_size > 5) {
+    // RFC 0007: a heads-up preflop root with flop-terminal depth is accepted;
+    // the frontier evaluator supplies leaf values. Multiway flop-terminal is
+    // outside the frontier evaluator's two-player contract.
+    if (def.board_size == 0 && def.preflop && def.terminal == poker::TerminalDepth::Flop) {
+      if (def.player_count != 2)
+        throw std::invalid_argument(
+            "nseat trainer: frontier evaluation is heads-up only; multiway "
+            "flop-terminal is outside RFC 0007's scope");
+    } else {
+      throw std::invalid_argument(
+          "nseat trainer requires a postflop root (3..5 public cards) or a "
+          "heads-up flop-terminal preflop root");
+    }
+  }
   if (ranges.size() != def.player_count)
     throw std::invalid_argument("nseat trainer needs one range per game seat");
 }
@@ -479,13 +518,18 @@ SplitMix64 derive_nseat_stream(std::uint64_t master_seed, NSeatStreamPurpose pur
 NSeatTrainingResult train_nseat(const AbstractTree& tree,
                                 const std::vector<std::vector<WeightedHand>>& ranges,
                                 std::uint64_t iterations, std::uint64_t master_seed,
-                                const NSeatTrainerLimits& limits) {
+                                const NSeatTrainerLimits& limits,
+                                const gto::FrontierEvaluator* frontier) {
   validate_request(tree, ranges);
   if (iterations == 0)
     throw std::invalid_argument("nseat trainer requires a positive iteration count");
   if (limits.max_nodes == 0 || limits.max_information_sets == 0 || limits.max_depth == 0 ||
       limits.max_bytes == 0 || limits.max_visits == 0 || limits.wall.count() <= 0)
     throw std::invalid_argument("nseat trainer requires positive resource limits");
+  // RFC 0007: a flop-terminal game requires a frontier evaluator.
+  if (tree.def().terminal == poker::TerminalDepth::Flop && frontier == nullptr)
+    throw std::invalid_argument(
+        "nseat trainer: a flop-terminal game requires a frontier evaluator");
   const std::size_t seats = tree.def().player_count;
   // The materialized tree the caller supplied must already fit the request's
   // structural caps; checking here means every entry point enforces them, and
@@ -529,7 +573,7 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
           derive_nseat_stream(master_seed, NSeatStreamPurpose::OpponentAction, iter, traverser),
           derive_nseat_stream(master_seed, NSeatStreamPurpose::ChanceCard, iter, traverser)};
       run_sweep(tree, sampler_ranges, root_board, traverser, streams, table, retained_bytes, visits,
-                limits);
+                limits, frontier);
     }
     ++completed;
     witness.next_u64();
@@ -559,10 +603,14 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
 void debug_run_one_nseat_sweep(const AbstractTree& tree,
                                const std::vector<std::vector<WeightedHand>>& ranges,
                                std::size_t traverser, NSeatTraversalStreams& streams,
-                               std::map<NSeatInformationKey, NSeatRawRow>& rows) {
+                               std::map<NSeatInformationKey, NSeatRawRow>& rows,
+                               const gto::FrontierEvaluator* frontier) {
   validate_request(tree, ranges);
   if (traverser >= tree.def().player_count)
     throw std::invalid_argument("debug sweep traverser is not a live seat");
+  if (tree.def().terminal == poker::TerminalDepth::Flop && frontier == nullptr)
+    throw std::invalid_argument(
+        "nseat trainer: a flop-terminal game requires a frontier evaluator");
   const auto sampler_ranges = to_sampler_ranges(ranges, tree.def().player_count);
   const std::vector<int> root_board(tree.def().board.begin(),
                                     tree.def().board.begin() + tree.def().board_size);
@@ -570,7 +618,7 @@ void debug_run_one_nseat_sweep(const AbstractTree& tree,
   std::size_t retained_bytes = 0;
   std::size_t visits = 0;
   run_sweep(tree, sampler_ranges, root_board, traverser, streams, rows, retained_bytes, visits,
-            limits);
+            limits, frontier);
 }
 
 const NSeatPolicyRow* NSeatPolicy::lookup(const tree::AbstractTree& tree,

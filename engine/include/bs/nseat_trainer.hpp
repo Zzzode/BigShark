@@ -82,6 +82,10 @@
 #include <stdexcept>
 #include <vector>
 
+namespace bs::gto {
+class FrontierEvaluator;  // RFC 0007: flop-terminal frontier evaluation
+}
+
 namespace bs::solver {
 
 // Resource bounds for the n-seat trainer. Distinct from TrainingLimits: the
@@ -206,7 +210,8 @@ class NSeatPolicy {
  private:
   friend NSeatTrainingResult train_nseat(const tree::AbstractTree&,
                                          const std::vector<std::vector<WeightedHand>>&,
-                                         std::uint64_t, std::uint64_t, const NSeatTrainerLimits&);
+                                         std::uint64_t, std::uint64_t, const NSeatTrainerLimits&,
+                                         const gto::FrontierEvaluator*);
   poker::GameDef game_{};
   abstraction::AbstractionId action_id_{};
   std::map<NSeatInformationKey, NSeatPolicyRow> rows_;
@@ -239,14 +244,17 @@ struct NSeatTrainingResult {
 // (`ranges.size()` must equal `tree.def().player_count`), each combo a sorted
 // distinct in-range pair with a finite strictly positive weight (normalized
 // internally by the joint sampler), a postflop root (`board_size` in 3..5; the
-// card abstraction is defined on a complete flop), a positive iteration count,
-// and the tree's identity action abstraction. Resource caps throw
+// card abstraction is defined on a complete flop) OR a heads-up preflop root
+// with `terminal == TerminalDepth::Flop` (RFC 0007; the frontier evaluator
+// supplies leaf values and must be non-null), a positive iteration count, and
+// the tree's identity action abstraction. Resource caps throw
 // `nseat_training_exhausted`; the wall cap instead returns the last completed
 // iteration counts with phase WallClock.
 NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,
                                 const std::vector<std::vector<WeightedHand>>& ranges,
                                 std::uint64_t iterations, std::uint64_t master_seed,
-                                const NSeatTrainerLimits& limits);
+                                const NSeatTrainerLimits& limits,
+                                const gto::FrontierEvaluator* frontier = nullptr);
 
 // One sweep's RAW accumulators, exposed only through the test seam below so a
 // gate can compare regrets and kFull sums against an independently coded
@@ -273,6 +281,7 @@ struct NSeatTraversalStreams {
 void debug_run_one_nseat_sweep(const tree::AbstractTree& tree,
                                const std::vector<std::vector<WeightedHand>>& ranges,
                                std::size_t traverser, NSeatTraversalStreams& streams,
-                               std::map<NSeatInformationKey, NSeatRawRow>& rows);
+                               std::map<NSeatInformationKey, NSeatRawRow>& rows,
+                               const gto::FrontierEvaluator* frontier = nullptr);
 
 }  // namespace bs::solver
