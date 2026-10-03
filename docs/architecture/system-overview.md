@@ -20,9 +20,10 @@ The repository separates three concerns:
 The TypeScript application and River adapter boundaries and the C++ target
 split are implemented. The v1 framed Protobuf engine protocol is the default
 for the River Club runner (with roots; v0 NDJSON remains as the fallback).
-The resident layer serves blueprint decisions on the v1 path, with
-terminal-only resolving on a minor-2 AUTOMATIC blueprint miss and a labeled
-operational fallback (check/call/fold) when the resolver also misses.
+The resident layer serves blueprint decisions on the v1 path (flop-rooted,
+turn-rooted, river-rooted, and heads-up preflop), with terminal-only
+resolving on a minor-2 AUTOMATIC blueprint miss and a labeled operational
+fallback (check/call/fold) when the resolver also misses.
 
 ## Runtime Components
 
@@ -134,8 +135,9 @@ The live engine is a hybrid poker decision engine:
 
 - Preflop: approximate 6-max, 100 BB charts; a trained heads-up preflop
   profile (flop-terminal, full-range 100 BB with exact all-in-at-flop equity)
-  is published as an offline artifact with policy-derived continuation
-  ranges.
+  is published as an artifact and wired into the live v1 decision path
+  through the resident layer (heads-up only; other table sizes and stack
+  depths fall back to the charts or operational fallback).
 - Flop and turn: deterministic Monte Carlo equity plus heuristics;
   resident blueprint libraries serve flop-rooted decisions at the
   `approximate` guarantee level when a configured root matches.

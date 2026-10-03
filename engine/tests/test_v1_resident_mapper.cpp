@@ -122,9 +122,10 @@ pv::DecisionRequest buildRequest(const NodeSpec& spec) {
 
   *state->add_hero_hole_cards() = protoCard(spec.heroCards[0]);
   *state->add_hero_hole_cards() = protoCard(spec.heroCards[1]);
-  const int boardCount = spec.street == pv::STREET_FLOP   ? 3
-                         : spec.street == pv::STREET_TURN ? 4
-                                                          : 5;
+  const int boardCount = spec.street == pv::STREET_PREFLOP ? 0
+                         : spec.street == pv::STREET_FLOP  ? 3
+                         : spec.street == pv::STREET_TURN  ? 4
+                                                           : 5;
   for (int i = 0; i < boardCount; ++i) {
     const int id = i < 3 ? spec.flop[i] : spec.turnRiver[i - 3];
     *state->add_board() = protoCard(id);
@@ -444,6 +445,64 @@ void assertMiss(const std::string& name, const NodeSpec& spec, V1BlueprintMiss e
                                      (ok ? "hit" : bs::v1::to_string(miss)) + ")");
 }
 
+// Assert a preflop reconstruction succeeds and the reconstructed node matches
+// the structured snapshot fields.
+void assertPreflop(const std::string& name, const NodeSpec& spec, std::size_t heroActor) {
+  pv::DecisionRequest request = buildRequest(spec);
+  ReconstructedPostflop reconstructed;
+  V1BlueprintMiss miss = V1BlueprintMiss::None;
+  const bool ok = bs::v1::reconstructPreflop(request, reconstructed, miss);
+  if (!ok) {
+    check(false, name + " reconstructed (miss " + bs::v1::to_string(miss) + ")");
+    return;
+  }
+  check(reconstructed.state.has_value(), name + " state present");
+  if (!reconstructed.state)
+    return;
+  const bs::poker::GameState& state = *reconstructed.state;
+  check(state.street() == bs::poker::Street::Preflop, name + " street is preflop");
+  check(state.board().empty(), name + " board is empty");
+  check(state.actor().has_value() && *state.actor() == heroActor, name + " actor is hero");
+  check(state.pot() == spec.pot, name + " pot matches");
+  check(reconstructed.hero_actor == heroActor, name + " hero_actor matches");
+  // History contains every preflop event in order.
+  const std::size_t expected_history = spec.preflop.size();
+  check(reconstructed.history.size() == expected_history, name + " history length");
+  for (std::size_t i = 0; i < reconstructed.history.size() && i < spec.preflop.size(); ++i) {
+    const auto& actual = reconstructed.history[i];
+    const EventSpec& expected_event = spec.preflop[i];
+    check(actual.street == bs::poker::Street::Preflop, name + " history street preflop");
+    check(actual.seat == static_cast<std::size_t>(std::stoul(expected_event.actor.substr(1))),
+          name + " history seat");
+    // The engine classifies a preflop aggressive action as Bet (opening the
+    // street, due == 0) or Raise (facing an existing bet) based on the street
+    // commitment at replay time. The v1 protocol uses RAISE for both (e.g.
+    // the BB's "raise" after a limp is a Bet because the SB's call brought
+    // the street commitment even with the BB's blind). The reconstruction
+    // would fail with OffTree if the wrong type were replayed, so accept
+    // either here.
+    if (expected_event.action == pv::ACTION_TYPE_BET ||
+        expected_event.action == pv::ACTION_TYPE_RAISE) {
+      check(actual.action.type == bs::poker::ActionType::Bet ||
+                actual.action.type == bs::poker::ActionType::Raise,
+            name + " history action type");
+    } else {
+      check(actual.action.type == pokerActionType(expected_event.action),
+            name + " history action type");
+    }
+  }
+}
+
+// Assert a preflop reconstruction misses with the expected reason.
+void assertPreflopMiss(const std::string& name, const NodeSpec& spec, V1BlueprintMiss expected) {
+  pv::DecisionRequest request = buildRequest(spec);
+  ReconstructedPostflop reconstructed;
+  V1BlueprintMiss miss = V1BlueprintMiss::None;
+  const bool ok = bs::v1::reconstructPreflop(request, reconstructed, miss);
+  check(!ok && miss == expected, name + " preflop misses as " + bs::v1::to_string(expected) +
+                                     " (got " + (ok ? "hit" : bs::v1::to_string(miss)) + ")");
+}
+
 }  // namespace
 
 int main() {
@@ -553,9 +612,53 @@ int main() {
     assertMatchesOracle("even pot with blinds only uses matched assumption", spec, 1);
   }
   {
+    // Preflop: SB completes, BB faces a check/raise decision. Starting stacks
+    // are 2000 (1980 current + 20 committed each). The reconstruction builds
+    // a preflop GameDef (blinds 10/20, pot 30 at the root) and replays the
+    // SB call.
     NodeSpec spec;
     spec.street = pv::STREET_PREFLOP;
-    assertMiss("preflop is outside the resident profile", spec, V1BlueprintMiss::RootNotSupported);
+    spec.hero = "p1";
+    spec.stacks = {1980, 1980};
+    spec.streetCommitted = {20, 20};
+    spec.pot = 40;
+    spec.toCall = 0;
+    spec.preflop = {{pv::STREET_PREFLOP, "p0", pv::ACTION_TYPE_CALL, std::nullopt, 10, 30}};
+    assertPreflop("preflop SB completes, BB faces", spec, 1);
+  }
+  {
+    // Preflop: SB completes, BB raises to 60, SB faces a call/fold decision.
+    NodeSpec spec;
+    spec.street = pv::STREET_PREFLOP;
+    spec.hero = "p0";
+    spec.stacks = {1980, 1940};
+    spec.streetCommitted = {20, 60};
+    spec.pot = 80;
+    spec.toCall = 40;
+    spec.preflop = {{pv::STREET_PREFLOP, "p0", pv::ACTION_TYPE_CALL, std::nullopt, 10, 30},
+                    {pv::STREET_PREFLOP, "p1", pv::ACTION_TYPE_RAISE, 60, std::nullopt, 40}};
+    assertPreflop("preflop BB raises, SB faces", spec, 0);
+  }
+  {
+    // Preflop at the root (no voluntary actions): SB acts first.
+    NodeSpec spec;
+    spec.street = pv::STREET_PREFLOP;
+    spec.hero = "p0";
+    spec.stacks = {1990, 1980};
+    spec.streetCommitted = {10, 20};
+    spec.pot = 30;
+    spec.toCall = 10;
+    spec.preflop.clear();
+    assertPreflop("preflop root, SB acts first", spec, 0);
+  }
+  {
+    // Three-seat preflop is rejected (the published artifact is heads-up).
+    NodeSpec spec;
+    spec.street = pv::STREET_PREFLOP;
+    spec.playerCount = 3;
+    spec.hero = "p0";
+    spec.preflop.clear();
+    assertPreflopMiss("three-seat preflop is rejected", spec, V1BlueprintMiss::RootNotSupported);
   }
   {
     // A three-seat request whose pot cannot split into equal matched

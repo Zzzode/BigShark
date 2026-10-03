@@ -59,4 +59,17 @@ bool reconstructPostflop(const pv::DecisionRequest& request, ReconstructedPostfl
 bool reconstructPostflopForResolve(const pv::DecisionRequest& request, ReconstructedPostflop& out,
                                    V1BlueprintMiss& miss);
 
+// RFC 0007 preflop reconstruction. Accepts a heads-up preflop decision
+// request and builds the flop-terminal GameDef (board_size=0, preflop=true,
+// blinds_posted derived from forced contributions, terminal=Flop) at the
+// current preflop action node. The published artifact is heads-up 100 BB;
+// a request with a different seat count, blind structure, or stack depth
+// reconstructs successfully but misses declared at the resident root match.
+// Folds, checks, calls, bets, and raises in the preflop action history are
+// replayed as PublicAction{Street::Preflop, ...}. The same fail-closed
+// contract applies: anything outside the profile is a deterministic coverage
+// miss, never an invented root.
+bool reconstructPreflop(const pv::DecisionRequest& request, ReconstructedPostflop& out,
+                        V1BlueprintMiss& miss);
+
 }  // namespace bs::v1

@@ -221,6 +221,29 @@ rows, 266 MB file, 111.6 s wall. The offline builder is
 full-game GTO solution; the all-in-at-flop frontier approximation ignores
 postflop betting.
 
+**Implementation update: live v1 decision-path wiring (2026-10-04).** The
+published heads-up preflop artifact is now wired into the live v1 decision
+path. The v1 protocol reconstruction layer (`reconstructPreflop()` in
+`engine/src/protocol/v1_resident_mapper.cpp`) accepts a heads-up preflop
+decision request and builds the flop-terminal GameDef (board_size=0,
+preflop=true, blinds_posted derived from forced contributions,
+terminal=Flop) at the current preflop action node. The envelope dispatch
+(`reconstructRequest()` in `engine/src/protocol/v1_envelope.cpp`) routes
+preflop requests to `reconstructPreflop()` and postflop requests to the
+existing postflop reconstruction. The resident layer and artifact loader
+already supported preflop (W4b), so no resident-layer changes were needed.
+
+The reconstruction handles the engine's Bet/Raise distinction: when the
+actor's street commitment equals the high (due == 0, e.g. the BB facing a
+limp), the engine classifies the aggressive action as Bet, not Raise. The
+v1 protocol uses RAISE for both cases, so the reconstruction computes `due`
+at replay time and maps to the correct engine action type.
+
+Requests outside the declared profile (non-heads-up, different stack depth,
+or different blind structure) reconstruct successfully but miss declared at
+the resident root match, falling back to the charts or operational fallback.
+The live six-max preflop charts remain in force for six-max play.
+
 ## Design Principles
 
 1. Additive only. Existing artifacts, keys, roots, and wire bytes keep their

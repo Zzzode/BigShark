@@ -238,12 +238,12 @@ carries no `artifact_sha256` and no `guarantee`.
 
 Forced `BLUEPRINT` resolves to a non-retryable `UNSUPPORTED_FEATURE` error
 (with a machine-readable diagnostic suffix) on every miss: the snapshot is
-not postflop heads-up on the no-ante/equal-matched profile, no advertised
-root matches (or the pinned digest mismatches), the structured history does
-not replay exactly, the node/runout is off the trained tree, the row action
-is outside the client window, the hero combo is untrained/board-blocked/zero
-reach, or joint belief is empty. The host never returns a fold strategy on a
-miss and never invents or clamps a root.
+not heads-up on the no-ante/equal-matched profile (postflop or preflop), no
+advertised root matches (or the pinned digest mismatches), the structured
+history does not replay exactly, the node/runout is off the trained tree,
+the row action is outside the client window, the hero combo is
+untrained/board-blocked/zero reach, or joint belief is empty. The host
+never returns a fold strategy on a miss and never invents or clamps a root.
 
 ## Negotiated minor 2 (RFC 0008 stage 5)
 

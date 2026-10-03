@@ -17,6 +17,16 @@ namespace pv = ::bigshark::engine::v1;
 
 constexpr std::size_t kMaxRequestIdBytes = 128;
 
+// Street dispatch: preflop requests go through the RFC 0007 preflop
+// reconstructor; postflop requests use the existing postflop path.
+bool reconstructRequest(const pv::DecisionRequest& request, ReconstructedPostflop& out,
+                        V1BlueprintMiss& miss, bool for_resolve) {
+  if (request.state().street() == pv::STREET_PREFLOP)
+    return reconstructPreflop(request, out, miss);
+  return for_resolve ? reconstructPostflopForResolve(request, out, miss)
+                     : reconstructPostflop(request, out, miss);
+}
+
 EnvelopeResult respondWithDecision(const std::string& requestId,
                                    const pv::DecisionResponse& response,
                                    std::uint32_t negotiated_minor) {
@@ -114,7 +124,7 @@ BlueprintLookup lookupBlueprint(const V1HostServices& services,
   }
   ReconstructedPostflop reconstructed;
   V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
-  if (!reconstructPostflop(request, reconstructed, reconstruct_miss)) {
+  if (!reconstructRequest(request, reconstructed, reconstruct_miss, /*for_resolve=*/false)) {
     result.miss_detail = to_string(reconstruct_miss);
     return result;
   }
@@ -155,7 +165,7 @@ ResolvingLookup lookupResolving(const V1HostServices& services, const pv::Decisi
   }
   ReconstructedPostflop reconstructed;
   V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
-  if (!reconstructPostflopForResolve(request, reconstructed, reconstruct_miss)) {
+  if (!reconstructRequest(request, reconstructed, reconstruct_miss, /*for_resolve=*/true)) {
     result.miss_detail = to_string(reconstruct_miss);
     return result;
   }

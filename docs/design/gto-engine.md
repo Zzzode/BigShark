@@ -283,8 +283,13 @@ trains to completion: 670 nodes, 319 information sets, 285 KB, 0.02 s.
 The RFC 0007 measured 606 info sets at 3 BB is the abstracted count
 (conditioned on hole-card buckets), not the raw tree node count.
 
-The live six-max preflop charts remain in force and are not replaced by
-the heads-up model.
+The live six-max preflop charts remain in force for six-max play. The
+heads-up preflop profile is wired into the live v1 decision path through
+the resident layer: a heads-up preflop request is reconstructed by
+`reconstructPreflop()` and matched against the published artifact. Requests
+outside the declared profile (non-heads-up, different stack depth, or
+different blind structure) miss declared at the resident root match and
+fall back to the charts or operational fallback.
 
 ## Abstract Public Betting Tree and Unified Solve (RFC 0008 Stage 4)
 
