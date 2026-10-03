@@ -1107,7 +1107,8 @@ int case_construction_rejections() {
   {
     GameDef def = base;
     def.terminal = TerminalDepth::Flop;
-    CHECK(rejects(def));  // RFC 0007's stage, not this one
+    // Flop-terminal requires a preflop root; base is flop-rooted.
+    CHECK(rejects(def));
   }
   return 0;
 }
@@ -1145,18 +1146,120 @@ int case_ante_is_rejected_in_this_profile() {
 
 }  // namespace
 
+// RFC 0007: a flop-terminal game ends when a completed flop would open
+// action. The traversal reaches a frontier leaf whose value is supplied
+// by a declared frontier evaluator rather than by the rules' showdown.
+int case_flop_terminal_frontier() {
+  // A heads-up preflop root with flop-terminal depth.
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 1;
+  def.big_blind = 2;
+  def.stacks = {50, 50, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 2;  // the two posted blinds
+  def.board = {-1, -1, -1, 0, 0};
+  def.board_size = 0;
+  def.preflop = true;
+  def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.blinds_posted[def.button] = 1;      // SB
+  def.blinds_posted[1 - def.button] = 2;  // BB
+  def.terminal = TerminalDepth::Flop;
+
+  GameState state(def);
+  CHECK(state.phase() == Phase::Action);
+  CHECK(state.actor() == def.button);  // button acts first preflop
+
+  // Button calls the big blind.
+  state = state.after_action(def.button, Action{ActionType::Call, 0});
+  // Big blind checks (its option).
+  CHECK(state.actor() == 1 - def.button);
+  state = state.after_action(1 - def.button, Action{ActionType::Check, 0});
+
+  // Preflop street closes; the flop deal begins.
+  CHECK(state.phase() == Phase::Deal);
+
+  // Deal three flop cards.
+  const int flop[3] = {card("2h"), card("3h"), card("4h")};
+  for (int c : flop)
+    state = state.after_card(c);
+
+  // The game terminates at the frontier.
+  CHECK(state.phase() == Phase::Frontier);
+  CHECK(!state.actor().has_value());
+  CHECK(state.board().size() == 3);
+  CHECK(state.board()[0] == flop[0]);
+  CHECK(state.board()[1] == flop[1]);
+  CHECK(state.board()[2] == flop[2]);
+  CHECK(state.street() == Street::Flop);
+
+  // The ledger is correct: both seats contributed 2, pot is 4.
+  CHECK(state.players()[0].contributed == 2);
+  CHECK(state.players()[1].contributed == 2);
+  CHECK(state.pot() == 4);
+  CHECK(state.players()[0].stack == 48);
+  CHECK(state.players()[1].stack == 48);
+  // Both seats are live at the frontier.
+  CHECK(state.live_players().size() == 2);
+
+  // Legal actions are empty at the frontier.
+  const LegalActions legal = state.legal();
+  CHECK(!legal.fold && !legal.check && !legal.call);
+
+  // --- Rejections ---
+  const auto rejects = [](GameDef d) {
+    try {
+      const GameState s(d);
+      static_cast<void>(s);
+    } catch (const std::invalid_argument&) {
+      return true;
+    } catch (const std::overflow_error&) {
+      return true;
+    }
+    return false;
+  };
+
+  // Flop-terminal requires a preflop root.
+  {
+    GameDef d = def;
+    d.preflop = false;
+    d.board_size = 3;
+    d.board = {card("2h"), card("3h"), card("4h"), 0, 0};
+    d.contributions = {2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+    d.pot = 4;
+    d.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(rejects(d));
+  }
+
+  // Flop-terminal is heads-up only.
+  {
+    GameDef d = def;
+    d.player_count = 3;
+    d.stacks = {50, 50, 50, 0, 0, 0, 0, 0, 0, 0};
+    // 3-seat preflop: blinds clockwise of button. button=1, small=2, big=0.
+    d.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    d.blinds_posted[2] = 1;
+    d.blinds_posted[0] = 2;
+    d.pot = 3;  // 1 + 2
+    CHECK(rejects(d));
+  }
+
+  return 0;
+}
+
 int main() {
   struct Case {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 6> cases = {{
+  const std::array<Case, 7> cases = {{
       {"flop_rooted_sweep", case_flop_rooted_sweep},
       {"preflop_sweep", case_preflop_sweep},
       {"rooted_flop_nobody_able_to_act", case_rooted_flop_with_nobody_able_to_act},
       {"settlement_and_conservation", case_settlement_and_conservation},
       {"construction_rejections", case_construction_rejections},
       {"ante_is_rejected_in_this_profile", case_ante_is_rejected_in_this_profile},
+      {"flop_terminal_frontier", case_flop_terminal_frontier},
   }};
   int failures = 0;
   for (const Case& item : cases) {

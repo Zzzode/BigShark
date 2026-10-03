@@ -16,7 +16,10 @@ inline constexpr Chips kMaxHeadsUpChips = (Chips{1} << 53) - 1;
 // River = 2 keep their historical values. Preflop is appended so existing
 // encodings, comparisons, and the flop-rooted profile are unchanged.
 enum class Street { Flop, Turn, River, Preflop };
-enum class Phase { Action, Deal, Showdown, Folded };
+// RFC 0007: Frontier is the terminal leaf of a flop-terminal game
+// (TerminalDepth::Flop). The game ends when a completed flop would open
+// action; the leaf's value is supplied by a declared frontier evaluator.
+enum class Phase { Action, Deal, Showdown, Folded, Frontier };
 enum class ActionType { Fold, Check, Call, Bet, Raise };
 
 struct Action {

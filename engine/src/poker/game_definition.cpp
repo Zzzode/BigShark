@@ -60,9 +60,17 @@ void validate(const GameDef& def) {
   require(def.player_count <= kMaxUnifiedSeats, "the unified profile serves at most ten seats");
   require(def.button < def.player_count, "button outside the seated range");
   require(def.big_blind > 0 && def.big_blind <= kMaxHeadsUpChips, "invalid big blind");
-  require(def.terminal == TerminalDepth::River,
-          "flop-terminal games are RFC 0007's stage, not this one");
   require(def.variant == RulesVariant::NoLimitHoldem, "unsupported rules variant");
+
+  // RFC 0007: a flop-terminal game is a heads-up preflop root. The frontier
+  // evaluator is a two-player contract; multiway frontier evaluation is
+  // outside this RFC's scope.
+  if (def.terminal == TerminalDepth::Flop) {
+    require(def.player_count == 2,
+            "flop-terminal games are heads-up only; multiway frontier evaluation is out of scope");
+    require(def.preflop && def.board_size == 0,
+            "a flop-terminal game must start at the preflop root");
+  }
 
   const bool heads_up = def.player_count == 2;
   // A blind never exceeds the stack posting it. An ante MAY exceed a stack:
@@ -623,6 +631,15 @@ GameState GameState::after_card(int card) const {
   next.street_ = dealt <= 3 ? Street::Flop : (dealt == 4 ? Street::Turn : Street::River);
   if (dealt < 3)
     return next;
+
+  // RFC 0007: a flop-terminal game ends when a completed flop would open
+  // action. The traversal reaches a frontier leaf whose value is supplied
+  // by a declared frontier evaluator rather than by the rules' showdown.
+  if (def_.terminal == TerminalDepth::Flop) {
+    next.refresh_live();
+    next.phase_ = Phase::Frontier;
+    return next;
+  }
 
   for (std::size_t p = 0; p < def_.player_count; ++p) {
     next.players_[p].street_committed = 0;

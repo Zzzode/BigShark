@@ -60,8 +60,8 @@ enum class RulesVariant { NoLimitHoldem };
 // RFC 0007's terminal-depth rule. A game that ends when a completed flop would
 // open action is a DIFFERENT GAME, not a different tree: the depth selects the
 // settlement path. It therefore belongs to the definition rather than to the
-// abstraction above it (RFC 0008 §L1). Only `River` is accepted in this stage;
-// `Flop` is declared so the identity surface does not grow a field later.
+// abstraction above it (RFC 0008 §L1). `Flop` is accepted for heads-up
+// preflop roots only; the frontier evaluator is a two-player contract.
 enum class TerminalDepth { River, Flop };
 
 // A hand's complete declared description.
