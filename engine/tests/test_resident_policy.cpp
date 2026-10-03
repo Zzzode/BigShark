@@ -10,6 +10,7 @@
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
+#include <bs/frontier.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
@@ -588,6 +589,69 @@ PublishedV2Fixture publish_v2(
   provenance.engine_revision = "resident-v2-test-1";
   create_checkpoint(checkpoint, exported, provenance);
   const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-v2-1");
+  return {policy_path, def, published.sha256_hex};
+}
+
+// --- RFC 0007 preflop flop-terminal resident fixtures -----------------------
+
+// A trivial frontier evaluator for resident tests: every frontier leaf has
+// zero chip utility for both seats.
+class ZeroFrontierEvaluator : public bs::gto::FrontierEvaluator {
+ public:
+  std::vector<double> evaluate(
+      std::span<const int> flop, std::span<const std::array<int, 2>> hands,
+      const bs::tree::TerminalPayload& ledger) const override {
+    (void)flop;
+    (void)hands;
+    (void)ledger;
+    return {0.0, 0.0};
+  }
+};
+
+// A two-seat preflop flop-terminal game: 3 BB stacks, standard heads-up blinds.
+GameDef two_seat_preflop_def() {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {6, 6, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;  // SB 1 + BB 2
+  def.board = {-1, -1, -1, 0, 0};
+  def.board_size = 0;
+  def.preflop = true;
+  def.blinds_posted = {1, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.terminal = TerminalDepth::Flop;
+  return def;
+}
+
+// Two combos per seat, all mutually card-distinct and sorted ascending.
+std::vector<std::vector<WeightedHand>> two_seat_preflop_ranges() {
+  return {
+      {{{card("Ks"), card("Kd")}, 3}, {{card("As"), card("Ad")}, 2}},
+      {{{card("Js"), card("Jd")}, 7}, {{card("Qs"), card("Qd")}, 5}},
+  };
+}
+
+// Train, checkpoint, and publish a preflop flop-terminal policy.
+PublishedV2Fixture publish_preflop(const fs::path& dir, const std::string& name) {
+  const GameDef def = two_seat_preflop_def();
+  const auto ranges = two_seat_preflop_ranges();
+  const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+  const ZeroFrontierEvaluator frontier;
+  const NSeatTrainingResult trained =
+      train_nseat(tree, ranges, 200, 20261003, NSeatTrainerLimits{}, &frontier);
+  if (trained.termination != NSeatTerminationPhase::Complete) {
+    std::printf("preflop fixture training did not complete for %s\n", name.c_str());
+    std::abort();
+  }
+  const SeatTrainingResult exported = export_seat_policy(trained, tree, ranges);
+  const fs::path checkpoint = dir / (name + "-preflop-checkpoint.db");
+  const fs::path policy_path = dir / (name + "-preflop-policy.db");
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "resident-preflop-test-1";
+  create_checkpoint(checkpoint, exported, provenance);
+  const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-preflop-1");
   return {policy_path, def, published.sha256_hex};
 }
 
@@ -1906,6 +1970,99 @@ static bool test_v3_resident_projection(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// RFC 0007 (W4b): a preflop flop-terminal artifact loads, advertises, and
+// serves belief and hero-decision queries at the preflop root. The root actor
+// is the button (seat 0, the SB in heads-up). A query with a mismatched blind
+// structure misses declared (same_root rejects the pot/big_blind mismatch).
+// ---------------------------------------------------------------------------
+
+static bool test_preflop_resident(const fs::path& dir) {
+  const PublishedV2Fixture fixture = publish_preflop(dir, "preflop");
+
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet residents = ResidentPolicySet::build(
+      {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
+  CHECK(results.size() == 1);
+  CHECK(results[0].status == RootStatus::Advertised);
+  CHECK(residents.advertised_roots() == 1);
+
+  // The preflop root answers a public-belief query. The root actor is the
+  // button (seat 0, the SB in heads-up). The fixture's combos are all mutually
+  // card-distinct, so the root marginals are the declared range weights
+  // normalized per seat.
+  const GameState root_state(two_seat_preflop_def());
+  const std::vector<PublicAction> root_history;
+  ResidentScratch scratch;
+  const ResidentAnswer belief =
+      residents.public_belief(root_state, root_history, std::nullopt, scratch);
+  CHECK(belief.hit);
+  CHECK(belief.reason == MissReason::None);
+  CHECK(belief.public_reach_seats == 2);
+  {
+    const double expected[2][2] = {{3.0 / 5.0, 2.0 / 5.0}, {7.0 / 12.0, 5.0 / 12.0}};
+    const int combos[2][2][2] = {
+        {{card("Ks"), card("Kd")}, {card("As"), card("Ad")}},
+        {{card("Js"), card("Jd")}, {card("Qs"), card("Qd")}},
+    };
+    for (std::size_t seat = 0; seat < 2; ++seat) {
+      double sum = 0.0;
+      for (double mass : *belief.public_reach[seat])
+        sum += mass;
+      CHECK(near(sum, 1.0, 1e-9));
+      for (int k = 0; k < 2; ++k) {
+        const int c = bs::comboIndex(combos[seat][k][0], combos[seat][k][1]);
+        CHECK(near((*belief.public_reach[seat])[c], expected[seat][k], 1e-9));
+      }
+    }
+  }
+
+  // A hero decision at the root returns the seat-0 actor's row (button 0 ->
+  // seat 0 acts first preflop). The hero combo comes from seat 0's range.
+  ResidentScratch hero_scratch;
+  const ResidentAnswer hero = residents.hero_decision(
+      root_state, root_history, {card("As"), card("Ad")}, std::nullopt, hero_scratch);
+  CHECK(hero.hit);
+  CHECK(hero.hero_row.size > 0);
+  double row_sum = 0.0;
+  for (std::size_t i = 0; i < hero.hero_row.size; ++i)
+    row_sum += hero.hero_row.probabilities[i];
+  CHECK(near(row_sum, 1.0, 1e-9));
+
+  // A preflop action history (SB completes, BB now acts) exercises the
+  // preflop event replay loop. The conditioned marginals still normalize.
+  const GameState after_sb_call = root_state.after_action(0, {ActionType::Call});
+  const std::vector<PublicAction> call_history = {
+      {Street::Preflop, 0, {ActionType::Call}},
+  };
+  ResidentScratch call_scratch;
+  const ResidentAnswer call_belief =
+      residents.public_belief(after_sb_call, call_history, std::nullopt, call_scratch);
+  CHECK(call_belief.hit);
+  CHECK(call_belief.reason == MissReason::None);
+  for (std::size_t seat = 0; seat < 2; ++seat) {
+    double sum = 0.0;
+    for (double mass : *call_belief.public_reach[seat])
+      sum += mass;
+    CHECK(near(sum, 1.0, 1e-9));
+  }
+
+  // A query with a mismatched blind structure misses declared: same_root
+  // rejects the pot/big_blind mismatch, so no record matches.
+  GameDef other_def = two_seat_preflop_def();
+  other_def.big_blind = 4;
+  other_def.blinds_posted = {2, 4, 0, 0, 0, 0, 0, 0, 0, 0};
+  other_def.pot = 6;  // SB 2 + BB 4
+  const GameState other_state(other_def);
+  ResidentScratch other_scratch;
+  const ResidentAnswer other =
+      residents.public_belief(other_state, root_history, std::nullopt, other_scratch);
+  CHECK(!other.hit);
+  CHECK(other.reason == MissReason::RootNotSupported);
+
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // W2c-ii-b: three-seat belief with card collisions across seats. The exact
 // inclusion-exclusion path must reproduce hand-computed marginals, and a
 // four-seat artifact must miss declared while still loading and advertising.
@@ -2474,6 +2631,7 @@ int main() {
       {"probe api", test_probe_api},
       {"v2 resident projection", test_v2_resident_projection},
       {"v3 resident projection", test_v3_resident_projection},
+      {"preflop resident projection", test_preflop_resident},
       {"three seat belief collision", test_three_seat_belief_collision},
       {"three seat belief bridging", test_three_seat_belief_bridging},
       {"four seat declared miss", test_four_seat_declared_miss},

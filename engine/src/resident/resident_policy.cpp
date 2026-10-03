@@ -51,18 +51,29 @@ bool same_root(const GameDef& a, const GameDef& b,
   if (a.player_count != b.player_count || a.pot != b.pot || a.big_blind != b.big_blind ||
       a.button != b.button)
     return false;
-  if (a.board_size < 3 || b.board_size < 3)
-    return false;
-  if (canonical_b) {
-    // W4c-ii: the query's flop was canonicalized; compare against the class
-    // representative stored in the record.
-    for (std::size_t i = 0; i < 3; ++i)
-      if (a.board[i] != (*canonical_b)[i])
+  // RFC 0007: a preflop root (board_size == 0) has no board to compare. Match
+  // only when both are preflop; a preflop/postflop mismatch is a root mismatch.
+  if (a.board_size == 0 || b.board_size == 0) {
+    if (a.board_size != b.board_size)
+      return false;
+    // Both preflop: compare blinds_posted (derived deterministically on read).
+    for (std::size_t p = 0; p < a.player_count; ++p)
+      if (a.blinds_posted[p] != b.blinds_posted[p])
         return false;
   } else {
-    for (std::size_t i = 0; i < 3; ++i)
-      if (a.board[i] != b.board[i])
-        return false;
+    if (a.board_size < 3 || b.board_size < 3)
+      return false;
+    if (canonical_b) {
+      // W4c-ii: the query's flop was canonicalized; compare against the class
+      // representative stored in the record.
+      for (std::size_t i = 0; i < 3; ++i)
+        if (a.board[i] != (*canonical_b)[i])
+          return false;
+    } else {
+      for (std::size_t i = 0; i < 3; ++i)
+        if (a.board[i] != b.board[i])
+          return false;
+    }
   }
   for (std::size_t p = 0; p < a.player_count; ++p)
     if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p])
@@ -88,9 +99,12 @@ int relabel_card(int card, const std::array<int, 4>& relabel) {
 UnifiedGame build_v2_game(const GameDef& game,
                           const std::vector<std::vector<solver::WeightedHand>>& ranges,
                           const abstraction::SizeSchedule& sizes) {
-  if (game.board_size != 3)
+  // RFC 0007: a preflop flop-terminal root (board_size == 0) is accepted
+  // alongside flop-rooted (board_size == 3) sources. Turn/river-rooted v2
+  // sources stay refused until the resident root generalizes (RFC 0009 D4).
+  if (game.board_size != 3 && game.board_size != 0)
     throw std::invalid_argument(
-        "resident path supports only flop-rooted v2 artifacts; got board_size " +
+        "resident path supports only flop-rooted or preflop v2 artifacts; got board_size " +
         std::to_string(game.board_size));
   UnifiedGame built;
   built.def = game;
@@ -477,7 +491,10 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
                                      std::span<const PublicAction> prefix) {
   // Prefix board size follows the EVENT's street, not the final state.
   const std::size_t prefix_street = static_cast<std::size_t>(event.street);
-  const std::size_t prefix_board_size = 3 + prefix_street;
+  // RFC 0007: a preflop event has no board cards; postflop events carry the
+  // flop (3) plus the street's turn/river card.
+  const std::size_t prefix_board_size =
+      (event.street == Street::Preflop) ? 0 : 3 + prefix_street;
   // W4c-ii: build the canonical prefix board — the artifact's canonical flop
   // plus relabeled turn/river cards — so the information key matches the
   // class-policy rows. For v2 the relabel is the identity and the canonical
@@ -525,6 +542,20 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
     return MissReason::EmptyJointRange;
 
   std::size_t consumed = 0;
+  // RFC 0007: preflop events (flop-terminal games only). No board cards are
+  // dealt before the frontier, so this loop only replays observed actions.
+  while (consumed < events.size() && events[consumed].street == Street::Preflop) {
+    const PublicAction& event = events[consumed];
+    const std::span<const PublicAction> prefix(events.data(), consumed);
+    model.prepare_partner_mass(event.seat);
+    const MissReason prob_miss =
+        read_action_probabilities(record.index, model, scratch, state, event, prefix);
+    if (prob_miss != MissReason::None)
+      return prob_miss;
+    if (!model.observe_action(event.seat, scratch.action_probability))
+      return MissReason::ZeroProbabilityObservedAction;
+    ++consumed;
+  }
   static constexpr std::array<Street, 3> streets{Street::Flop, Street::Turn, Street::River};
   for (std::size_t street = 0; street < streets.size(); ++street) {
     if (street > 0) {
@@ -593,15 +624,21 @@ ResidentAnswer ResidentPolicySet::public_belief(const GameState& state,
   // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
   // For v2 the relabel is the identity and the canonical flop equals the query
   // flop, so every downstream function behaves exactly as before.
-  if (record.card_abstraction) {
+  // RFC 0007: a preflop record (board_size == 0) has no flop to canonicalize;
+  // the identity relabel and a zeroed canonical flop are correct.
+  if (record.card_abstraction && record.game.def.board_size >= 3) {
     const auto canon =
         abstraction::canonicalize({state.board()[0], state.board()[1], state.board()[2]});
     scratch.canonical_relabel = canon.relabel;
   } else {
     scratch.canonical_relabel = {0, 1, 2, 3};
   }
-  scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
-                            record.game.def.board[2]};
+  if (record.game.def.board_size >= 3) {
+    scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
+                              record.game.def.board[2]};
+  } else {
+    scratch.canonical_flop = {0, 0, 0};
+  }
   if (!runout_matches(record.game, state, scratch.canonical_relabel))
     return miss_answer(MissReason::RunoutDivergence);
 
@@ -632,15 +669,20 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   if (record.game.def.player_count > 3)
     return miss_answer(MissReason::SeatCountNotSupported);
   // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
-  if (record.card_abstraction) {
+  // RFC 0007: a preflop record (board_size == 0) has no flop to canonicalize.
+  if (record.card_abstraction && record.game.def.board_size >= 3) {
     const auto canon =
         abstraction::canonicalize({state.board()[0], state.board()[1], state.board()[2]});
     scratch.canonical_relabel = canon.relabel;
   } else {
     scratch.canonical_relabel = {0, 1, 2, 3};
   }
-  scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
-                            record.game.def.board[2]};
+  if (record.game.def.board_size >= 3) {
+    scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
+                              record.game.def.board[2]};
+  } else {
+    scratch.canonical_flop = {0, 0, 0};
+  }
   if (!runout_matches(record.game, state, scratch.canonical_relabel))
     return miss_answer(MissReason::RunoutDivergence);
 
