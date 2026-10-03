@@ -108,7 +108,7 @@ std::vector<int> independent_chance(const GameState& s) {
 }
 
 struct Counts {
-  long nodes = 0, action = 0, chance = 0, fold = 0, showdown = 0;
+  long nodes = 0, action = 0, chance = 0, fold = 0, showdown = 0, frontier = 0;
   long menu_mismatches = 0, chance_mismatches = 0;
   long fold_payout_bad = 0, edge_bad = 0;
 };
@@ -176,6 +176,34 @@ int verify_node(const AbstractTree& tree, const SizeSchedule& schedule, Counts& 
         saw_folded_ledger = true;
     }
     (void)saw_folded_ledger;
+    CHECK(n.children.empty());
+    return 0;
+  }
+  if (state.phase() == Phase::Frontier) {
+    // RFC 0007: a flop-terminal game ends at the frontier. The leaf carries
+    // the same ledger as a showdown leaf; L4 supplies the value.
+    CHECK(n.kind == NodeKind::TerminalFrontier);
+    ++c.frontier;
+    CHECK(n.terminal != kNoNode);
+    const TerminalPayload& tp = tree.terminal(n.terminal);
+    CHECK(!tp.folded);
+    CHECK(tp.chip_utility.empty());
+    CHECK(tp.live_count == state.live_players().size());
+    for (std::size_t i = 0; i < tp.live_count; ++i)
+      CHECK(tp.live_order[i] == state.live_players()[i]);
+    CHECK(tp.board_size == state.board().size());
+    CHECK(tp.board_size == 3);
+    for (std::size_t i = 0; i < state.board().size(); ++i)
+      CHECK(tp.board[i] == state.board()[i]);
+    for (std::size_t seat = 0; seat < state.player_count(); ++seat) {
+      if (tp.seats[seat].contributed != state.players()[seat].contributed ||
+          tp.seats[seat].refunded != state.players()[seat].refunded ||
+          tp.seats[seat].stack != state.players()[seat].stack ||
+          tp.seats[seat].folded != state.players()[seat].folded) {
+        std::printf("frontier ledger seat %zu mismatch at node %zu\n", seat, ni);
+        return 1;
+      }
+    }
     CHECK(n.children.empty());
     return 0;
   }
@@ -259,6 +287,26 @@ GameDef three_seat_rooted(std::array<Chips, 3> stacks) {
   d.pot = 3;
   d.board = {card("2c"), card("3d"), card("7h"), 0, 0};
   d.board_size = 3;
+  return d;
+}
+
+// RFC 0007: two-seat preflop root with flop-terminal depth. The game ends
+// when a completed flop would open action; every non-fold leaf is a frontier.
+GameDef two_seat_preflop_flop_terminal(Chips stack) {
+  GameDef d{};
+  d.player_count = 2;
+  d.button = 1;
+  d.big_blind = 2;
+  d.stacks = {stack, stack, 0, 0, 0, 0, 0, 0, 0, 0};
+  d.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  d.pot = 2;  // declared root pot; constructor validates contributions <= pot
+  d.board = {-1, -1, -1, 0, 0};
+  d.board_size = 0;
+  d.preflop = true;
+  d.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  d.blinds_posted[d.button] = 1;      // SB
+  d.blinds_posted[1 - d.button] = 2;  // BB
+  d.terminal = TerminalDepth::Flop;
   return d;
 }
 
@@ -397,6 +445,33 @@ int main() {
     }
     CHECK(two_way_with_a_folder == 183456);
     CHECK(three_way == 108192);
+  }
+
+  // --- RFC 0007: two-seat preflop flop-terminal. The lockstep walk verifies
+  // every frontier leaf's kind, ledger, and board. The tree is bounded: no
+  // node has street past Flop, and every non-fold terminal is a frontier.
+  // Stack 3 BB limits the raise ladder to all-in only, keeping the tree
+  // small enough for an exact pinned-count test. ---
+  {
+    GameDef def = two_seat_preflop_flop_terminal(3);
+    AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+    Counts c;
+    GameState root(def);
+    if (verify_node(tree, schedule, c, tree.root_index(), root, 1) != 0)
+      return 1;
+    std::printf("2p preflop flop-term s3: nodes=%ld A=%ld C=%ld F=%ld S=%ld FR=%ld\n", c.nodes,
+                c.action, c.chance, c.fold, c.showdown, c.frontier);
+    CHECK(c.frontier > 0);
+    CHECK(c.showdown == 0);
+    CHECK(c.menu_mismatches == 0 && c.chance_mismatches == 0 && c.fold_payout_bad == 0);
+    CHECK(static_cast<std::size_t>(c.nodes) == tree.size());
+    // Bounded: no node has street past Flop.
+    for (const TreeNode& n : tree.nodes())
+      CHECK(n.street == Street::Preflop || n.street == Street::Flop);
+    // Every terminal is either a fold or a frontier (no showdown).
+    for (const TreeNode& n : tree.nodes())
+      if (n.is_terminal())
+        CHECK(n.kind == NodeKind::TerminalFold || n.kind == NodeKind::TerminalFrontier);
   }
 
   // --- TreeLimits: a node cap below the true size throws the typed, NON

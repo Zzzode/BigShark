@@ -43,7 +43,10 @@ std::vector<Action> abstract_node_menu(const GameState& state,
 // trainer's streaming chance ordinal indexes this exact list.
 std::vector<int> public_runout_cards(const GameState& state);
 
-enum class NodeKind { Action, Chance, TerminalFold, TerminalShowdown };
+// RFC 0007: TerminalFrontier is the leaf of a flop-terminal game
+// (TerminalDepth::Flop). The payload carries the same ledger as a showdown
+// leaf; the frontier value is supplied by L4 through a FrontierEvaluator.
+enum class NodeKind { Action, Chance, TerminalFold, TerminalShowdown, TerminalFrontier };
 
 // One seat's terminal ledger entry. Folded seats are retained with their GROSS
 // contributed amount: N-way side-pot settlement needs every seat's commitment,
@@ -122,7 +125,8 @@ struct TreeNode {
   bool is_action() const { return kind == NodeKind::Action; }
   bool is_chance() const { return kind == NodeKind::Chance; }
   bool is_terminal() const {
-    return kind == NodeKind::TerminalFold || kind == NodeKind::TerminalShowdown;
+    return kind == NodeKind::TerminalFold || kind == NodeKind::TerminalShowdown ||
+           kind == NodeKind::TerminalFrontier;
   }
 };
 

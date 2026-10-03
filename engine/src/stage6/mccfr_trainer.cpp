@@ -511,6 +511,12 @@ double walk(SweepContext& ctx, const GameState& state, std::size_t node_index, d
       }
       return walk_action(ctx, state, coarse_menu(state, *ctx.config), node_index, own_reach);
     }
+    case Phase::Frontier:
+      // RFC 0007: the stage-6 streaming trainer does not evaluate flop-terminal
+      // games; the n-seat trainer owns frontier evaluation. Fail with a clear
+      // message rather than falling through to the generic phase error.
+      throw std::runtime_error(
+          "stage-6 trainer does not support flop-terminal games; use the n-seat trainer");
   }
   throw std::runtime_error("trainer reached an unrecognized game phase");
 }
@@ -678,7 +684,8 @@ AlignmentReport debug_verify_tree_paths(const AbstractTree& tree, const GameDef&
 
     if (node.is_terminal()) {
       ++report.terminal_nodes;
-      if (state.phase() != Phase::Folded && state.phase() != Phase::Showdown)
+      if (state.phase() != Phase::Folded && state.phase() != Phase::Showdown &&
+          state.phase() != Phase::Frontier)
         throw std::runtime_error("path alignment: terminal node maps to a non-terminal state");
       continue;
     }

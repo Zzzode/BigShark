@@ -230,6 +230,15 @@ class TreeBuilder {
         TerminalPayload payload = make_terminal(frame.state, false, budget_);
         grow_to_fit(tree_.terminals_, tree_.terminals_.size() + 1, budget_);
         tree_.terminals_.push_back(std::move(payload));
+      } else if (phase == Phase::Frontier) {
+        // RFC 0007: a flop-terminal game ends at the frontier. The payload
+        // carries the same ledger as a showdown leaf; L4 supplies the value
+        // through a FrontierEvaluator.
+        node.kind = NodeKind::TerminalFrontier;
+        node.terminal = tree_.terminals_.size();
+        TerminalPayload payload = make_terminal(frame.state, false, budget_);
+        grow_to_fit(tree_.terminals_, tree_.terminals_.size() + 1, budget_);
+        tree_.terminals_.push_back(std::move(payload));
       } else if (phase == Phase::Deal) {
         node.kind = NodeKind::Chance;
       } else {
