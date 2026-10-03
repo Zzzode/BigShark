@@ -11,12 +11,12 @@ management fields.
 `engine/src/protocol/v0_json.cpp` owns JSON mapping and yyjson. It maps to
 protocol-neutral domain types before `bigshark_service` invokes policy.
 
-The current protocol is an internal, unversioned v0 contract. Its accepted
+The v0 protocol is an internal, unversioned JSON contract. Its accepted
 typed replacement is defined by
 [RFC 0002](../rfcs/0002-protobuf-engine-protocol.md). The v1 IDL and generated
 bindings are documented in
-[Protobuf Engine Protocol](protobuf-engine-protocol.md). The production
-process has not migrated.
+[Protobuf Engine Protocol](protobuf-engine-protocol.md). The River Club
+runner defaults to v1 (with roots); v0 remains as the fallback path.
 
 ## Transport
 
@@ -166,15 +166,15 @@ The parser applies defaults to missing values. Syntactically invalid JSON
 becomes an empty default context and produces a fold-shaped `no hole cards`
 response. An exception produces a fold-shaped `parse-error` response.
 
-This is safe for the current River Club runner, which performs a legality
-check and owns the final operational fallback. It is insufficient as a public
+This is safe for the River Club runner, which performs a legality check and
+owns the final operational fallback. It is insufficient as a public
 multi-platform contract because errors and strategic folds are not strongly
 distinguished. RFC 0002 requires explicit protocol versions, request IDs,
 validation errors, mixed strategies, and capability negotiation.
 
 ## Compatibility
 
-This document describes the current implementation and does not declare a
-stable public API. New adapters target the accepted RFC 0002 contract rather
-than adopting v0. Existing River Club operation remains on v0 until Protobuf
-adapter parity and host migration pass.
+This document describes the v0 fallback implementation and does not declare a
+stable public API. New adapters target the accepted RFC 0002 contract. The
+River Club runner defaults to v1 (with roots); v0 remains as the fallback
+path for backward compatibility.

@@ -25,11 +25,13 @@ integration, and development documentation.
 | RFC | [RFC 0004: Heads-up blueprint](rfcs/0004-heads-up-blueprint.md) | Implementing | Real betting rules, multi-size offline training, coverage, and quality gates |
 | RFC | [RFC 0005: Artifacts and resolving](rfcs/0005-strategy-artifacts-and-resolving.md) | Implementing | Durable strategies, bounded lookup, certified on-tree resolving, and minor-1 integration |
 | RFC | [RFC 0006: Extended poker utility](rfcs/0006-extended-poker-utility.md) | Implementing | Side pots, rake, ICM, experimental multiway evaluation, and production prerequisites |
-| RFC | [RFC 0007: Preflop profile abstraction](rfcs/0007-preflop-profile-abstraction.md) | Accepted | Bounded preflop training for a declared small profile, policy-derived continuation ranges, and coexistence with existing artifacts |
+| RFC | [RFC 0007: Preflop profile abstraction](rfcs/0007-preflop-profile-abstraction.md) | Implementing | Bounded preflop training for a declared small profile, policy-derived continuation ranges, and coexistence with existing artifacts |
 | RFC | [RFC 0008: Unified N-player architecture](rfcs/0008-unified-n-player-architecture.md) | Implementing | One game definition for 2..10 seats, a versioned abstraction layer with measured error, one solver interface, explicit guarantee levels, and staged removal of superseded paths |
-| RFC | [RFC 0009: Unified engine delivery](rfcs/0009-unified-engine-delivery.md) | Accepted | Live promotion and wiring, a seat-parameterized solve seam, artifact schema v2 with abstraction identity, generalized resolving, flop coverage, and the heuristic demotion |
+| RFC | [RFC 0009: Unified engine delivery](rfcs/0009-unified-engine-delivery.md) | Implementing | Live promotion and wiring, a seat-parameterized solve seam, artifact schema v2 with abstraction identity, generalized resolving, flop coverage, and the heuristic demotion |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
+| Plan | [RFC 0009 implementation](plans/0009-implementation.md) | Current | Unified engine delivery stages W1-W5, status, and evidence |
+| Plan | [RFC 0009 W2c-ii state layer](plans/0009-w2c-ii-state-layer.md) | Current | N-seat belief state layer design, generalization, and certification |
 | Plan | [GTO delivery roadmap](plans/gto-delivery-roadmap.md) | Proposed | Complete follow-up scope, dependencies, acceptance evidence, and outstanding decisions |
 | Strategy | [Poker playbook](../strategy/PLAYBOOK.md) | Current | Baseline poker decisions and bankroll discipline |
 | Strategy | [Style selector](../.codex/skills/INDEX.md) | Current | Exploitative style selection and overrides |

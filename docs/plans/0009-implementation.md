@@ -2,15 +2,15 @@
 
 Status: Current
 
-Execution state: RFC 0009 is Accepted (independent approval record in the
+Execution state: RFC 0009 is Implementing (independent approval record in the
 RFC's Decision section, 2026-09-29). This plan maps its stages W1-W5 to tasks,
 evidence, and gates. Each stage lands as one reviewed commit set with
 implementer and reviewer as separate agents (repository convention).
 
 ## Stage W1 — Wiring, no default change
 
-Status: implemented in the working tree, independently reviewed and Approved
-(2026-09-29, two rounds; see the review record below), pending commit.
+Status: implemented and committed (c88dc17), independently reviewed and Approved
+(2026-09-29, two rounds; see the review record below).
 
 Delivered (RFC 0009 D1):
 
@@ -72,8 +72,8 @@ can return a non-integer that the budget sanitizer pins to 2000 (cosmetic).
 | W1 | Wiring: root config, v1 enablement, budget, provenance | Committed (c88dc17) |
 | W2 | Seat-parameterized trainer behind `solve()`; artifact schema v2; resolver/resident generalization (per-seat certification); host service types | Committed (W2a f05a813; W2b 54a3cf6; W2c-i 883fc72; W2c-ii-a ec1fe6c; W2c-ii-b 4ed6630; W2c-ii-c b88c005) |
 | W3 | Promotion + demotion in one change (runner defaults to v1 with roots; minor-2 AUTOMATIC loses the heuristic fallthrough; minor 1 frozen); rollback artifact recorded | Committed (9d41749); rollback artifact = commit b88c005 + pre-W3 release binary; independent review APPROVE |
-| W4 | Coverage: suit canonicalization, preflop profile (RFC 0007), first flop library, terminal-only resolving at n >= 2, simulator engine-served tier (D7) | W4a suit canonicalization committed (745a379); W4c-i schema v3 card-abstraction declaration committed; W4b preflop profile, W4c-ii class-based resolve_root, W4c-iii first trained class library, W4d terminal-only resolving, W4e simulator engine-served tier committed (67f3118) |
-| W5 | Documentation freshness (system overview, design doc corrections, protocol references) | Not started |
+| W4 | Coverage: suit canonicalization, preflop profile (RFC 0007), first flop library, terminal-only resolving at n >= 2, simulator engine-served tier (D7) | W4a suit canonicalization committed (745a379); W4c-i schema v3 card-abstraction declaration committed (6c88793); W4b preflop profile committed (97d58f6, 6405ab8, aa7f359, 34840b4, efecb17, 8cb16ae); W4c-ii class-based resolve_root committed (0f58799); W4c-iii first trained class library committed (ebeb32c); W4d terminal-only resolving committed (0844a18); W4e simulator engine-served tier committed (67f3118, d070079) |
+| W5 | Documentation freshness (system overview, design doc corrections, protocol references) | Committed |
 
 Open items carried for later stages (from review round 1, non-blocking):
 reconcile D1's "journals that state" wording for v1-without-roots at W3;

@@ -12,12 +12,19 @@ the process warm and communicates with it through newline-delimited JSON
 
 The live policy is hybrid:
 
-- preflop uses approximate charts;
+- preflop uses approximate charts; a trained heads-up preflop profile
+  (flop-terminal, declared small profile at 3 BB) is available as an offline
+  artifact with policy-derived continuation ranges (RFC 0007 / W4b);
 - flop and turn use deterministic Monte Carlo equity and policy heuristics;
+  resident blueprint libraries serve flop-rooted decisions at the
+  `approximate` guarantee level when a configured root matches;
 - supported heads-up river spots use an exact sequence-form linear program
   when HiGHS is available and the solve fits the time budget;
 - other supported river spots use bounded Discounted Counterfactual Regret
   Minimization (DCFR);
+- on a minor-2 AUTOMATIC blueprint miss, the bounded terminal-only resolver
+  runs; if it also misses, a labeled operational fallback (check/call/fold)
+  is served;
 - unsupported or failed solver paths return to the heuristic policy.
 
 The term GTO in this repository applies to the implemented equilibrium
@@ -27,9 +34,13 @@ subsystems. It does not imply full-game equilibrium coverage.
 
 ```mermaid
 flowchart TD
-  Input[Normalized v0 JSON context] --> Protocol[v0 protocol mapper]
+  Input[Normalized v1 framed context] --> Protocol[v1 protocol mapper]
+  Input --> V0Fallback[v0 protocol mapper fallback]
   Protocol --> Service[Decision service]
-  Service --> Street{Street}
+  V0Fallback --> Service
+  Service --> Resident{Resident blueprint?}
+  Resident -->|Hit| Blueprint[Serve blueprint]
+  Resident -->|Miss| Street{Street}
   Street -->|Preflop| Charts[Position and response charts]
   Street -->|Flop or turn| Equity[Monte Carlo equity]
   Equity --> Heuristic[Postflop heuristic policy]
@@ -39,10 +50,15 @@ flowchart TD
   Ranges --> Budget{Exact solve fits budget?}
   Budget -->|Yes| LP[Sequence-form LP]
   Budget -->|No| DCFR[Bounded DCFR]
+  Resident -->|Miss, minor-2 AUTOMATIC| Resolve[Terminal-only resolver]
+  Resolve -->|Hit| Translate
+  Resolve -->|Miss| Fallback[Operational fallback]
   LP --> Translate[Translate and validate action]
   DCFR --> Translate
   Charts --> Translate
   Heuristic --> Translate
+  Blueprint --> Translate
+  Fallback --> Translate
   Translate --> Output[Decision response]
 ```
 
@@ -53,19 +69,19 @@ flowchart TD
 | `include/bs/eval.hpp` | Five-to-seven-card hand evaluation and comparable scores |
 | `include/bs/heads_up.hpp`, `src/poker/heads_up.cpp` | Offline flop-rooted heads-up betting transitions and exact chip settlement |
 | `include/bs/game_definition.hpp`, `src/poker/game_definition.cpp`, `src/poker/game_definition_settlement.cpp` | RFC 0008 unified game definition: one `GameDef` / `GameState` for 2..10 seats with a single legal-transition implementation. Stages 1-2 construct every seat count 2..10; the machine selects the heads-up rules at two seats and the `MultiwayState` rules at 3..10 by seat-count branch. `HeadsUpState`/`MultiwayState` remain the shipping rules types and nothing routes through this yet. Guarded by two independent oracles (`test_game_definition` for the two-seat profile, `test_game_definition_multiway` driving the real `MultiwayState` in lockstep at 3..6 and an independent ledger at 7..10) and by machine-run mutation batteries that require every semantic mutation to turn an oracle red or be recorded as equivalent with a reachability measurement that proves it |
-| `include/bs/abstraction.hpp`, `src/abstraction/abstraction.cpp` | RFC 0008 stage 3 L2 abstraction (a separate `bigshark_abstraction` target linking ONLY `bigshark_poker`): the declared ordered action menu (the RFC 0007 per-street pot-fraction schedule with its `AbstractionId`), identity and lossy card bucketing, deterministic abstraction identity, and a typed `abstraction_mismatch` refusal. The rules never depend on it and it never knows a solver; the solver menu is a thin adapter over it. The identity menu reproduces the shipped menu element-for-element, pinned by `test_abstraction_equivalence`; decision behavior is unchanged (replay 156/0/0). Stage 3 also added the profile-neutral `build_multiway_action_menu` with a caller-supplied deepest-cover cap; the two-seat `build_action_menu` path is byte-identical (shared core). Persistence of the id is a later stage and the frozen artifact schema is untouched |
+| `include/bs/abstraction.hpp`, `src/abstraction/abstraction.cpp` | RFC 0008 stage 3 L2 abstraction (a separate `bigshark_abstraction` target linking ONLY `bigshark_poker`): the declared ordered action menu (the RFC 0007 per-street pot-fraction schedule with its `AbstractionId`), identity and lossy card bucketing, deterministic abstraction identity, and a typed `abstraction_mismatch` refusal. The rules never depend on it and it never knows a solver; the solver menu is a thin adapter over it. The identity menu reproduces the shipped menu element-for-element, pinned by `test_abstraction_equivalence`; decision behavior is unchanged (replay 156/0/0). Stage 3 also added the profile-neutral `build_multiway_action_menu` with a caller-supplied deepest-cover cap; the two-seat `build_action_menu` path is byte-identical (shared core). Persistence of the id landed in schema v3 (W4c-i); the card-abstraction declaration is stored in the artifact manifest and consumed by the class-based `resolve_root` and flop class library |
 | `include/bs/abstract_tree.hpp`, `src/tree/abstract_tree.cpp` | RFC 0008 stage 4 L3 abstract public betting tree (a separate `bigshark_tree` target linking ONLY `bigshark_poker` and `bigshark_abstraction`): one seat-count-agnostic builder materializes the full unconditioned public tree (abstracted action nodes, probability-free public-card chance nodes, and fold/showdown terminal ledgers) from an L1 `GameDef` plus an L2 `ActionAbstraction`, owned by value. It carries no regrets, ranges, hole cards, or policy; chance edges carry no probability (per-deal conditioning is L4), and a fold leaf records the exact `settle_fold()` utility vector while a showdown leaf records the ledger L4 needs for `settle_showdown`. Deterministic `TreeLimits` throw a typed, non-`invalid_argument` `tree_resource_exhausted`, and the byte cap is a true upper bound on retained capacity (every retained slab is budgeted before allocation). An unconditional build-time boundary-guard target (scanning the header and source with comments/strings stripped) and a link-negative target forbid any L3 dependency on the solver, the transitional rules adapters, storage/transport, or a private-holding evaluator. Fidelity is pinned by an independent enumerator (`test_abstract_tree_fidelity`) that never calls the builder or L2 menu |
 | `include/bs/solve.hpp`, `src/gto/solve.cpp`, `include/bs/detail/solve_projection.hpp`, `src/gto/solve_projection.cpp` | RFC 0008 stage 4 L4 unified solver seam: `SolveResult solve(const SolveRequest&)`. Every RFC-named solver is reachable through it; a solver that does not model the tree's shape throws a typed, non-`invalid_argument` `unsupported_tree_shape` rather than approximating. Stage 4 routes the heads-up multistreet CFR behind solve() by a pure field-copy projection of the two-seat `GameDef` onto a `HeadsUpRoot` (the projection is a separately unit-tested detail translation unit so the unmaterializable preflop arm is still verified), with the numeric `HeadsUpTrainer` core unchanged and bit-for-bit conformance over both drivers and all fixed-runout variants (`test_solve_conformance`); it pre-validates fixed conditioning with the typed refusal. The river LP/DCFR and experimental multistreet solvers are registered as explicit refuse-only adapters because their bespoke models are not L1 identity trees. No `Guarantee` enum lives here (the source-to-guarantee map is L6) |
 | `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response. The fractional size schedule types and the ordered action menu now live in `bigshark_abstraction`; this target re-exports the types unchanged and delegates `abstract_actions` to the lifted builder. As of stage 4 its only unified entry point is `solve()`; the direct trainer remains the bit-for-bit reference that conformance pins against, not a second strategy |
 | `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
-| `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 offline resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup; unwired and offline in this stage |
+| `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup. Wired into the v1 decision path: linked by `bigshark_v1_protocol` (PRIVATE) and serves blueprint decisions on the resident path |
 | `include/bs/flop_library.hpp`, `src/flop_library/` | RFC 0009 W4c-iii offline flop class library builder: enumerates the 1,755 suit-isomorphic canonical classes, trains and publishes a per-class schema-v3 artifact with a declared premium range, and writes an honest coverage/storage manifest. Links `bigshark_artifacts` PUBLIC; offline only, linked by nothing on a decision path |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
 | `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..10-player ledger (widened from 2..6 in RFC 0008 stage 2) |
 | `include/bs/charts.hpp`, `src/poker/charts.cpp` | 169-hand keys, Chen ordering, and preflop ranges |
 | `include/bs/equity.hpp` | Deterministic Monte Carlo equity against filtered opponent ranges |
 | `include/bs/range.hpp` | Concrete two-card combinations and range utilities |
-| `include/bs/policy.hpp`, `include/bs/guarantee.hpp`, `src/policy/decision.cpp`, `src/policy/guarantee.cpp` | Street routing, heuristic policy, solver action translation, and (RFC 0008 stage 5) the declared `DecisionSource` ladder. `evaluatePolicySourced(Ctx, RiverBackendHint)` names the source that selected each decision at the routing branch; `guaranteeFor` is the single normative source-to-level table (all policy-producible sources are `approximate` today), owned here under a narrow `-Werror=switch` |
+| `include/bs/policy.hpp`, `include/bs/guarantee.hpp`, `src/policy/decision.cpp`, `src/policy/guarantee.cpp` | Street routing, heuristic policy, solver action translation, and (RFC 0008 stage 5) the declared `DecisionSource` ladder. `evaluatePolicySourced(Ctx, RiverBackendHint)` names the source that selected each decision at the routing branch; `guaranteeFor` is the single normative source-to-level table (policy-producible sources span `approximate`, `certified_bound`, and `operational_fallback` after W3/W4d), owned here under a narrow `-Werror=switch` |
 | `include/bs/service.hpp`, `src/service/decision_service.cpp` | Protocol-neutral decision service entry point; stage 5 adds `decideSourced(Ctx)` returning the decision plus its declared source |
 | `include/bs/v0_protocol.hpp`, `src/protocol/v0_json.cpp` | Legacy JSON request and response mapping (frozen; no guarantee surface) |
 | `src/protocol/v1_*.{hpp,cpp}` | RFC 0002/0005 framed Protobuf host: minor 0 (frozen), minor 1 (`ExpandedStrategy`, resident blueprint/resolve, field 10 vocabulary), and (RFC 0008 stage 5) minor 2 with the typed five-level ladder — `SolverMetadata.guarantee_level` (field 11) on every successful response, the `minimum_guarantee` request floor (field 8), and non-retryable error code 9 for a complete below-floor answer. RFC 0009 W3 demotes the minor-2 `AUTOMATIC` heuristic fallthrough to an explicit `HEURISTIC` request; W4d wires terminal-only resolving into the minor-2 `AUTOMATIC` branch on a blueprint miss (certified → `certified_bound`/RESOLVING, deadline baseline → `approximate`/BLUEPRINT, resolver miss → operational fallback) |
@@ -77,7 +93,7 @@ flowchart TD
 | `src/gto/cfr_solver.*` | Bounded full-tree DCFR fallback |
 | `include/bs/river_gto.hpp`, `src/gto/river_gto.cpp` | Public river solver facade and scheduling |
 | `src/gto/multistreet_cfr.*` | Experimental offline flop-to-river DCFR |
-| `apps/engine-host/main.cpp` | One-shot and persistent NDJSON process composition |
+| `apps/engine-host/main.cpp` | One-shot and persistent NDJSON process composition, plus framed Protobuf host modes (`--proto` / `--serve-proto`, the default serving mode) |
 
 The corresponding CMake dependency graph is:
 
@@ -173,7 +189,8 @@ utility relative to hand-start chips. Zero-sum chip conservation applies
 throughout this supported profile. After an all-in call the remaining public
 cards are dealt without further betting.
 
-Persistence, resolving, and multiway rules are separate implementation stages.
+Persistence (Stage 5) and resolving (Stage 9, plus W4d wiring) have landed.
+Multiway rules remain a separate implementation stage.
 
 ### Preflop size schedule and the accounting decoupling (RFC 0007 step 1)
 
@@ -244,25 +261,28 @@ mismatched blind posts, and blinds exceeding a stack are rejected.
 
 This change delivers the preflop RULES and their independent native tests
 (`engine/tests/test_heads_up_preflop.cpp`), which is rollout step 1 of RFC 0004
-("rules and independent terminal tests, with no live policy change"). It does
-NOT deliver preflop training or continuation-range export, and the profile must
-not be described as solved.
+("rules and independent terminal tests, with no live policy change").
 
-The blocker is measured, not assumed. A full traversal from a preflop root is
-not a bounded workload: every preflop line reaches every flop, so the tree spans
-all C(48,3) = 17,296 boards per line times the action menu. Even a deliberately
-shallow three-big-blind stack does not converge inside the declared limits — a
-bounded walk visits over 3,000,000 nodes and more than 1,000,000 distinct
-postflop information sets while the preflop street itself has only two. The
-convergence gates are therefore not met and no preflop coverage is claimed.
+RFC 0007 (W4b) subsequently delivered the bounded preflop profile:
+`TerminalDepth::Flop` game termination, `Phase::Frontier` frontier leaves,
+the frontier evaluator contract (option A: declared table), n-seat trainer
+flop-terminal support, preflop artifact persistence (rules_id
+`rfc0009-unified-preflop-v1`), resident-layer preflop support, and
+continuation-range export. The declared small profile (6 combos/seat,
+flop-terminal) trains to completion.
 
-A bounded preflop profile needs its own abstraction (a flop-terminal subgame
-with the postflop continuation represented rather than enumerated) plus a
-dedicated preflop size menu. That menu changes `SizeSchedule`, which is part of
-the artifact byte-accounting contract (`accounted_bytes` identity between a
-split run and an uninterrupted one), so it needs its own accepted design before
-implementation. Until then the live six-max preflop charts remain in force and
-are not replaced by any heads-up model.
+MEASUREMENT FINDING: the flop-terminal tree is dominated by the chance
+subtree (52*51*50 = 132,600 flop runouts per preflop line). The tree fits
+within the default 1 GiB TreeLimits byte cap only at 3 BB (947K nodes,
+614 MB); 5 BB needs 2.4 GiB and 25 BB exceeds even an 8 GiB cap. The
+RFC 0007 measured 606 info sets is the abstracted count (conditioned on
+hole-card buckets), not the raw tree node count. The declared profile is
+trained at 3 BB, the largest stack within the default bounded limits.
+Realistic-size preflop training needs a DAG/shared-chance-subtree
+representation and is deferred.
+
+The live six-max preflop charts remain in force and are not replaced by
+the heads-up model.
 
 ## Abstract Public Betting Tree and Unified Solve (RFC 0008 Stage 4)
 
@@ -459,8 +479,9 @@ evaluation reports resource failure explicitly. Extremely small probabilities
 that would underflow are unsupported rather than silently removed.
 
 Sampled traversal is implemented and is the documented release-scale trainer
-(see the next section); serialized training resume, release-scale coverage,
-and preflop training remain pending. A small weighted fixed-run fixture reaches
+(see the next section); serialized training resume and release-scale coverage
+remain pending. Preflop training landed in W4b (flop-terminal, declared small
+profile at 3 BB). A small weighted fixed-run fixture reaches
 normalized NashConv `0.000821201` at 8,192 iterations; this is not a
 general-game equilibrium claim.
 
@@ -554,8 +575,8 @@ exchanges only solver domain records (`HeadsUpGame`, `HeadsUpPolicy`,
 regret/average rows). SQLite and OpenSSL headers never appear in the public
 header; SQL handles never cross the boundary. The library links
 `bigshark_solver` publicly for the domain types and keeps the vendored SQLite
-amalgamation and OpenSSL Crypto PRIVATE. No host, service, client, platform, or
-live-decision path links it in this stage; wiring is deferred.
+amalgamation and OpenSSL Crypto PRIVATE. The library is linked by
+`bigshark_resident`, which is wired into the v1 decision path.
 
 ```mermaid
 flowchart LR
@@ -655,7 +676,8 @@ checked in C++ before indexing, independent of write-time SQL CHECKs.
 Optional digest pinning rejects a tampered file before parsing. Failures are
 typed `ArtifactError` values (including a dedicated capacity-exceeded kind).
 This stage eagerly loads all rows into immutable domain records; bounded
-resident subset selection and any decision-path access belong to Stage 6.
+resident subset selection and decision-path access landed in Stage 6 (the
+resident layer, wired into the v1 path).
 Checkpoint writers fail closed: after setting the writer pragmas they read
 `synchronous` (`2`/FULL) and `journal_mode` (`delete`) back on the same
 connection and abort on mismatch; the per-connection synchronous setting is
@@ -671,19 +693,18 @@ sums, oversized integers, and immutable-publication guarantees.
 
 ## Resident Policy Lookup (RFC 0005 Stage 6)
 
-The offline `bigshark_resident` static library adds the resident layer over
+The `bigshark_resident` static library adds the resident layer over
 validated artifacts. Its public surface is
 `include/bs/resident_policy.hpp`, implemented under `src/resident/`
 (`resident_policy.cpp`, `public_reach.{hpp,cpp}`,
 `resident_index.{hpp,cpp}`). It links `bigshark_artifacts` PUBLIC (which
-brings the solver and poker domain records) and is linked by nothing else:
-not the policy, service, host, v0, protocol, client, or platform targets.
-The layer is offline only and is not wired to any decision path in this
-stage.
+brings the solver and poker domain records) and is linked by
+`bigshark_v1_protocol` (PRIVATE), serving blueprint decisions on the v1
+decision path.
 
 ```mermaid
 flowchart LR
-  Future[future offline host / trainer] --> Resident[bigshark_resident]
+  V1[bigshark_v1_protocol] --> Resident[bigshark_resident]
   Resident --> Artifacts[bigshark_artifacts]
   Artifacts --> Solver[solver domain records]
 ```
@@ -708,9 +729,9 @@ advertise a root the exact measurement would refuse. Roots whose declared
 ranges leave no positive card-compatible joint deal (zero or fully
 cross-blocked ranges, which the loader itself accepts) are refused with
 `InvalidRange`; the same canonical root listed twice is `DuplicateRoot`; a
-bad artifact is `LoadFailed` and never disables the other roots. Capacity
-failure cannot affect any other component because the library is not wired
-to the old solver in this stage.
+bad artifact is `LoadFailed` and never disables the other roots. A capacity
+failure in one root is isolated to that root; other roots and the non-resident
+decision path are unaffected.
 
 Root identity at a query is the full canonical notion shared with the
 solver's `same_root` and the artifact reader's `same_game`: ordered flop,
@@ -862,12 +883,11 @@ runout paths per action path — and the export emits a concrete policy row for
 every (seat, combo, action-node) triple across all of them. The trainer itself
 visits only 4,966–5,680 information sets per class; the ~2.6M stored rows are
 the concrete expansion. A flop-terminal profile would eliminate the turn/river
-chance branching and reduce this by orders of magnitude, but
-`TerminalDepth::Flop` is rejected by `GameDef::validate` ("flop-terminal games
-are RFC 0007's stage, not this one") and is out of scope for this stage. The
-measurements above are the honest cost of the River-terminal shape; the class
-selection and storage budget for a larger library are decided by these
-measured costs, not estimated.
+chance branching and reduce this by orders of magnitude; `TerminalDepth::Flop`
+has since landed in W4b (RFC 0007), though the flop class library itself
+remains River-terminal. The measurements above are the honest cost of the
+River-terminal shape; the class selection and storage budget for a larger
+library are decided by these measured costs, not estimated.
 
 ## Bounded Resolving Gadget (RFC 0005 Stage 9)
 
@@ -1088,7 +1108,7 @@ provider gates. Tests independently enumerate finish permutations, including
 
 ## Preflop Policy
 
-The preflop policy is an approximation for 6-max cash play near 100 BB:
+The live preflop policy is an approximation for 6-max cash play near 100 BB:
 
 - raise-first-in ranges are keyed by `UTG`, `HJ`, `CO`, `BTN`, and `SB`;
 - response ranges are keyed by the opener bucket;
@@ -1100,6 +1120,24 @@ The preflop policy is an approximation for 6-max cash play near 100 BB:
 `MP` and short-handed positions are mapped into the available chart buckets.
 This policy is deterministic and range-based, but it is not a solved preflop
 equilibrium.
+
+### Trained heads-up preflop profile (RFC 0007 / W4b)
+
+A trained heads-up preflop profile is available as an offline artifact. It
+uses `TerminalDepth::Flop` game termination with frontier leaves valued by a
+declared evaluator (option A: declared frontier table). The profile trains
+the n-seat MCCFR trainer on a flop-terminal game and exports policy-derived
+continuation ranges (`PolicyReachRangePair`) for every flop reached with
+positive probability.
+
+The declared small profile (6 combos/seat, flop-terminal) trains to
+completion at 3 BB: 947,150 tree nodes, 16 information sets (abstracted by
+`CategoryTiersV1` buckets), 13,568 accounted bytes, 0.01s wall, 22,100 flops
+exported. The tree fits within the default 1 GiB byte cap only at 3 BB;
+5 BB needs 2.4 GiB and 25 BB exceeds even an 8 GiB cap. Realistic-size
+preflop training needs a DAG/shared-chance-subtree representation and is
+deferred. The profile is a declared-profile coverage result, not a
+full-game GTO solution.
 
 ## Flop and Turn Policy
 
@@ -1308,8 +1346,13 @@ portable fallback build; it does not validate the HiGHS backend on Linux.
 
 ## Known Limitations
 
-- Only the supported heads-up river tree has a production equilibrium solver.
-- Preflop, flop, turn, and multiway decisions remain approximate.
+- Resident blueprints serve flop-rooted and preflop decisions at the
+  `approximate` guarantee level and river-rooted decisions at
+  `certified_bound`; only the supported heads-up river tree has a production
+  equilibrium solver.
+- Preflop (6-max charts), turn, and multiway decisions remain approximate.
+  The trained heads-up preflop profile is a declared-profile coverage result
+  at 3 BB, not a full-game solution.
 - The live betting tree supports one bet and one raise.
 - Ante, rake, side-pot utility, tournament ICM, and non-Hold'em variants are
   outside the current engine context.

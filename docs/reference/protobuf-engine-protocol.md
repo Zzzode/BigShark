@@ -5,7 +5,7 @@ Status: Current
 ## Scope
 
 `proto/bigshark/engine/v1/engine.proto` is the authoritative v1 engine
-protocol definition. RFC 0002 Stage 7 ships an opt-in framed Protobuf host
+protocol definition. RFC 0002 Stage 7 ships the framed Protobuf host
 mode, C++ request/response mappers with a strict hand-written semantic
 validator, a framed TypeScript client, a River v1 mapper, and v0/v1 golden
 differential parity. RFC 0002 Stage 8 adds the negotiated minor-1 RPC
@@ -16,11 +16,10 @@ the offline `--resident-root` host flag. RFC 0008 stage 5 adds the
 negotiated minor-2 guarantee ladder: every decision carries its typed level
 (`SolverMetadata.guarantee_level`, field 11), callers may demand a minimum
 level (`DecisionOptions.minimum_guarantee`, field 8), and an answer below
-the floor is refused with error code 9 rather than served. The v0 NDJSON
-host, the Node JSON client, and live River Club traffic remain the default;
-the framed path and minors 1/2 are selected only explicitly (see [Framed
-host](#framed-host), [Negotiated minor 1](#negotiated-minor-1), and
-[Negotiated minor 2](#negotiated-minor-2-rfc-0008-stage-5)).
+the floor is refused with error code 9 rather than served. The River Club
+runner defaults to v1 (with roots); v0 NDJSON remains as the fallback
+path (see [Framed host](#framed-host), [Negotiated minor 1](#negotiated-minor-1),
+and [Negotiated minor 2](#negotiated-minor-2-rfc-0008-stage-5)).
 
 ## Toolchain
 
@@ -116,13 +115,14 @@ unknown-field preservation, and additive enum handling. A separate C++
 producer writes a capability envelope that the TypeScript test consumes,
 covering both cross-language directions.
 
-## Pending Runtime Work
+## Runtime Status
 
 Length-delimited framing, semantic request validation, capability handling,
 service-domain mapping, and the minor-1 resident blueprint distribution path
-are implemented (Stages 7 and 8). Live dry-run/canary, v0 removal, the
-resolving gadget and certification/eligibility gates, and whole-range
-selection remain explicit external gates.
+are implemented (Stages 7 and 8). The resolving gadget, certification/
+eligibility gates, and whole-range selection are implemented (Stage 9 and
+RFC 0009 W4d). Live dry-run/canary and v0 removal remain explicit external
+gates.
 
 ## Negotiated minor 1
 
@@ -191,10 +191,13 @@ A minor-1 blueprint hit returns `DecisionResponse.expanded_strategy` (field
 ### Resolving (RFC 0005 Stage 9)
 
 Forced `SOLVER_MODE_RESOLVING` on minor 1 runs the bounded terminal-only
-resolver. AUTOMATIC never resolves. The host is stateless about eligibility:
-the explicit mode is only the adapter's assertion that its per-hand monotone
-prefix conditions held (fresh pinned artifact-root snapshot followed by a
-matching blueprint execution); no eligibility bit crosses the RPC.
+resolver. Minor-1 AUTOMATIC never resolves (frozen). On minor 2, AUTOMATIC
+tries terminal-only resolving on a blueprint miss (RFC 0009 W4d); if the
+resolver also misses, a labeled operational fallback is served. The host is
+stateless about eligibility: the explicit mode is only the adapter's
+assertion that its per-hand monotone prefix conditions held (fresh pinned
+artifact-root snapshot followed by a matching blueprint execution); no
+eligibility bit crosses the RPC.
 
 The solve is whole-range and hero-card independent; the actual hero combo
 selects only the returned row afterward. Outcomes:
@@ -449,15 +452,15 @@ vectors hold (seed 42 -> bucket 3, seed 0 -> bucket 6, seed 1 -> bucket 4).
 
 ## Framed Host
 
-The published `bin/bigshark-engine` binary keeps its v0 invocation unchanged
-and adds two explicit flags:
+The published `bin/bigshark-engine` binary supports both v0 and v1
+invocation:
 
 | Invocation | Transport |
 | --- | --- |
-| `bigshark-engine` | v0 one-shot JSON on stdin/stdout (default) |
-| `bigshark-engine --serve` | v0 persistent NDJSON coprocess (default) |
+| `bigshark-engine` | v0 one-shot JSON on stdin/stdout |
+| `bigshark-engine --serve` | v0 persistent NDJSON coprocess |
 | `bigshark-engine --proto` | one framed `Envelope` in, one framed `Envelope` out |
-| `bigshark-engine --serve-proto` | persistent framed coprocess, one frame per decision |
+| `bigshark-engine --serve-proto` | persistent framed coprocess, one frame per decision (default for the River Club runner) |
 
 The framed host is sequential. Each frame is a canonical ULEB128 length
 prefix followed by a serialized `Envelope`. Standard output carries frames
@@ -759,13 +762,15 @@ the `Number.MAX_SAFE_INTEGER` profile; out-of-range values fail closed. Engine
 and transport errors surface the code and route to the existing operational
 `safeFallback`, never to a strategic fold.
 
-The framed path is selected only by `BIGSHARK_ENGINE_PROTO=1` or an explicit
-`EngineConfig.proto`; with the env unset and no config flag, the v0 JSON
-client and behavior are unchanged. Minor 1 is an additional explicit opt-in:
-the client is constructed with `negotiateMinor1: true` (the built-in River
-client does this when `BIGSHARK_ENGINE_PROTO_MINOR1=1`) and exposes the
-negotiated result as `negotiatedProtocolMinor` / `minor1Capable`. Minor 2
-follows the same pattern with `negotiateMinor2: true` /
+The framed path is selected by `BIGSHARK_ENGINE_PROTO=1`, an explicit
+`EngineConfig.proto`, or by default when the River Club runner is configured
+with resident roots (RFC 0009 W3). With the env unset, no config flag, and no
+resident roots, the v0 JSON client and behavior are unchanged. Minor 1 is an
+additional explicit opt-in: the client is constructed with
+`negotiateMinor1: true` (the built-in River client does this when
+`BIGSHARK_ENGINE_PROTO_MINOR1=1`) and exposes the negotiated result as
+`negotiatedProtocolMinor` / `minor1Capable`. Minor 2 follows the same
+pattern with `negotiateMinor2: true` /
 `BIGSHARK_ENGINE_PROTO_MINOR2=1`; when both flags are set the probe order is
 2 → 1 → 0 and the client settles on the highest minor the host advertises.
 A caller that does not opt in never sends above minor 0. The River adapter

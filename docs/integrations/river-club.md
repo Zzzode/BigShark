@@ -23,12 +23,14 @@ The historical protocol v1 field notes are retained in
 | --- | --- |
 | `platforms/river-club/src/river-cli.ts` | Official protocol v2.1 API client and command implementation |
 | `platforms/river-club/src/journal-cli.ts` | CLI wrapper and append-only session journal |
-| `platforms/river-club/src/v0-normalizer.ts` | River snapshot to legacy engine context mapping |
+| `platforms/river-club/src/v0-normalizer.ts` | River snapshot to legacy engine context mapping (fallback path) |
+| `platforms/river-club/src/v1-mapper.ts` | River snapshot to structured v1 engine context mapping (default path) |
 | `platforms/river-club/src/engine.ts` | River adapter, engine call, legality check, and operational fallback |
 | `platforms/river-club/src/wait-turn.ts` | Long polling until a decision or exit state |
 | `platforms/river-club/src/atomic-action.ts` | Atomic refresh, precondition validation, and action |
 | `apps/river-club-agent/main.ts` | Adaptive autonomous session runner |
-| `clients/node/engine-process-client.ts` | Platform-neutral engine process lifecycle and NDJSON framing |
+| `clients/node/engine-process-client.ts` | Platform-neutral engine process lifecycle and NDJSON framing (v0 fallback) |
+| `clients/node/proto-engine-process-client.ts` | Platform-neutral framed v1 engine process lifecycle (default) |
 | `bin/*` | Stable launchers into compiled `dist/` modules |
 
 ## State Machine
@@ -58,7 +60,11 @@ Operational invariants:
 
 ## River-to-Engine Mapping
 
-`platforms/river-club/src/v0-normalizer.ts` performs this mapping:
+The v1 mapper (`platforms/river-club/src/v1-mapper.ts`) is the default path.
+It produces a structured v1 context with chip units, enum cards, ordered
+seats, structured action history, side pots, and absolute targets. The v0
+normalizer (`platforms/river-club/src/v0-normalizer.ts`) remains as the
+fallback path and performs this mapping:
 
 | River field | Engine field |
 | --- | --- |
@@ -125,11 +131,13 @@ All files below are local and ignored by Git:
 | `.runtime/resume` | Explicit approval to resume table selection |
 | `sessions/*.jsonl` | Full CLI command and response journal |
 
-With at least one configured resident root the runner opts into the framed v1
+With at least one configured resident root the runner uses the framed v1
 protocol at negotiated minor 2 (the guarantee-level and artifact-digest
 surface) and passes the server's remaining-time budget through as the solve
-budget. Without roots nothing changes: the call path, launch line, and
-journaling are exactly as before.
+budget. Since W3, v1 is the default protocol for the River Club runner;
+v0 NDJSON remains as the fallback path. On a minor-2 AUTOMATIC blueprint
+miss, the engine tries terminal-only resolving; if the resolver also misses,
+a labeled operational fallback (check/call/fold) is served (W4d).
 
 ## Credentials
 
@@ -151,6 +159,7 @@ launchers never import TypeScript source directly.
 
 River normalization and generic process management are separate. This allows
 a future platform adapter to reuse the engine client without importing River
-types. A second platform and the Protobuf migration remain pending under
-[RFC 0001](../rfcs/0001-engineering-architecture.md) and
-[RFC 0002](../rfcs/0002-protobuf-engine-protocol.md).
+types. A second platform remains pending under
+[RFC 0001](../rfcs/0001-engineering-architecture.md). The Protobuf migration
+defined by [RFC 0002](../rfcs/0002-protobuf-engine-protocol.md) has landed;
+v1 is the default protocol and v0 is the fallback.
