@@ -114,6 +114,23 @@ pv::ActionType wireActionType(bs::poker::ActionType type) {
   return pv::ACTION_TYPE_UNSPECIFIED;
 }
 
+// Normalizes the engine's Bet/Raise distinction to the platform's aggressive
+// vocabulary on preflop. River uses RAISE for all preflop aggression; the
+// engine types it as Bet when due == 0 (e.g. BB facing a limp). Returns the
+// wire type unchanged on postflop streets or when no aggressive legal action
+// is present.
+pv::ActionType normalizeAggressiveType(const pv::HandState& state, pv::ActionType type) {
+  if (state.street() != pv::STREET_PREFLOP)
+    return type;
+  if (type != pv::ACTION_TYPE_BET && type != pv::ACTION_TYPE_RAISE)
+    return type;
+  for (const pv::LegalAction& legal : state.legal_actions()) {
+    if (legal.type() == pv::ACTION_TYPE_BET || legal.type() == pv::ACTION_TYPE_RAISE)
+      return legal.type();
+  }
+  return type;
+}
+
 // Fills the heuristic solver metadata. Minor 0/1 pass the source INFERRED FROM
 // the reason text (frozen behavior, including the four chart folds pinned as
 // postflop-heuristic); minor 2 passes the source the policy declared at the
@@ -391,7 +408,8 @@ bool blueprintRowIsLegal(const pv::DecisionRequest& request, const V1BlueprintRo
     if (!std::isfinite(probability) || probability < 0.0)
       return false;
     sum += probability;
-    const pv::ActionType type = wireActionType(row.actions[i].type);
+    const pv::ActionType type =
+        normalizeAggressiveType(request.state(), wireActionType(row.actions[i].type));
     const bool aggressive = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
     const std::uint64_t target = row.actions[i].target_total;
     if (!actionIsLegal(request.state(), type, target, aggressive))
@@ -420,7 +438,8 @@ void verifyStorageRowComplete(const pv::DecisionRequest& request, const V1Bluepr
       throw MappingError(pv::ERROR_CODE_INTERNAL, "blueprint sampler selected no live action",
                          /*retryable=*/true);
     const bs::poker::Action& action = row.actions[chosen];
-    const pv::ActionType type = wireActionType(action.type);
+    const pv::ActionType type =
+        normalizeAggressiveType(request.state(), wireActionType(action.type));
     const bool aggressive = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
     if (!actionIsLegal(request.state(), type, action.target_total, aggressive))
       throw MappingError(pv::ERROR_CODE_INTERNAL,
@@ -467,7 +486,8 @@ pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
 
   for (std::size_t i = 0; i < row.size; ++i) {
     const bs::poker::Action& action = row.actions[i];
-    const pv::ActionType type = wireActionType(action.type);
+    const pv::ActionType type =
+        normalizeAggressiveType(request.state(), wireActionType(action.type));
     pv::ActionPolicy* policy = expanded->add_actions();
     policy->set_type(type);
     const bool aggressive = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;
@@ -486,7 +506,8 @@ pv::DecisionResponse mapExpandedResponseImpl(const pv::DecisionRequest& request,
   if (request.options().include_sampled_action()) {
     const std::size_t chosen = sampleBucket(row.probabilities, row.size, request.options().seed());
     const bs::poker::Action& action = row.actions[chosen];
-    const pv::ActionType type = wireActionType(action.type);
+    const pv::ActionType type =
+        normalizeAggressiveType(request.state(), wireActionType(action.type));
     pv::SelectedAction* selected = expanded->mutable_selected_action();
     selected->set_type(type);
     const bool aggressive = type == pv::ACTION_TYPE_BET || type == pv::ACTION_TYPE_RAISE;

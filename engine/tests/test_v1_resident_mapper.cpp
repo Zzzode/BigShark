@@ -176,7 +176,13 @@ pv::DecisionRequest buildRequest(const NodeSpec& spec) {
     state->add_legal_actions()->set_type(pv::ACTION_TYPE_CHECK);
   else
     state->add_legal_actions()->set_type(pv::ACTION_TYPE_CALL);
-  const pv::ActionType aggressive = spec.toCall == 0 ? pv::ACTION_TYPE_BET : pv::ACTION_TYPE_RAISE;
+  // River uses RAISE for all preflop aggression (the engine types it as Bet
+  // when due == 0, e.g. BB facing a limp). Postflop uses BET when opening the
+  // street and RAISE when facing a bet.
+  const pv::ActionType aggressive =
+      spec.street == pv::STREET_PREFLOP ? pv::ACTION_TYPE_RAISE
+      : spec.toCall == 0               ? pv::ACTION_TYPE_BET
+                                       : pv::ACTION_TYPE_RAISE;
   pv::LegalAction* raise = state->add_legal_actions();
   raise->set_type(aggressive);
   raise->set_min_target_total(spec.toCall == 0 ? 20 : spec.toCall + 20);
@@ -638,6 +644,22 @@ int main() {
     spec.preflop = {{pv::STREET_PREFLOP, "p0", pv::ACTION_TYPE_CALL, std::nullopt, 10, 30},
                     {pv::STREET_PREFLOP, "p1", pv::ACTION_TYPE_RAISE, 60, std::nullopt, 40}};
     assertPreflop("preflop BB raises, SB faces", spec, 0);
+  }
+  {
+    // Preflop: SB opens to 60, BB faces a call/fold decision. Unlike the
+    // BB-after-limp case (where due == 0 and the engine types the aggression
+    // as Bet), SB faces the BB blind so due = 20 - 10 = 10 > 0 and the engine
+    // types it as Raise. This exercises the due > 0 branch of the Bet/Raise
+    // mapping.
+    NodeSpec spec;
+    spec.street = pv::STREET_PREFLOP;
+    spec.hero = "p1";
+    spec.stacks = {1940, 1980};
+    spec.streetCommitted = {60, 20};
+    spec.pot = 80;
+    spec.toCall = 40;
+    spec.preflop = {{pv::STREET_PREFLOP, "p0", pv::ACTION_TYPE_RAISE, 60, 50, 30}};
+    assertPreflop("preflop SB opens, BB faces", spec, 1);
   }
   {
     // Preflop at the root (no voluntary actions): SB acts first.

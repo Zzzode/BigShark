@@ -545,6 +545,14 @@ maps preflop `Bet`/`Raise` → `ACTION_TYPE_RAISE` in both `legal_actions` and
 `action_history`, and maps an aggressive response back through
 `legal.aggressive->type` (never blindly to `Raise`).
 
+The engine's v1 response mapper applies the same normalization on the blueprint
+path: `blueprintRowIsLegal`, `verifyStorageRowComplete`, and the expanded-
+strategy serializer all map a blueprint row's engine `Bet`/`Raise` through the
+legal window's aggressive type before checking legality or emitting wire bytes.
+Without this, a preflop blueprint row containing `Bet` (the engine's type for
+zero-due aggression, e.g. BB facing a limp) would be rejected as outside the
+legal window and the spot would fall through to the heuristic fallback.
+
 ### Response mapper
 
 `map_decision_response` extracts the action from a `DecisionResponse`:

@@ -216,6 +216,73 @@ pv::DecisionRequest weakPreflopRequest(pv::SolverMode mode) {
   return request;
 }
 
+// Preflop BB facing a BTN limp: the SB completed to 20, so the BB's
+// aggressive action has due == 0 and the engine types it as Bet. River's
+// vocabulary is RAISE for all preflop aggression, so this exercises the
+// Bet -> RAISE normalization in the blueprint legality check and response
+// mapper.
+pv::DecisionRequest limpPreflopRequest(pv::SolverMode mode) {
+  pv::DecisionRequest request;
+  pv::HandState* state = request.mutable_state();
+  pv::GameDefinition* game = state->mutable_game();
+  game->set_variant(pv::GAME_VARIANT_NLHE);
+  game->set_betting_structure(pv::BETTING_STRUCTURE_NO_LIMIT);
+  game->set_game_type(pv::GAME_TYPE_CASH);
+  game->set_table_capacity(2);
+  game->mutable_amount_unit()->set_name("chip");
+  game->mutable_amount_unit()->set_decimal_places(0);
+  game->set_small_blind(10);
+  game->set_big_blind(20);
+  state->set_hand_id("minor2-limp");
+  state->set_decision_index(1);
+  state->set_street(pv::STREET_PREFLOP);
+  state->set_button_seat(1);
+  state->set_hero_player_id("p1");
+  pv::PlayerState* villain = state->add_players();
+  villain->set_player_id("p0");
+  villain->set_seat(1);
+  villain->set_stack(1980);
+  villain->set_street_committed(20);
+  villain->set_status(pv::PLAYER_STATUS_ACTIVE);
+  pv::PlayerState* hero = state->add_players();
+  hero->set_player_id("p1");
+  hero->set_seat(0);
+  hero->set_stack(1980);
+  hero->set_street_committed(20);
+  hero->set_status(pv::PLAYER_STATUS_ACTIVE);
+  *state->add_hero_hole_cards() = card(pv::RANK_SEVEN, pv::SUIT_CLUBS);
+  *state->add_hero_hole_cards() = card(pv::RANK_TWO, pv::SUIT_DIAMONDS);
+  state->mutable_pot()->set_pot_total(40);
+  state->mutable_pot()->set_main_pot(40);
+  auto* sb = state->add_forced_contributions();
+  sb->set_type(pv::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND);
+  sb->set_player_id("p0");
+  sb->set_amount(10);
+  auto* bb = state->add_forced_contributions();
+  bb->set_type(pv::FORCED_CONTRIBUTION_TYPE_BIG_BLIND);
+  bb->set_player_id("p1");
+  bb->set_amount(20);
+  pv::ActionEvent* limp = state->add_action_history();
+  limp->set_sequence(0);
+  limp->set_street(pv::STREET_PREFLOP);
+  limp->set_actor_player_id("p0");
+  limp->set_action(pv::ACTION_TYPE_CALL);
+  limp->set_incremental_amount(10);
+  state->add_legal_actions()->set_type(pv::ACTION_TYPE_CHECK);
+  pv::LegalAction* raise = state->add_legal_actions();
+  raise->set_type(pv::ACTION_TYPE_RAISE);
+  raise->set_min_target_total(40);
+  raise->set_max_target_total(2000);
+  state->set_to_call(0);
+  pv::DecisionOptions* options = request.mutable_options();
+  options->set_strategy_profile("tag");
+  options->set_solve_time_budget_ms(1000);
+  options->set_seed(7);
+  options->set_include_sampled_action(true);
+  options->set_solver_mode(mode);
+  return request;
+}
+
 // Facing-all-in flop snapshot (fold/call legal) so resolver-only
 // reconstruction admits the node; blueprint rows use fold/call.
 pv::DecisionRequest resolveRequest(pv::SolverMode mode) {
@@ -385,6 +452,40 @@ int main() {
               solver.source() == pv::SOLVER_SOURCE_BLUEPRINT && solver.cache_hit() &&
               solver.guarantee_level() == "approximate" && !solver.has_guarantee(),
           "cached blueprint served at approximate floor with field 11 only");
+  }
+
+  // --- Preflop blueprint round-trip: engine Bet normalizes to wire RAISE ----
+  // The BB faces a limp (due == 0), so the engine types aggression as Bet.
+  // River's legal window uses RAISE. The blueprint legality check and the
+  // response mapper must both normalize Bet -> RAISE; before the fix the
+  // legality check rejected the row and the response emitted BET.
+  {
+    FakeServices services;
+    services.actions = {{ActionType::Check}, {ActionType::Bet, 60}};
+    services.probabilities = {0.5, 0.5};
+    pv::DecisionRequest request = limpPreflopRequest(pv::SOLVER_MODE_BLUEPRINT);
+    pv::Envelope response = send(envelopeFor(2, "bp-limp", request), services);
+    check(response.protocol_minor() == 2, "preflop blueprint round-trip echoes minor 2");
+    const pv::DecisionResponse& dr = response.decision_response();
+    check(dr.has_expanded_strategy(), "preflop blueprint round-trip serves an expanded strategy");
+    const pv::ExpandedStrategy& expanded = dr.expanded_strategy();
+    check(expanded.solver().source() == pv::SOLVER_SOURCE_BLUEPRINT,
+          "preflop blueprint round-trip is a blueprint hit");
+    check(expanded.actions_size() == 2, "preflop blueprint round-trip has two actions");
+    check(expanded.actions(0).type() == pv::ACTION_TYPE_CHECK,
+          "preflop blueprint round-trip action 0 is CHECK");
+    check(expanded.actions(1).type() == pv::ACTION_TYPE_RAISE,
+          "preflop blueprint round-trip action 1 is RAISE (not BET)");
+    check(expanded.actions(1).target_total() == 60,
+          "preflop blueprint round-trip action 1 targets 60");
+    if (expanded.has_selected_action()) {
+      const pv::SelectedAction& selected = expanded.selected_action();
+      check(selected.type() != pv::ACTION_TYPE_BET,
+            "preflop blueprint round-trip sampled action is never BET");
+      if (selected.type() == pv::ACTION_TYPE_RAISE)
+        check(selected.target_total() == 60,
+              "preflop blueprint round-trip sampled RAISE targets 60");
+    }
   }
 
   // --- Forced BLUEPRINT coverage errors take precedence over the floor -----
