@@ -46,7 +46,14 @@ std::vector<int> public_runout_cards(const GameState& state);
 // RFC 0007: TerminalFrontier is the leaf of a flop-terminal game
 // (TerminalDepth::Flop). The payload carries the same ledger as a showdown
 // leaf; the frontier value is supplied by L4 through a FrontierEvaluator.
-enum class NodeKind { Action, Chance, TerminalFold, TerminalShowdown, TerminalFrontier };
+//
+// FlopDeal is a virtual leaf for flop-terminal games: it replaces the entire
+// 3-level chance subtree (52×51×50 = 132,600 frontier leaves per preflop
+// line). The tree stores no chance nodes or frontier payloads for these
+// games; the trainer's walk samples 3 cards inline at the FlopDeal leaf and
+// constructs the frontier payload from the GameState it carries. This keeps
+// the tree small (hundreds of nodes) at any stack depth.
+enum class NodeKind { Action, Chance, TerminalFold, TerminalShowdown, TerminalFrontier, FlopDeal };
 
 // One seat's terminal ledger entry. Folded seats are retained with their GROSS
 // contributed amount: N-way side-pot settlement needs every seat's commitment,
@@ -74,6 +81,14 @@ struct TerminalPayload {
   bool folded = false;
   std::vector<std::int64_t> chip_utility;  // populated for fold leaves
 };
+
+// Constructs a TerminalPayload for a frontier leaf from a GameState. This is
+// the walk-side counterpart to the builder's internal make_terminal: a
+// FlopDeal leaf stores no payload, so the walk builds one from the GameState
+// it carries by value. The payload is never folded and has empty chip_utility
+// (the frontier evaluator supplies expectation values).
+TerminalPayload make_frontier_payload(const GameState& state);
+
 // A deterministic construction bound (no time cap: building is deterministic,
 // so a wall clock would bind a non-property). Each cap is checked BEFORE the
 // allocation that would exceed it. Distinct from an unsupported tree shape.
@@ -124,6 +139,7 @@ struct TreeNode {
 
   bool is_action() const { return kind == NodeKind::Action; }
   bool is_chance() const { return kind == NodeKind::Chance; }
+  bool is_flop_deal() const { return kind == NodeKind::FlopDeal; }
   bool is_terminal() const {
     return kind == NodeKind::TerminalFold || kind == NodeKind::TerminalShowdown ||
            kind == NodeKind::TerminalFrontier;

@@ -109,6 +109,7 @@ std::vector<int> independent_chance(const GameState& s) {
 
 struct Counts {
   long nodes = 0, action = 0, chance = 0, fold = 0, showdown = 0, frontier = 0;
+  long flop_deal = 0;
   long menu_mismatches = 0, chance_mismatches = 0;
   long fold_payout_bad = 0, edge_bad = 0;
 };
@@ -208,6 +209,13 @@ int verify_node(const AbstractTree& tree, const SizeSchedule& schedule, Counts& 
     return 0;
   }
   if (state.phase() == Phase::Deal) {
+    if (n.kind == NodeKind::FlopDeal) {
+      // Virtual flop deal: a single leaf replaces the chance subtree.
+      ++c.flop_deal;
+      CHECK(n.terminal == kNoNode);
+      CHECK(n.children.empty());
+      return 0;
+    }
     CHECK(n.kind == NodeKind::Chance);
     ++c.chance;
     const std::vector<int> want = independent_chance(state);
@@ -448,10 +456,9 @@ int main() {
   }
 
   // --- RFC 0007: two-seat preflop flop-terminal. The lockstep walk verifies
-  // every frontier leaf's kind, ledger, and board. The tree is bounded: no
-  // node has street past Flop, and every non-fold terminal is a frontier.
-  // Stack 3 BB limits the raise ladder to all-in only, keeping the tree
-  // small enough for an exact pinned-count test. ---
+  // every FlopDeal leaf's kind and that it has no children or payload. The
+  // tree is bounded: no node has street past Flop, and every non-fold leaf is
+  // a FlopDeal (the virtual flop deal replaces the chance subtree). ---
   {
     GameDef def = two_seat_preflop_flop_terminal(3);
     AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
@@ -459,19 +466,27 @@ int main() {
     GameState root(def);
     if (verify_node(tree, schedule, c, tree.root_index(), root, 1) != 0)
       return 1;
-    std::printf("2p preflop flop-term s3: nodes=%ld A=%ld C=%ld F=%ld S=%ld FR=%ld\n", c.nodes,
-                c.action, c.chance, c.fold, c.showdown, c.frontier);
-    CHECK(c.frontier > 0);
+    std::printf("2p preflop flop-term s3: nodes=%ld A=%ld C=%ld F=%ld S=%ld FR=%ld FD=%ld\n",
+                c.nodes, c.action, c.chance, c.fold, c.showdown, c.frontier, c.flop_deal);
+    CHECK(c.flop_deal > 0);
+    CHECK(c.frontier == 0);
+    CHECK(c.chance == 0);
     CHECK(c.showdown == 0);
     CHECK(c.menu_mismatches == 0 && c.chance_mismatches == 0 && c.fold_payout_bad == 0);
     CHECK(static_cast<std::size_t>(c.nodes) == tree.size());
     // Bounded: no node has street past Flop.
     for (const TreeNode& n : tree.nodes())
       CHECK(n.street == Street::Preflop || n.street == Street::Flop);
-    // Every terminal is either a fold or a frontier (no showdown).
-    for (const TreeNode& n : tree.nodes())
+    // Every terminal is a fold (no frontier, no showdown); every non-fold leaf
+    // is a FlopDeal.
+    for (const TreeNode& n : tree.nodes()) {
       if (n.is_terminal())
-        CHECK(n.kind == NodeKind::TerminalFold || n.kind == NodeKind::TerminalFrontier);
+        CHECK(n.kind == NodeKind::TerminalFold);
+      if (n.is_flop_deal()) {
+        CHECK(n.children.empty());
+        CHECK(n.terminal == kNoNode);
+      }
+    }
   }
 
   // --- TreeLimits: a node cap below the true size throws the typed, NON

@@ -97,7 +97,7 @@ double independent_flop_reach(const NSeatPolicy& policy, const AbstractTree& tre
   const TreeNode& node = tree.node(node_index);
   if (node.is_terminal())
     return 0.0;
-  if (node.is_chance())
+  if (node.is_flop_deal())
     return reach;
 
   const std::size_t actor = node.actor;
@@ -217,16 +217,15 @@ bool test_continuation_range() {
 }
 
 // ---------------------------------------------------------------------------
-// Training evidence: the declared small profile (6 combos, flop-terminal).
+// Training evidence: the declared small profile (6 combos, flop-terminal)
+// at 25 BB — a realistic stack depth.
 //
-// MEASUREMENT FINDING: the flop-terminal tree is dominated by the chance
-// subtree (52*51*50 = 132,600 flop runouts per preflop line that reaches the
-// flop). The tree fits within the default 1 GiB TreeLimits byte cap only at
-// 3 BB (947K nodes, 614 MB); 5 BB needs 2.4 GiB and 25 BB exceeds even an
-// 8 GiB cap. The RFC 0007 measured 606 info sets is the ABSTRACTED count
-// (conditioned on hole-card buckets), not the raw tree node count. The
-// declared profile is therefore trained at 3 BB, the largest stack within
-// the default bounded limits.
+// The virtual flop deal (FlopDeal leaf) replaces the 3-level chance subtree
+// (52*51*50 = 132,600 frontier leaves per preflop line) with a single leaf,
+// so the tree has only hundreds of nodes at any stack depth. Before this
+// change the tree exceeded an 8 GiB cap at 25 BB; now it fits in under 1 MB.
+// The RFC 0007 measured 606 info sets is the ABSTRACTED count (conditioned on
+// hole-card buckets), not the raw tree node count.
 // ---------------------------------------------------------------------------
 
 bool test_preflop_training_evidence() {
@@ -234,7 +233,7 @@ bool test_preflop_training_evidence() {
   def.player_count = 2;
   def.button = 0;
   def.big_blind = 2;
-  def.stacks = {6, 6, 0, 0, 0, 0, 0, 0, 0, 0};  // 3 BB (largest within 1 GiB)
+  def.stacks = {50, 50, 0, 0, 0, 0, 0, 0, 0, 0};  // 25 BB
   def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   def.pot = 3;
   def.board = {-1, -1, -1, 0, 0};
@@ -269,7 +268,7 @@ bool test_preflop_training_evidence() {
   const auto elapsed = std::chrono::steady_clock::now() - start;
   const double wall_s = std::chrono::duration<double>(elapsed).count();
 
-  std::printf("[evidence] declared small profile (6 combos, 3 BB, flop-terminal)\n");
+  std::printf("[evidence] declared small profile (6 combos, 25 BB, flop-terminal)\n");
   std::printf("[evidence]   termination:     %s\n",
               trained.termination == NSeatTerminationPhase::Complete ? "Complete" : "INCOMPLETE");
   std::printf("[evidence]   iterations:      %llu\n",

@@ -91,6 +91,9 @@ void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
   if (node.is_terminal())
     return;
 
+  if (node.is_flop_deal())
+    return;
+
   if (node.is_chance()) {
     for (std::size_t ci = 0; ci < node.children.size(); ++ci) {
       const tree::TreeNode& child = tree.node(node.children[ci]);

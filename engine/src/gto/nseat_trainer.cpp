@@ -41,6 +41,7 @@ using poker::Action;
 using poker::GameState;
 using poker::Phase;
 using tree::AbstractTree;
+using tree::make_frontier_payload;
 using tree::NodeKind;
 using tree::TerminalPayload;
 using tree::TreeNode;
@@ -403,14 +404,64 @@ double walk_chance(SweepContext& ctx, const GameState& state, std::size_t node_i
   return walk(ctx, next, node.children[ordinal], own_reach);
 }
 
+// Virtual flop deal: the tree stores a single FlopDeal leaf instead of the
+// 3-level chance subtree. Sample 3 cards inline, construct the frontier state,
+// and evaluate through the frontier evaluator.
+double walk_flop_deal(SweepContext& ctx, const GameState& state, std::size_t node_index,
+                      double own_reach) {
+  DepthGuard frame(ctx);
+  const TreeNode& node = ctx.tree->node(node_index);
+  if (!node.is_flop_deal())
+    throw std::runtime_error("nseat trainer expected a flop-deal leaf");
+  if (ctx.frontier == nullptr)
+    throw std::runtime_error("nseat trainer reached a flop-deal leaf without a frontier evaluator");
+
+  // Sample 3 cards sequentially, removing each from the legal list.
+  GameState s1 = state;
+  {
+    const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
+    const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
+    s1 = s1.after_card(cards[idx]);
+  }
+  GameState s2 = s1;
+  {
+    const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
+    const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
+    s2 = s1.after_card(cards[idx]);
+  }
+  GameState frontier = s2;
+  {
+    const std::vector<int> cards = legal_runout_cards(s2, *ctx.holes);
+    const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
+    frontier = s2.after_card(cards[idx]);
+  }
+  if (frontier.phase() != Phase::Frontier)
+    throw std::runtime_error("nseat trainer flop-deal leaf did not reach the frontier");
+
+  const tree::TerminalPayload payload = make_frontier_payload(frontier);
+  const std::vector<int> flop(frontier.board().begin(), frontier.board().end());
+  std::vector<std::array<int, 2>> hands(frontier.player_count());
+  for (std::size_t seat = 0; seat < frontier.player_count(); ++seat)
+    hands[seat] = (*ctx.holes)[seat];
+  const std::vector<double> values = ctx.frontier->evaluate(flop, hands, payload);
+  if (values.size() != frontier.player_count())
+    throw std::runtime_error("nseat trainer frontier evaluator returned the wrong seat count");
+  // Chance is externally sampled; own reach is unchanged.
+  return values[ctx.traverser];
+}
+
 double walk(SweepContext& ctx, const GameState& state, std::size_t node_index, double own_reach) {
   switch (state.phase()) {
     case Phase::Folded:
     case Phase::Showdown:
     case Phase::Frontier:
       return terminal_utility(ctx, state, node_index);
-    case Phase::Deal:
+    case Phase::Deal: {
+      const TreeNode& node = ctx.tree->node(node_index);
+      if (node.is_flop_deal())
+        return walk_flop_deal(ctx, state, node_index, own_reach);
       return walk_chance(ctx, state, node_index, own_reach);
+    }
     case Phase::Action:
       return walk_action(ctx, state, node_index, own_reach);
   }
@@ -671,7 +722,8 @@ const NSeatPolicyRow* NSeatPolicy::lookup(const tree::AbstractTree& tree,
     Frame frame = std::move(stack.back());
     stack.pop_back();
     const TreeNode& node = tree.node(frame.node);
-    if (node.kind == NodeKind::TerminalFold || node.kind == NodeKind::TerminalShowdown)
+    if (node.kind == NodeKind::TerminalFold || node.kind == NodeKind::TerminalShowdown ||
+        node.kind == NodeKind::TerminalFrontier || node.kind == NodeKind::FlopDeal)
       continue;
     if (node.kind == NodeKind::Chance) {
       const std::vector<int> cards = tree::public_runout_cards(frame.state);

@@ -17,7 +17,7 @@ double flop_reach(const NSeatPolicy& policy, const tree::AbstractTree& tree, std
   const tree::TreeNode& node = tree.node(node_index);
   if (node.is_terminal())
     return 0.0;
-  if (node.is_chance())
+  if (node.is_flop_deal())
     return reach;
 
   // Action node: branch on the policy's action distribution.

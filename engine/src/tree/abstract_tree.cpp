@@ -179,6 +179,26 @@ std::vector<int> public_runout_cards(const GameState& state) {
   return cards;
 }
 
+TerminalPayload make_frontier_payload(const GameState& state) {
+  TerminalPayload payload;
+  payload.player_count = state.player_count();
+  payload.folded = false;
+  payload.board_size = static_cast<std::uint8_t>(state.board().size());
+  for (std::size_t i = 0; i < state.board().size() && i < payload.board.size(); ++i)
+    payload.board[i] = state.board()[i];
+  const auto& players = state.players();
+  for (std::size_t seat = 0; seat < state.player_count(); ++seat) {
+    payload.seats[seat].contributed = players[seat].contributed;
+    payload.seats[seat].refunded = players[seat].refunded;
+    payload.seats[seat].stack = players[seat].stack;
+    payload.seats[seat].folded = players[seat].folded;
+  }
+  payload.live_count = state.live_players().size();
+  for (std::size_t i = 0; i < state.live_players().size(); ++i)
+    payload.live_order[i] = state.live_players()[i];
+  return payload;
+}
+
 // In bs::tree (not the anonymous namespace) so its name matches the
 // `friend class TreeBuilder` declaration on AbstractTree.
 class TreeBuilder {
@@ -240,7 +260,15 @@ class TreeBuilder {
         grow_to_fit(tree_.terminals_, tree_.terminals_.size() + 1, budget_);
         tree_.terminals_.push_back(std::move(payload));
       } else if (phase == Phase::Deal) {
-        node.kind = NodeKind::Chance;
+        if (tree_.def_.terminal == poker::TerminalDepth::Flop) {
+          // Virtual flop deal: a single leaf replaces the entire 3-level
+          // chance subtree (52×51×50 = 132,600 frontier leaves per line).
+          // The trainer's walk samples 3 cards inline and constructs the
+          // frontier payload from the GameState it carries.
+          node.kind = NodeKind::FlopDeal;
+        } else {
+          node.kind = NodeKind::Chance;
+        }
       } else {
         node.kind = NodeKind::Action;
         node.actor = *frame.state.actor();
@@ -264,7 +292,7 @@ class TreeBuilder {
       // Enqueue children. Reverse the natural order so LIFO popping expands them
       // in ascending edge order; each parent's children vector (appended above
       // in expansion order) then reads in the L1/L2 enumeration order.
-      if (phase == Phase::Deal) {
+      if (phase == Phase::Deal && tree_.def_.terminal != poker::TerminalDepth::Flop) {
         const std::vector<int> cards = public_runout_cards(frame.state);
         for (auto it = cards.rbegin(); it != cards.rend(); ++it) {
           stack.push_back(Frame{frame.state.after_card(*it), node.index, frame.depth + 1, {}, *it});
