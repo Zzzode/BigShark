@@ -299,6 +299,7 @@ add_library(bigshark_solver STATIC
   src/gto/solve_projection.cpp
   src/gto/multiway_sampler.cpp
   src/gto/nseat_trainer.cpp
+  src/gto/frontier_table.cpp
   src/solver/seat_policy.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
@@ -821,6 +822,12 @@ if(BUILD_TESTING)
   add_executable(test_abstract_tree_fidelity tests/test_abstract_tree_fidelity.cpp)
   target_link_libraries(test_abstract_tree_fidelity PRIVATE bigshark_solver)
   add_test(NAME abstract_tree_fidelity COMMAND test_abstract_tree_fidelity)
+
+  # RFC 0007: the declared frontier table (option A) — canonical keying,
+  # lookup, fail-closed missing entries, construction validation.
+  add_executable(test_frontier_table tests/test_frontier_table.cpp)
+  target_link_libraries(test_frontier_table PRIVATE bigshark_solver)
+  add_test(NAME frontier_table COMMAND test_frontier_table)
 
   # RFC 0008 stage 4 L4 conformance: solve() reproduces the heads-up CFR's
   # golden results bit-for-bit (full + sampled, all runout variants) and
