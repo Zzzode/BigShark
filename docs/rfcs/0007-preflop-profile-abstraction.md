@@ -173,6 +173,21 @@ A shallow three-big-blind stack therefore does not converge either: the limit is
 consumed by postflop enumeration, which is exactly what the flop-terminal
 declaration removes.
 
+**Implementation update: virtual flop deal (2026-10-03).** The flop-terminal
+tree was dominated by the 3-level chance subtree (52×51×50 = 132,600 frontier
+leaves per preflop line that reaches the flop). At 25 BB the tree exceeded an
+8 GiB byte cap; only 3 BB fit the default 1 GiB limit. The virtual flop deal
+(`NodeKind::FlopDeal`) replaces the entire chance subtree with a single leaf
+node. The trainer's walk samples 3 cards inline at the leaf and constructs the
+frontier payload from the GameState it carries, so no consumer enumerates the
+chance subtree. This drops the flop-terminal tree from millions of nodes
+(>8 GiB at 25 BB) to hundreds of nodes (<1 MB at any stack depth). The
+declared small profile (6 combos/seat, 25 BB, flop-terminal) now trains to
+completion: 670 nodes, 319 information sets, 285 KB, 0.02 s. The
+continuation-range export is unchanged (it already stopped at the first
+chance node; now it stops at the FlopDeal leaf). River-terminal games are
+unaffected.
+
 ## Design Principles
 
 1. Additive only. Existing artifacts, keys, roots, and wire bytes keep their

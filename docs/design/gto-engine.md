@@ -13,7 +13,7 @@ the process warm and communicates with it through newline-delimited JSON
 The live policy is hybrid:
 
 - preflop uses approximate charts; a trained heads-up preflop profile
-  (flop-terminal, declared small profile at 3 BB) is available as an offline
+  (flop-terminal, declared small profile at 25 BB) is available as an offline
   artifact with policy-derived continuation ranges (RFC 0007 / W4b);
 - flop and turn use deterministic Monte Carlo equity and policy heuristics;
   resident blueprint libraries serve flop-rooted decisions at the
@@ -271,15 +271,16 @@ flop-terminal support, preflop artifact persistence (rules_id
 continuation-range export. The declared small profile (6 combos/seat,
 flop-terminal) trains to completion.
 
-MEASUREMENT FINDING: the flop-terminal tree is dominated by the chance
-subtree (52*51*50 = 132,600 flop runouts per preflop line). The tree fits
-within the default 1 GiB TreeLimits byte cap only at 3 BB (947K nodes,
-614 MB); 5 BB needs 2.4 GiB and 25 BB exceeds even an 8 GiB cap. The
-RFC 0007 measured 606 info sets is the abstracted count (conditioned on
-hole-card buckets), not the raw tree node count. The declared profile is
-trained at 3 BB, the largest stack within the default bounded limits.
-Realistic-size preflop training needs a DAG/shared-chance-subtree
-representation and is deferred.
+The virtual flop deal (`NodeKind::FlopDeal`) replaces the 3-level chance
+subtree (52×51×50 = 132,600 frontier leaves per preflop line) with a single
+leaf node. The trainer's walk samples 3 cards inline at the leaf and
+constructs the frontier payload from the GameState it carries. This drops
+the flop-terminal tree from millions of nodes (>8 GiB at 25 BB) to hundreds
+of nodes (<1 MB at any stack depth), enabling realistic-depth preflop
+training. The declared small profile (6 combos/seat, 25 BB, flop-terminal)
+trains to completion: 670 nodes, 319 information sets, 285 KB, 0.02 s.
+The RFC 0007 measured 606 info sets at 3 BB is the abstracted count
+(conditioned on hole-card buckets), not the raw tree node count.
 
 The live six-max preflop charts remain in force and are not replaced by
 the heads-up model.
@@ -481,8 +482,8 @@ that would underflow are unsupported rather than silently removed.
 Sampled traversal is implemented and is the documented release-scale trainer
 (see the next section); serialized training resume and release-scale coverage
 remain pending. Preflop training landed in W4b (flop-terminal, declared small
-profile at 3 BB). A small weighted fixed-run fixture reaches
-normalized NashConv `0.000821201` at 8,192 iterations; this is not a
+profile at 25 BB via the virtual flop deal). A small weighted fixed-run fixture
+reaches normalized NashConv `0.000821201` at 8,192 iterations; this is not a
 general-game equilibrium claim.
 
 ## Sampled Heads-Up Trainer (External Sampling)

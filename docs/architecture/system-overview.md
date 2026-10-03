@@ -133,7 +133,7 @@ protocol.
 The live engine is a hybrid poker decision engine:
 
 - Preflop: approximate 6-max, 100 BB charts; a trained heads-up preflop
-  profile (flop-terminal, declared small profile at 3 BB) is available as
+  profile (flop-terminal, declared small profile at 25 BB) is available as
   an offline artifact with policy-derived continuation ranges.
 - Flop and turn: deterministic Monte Carlo equity plus heuristics;
   resident blueprint libraries serve flop-rooted decisions at the
