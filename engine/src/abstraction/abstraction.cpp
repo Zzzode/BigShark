@@ -247,11 +247,12 @@ std::vector<Action> build_multiway_action_menu(const poker::LegalActions& legal,
 }
 
 std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<int>& board) {
-  // Card bucketing is defined on a flop/turn/river board (3/4/5 public cards);
-  // a preflop holding has no board to bucket against and an over-long board
-  // would write past the fixed array. Fail closed rather than read OOB.
-  if (board.size() < 3 || board.size() > 5)
-    throw std::invalid_argument("card bucket requires a 3/4/5-card board");
+  // Card bucketing is defined on a flop/turn/river board (3/4/5 public cards)
+  // or an empty board (preflop, RFC 0007), where the evaluator scores the two
+  // hole cards alone (pair or high-card category). An over-long board would
+  // write past the fixed array. Fail closed rather than read OOB.
+  if (board.size() > 5)
+    throw std::invalid_argument("card bucket requires at most a 5-card board");
   // The two hole cards sit immediately after the public cards so the evaluator
   // reads exactly board.size()+2 contiguous cards, never zero padding that a
   // fixed index 5/6 would read on the flop.

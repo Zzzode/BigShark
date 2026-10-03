@@ -275,17 +275,13 @@ int test_identity_and_typed_refusal() {
     CHECK(rejected);
   }
 
-  // Card bucketing requires a 3/4/5-card board; preflop and over-long boards
-  // fail closed rather than reading out of bounds.
+  // Card bucketing accepts an empty board (preflop, RFC 0007) and rejects
+  // over-long boards rather than reading out of bounds.
   {
     const std::array<int, 2> hole{card("Ah"), card("Ad")};
-    bool rejected_empty = false;
-    try {
-      (void)strength_bucket(hole, {});
-    } catch (const std::invalid_argument&) {
-      rejected_empty = true;
-    }
-    CHECK(rejected_empty);
+    // Empty board: the two hole cards score as a pair or high card.
+    const std::uint32_t preflop_score = strength_bucket(hole, {});
+    CHECK(preflop_score != 0);
     bool rejected_long = false;
     try {
       (void)strength_bucket(hole, {1, 2, 3, 4, 5, 6});

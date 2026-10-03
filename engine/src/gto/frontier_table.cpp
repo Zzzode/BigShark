@@ -4,9 +4,8 @@
 // pair, produced offline by evaluating a flop-rooted blueprint. Lookup is O(1)
 // via a canonical 42-bit key. Missing entries throw (fail closed, never
 // approximate).
-#include <bs/frontier.hpp>
-
 #include <algorithm>
+#include <bs/frontier.hpp>
 #include <cstdio>
 #include <sstream>
 
@@ -38,18 +37,16 @@ DeclaredFrontierTable::DeclaredFrontierTable(std::vector<Entry> entries) {
     const std::uint64_t key = make_key(flop, hands);
     auto [it, inserted] = table_.emplace(key, e.values);
     if (!inserted)
-      throw std::invalid_argument(
-          "DeclaredFrontierTable: duplicate (flop, joint deal) entry");
+      throw std::invalid_argument("DeclaredFrontierTable: duplicate (flop, joint deal) entry");
   }
 }
 
-std::vector<double> DeclaredFrontierTable::evaluate(
-    std::span<const int> flop, std::span<const std::array<int, 2>> hands,
-    const bs::tree::TerminalPayload& ledger) const {
+std::vector<double> DeclaredFrontierTable::evaluate(std::span<const int> flop,
+                                                    std::span<const std::array<int, 2>> hands,
+                                                    const bs::tree::TerminalPayload& ledger) const {
   (void)ledger;  // The declared table is pre-computed; the ledger is not needed.
   if (flop.size() != 3)
-    throw std::invalid_argument(
-        "DeclaredFrontierTable::evaluate: flop must have exactly 3 cards");
+    throw std::invalid_argument("DeclaredFrontierTable::evaluate: flop must have exactly 3 cards");
   if (hands.size() != 2)
     throw std::invalid_argument(
         "DeclaredFrontierTable::evaluate: frontier evaluation is heads-up only "
@@ -68,17 +65,16 @@ std::vector<double> DeclaredFrontierTable::evaluate(
   if (it == table_.end()) {
     // Fail closed: never approximate a missing frontier value.
     std::ostringstream oss;
-    oss << "DeclaredFrontierTable: no entry for flop [" << flop_sorted[0] << ","
-        << flop_sorted[1] << "," << flop_sorted[2] << "] hands ["
-        << hands_sorted[0][0] << "," << hands_sorted[0][1] << "] ["
-        << hands_sorted[1][0] << "," << hands_sorted[1][1] << "]";
+    oss << "DeclaredFrontierTable: no entry for flop [" << flop_sorted[0] << "," << flop_sorted[1]
+        << "," << flop_sorted[2] << "] hands [" << hands_sorted[0][0] << "," << hands_sorted[0][1]
+        << "] [" << hands_sorted[1][0] << "," << hands_sorted[1][1] << "]";
     throw std::runtime_error(oss.str());
   }
   return {it->second[0], it->second[1]};
 }
 
-std::uint64_t DeclaredFrontierTable::make_key(
-    std::span<const int> flop, std::span<const std::array<int, 2>> hands) {
+std::uint64_t DeclaredFrontierTable::make_key(std::span<const int> flop,
+                                              std::span<const std::array<int, 2>> hands) {
   // 7 cards × 6 bits = 42 bits, fits in uint64_t.
   std::uint64_t key = 0;
   int shift = 0;

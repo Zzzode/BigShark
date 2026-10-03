@@ -40,9 +40,9 @@ class FrontierEvaluator {
   // `ledger` is the terminal payload's seat ledger.
   // Returns 2 values in chip units for a heads-up game.
   // Throws on a missing entry or unsupported seat count (fail closed).
-  virtual std::vector<double> evaluate(
-      std::span<const int> flop, std::span<const std::array<int, 2>> hands,
-      const bs::tree::TerminalPayload& ledger) const = 0;
+  virtual std::vector<double> evaluate(std::span<const int> flop,
+                                       std::span<const std::array<int, 2>> hands,
+                                       const bs::tree::TerminalPayload& ledger) const = 0;
 };
 
 // RFC 0007 option A: a declared frontier table. An immutable map from
@@ -67,9 +67,8 @@ class DeclaredFrontierTable : public FrontierEvaluator {
   // std::invalid_argument. The table is immutable after construction.
   explicit DeclaredFrontierTable(std::vector<Entry> entries);
 
-  std::vector<double> evaluate(
-      std::span<const int> flop, std::span<const std::array<int, 2>> hands,
-      const bs::tree::TerminalPayload& ledger) const override;
+  std::vector<double> evaluate(std::span<const int> flop, std::span<const std::array<int, 2>> hands,
+                               const bs::tree::TerminalPayload& ledger) const override;
 
   std::size_t size() const noexcept { return table_.size(); }
 

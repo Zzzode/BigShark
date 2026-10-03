@@ -67,6 +67,9 @@ inline constexpr std::uint32_t kArtifactSchemaVersionV3 = 3;
 inline constexpr const char* kNumericProfileV2 =
     "ieee754-binary64;chips<=9007199254740991;sqlite-real;key-rev2";
 inline constexpr const char* kRulesIdentifierV2 = "rfc0009-unified-flop-v1";
+// RFC 0007: the preflop flop-terminal profile. Distinct from kRulesIdentifierV2
+// so a reader can dispatch on the rules identifier without inspecting columns.
+inline constexpr const char* kRulesIdentifierPreflop = "rfc0009-unified-preflop-v1";
 // The seat-generic trainer's declared algorithm: sampled external-sampling
 // MCCFR with the kFull own-reach-weighted average and splitmix64.
 inline constexpr const char* kDefaultAlgorithmRevisionV2 = "rfc0009-nseat-rev1-sampled-splitmix64";

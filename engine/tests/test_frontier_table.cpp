@@ -3,7 +3,6 @@
 // Tests the DeclaredFrontierTable (option A): canonical keying, lookup,
 // fail-closed missing entries, and construction validation.
 #include <bs/frontier.hpp>
-
 #include <cstdio>
 #include <stdexcept>
 #include <vector>
@@ -65,7 +64,7 @@ int test_canonical_keying() {
   // The same (flop, joint deal) with cards in different order must produce
   // the same lookup. The constructor sorts, and evaluate() sorts its input.
   DeclaredFrontierTable::Entry e;
-  e.flop = {k4h, k2h, k3h};  // unsorted
+  e.flop = {k4h, k2h, k3h};              // unsorted
   e.hands = {{{kKs, kAs}, {kKh, kAh}}};  // unsorted within seats
   e.values = {2.0, -2.0};
   std::vector<DeclaredFrontierTable::Entry> entries{e};
@@ -81,8 +80,7 @@ int test_canonical_keying() {
 
   // Query with unsorted input (must still hit the same entry).
   const std::array<int, 3> flop_unsorted = {k3h, k2h, k4h};
-  const std::array<std::array<int, 2>, 2> hands_unsorted = {
-      {{kKs, kAs}, {kAh, kKh}}};
+  const std::array<std::array<int, 2>, 2> hands_unsorted = {{{kKs, kAs}, {kAh, kKh}}};
   result = table.evaluate(flop_unsorted, hands_unsorted, ledger);
   CHECK(result[0] == 2.0);
   CHECK(result[1] == -2.0);
@@ -114,8 +112,7 @@ int test_wrong_seat_count_throws() {
   const TerminalPayload ledger = make_ledger();
   const std::array<int, 3> flop = {k2h, k3h, k4h};
   // 3 seats — frontier evaluation is heads-up only.
-  const std::array<std::array<int, 2>, 3> hands3 = {
-      {{kAs, kKs}, {kAh, kKh}, {kAc, kKc}}};
+  const std::array<std::array<int, 2>, 3> hands3 = {{{kAs, kKs}, {kAh, kKh}, {kAc, kKc}}};
   bool threw = false;
   try {
     (void)table.evaluate(flop, hands3, ledger);

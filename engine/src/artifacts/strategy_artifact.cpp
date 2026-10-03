@@ -27,6 +27,7 @@ using poker::Chips;
 using poker::GameDef;
 using poker::HeadsUpRoot;
 using poker::RulesVariant;
+using poker::TerminalDepth;
 using solver::HeadsUpGame;
 using solver::InformationKey;
 using solver::NSeatTerminationPhase;
@@ -1101,6 +1102,11 @@ void write_schema_v3(dt::Db& db) {
 // blinds are posted at the root (the GameState constructor seats the declared
 // stacks/contributions verbatim, so the stack/contribution round-trip is the
 // identity), and no ante is declared until an ante profile ships.
+//
+// RFC 0007: a heads-up preflop root with flop-terminal depth is also accepted.
+// The root has board_size == 0, preflop == true, blinds posted (the GameState
+// constructor posts them from stacks), and terminal == Flop. The reader
+// derives blinds_posted deterministically from big_blind for 2-seat games.
 void validate_game_v2(const GameDef& game) {
   check(game.player_count >= 2 && game.player_count <= 10, ArtifactErrorKind::InvalidArgument,
         "player_count must be in 2..10");
@@ -1110,11 +1116,29 @@ void validate_game_v2(const GameDef& game) {
         "big blind outside the numeric profile");
   check(game.ante == 0, ArtifactErrorKind::InvalidArgument,
         "nonzero ante is not supported by the v2 profile");
-  check(game.board_size == 3 || game.board_size == 4 || game.board_size == 5,
-        ArtifactErrorKind::InvalidArgument,
-        "v2 writer supports rooted flop/turn/river games only (board_size 3..5)");
-  check(!game.preflop, ArtifactErrorKind::InvalidArgument,
-        "v2 writer does not support preflop games");
+  const bool is_preflop_flop_terminal =
+      game.board_size == 0 && game.preflop && game.terminal == TerminalDepth::Flop;
+  if (is_preflop_flop_terminal) {
+    check(game.player_count == 2, ArtifactErrorKind::InvalidArgument,
+          "preflop flop-terminal artifacts are heads-up only (RFC 0007 frontier contract)");
+    // The reader derives blinds_posted deterministically from big_blind for
+    // 2-seat games (button posts SB = big_blind/2, other posts BB). Validate
+    // the stored game matches that convention so same_game_def round-trips.
+    const Chips sb = game.big_blind / 2;
+    for (std::size_t seat = 0; seat < 2; ++seat) {
+      const Chips expected = (seat == game.button) ? sb : game.big_blind;
+      check(game.blinds_posted[seat] == expected, ArtifactErrorKind::InvalidArgument,
+            "preflop blinds_posted must match the standard 2-seat convention "
+            "(button posts big_blind/2, other posts big_blind)");
+    }
+  } else {
+    check(game.board_size == 3 || game.board_size == 4 || game.board_size == 5,
+          ArtifactErrorKind::InvalidArgument,
+          "v2 writer supports rooted flop/turn/river games (board_size 3..5) or heads-up "
+          "flop-terminal preflop games (board_size 0, preflop, terminal=Flop)");
+    check(!game.preflop, ArtifactErrorKind::InvalidArgument,
+          "v2 writer does not support preflop games without flop-terminal depth");
+  }
   check(game.variant == RulesVariant::NoLimitHoldem, ArtifactErrorKind::InvalidArgument,
         "unsupported rules variant");
   std::array<bool, 52> used{};
@@ -1131,8 +1155,10 @@ void validate_game_v2(const GameDef& game) {
           "stack outside the 2^53-1 profile");
     check(game.contributions[seat] <= kMaxStoredChips, ArtifactErrorKind::InvalidArgument,
           "contribution outside the 2^53-1 profile");
-    check(game.blinds_posted[seat] == 0, ArtifactErrorKind::InvalidArgument,
-          "rooted board games must not post blinds at the root");
+    if (!is_preflop_flop_terminal) {
+      check(game.blinds_posted[seat] == 0, ArtifactErrorKind::InvalidArgument,
+            "rooted board games must not post blinds at the root");
+    }
   }
 }
 
@@ -1302,17 +1328,21 @@ void insert_game_v2(dt::Db& db, const GameDef& game) {
                   " pot, utility_id) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                   "insert game");
   int i = 1;
-  insert.bind_text(i++, kRulesIdentifierV2);
+  const bool is_preflop = game.board_size == 0;
+  insert.bind_text(i++, is_preflop ? kRulesIdentifierPreflop : kRulesIdentifierV2);
   insert.bind_i64(i++, static_cast<std::int64_t>(game.player_count));
   insert.bind_i64(i++, static_cast<std::int64_t>(game.button));
   insert.bind_u64_chips(i++, game.big_blind);
   insert.bind_u64_chips(i++, game.ante);
-  // board_size 3..5 maps to root_street 0..2 (Flop..River).
-  insert.bind_i64(i++, static_cast<std::int64_t>(game.board_size) - 3);
+  // board_size 3..5 maps to root_street 0..2 (Flop..River); board_size 0
+  // (preflop) maps to root_street 3.
+  insert.bind_i64(i++, is_preflop ? 3 : static_cast<std::int64_t>(game.board_size) - 3);
   insert.bind_i64(i++, static_cast<std::int64_t>(game.terminal));
-  insert.bind_i64(i++, game.board[0]);
-  insert.bind_i64(i++, game.board[1]);
-  insert.bind_i64(i++, game.board[2]);
+  // Preflop roots store 0 for flop cards (valid card ids, never read by the
+  // reader because root_street == 3 skips the flop/fixed-card reads).
+  insert.bind_i64(i++, is_preflop ? 0 : game.board[0]);
+  insert.bind_i64(i++, is_preflop ? 0 : game.board[1]);
+  insert.bind_i64(i++, is_preflop ? 0 : game.board[2]);
   if (game.board_size >= 4)
     insert.bind_i64(i++, game.board[3]);
   else
@@ -1976,9 +2006,12 @@ ArtifactManifest read_manifest_v3(dt::Db& db) {
 }
 
 // Reconstructs the GameDef identity from the seat-generic game row and the
-// game_seats child table. The reader reconstructs blinds_posted=0 and
-// preflop=false (the writer requires both), so same_game_def round-trips
-// exactly. variant is always NoLimitHoldem.
+// game_seats child table. For rooted flop/turn/river games the reader
+// reconstructs blinds_posted=0 and preflop=false (the writer requires both),
+// so same_game_def round-trips exactly. For RFC 0007 preflop flop-terminal
+// games (root_street == 3) the reader derives blinds_posted deterministically
+// from big_blind for 2-seat games (button posts SB, other posts BB) and sets
+// preflop=true. variant is always NoLimitHoldem.
 GameDef read_game_v2(dt::Db& db) {
   dt::Stmt query(db.get(),
                  "SELECT rules_id, player_count, button, big_blind, ante, root_street,"
@@ -1990,7 +2023,8 @@ GameDef read_game_v2(dt::Db& db) {
   GameDef game{};
   int i = 0;
   const std::string_view rules = query.column_text(i++);
-  check(rules == kRulesIdentifierV2, ArtifactErrorKind::UnsupportedVersion,
+  const bool is_preflop = (rules == kRulesIdentifierPreflop);
+  check(rules == kRulesIdentifierV2 || is_preflop, ArtifactErrorKind::UnsupportedVersion,
         "unsupported rules identifier: " + std::string(rules));
   const std::int64_t player_count_raw = query.column_i64(i++);
   check(player_count_raw >= 2 && player_count_raw <= 10, ArtifactErrorKind::InvalidSchema,
@@ -2006,52 +2040,80 @@ GameDef read_game_v2(dt::Db& db) {
         "nonzero ante is not supported by the v2 profile");
   game.ante = ante;
   const std::int64_t root_street = query.column_i64(i++);
-  check(root_street >= 0 && root_street <= 2, ArtifactErrorKind::UnsupportedVersion,
-        "v2 reader supports rooted flop/turn/river games only (root_street 0..2)");
+  check(root_street >= 0 && root_street <= 3, ArtifactErrorKind::UnsupportedVersion,
+        "v2 reader supports root_street 0..3");
+  if (is_preflop) {
+    check(root_street == 3, ArtifactErrorKind::InvalidSchema,
+          "preflop rules identifier requires root_street == 3");
+    check(player_count_raw == 2, ArtifactErrorKind::InvalidSchema,
+          "preflop flop-terminal artifacts are heads-up only");
+  } else {
+    check(root_street <= 2, ArtifactErrorKind::UnsupportedVersion,
+          "v2 reader supports rooted flop/turn/river games only (root_street 0..2)");
+  }
   const std::int64_t terminal_depth_raw = query.column_i64(i++);
   check(terminal_depth_raw == 0 || terminal_depth_raw == 1, ArtifactErrorKind::InvalidSchema,
         "game.terminal_depth must be 0 or 1");
   game.terminal = static_cast<poker::TerminalDepth>(terminal_depth_raw);
-  for (int flop_index = 0; flop_index < 3; ++flop_index) {
-    const std::int64_t flop_card = query.column_i64(i++);
-    check(flop_card >= 0 && flop_card < 52, ArtifactErrorKind::InvalidValue,
-          "game flop card outside 0..51");
-    game.board[flop_index] = static_cast<int>(flop_card);
-  }
-  // root_street 0 (flop): board_size 3, no fixed cards.
-  // root_street 1 (turn): board_size 4, fixed_turn = board[3].
-  // root_street 2 (river): board_size 5, fixed_turn = board[3], fixed_river = board[4].
-  if (root_street >= 1) {
-    check(!query.column_null(i), ArtifactErrorKind::InvalidSchema,
-          "turn-rooted game requires a fixed_turn card");
-    const std::int64_t turn_card = query.column_i64(i);
-    check(turn_card >= 0 && turn_card < 52, ArtifactErrorKind::InvalidValue,
-          "fixed_turn card outside 0..51");
-    game.board[3] = static_cast<int>(turn_card);
-  } else {
+  if (is_preflop) {
+    // Preflop root: skip flop/fixed-card reads. The stored values are 0 (valid
+    // card ids, never read for preflop roots).
+    i += 3;  // flop0, flop1, flop2
     check(query.column_null(i), ArtifactErrorKind::InvalidSchema,
-          "flop-rooted game must not carry a fixed_turn card");
-  }
-  ++i;
-  if (root_street >= 2) {
-    check(!query.column_null(i), ArtifactErrorKind::InvalidSchema,
-          "river-rooted game requires a fixed_river card");
-    const std::int64_t river_card = query.column_i64(i);
-    check(river_card >= 0 && river_card < 52, ArtifactErrorKind::InvalidValue,
-          "fixed_river card outside 0..51");
-    game.board[4] = static_cast<int>(river_card);
-  } else {
+          "preflop game must not carry a fixed_turn card");
+    ++i;
     check(query.column_null(i), ArtifactErrorKind::InvalidSchema,
-          "non-river-rooted game must not carry a fixed_river card");
+          "preflop game must not carry a fixed_river card");
+    ++i;
+    game.board_size = 0;
+    game.preflop = true;
+    // Derive blinds_posted deterministically for 2-seat heads-up: the button
+    // posts the small blind (big_blind / 2), the other seat posts the big
+    // blind. This is the heads-up convention the GameState constructor uses.
+    game.blinds_posted[game.button] = game.big_blind / 2;
+    game.blinds_posted[1 - game.button] = game.big_blind;
+  } else {
+    for (int flop_index = 0; flop_index < 3; ++flop_index) {
+      const std::int64_t flop_card = query.column_i64(i++);
+      check(flop_card >= 0 && flop_card < 52, ArtifactErrorKind::InvalidValue,
+            "game flop card outside 0..51");
+      game.board[flop_index] = static_cast<int>(flop_card);
+    }
+    // root_street 0 (flop): board_size 3, no fixed cards.
+    // root_street 1 (turn): board_size 4, fixed_turn = board[3].
+    // root_street 2 (river): board_size 5, fixed_turn = board[3], fixed_river = board[4].
+    if (root_street >= 1) {
+      check(!query.column_null(i), ArtifactErrorKind::InvalidSchema,
+            "turn-rooted game requires a fixed_turn card");
+      const std::int64_t turn_card = query.column_i64(i);
+      check(turn_card >= 0 && turn_card < 52, ArtifactErrorKind::InvalidValue,
+            "fixed_turn card outside 0..51");
+      game.board[3] = static_cast<int>(turn_card);
+    } else {
+      check(query.column_null(i), ArtifactErrorKind::InvalidSchema,
+            "flop-rooted game must not carry a fixed_turn card");
+    }
+    ++i;
+    if (root_street >= 2) {
+      check(!query.column_null(i), ArtifactErrorKind::InvalidSchema,
+            "river-rooted game requires a fixed_river card");
+      const std::int64_t river_card = query.column_i64(i);
+      check(river_card >= 0 && river_card < 52, ArtifactErrorKind::InvalidValue,
+            "fixed_river card outside 0..51");
+      game.board[4] = static_cast<int>(river_card);
+    } else {
+      check(query.column_null(i), ArtifactErrorKind::InvalidSchema,
+            "non-river-rooted game must not carry a fixed_river card");
+    }
+    ++i;
+    game.board_size = static_cast<std::uint8_t>(3 + root_street);
+    game.preflop = false;
   }
-  ++i;
-  game.board_size = static_cast<std::uint8_t>(3 + root_street);
   game.pot = static_cast<Chips>(read_bounded_i64(query, i++, "pot"));
   const std::string_view utility = query.column_text(i++);
   check(utility == kUtilityIdentifierV1, ArtifactErrorKind::UnsupportedVersion,
         "unsupported utility identifier: " + std::string(utility));
   check(!query.step("read game"), ArtifactErrorKind::InvalidSchema, "game table not singleton");
-  game.preflop = false;
   game.variant = RulesVariant::NoLimitHoldem;
   return game;
 }

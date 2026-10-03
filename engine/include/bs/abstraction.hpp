@@ -246,8 +246,9 @@ class ActionAbstraction {
 };
 
 // Seven-card score (the identity card bucket). `hole` is two card ids and
-// `board` is 3/4/5 card ids; the result is the evaluator score, whose order is
-// hand strength.
+// `board` is 0/3/4/5 card ids; the result is the evaluator score, whose order
+// is hand strength. An empty board (preflop, RFC 0007) scores the two hole
+// cards alone (pair or high-card category).
 std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<int>& board);
 
 // The declared bucket for a holding under a card abstraction family.

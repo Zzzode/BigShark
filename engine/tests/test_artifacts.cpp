@@ -16,6 +16,7 @@
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
 #include <bs/eval.hpp>
+#include <bs/frontier.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
@@ -321,6 +322,67 @@ SeatTrainingResult trained_seat_result_v3() {
   if (trained.termination != NSeatTerminationPhase::Complete)
     throw std::runtime_error("v3 seat fixture training did not complete");
   return export_seat_policy(trained, tree, ranges, bs::abstraction::suit_canonicalization_id());
+}
+
+// --- RFC 0007 preflop flop-terminal fixtures --------------------------------
+
+// A trivial frontier evaluator for artifact round-trip tests: every frontier
+// leaf has zero chip utility for both seats. This is a valid (if trivial)
+// evaluator — the artifact test verifies persistence, not policy quality.
+class ZeroFrontierEvaluator : public bs::gto::FrontierEvaluator {
+ public:
+  std::vector<double> evaluate(std::span<const int> flop, std::span<const std::array<int, 2>> hands,
+                               const bs::tree::TerminalPayload& ledger) const override {
+    (void)flop;
+    (void)hands;
+    (void)ledger;
+    return {0.0, 0.0};
+  }
+};
+
+// A two-seat preflop flop-terminal game: 3 BB stacks, standard heads-up blinds
+// (button posts SB = big_blind/2, other posts BB). The small stack keeps the
+// tree and training fast while exercising the full preflop artifact path.
+GameDef two_seat_preflop_def_v2() {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {6, 6, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;  // SB 1 + BB 2
+  def.board = {-1, -1, -1, 0, 0};
+  def.board_size = 0;
+  def.preflop = true;
+  def.blinds_posted = {1, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.terminal = TerminalDepth::Flop;
+  return def;
+}
+
+// Two combos per seat, all mutually card-distinct. Canonical form: each hand's
+// cards sorted ascending and each seat's range sorted by combo id, matching the
+// reader's `ORDER BY player, combo` output (the round-trip canonicalizes range
+// order, so the fixture must already be in the reader's order).
+std::vector<std::vector<WeightedHand>> two_seat_preflop_ranges_v2() {
+  return {
+      {{{card("Ks"), card("Kd")}, 3}, {{card("As"), card("Ad")}, 2}},
+      {{{card("Js"), card("Jd")}, 7}, {{card("Qs"), card("Qd")}, 5}},
+  };
+}
+
+// Trains the two-seat preflop flop-terminal fixture with the zero frontier
+// evaluator and exports a concrete SeatTrainingResult, the v2 writer's domain
+// record.
+SeatTrainingResult trained_preflop_result_v2() {
+  const GameDef def = two_seat_preflop_def_v2();
+  const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+  const auto ranges = two_seat_preflop_ranges_v2();
+  const ZeroFrontierEvaluator frontier;
+  const NSeatTrainingResult trained =
+      train_nseat(tree, ranges, 200, 20261003, NSeatTrainerLimits{}, &frontier);
+  if (trained.termination != NSeatTerminationPhase::Complete)
+    throw std::runtime_error("preflop fixture training did not complete");
+  return export_seat_policy(trained, tree, ranges);
 }
 
 bool same_schedule_v2_exact(const SizeSchedule& a, const SizeSchedule& b) {
@@ -1303,6 +1365,115 @@ static int test_roundtrip_v3(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// test 1c: RFC 0007 preflop flop-terminal checkpoint round trip
+// ---------------------------------------------------------------------------
+
+static int test_roundtrip_preflop(const fs::path& dir) {
+  const SeatTrainingResult exported = trained_preflop_result_v2();
+  CHECK(!exported.policy.rows().empty());
+  CHECK(exported.policy.game().player_count == 2);
+  CHECK(exported.policy.game().board_size == 0);
+  CHECK(exported.policy.game().preflop);
+  CHECK(exported.terminal_depth == TerminalDepth::Flop);
+
+  const fs::path path = dir / "roundtrip-preflop-checkpoint.db";
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "roundtrip-preflop-engine-1";
+  create_checkpoint(path, exported, provenance);
+  CHECK(throws_artifact([&] { create_checkpoint(path, exported, provenance); },
+                        ArtifactErrorKind::AlreadyExists));
+
+  // Independent schema oracle through a raw connection.
+  {
+    RawDb raw(path, SQLITE_OPEN_READONLY);
+    CHECK(raw.scalar_i64("PRAGMA user_version") == 2);
+    CHECK(raw.scalar_text("SELECT rules_id FROM game") == kRulesIdentifierPreflop);
+    CHECK(raw.scalar_i64("SELECT player_count FROM game") == 2);
+    CHECK(raw.scalar_i64("SELECT root_street FROM game") == 3);  // preflop
+    CHECK(raw.scalar_i64("SELECT terminal_depth FROM game") ==
+          static_cast<std::int64_t>(TerminalDepth::Flop));
+    CHECK(raw.scalar_i64("SELECT flop0 FROM game") == 0);  // stored but never read
+    CHECK(raw.scalar_i64("SELECT flop1 FROM game") == 0);
+    CHECK(raw.scalar_i64("SELECT flop2 FROM game") == 0);
+    CHECK(raw.scalar_text("SELECT utility_id FROM game") == kUtilityIdentifierV1);
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM game_seats") == 2);
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM information_states") ==
+          static_cast<std::int64_t>(exported.policy.rows().size()));
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM training") == 0);
+  }
+
+  // Same-process lossless read.
+  const LoadedArtifact loaded = load_artifact(path);
+  CHECK(loaded.bundle.nseat.has_value());
+  CHECK(loaded.bundle.result.policy.rows().empty());
+  CHECK(loaded.bundle.rows.empty());
+  const GameDef& read_game = loaded.bundle.nseat->policy.game();
+  CHECK(read_game.player_count == 2);
+  CHECK(read_game.board_size == 0);
+  CHECK(read_game.preflop);
+  CHECK(read_game.terminal == TerminalDepth::Flop);
+  CHECK(read_game.big_blind == 2);
+  CHECK(read_game.blinds_posted[0] == 1);  // button posts SB
+  CHECK(read_game.blinds_posted[1] == 2);  // other posts BB
+  CHECK(read_game.pot == 3);
+  if (compare_seat_result_exact(exported, *loaded.bundle.nseat) != 0) {
+    std::printf("preflop roundtrip seat-result comparison failed\n");
+    return 1;
+  }
+
+  // Byte stability: a second write of the same result has the same SHA-256.
+  const fs::path path2 = dir / "roundtrip-preflop-checkpoint-2.db";
+  create_checkpoint(path2, exported, provenance);
+  CHECK(sha256_file_hex(path) == sha256_file_hex(path2));
+
+  // Publish and probe.
+  const fs::path policy_dir = dir / "policy-preflop";
+  fs::create_directory(policy_dir);
+  const fs::path policy_path = policy_dir / "generation-preflop-0001.db";
+  const PublishedPolicy published = publish_policy(path, policy_path, "publish-preflop-1");
+  CHECK(published.sha256_hex == sha256_file_hex(policy_path));
+
+  const ArtifactProbe probe = probe_artifact(policy_path);
+  CHECK(probe.manifest.kind == ArtifactKind::Policy);
+  CHECK(probe.manifest.validation == ValidationState::Validated);
+  CHECK(probe.game_def.has_value());
+  CHECK(probe.game_def->player_count == 2);
+  CHECK(probe.game_def->board_size == 0);
+  CHECK(probe.game_def->preflop);
+  CHECK(probe.game_def->terminal == TerminalDepth::Flop);
+  CHECK(probe.ranges.has_value());
+  CHECK(probe.ranges->size() == 2);
+  CHECK(probe.sizes.has_value());
+  CHECK(probe.information_sets == exported.policy.rows().size());
+
+  // The published policy round-trips through the v2 loader.
+  const LoadedArtifact published_loaded =
+      load_artifact(policy_path, LoadOptions{published.file_bytes, published.sha256});
+  CHECK(published_loaded.bundle.manifest.kind == ArtifactKind::Policy);
+  CHECK(published_loaded.bundle.nseat.has_value());
+  if (compare_seat_result_exact(exported, *published_loaded.bundle.nseat) != 0) {
+    std::printf("preflop published-policy seat-result comparison failed\n");
+    return 1;
+  }
+
+  // A flop-rooted v2 artifact must NOT match the preflop rules identifier and
+  // vice versa: the reader dispatches on rules_id, so a preflop root_street
+  // with the flop-rooted rules_id is rejected as UnsupportedVersion.
+  {
+    const fs::path tampered = dir / "roundtrip-preflop-tampered-rules.db";
+    fs::copy_file(path, tampered);
+    {
+      RawDb raw(tampered, SQLITE_OPEN_READWRITE);
+      raw.exec("UPDATE game SET rules_id = 'rfc0009-unified-flop-v1' WHERE id = 1");
+    }
+    CHECK(throws_artifact([&] { (void)load_artifact(tampered); },
+                          ArtifactErrorKind::UnsupportedVersion));
+  }
+
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // test 2: canonical key oracle (hand-authored bytes + malformed rejection)
 // ---------------------------------------------------------------------------
 
@@ -2247,6 +2418,7 @@ int main() {
       {"roundtrip", test_roundtrip},
       {"roundtrip-v2", test_roundtrip_v2},
       {"roundtrip-v3", test_roundtrip_v3},
+      {"roundtrip-preflop", test_roundtrip_preflop},
       {"canonical-keys", test_canonical_keys},
       {"split-run", test_split_run},
       {"resume-identity", test_resume_identity},
