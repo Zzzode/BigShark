@@ -170,6 +170,11 @@ AbstractionId card_abstraction_id(CardBucketKind kind) {
       id.version = 1;
       id.parameters = "bucket=hand-category;tiers=9;lossless=0";
       break;
+    case CardBucketKind::Preflop169:
+      id.name = "preflop-169";
+      id.version = 1;
+      id.parameters = "bucket=preflop-rank-suit;count=169;lossless=0";
+      break;
   }
   id.digest = abstraction_digest(id.name, id.version, id.parameters);
   return id;
@@ -266,16 +271,36 @@ std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<
 
 std::uint32_t card_bucket(CardBucketKind kind, const std::array<int, 2>& hole,
                           const std::vector<int>& board) {
-  const std::uint32_t score = strength_bucket(hole, board);
   switch (kind) {
     case CardBucketKind::Identity:
-      return score;
-    case CardBucketKind::CategoryTiersV1:
+      return strength_bucket(hole, board);
+    case CardBucketKind::CategoryTiersV1: {
+      const std::uint32_t score = strength_bucket(hole, board);
       // The evaluator packs the category (1..9) in the top bits; same category
       // collapses to one bucket, discarding every rank/ kicker distinction.
       return (score >> 20) & 0xF;
+    }
+    case CardBucketKind::Preflop169: {
+      if (!board.empty()) {
+        // Postflop: fall back to CategoryTiersV1.
+        const std::uint32_t score = strength_bucket(hole, board);
+        return (score >> 20) & 0xF;
+      }
+      // Preflop: 13 pairs + 78 suited + 78 offsuit = 169 buckets.
+      // Card ids are rank-major: id = rank * 4 + suit, rank 0..12.
+      const int r0 = hole[0] / 4;
+      const int r1 = hole[1] / 4;
+      if (r0 == r1)
+        return static_cast<std::uint32_t>(r0);  // pair: 0..12
+      const int hi = r0 > r1 ? r0 : r1;
+      const int lo = r0 < r1 ? r0 : r1;
+      const std::uint32_t rank_idx = static_cast<std::uint32_t>(hi * (hi - 1) / 2 + lo);
+      if (hole[0] % 4 == hole[1] % 4)
+        return 13 + rank_idx;     // suited: 13..90
+      return 13 + 78 + rank_idx;  // offsuit: 91..168
+    }
   }
-  return score;
+  return strength_bucket(hole, board);
 }
 
 CanonicalBoard canonicalize(const std::array<int, 3>& board) {

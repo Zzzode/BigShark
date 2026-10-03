@@ -54,10 +54,10 @@
 // The node index abstracts the concrete board value (chance child positions
 // are board-only ordinals), so one tree serves every sampled flop of the
 // rooted profile. The own-card bucket uses the L2 card abstraction
-// (`abstraction::CategoryTiersV1` by default, over the concrete sampled board
-// and the acting seat's own two cards only), which is L4-owned here: the
-// artifact reader/writer side later maps buckets to concrete decoding
-// (RFC 0009 D3).
+// (`abstraction::Preflop169` by default — 13 pairs + 78 suited + 78 offsuit
+// at preflop, falling back to CategoryTiersV1 at postflop), which is L4-owned
+// here: the artifact reader/writer side later maps buckets to concrete
+// decoding (RFC 0009 D3).
 //
 // Refusal layering (mirroring the stage-4 heads-up route): the trainer itself
 // throws std::invalid_argument for a malformed request (wrong range count,
@@ -93,7 +93,7 @@ namespace bs::solver {
 // bucket the trainer keyed on; a consumer that buckets differently silently
 // misses every row.
 inline constexpr abstraction::CardBucketKind kNSeatCardKind =
-    abstraction::CardBucketKind::CategoryTiersV1;
+    abstraction::CardBucketKind::Preflop169;
 
 // Resource bounds for the n-seat trainer. Distinct from TrainingLimits: the
 // node cap bounds the FINITE tree materialization (delegated to TreeLimits,

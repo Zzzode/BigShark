@@ -173,20 +173,34 @@ A shallow three-big-blind stack therefore does not converge either: the limit is
 consumed by postflop enumeration, which is exactly what the flop-terminal
 declaration removes.
 
-**Implementation update: virtual flop deal (2026-10-03).** The flop-terminal
-tree was dominated by the 3-level chance subtree (52×51×50 = 132,600 frontier
-leaves per preflop line that reaches the flop). At 25 BB the tree exceeded an
-8 GiB byte cap; only 3 BB fit the default 1 GiB limit. The virtual flop deal
-(`NodeKind::FlopDeal`) replaces the entire chance subtree with a single leaf
-node. The trainer's walk samples 3 cards inline at the leaf and constructs the
-frontier payload from the GameState it carries, so no consumer enumerates the
-chance subtree. This drops the flop-terminal tree from millions of nodes
-(>8 GiB at 25 BB) to hundreds of nodes (<1 MB at any stack depth). The
-declared small profile (6 combos/seat, 25 BB, flop-terminal) now trains to
-completion: 670 nodes, 319 information sets, 285 KB, 0.02 s. The
-continuation-range export is unchanged (it already stopped at the first
-chance node; now it stops at the FlopDeal leaf). River-terminal games are
-unaffected.
+**Implementation update: virtual flop deal + Preflop169 (2026-10-03).** The
+flop-terminal tree was dominated by the 3-level chance subtree (52×51×50 =
+132,600 frontier leaves per preflop line that reaches the flop). At 25 BB the
+tree exceeded an 8 GiB byte cap; only 3 BB fit the default 1 GiB limit. The
+virtual flop deal (`NodeKind::FlopDeal`) replaces the entire chance subtree
+with a single leaf node. The trainer's walk samples 3 cards inline at the
+leaf and constructs the frontier payload from the GameState it carries, so no
+consumer enumerates the chance subtree. This drops the flop-terminal tree
+from millions of nodes (>8 GiB at 25 BB) to hundreds of nodes (<1 MB at any
+stack depth). The continuation-range export is unchanged (it already stopped
+at the first chance node; now it stops at the FlopDeal leaf). River-terminal
+games are unaffected.
+
+The card abstraction was upgraded from `CategoryTiersV1` (only 2 preflop
+buckets: pair vs. high card — too coarse for a preflop policy) to
+`Preflop169` (13 pairs + 78 suited + 78 offsuit = 169 buckets, the standard
+lossless preflop rank-suit abstraction, falling back to `CategoryTiersV1` at
+postflop). `kNSeatCardKind` now seals rows under `Preflop169`. A latent bug
+in `export_seat_policy` (hardcoded `CategoryTiersV1` instead of
+`kNSeatCardKind`) was fixed as part of this change.
+
+The declared small profile (6 combos/seat, 25 BB, flop-terminal) now trains
+to completion: 670 nodes, 922 information sets (abstracted by `Preflop169`
+buckets), 827,136 accounted bytes, 0.02 s, 22,100 flops exported. The
+full-range profile (all 1,326 combos/seat, 100 BB, flop-terminal) also trains
+to completion: 5,326 tree nodes (1,776 action), 85,605 information sets,
+78,614,144 accounted bytes (~75 MB), 0.53 s. Both fit well within the
+default 1 GiB byte cap.
 
 ## Design Principles
 

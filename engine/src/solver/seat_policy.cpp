@@ -119,8 +119,7 @@ void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
       if (on_board[static_cast<std::size_t>(c1)])
         continue;
       const std::array<int, 2> cards{c0, c1};
-      const std::uint32_t bucket =
-          abstraction::card_bucket(abstraction::CardBucketKind::CategoryTiersV1, cards, board_vec);
+      const std::uint32_t bucket = abstraction::card_bucket(kNSeatCardKind, cards, board_vec);
       const NSeatInformationKey nk{bucket, node_index};
       const auto it = nseat_policy.rows().find(nk);
       if (it == nseat_policy.rows().end())

@@ -123,7 +123,8 @@ struct SeatTrainingResult {
 // each edge's incoming_action/incoming_card during the DFS) and the observed
 // public-action path. At each Action node with acting seat `s`, for every
 // concrete combo (card0, card1) off the node's board it computes the
-// `CategoryTiersV1` bucket, looks up the sealed `(bucket, node_index)` row, and
+// `kNSeatCardKind` bucket (Preflop169 at preflop, CategoryTiersV1 fallback at
+// postflop), looks up the sealed `(bucket, node_index)` row, and
 // emits a concrete row keyed by `make_information_key(s, {card0,card1}, board,
 // path)`. A bucket with no sealed row at that node is an exact miss (no row
 // emitted), matching `NSeatPolicy::lookup`'s no-fill semantics.

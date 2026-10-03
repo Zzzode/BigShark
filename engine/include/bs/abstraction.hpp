@@ -129,7 +129,11 @@ AbstractionId identity_action_id();
 // river-terminal fixtures. `CategoryTiersV1` maps it to the hand category
 // 1..9, which deliberately merges every hand within a category and is the
 // first declared lossy bucketing, carried only with a measured merge rate.
-enum class CardBucketKind { Identity, CategoryTiersV1 };
+// `Preflop169` is the standard preflop abstraction: 13 pairs + 78 suited +
+// 78 offsuit = 169 buckets, computed directly from card ranks and suits
+// without the evaluator. At postflop (non-empty board) it falls back to
+// CategoryTiersV1, so river-terminal games are unaffected.
+enum class CardBucketKind { Identity, CategoryTiersV1, Preflop169 };
 
 AbstractionId card_abstraction_id(CardBucketKind kind);
 

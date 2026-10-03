@@ -24,6 +24,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <vector>
 
 using namespace bs::poker;
@@ -291,6 +292,97 @@ bool test_preflop_training_evidence() {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// Full-range 100 BB measurement: all 1,326 combos per seat at 100 BB.
+//
+// This tests whether the virtual flop deal + Preflop169 card abstraction
+// enables training at a realistic stack depth with the complete preflop
+// range. The key measurement is the information-set count, which depends on
+// the card bucket system: Preflop169 produces 169 distinct preflop buckets
+// (13 pairs + 78 suited + 78 offsuit), versus CategoryTiersV1's 2 (pair vs.
+// high card).
+// ---------------------------------------------------------------------------
+
+bool test_preflop_full_range_100bb() {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {200, 200, 0, 0, 0, 0, 0, 0, 0, 0};  // 100 BB
+  def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;
+  def.board = {-1, -1, -1, 0, 0};
+  def.board_size = 0;
+  def.preflop = true;
+  def.blinds_posted = {1, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.terminal = TerminalDepth::Flop;
+
+  // All 1,326 combos per seat (C(52,2) = 1,326).
+  std::vector<std::vector<WeightedHand>> ranges(2);
+  ranges[0].reserve(1326);
+  ranges[1].reserve(1326);
+  for (int c0 = 0; c0 < 52; ++c0) {
+    for (int c1 = c0 + 1; c1 < 52; ++c1) {
+      ranges[0].push_back({{c0, c1}, 1.0});
+      ranges[1].push_back({{c0, c1}, 1.0});
+    }
+  }
+
+  const AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+
+  // Count action nodes.
+  std::size_t action_nodes = 0;
+  for (const auto& n : tree.nodes()) {
+    if (n.is_action())
+      ++action_nodes;
+  }
+
+  // Count distinct preflop buckets under CategoryTiersV1 and Identity.
+  std::set<std::uint32_t> tiers_buckets;
+  std::set<std::uint32_t> identity_buckets;
+  for (const auto& wh : ranges[0]) {
+    tiers_buckets.insert(bs::abstraction::card_bucket(kNSeatCardKind, wh.cards, {}));
+    identity_buckets.insert(
+        bs::abstraction::card_bucket(bs::abstraction::CardBucketKind::Identity, wh.cards, {}));
+  }
+
+  std::printf("[full-range] 100 BB, 1326 combos/seat\n");
+  std::printf("[full-range]   tree nodes:       %zu (%zu action)\n", tree.size(), action_nodes);
+  std::printf("[full-range]   accounted bytes:  %zu\n", tree.accounted_bytes());
+  std::printf("[full-range]   kNSeatCardKind buckets: %zu", tiers_buckets.size());
+  std::printf(" (values:");
+  for (auto b : tiers_buckets)
+    std::printf(" %u", b);
+  std::printf(")\n");
+  std::printf("[full-range]   Identity buckets:      %zu\n", identity_buckets.size());
+
+  // Train with a 5-minute wall clock.
+  const ZeroFrontierEvaluator frontier;
+  NSeatTrainerLimits limits;
+  limits.wall = std::chrono::minutes(5);
+
+  const auto start = std::chrono::steady_clock::now();
+  const NSeatTrainingResult trained = train_nseat(tree, ranges, 10000, 20261003, limits, &frontier);
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  const double wall_s = std::chrono::duration<double>(elapsed).count();
+
+  std::printf("[full-range]   termination:      %s\n",
+              trained.termination == NSeatTerminationPhase::Complete    ? "Complete"
+              : trained.termination == NSeatTerminationPhase::WallClock ? "WallClock"
+                                                                        : "ResourceLimit");
+  std::printf("[full-range]   iterations:       %llu\n",
+              static_cast<unsigned long long>(trained.completed_iterations));
+  std::printf("[full-range]   information sets: %zu\n", trained.information_sets);
+  std::printf("[full-range]   accounted bytes:  %zu\n", trained.accounted_bytes);
+  std::printf("[full-range]   wall time:        %.2f s\n", wall_s);
+
+  CHECK(trained.termination != NSeatTerminationPhase::ResourceLimit);
+  CHECK(trained.information_sets > 0);
+  CHECK(trained.nodes > 0);
+
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -305,6 +397,12 @@ int main() {
     return 1;
   }
   std::printf("[continuation-range] training evidence passed\n");
+
+  if (!test_preflop_full_range_100bb()) {
+    std::printf("test_preflop_full_range_100bb FAILED\n");
+    return 1;
+  }
+  std::printf("[continuation-range] full-range 100 BB passed\n");
 
   std::printf("continuation-range: all tests passed\n");
   return 0;
