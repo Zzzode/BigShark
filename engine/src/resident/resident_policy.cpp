@@ -493,8 +493,7 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
   const std::size_t prefix_street = static_cast<std::size_t>(event.street);
   // RFC 0007: a preflop event has no board cards; postflop events carry the
   // flop (3) plus the street's turn/river card.
-  const std::size_t prefix_board_size =
-      (event.street == Street::Preflop) ? 0 : 3 + prefix_street;
+  const std::size_t prefix_board_size = (event.street == Street::Preflop) ? 0 : 3 + prefix_street;
   // W4c-ii: build the canonical prefix board — the artifact's canonical flop
   // plus relabeled turn/river cards — so the information key matches the
   // class-policy rows. For v2 the relabel is the identity and the canonical

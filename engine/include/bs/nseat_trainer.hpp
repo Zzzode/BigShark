@@ -88,6 +88,13 @@ class FrontierEvaluator;  // RFC 0007: flop-terminal frontier evaluation
 
 namespace bs::solver {
 
+// The card bucket kind the n-seat trainer seals rows under. Exposed so
+// consumers (continuation-range export, artifact readers) compute the same
+// bucket the trainer keyed on; a consumer that buckets differently silently
+// misses every row.
+inline constexpr abstraction::CardBucketKind kNSeatCardKind =
+    abstraction::CardBucketKind::CategoryTiersV1;
+
 // Resource bounds for the n-seat trainer. Distinct from TrainingLimits: the
 // node cap bounds the FINITE tree materialization (delegated to TreeLimits,
 // which throws tree_resource_exhausted), `max_visits` bounds the unbounded

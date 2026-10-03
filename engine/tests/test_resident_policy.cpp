@@ -598,9 +598,8 @@ PublishedV2Fixture publish_v2(
 // zero chip utility for both seats.
 class ZeroFrontierEvaluator : public bs::gto::FrontierEvaluator {
  public:
-  std::vector<double> evaluate(
-      std::span<const int> flop, std::span<const std::array<int, 2>> hands,
-      const bs::tree::TerminalPayload& ledger) const override {
+  std::vector<double> evaluate(std::span<const int> flop, std::span<const std::array<int, 2>> hands,
+                               const bs::tree::TerminalPayload& ledger) const override {
     (void)flop;
     (void)hands;
     (void)ledger;

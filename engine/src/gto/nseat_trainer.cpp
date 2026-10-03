@@ -45,13 +45,6 @@ using tree::NodeKind;
 using tree::TerminalPayload;
 using tree::TreeNode;
 
-// The L4-owned card abstraction default. The artifact schema v2 (RFC 0009 D3)
-// later makes this declaration explicit; today it is the coarse tier kind the
-// stage-6 measurement core also trained under, so the two agree on what a
-// bucket means.
-inline constexpr abstraction::CardBucketKind kNSeatCardKind =
-    abstraction::CardBucketKind::CategoryTiersV1;
-
 // --- pinned sampling primitives --------------------------------------------
 // Same conventions as the heads-up solver and the stage-6 trainer: a
 // rejecting-threshold bounded index and the top-53-bits unit draw. These are

@@ -300,6 +300,7 @@ add_library(bigshark_solver STATIC
   src/gto/multiway_sampler.cpp
   src/gto/nseat_trainer.cpp
   src/gto/frontier_table.cpp
+  src/gto/continuation_range.cpp
   src/solver/seat_policy.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
@@ -828,6 +829,12 @@ if(BUILD_TESTING)
   add_executable(test_frontier_table tests/test_frontier_table.cpp)
   target_link_libraries(test_frontier_table PRIVATE bigshark_solver)
   add_test(NAME frontier_table COMMAND test_frontier_table)
+
+  # RFC 0007 (W4b): continuation-range export — hand-derived marginal, card
+  # removal, multi-line accumulation, and declared-profile training evidence.
+  add_executable(test_continuation_range tests/test_continuation_range.cpp)
+  target_link_libraries(test_continuation_range PRIVATE bigshark_solver)
+  add_test(NAME continuation_range COMMAND test_continuation_range)
 
   # RFC 0008 stage 4 L4 conformance: solve() reproduces the heads-up CFR's
   # golden results bit-for-bit (full + sampled, all runout variants) and
