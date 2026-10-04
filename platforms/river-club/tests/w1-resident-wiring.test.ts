@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 import { create } from '@bufbuild/protobuf';
@@ -20,7 +20,7 @@ import {
   SolverSource,
   StrategySchema,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
-import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs } from '../src/engine.js';
+import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, warmupTimeoutMsFor, AUTO_FLOP_LIBRARY_BUDGET_MIB } from '../src/engine.js';
 import {
   decisionEnvelope,
   fromV1DecisionResponse,
@@ -169,16 +169,16 @@ test('parseFlopLibraries validates the config surface (explicit over env)', () =
     parseFlopLibraries({ flopLibraries: ['/path/to/library'] }),
     ['/path/to/library'],
   );
-  // Absent everywhere yields none.
+  // Absent everywhere yields none (auto-detect suppressed via null detector).
   const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
-  assert.deepEqual(parseFlopLibraries({}), []);
+  assert.deepEqual(resolveFlopLibraries({}, () => null).libraries, []);
   // Environment JSON array is accepted.
   process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = JSON.stringify(['/env/lib']);
-  assert.deepEqual(parseFlopLibraries({}), ['/env/lib']);
+  assert.deepEqual(resolveFlopLibraries({}, () => null).libraries, ['/env/lib']);
   // Unparseable environment yields none (declared fallback, never a crash).
   process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = '{not json';
-  assert.deepEqual(parseFlopLibraries({}), []);
+  assert.deepEqual(resolveFlopLibraries({}, () => null).libraries, []);
   delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   if (prior !== undefined) process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
 });
@@ -194,9 +194,94 @@ test('parseFlopLibraries rejects malformed entries instead of silently dropping 
   );
   const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = JSON.stringify(['ok', '']);
-  assert.throws(() => parseFlopLibraries({}), /non-empty strings/);
+  assert.throws(() => resolveFlopLibraries({}, () => null), /non-empty strings/);
   if (prior === undefined) delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   else process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
+});
+
+// ---- auto-detection, budget, and warmup -----------------------------------
+
+test('resolveFlopLibraries auto-detects the bundled library and attaches the 6 GiB budget', () => {
+  const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+
+  // Build a temp repo root with artifacts/flop-library/manifest.json.
+  const tempRoot = mkdtempSync(join(tmpdir(), 'bs-autodetect-'));
+  const libDir = join(tempRoot, 'artifacts', 'flop-library');
+  mkdirSync(libDir, { recursive: true });
+  writeFileSync(join(libDir, 'manifest.json'), '{}');
+
+  // Detector fires: library path + 6 GiB budget.
+  const detected = resolveFlopLibraries({}, () => autoDetectedFlopLibrary(tempRoot));
+  assert.deepEqual(detected.libraries, [libDir]);
+  assert.equal(detected.residentBudgetMiB, AUTO_FLOP_LIBRARY_BUDGET_MIB);
+  assert.equal(detected.residentBudgetMiB, 6144);
+
+  // No manifest: no libraries, no budget.
+  const emptyRoot = mkdtempSync(join(tmpdir(), 'bs-autodetect-empty-'));
+  const none = resolveFlopLibraries({}, () => autoDetectedFlopLibrary(emptyRoot));
+  assert.deepEqual(none.libraries, []);
+  assert.equal(none.residentBudgetMiB, undefined);
+
+  // Explicit config wins over a firing detector (no budget attached).
+  const explicit = resolveFlopLibraries(
+    { flopLibraries: ['/explicit'] },
+    () => autoDetectedFlopLibrary(tempRoot),
+  );
+  assert.deepEqual(explicit.libraries, ['/explicit']);
+  assert.equal(explicit.residentBudgetMiB, undefined);
+
+  // Explicit empty array is the config opt-out.
+  const optedOut = resolveFlopLibraries(
+    { flopLibraries: [] },
+    () => autoDetectedFlopLibrary(tempRoot),
+  );
+  assert.deepEqual(optedOut.libraries, []);
+  assert.equal(optedOut.residentBudgetMiB, undefined);
+
+  // Env var set (even garbage) suppresses auto-detection.
+  process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = '{not json';
+  const envSuppressed = resolveFlopLibraries({}, () => autoDetectedFlopLibrary(tempRoot));
+  assert.deepEqual(envSuppressed.libraries, []);
+  assert.equal(envSuppressed.residentBudgetMiB, undefined);
+
+  delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  if (prior !== undefined) process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
+  rmSync(tempRoot, { recursive: true, force: true });
+  rmSync(emptyRoot, { recursive: true, force: true });
+});
+
+test('the launch line appends --resident-budget only when a budget is given', () => {
+  // With budget: flag and value appended after libraries.
+  assert.deepEqual(
+    protoEngineLaunchArgs([], ['/lib'], 6144),
+    ['--serve-proto', '--flop-library', '/lib', '--resident-budget', '6144'],
+  );
+  // Without budget: no flag (backward compatible).
+  assert.deepEqual(
+    protoEngineLaunchArgs([], ['/lib']),
+    ['--serve-proto', '--flop-library', '/lib'],
+  );
+  // Roots + libraries + budget coexist.
+  assert.deepEqual(
+    protoEngineLaunchArgs(
+      [{ path: '/x/policy.db', sha256: ROOT_A }],
+      ['/lib/a'],
+      2048,
+    ),
+    [
+      '--serve-proto',
+      '--resident-root', `/x/policy.db=${ROOT_A}`,
+      '--flop-library', '/lib/a',
+      '--resident-budget', '2048',
+    ],
+  );
+});
+
+test('warmupTimeoutMsFor scales with library presence', () => {
+  assert.equal(warmupTimeoutMsFor([]), 10_000);
+  assert.equal(warmupTimeoutMsFor(['/lib']), 300_000);
+  assert.equal(warmupTimeoutMsFor(['/lib/a', '/lib/b']), 300_000);
 });
 
 // ---- solve budget sanitizer ---------------------------------------------
@@ -371,6 +456,8 @@ test('real binary: the IMPLICIT client path serves the fixture root (singleton l
   t.after(() => closeEngine());
   // No protoEngineClient override: decide() must construct the implicit
   // process client from the configured roots (the path the runner ships).
+  // flopLibraries: [] suppresses auto-detection so the implicit client
+  // launches with only the fixture root, not the 1,755-class library.
   const room = residentRoom();
   const decision = await decide(room, {
     style: 'tag',
@@ -378,6 +465,7 @@ test('real binary: the IMPLICIT client path serves the fixture root (singleton l
     timeoutMs: 10_000,
     proto: true,
     residentRoots: [{ path: fixture.path, sha256: fixture.sha256 }],
+    flopLibraries: [],
   });
   assert.match(decision.reason, /blueprint/,
     `expected the implicit client to serve the blueprint, got ${decision.reason}`);
@@ -390,6 +478,7 @@ test('real binary: the IMPLICIT client path serves the fixture root (singleton l
     timeoutMs: 10_000,
     proto: true,
     residentRoots: [{ path: fixture.path, sha256: fixture.sha256 }],
+    flopLibraries: [],
   });
   assert.match(again.reason, /blueprint/);
   assert.equal(again.artifactSha256, fixture.sha256);

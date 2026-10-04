@@ -25,6 +25,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   decide,
+  resolveFlopLibraries,
   safeFallback,
 } from '../../platforms/river-club/src/engine.js';
 import {
@@ -376,12 +377,22 @@ function responseCode(value: unknown): string | undefined {
 // AUTOMATIC mode already tries the resident blueprint first on minor 1+, and
 // the minor-2 AUTOMATIC route keeps the demotion contract (a miss falls
 // through to the engine's declared fallback rather than failing the turn).
+//
+// When no explicit flopLibraries config is set, the launcher auto-detects
+// the bundled library (artifacts/flop-library/manifest.json at the repo
+// root). When it fires, the framed path is required so the library actually
+// loads; decide() re-resolves the same set and attaches its 6 GiB budget.
 function engineDecisionConfig(
   timeoutMs: number,
 ): Parameters<typeof decide>[1] {
   const roots = cfg.residentRoots;
   const libraries = cfg.flopLibraries;
-  const hasArtifacts = (roots?.length ?? 0) > 0 || (libraries?.length ?? 0) > 0;
+  const autoLibraries = libraries === undefined
+    ? resolveFlopLibraries({}).libraries
+    : [];
+  const hasArtifacts = (roots?.length ?? 0) > 0
+    || (libraries?.length ?? 0) > 0
+    || autoLibraries.length > 0;
   return {
     style,
     heroName,

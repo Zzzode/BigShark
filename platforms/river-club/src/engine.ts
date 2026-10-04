@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { EngineProcessClient } from '../../../clients/node/engine-process-client.js';
@@ -36,6 +37,19 @@ import type { Envelope } from '../../../build/generated/ts/bigshark/engine/v1/en
 const defaultBinary = process.env.BIGSHARK_ENGINE_BINARY || fileURLToPath(
   new URL('../../../../bin/bigshark-engine', import.meta.url),
 );
+// Repo root relative to the COMPILED module (dist/platforms/river-club/src/),
+// the same depth defaultBinary uses. Auto-detection looks for the bundled
+// flop class library at <repo>/artifacts/flop-library/manifest.json.
+const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+const AUTO_FLOP_LIBRARY_MANIFEST = 'artifacts/flop-library/manifest.json';
+// 6 GiB: the 1,755-class library measures ~2.7 MiB resident per class
+// (~4.8 GiB total), so 6 GiB advertises every class with headroom.
+export const AUTO_FLOP_LIBRARY_BUDGET_MIB = 6144;
+// The full library takes ~55 s to probe and longer to load; the default
+// 10 s warmup would expire mid-handshake. 300 s only when a flop library
+// is being launched; resident roots alone stay at 10 s.
+export const WARMUP_TIMEOUT_WITH_LIBRARY_MS = 300_000;
+const WARMUP_TIMEOUT_DEFAULT_MS = 10_000;
 let defaultClient: EngineProcessClient<V0DecisionContext, RawEngineDecision> | null = null;
 let defaultProtoClient: ProtoEngineProcessClient | null = null;
 let defaultProtoClientKey = '';
@@ -107,37 +121,82 @@ export function parseResidentRoots(
 }
 
 /**
- * Flop class library directories the engine child is launched with. The
- * explicit `config.flopLibraries` wins over the
- * `BIGSHARK_ENGINE_FLOP_LIBRARIES` environment variable (a JSON array of
- * directory path strings). Each entry becomes a repeatable
- * `--flop-library <dir>` child argument; the engine expands it into one
- * resident root per class via `<dir>/manifest.json`. An unparseable
- * environment value yields an empty list.
+ * The bundled flop class library directory, or null when its manifest is
+ * absent. Injectable so the wiring tests are deterministic on machines
+ * without the 3 GB checkout.
+ */
+export function autoDetectedFlopLibrary(root: string = repoRoot): string | null {
+  const manifest = join(root, AUTO_FLOP_LIBRARY_MANIFEST);
+  return existsSync(manifest) ? dirname(manifest) : null;
+}
+
+export interface ResolvedFlopLibraries {
+  libraries: string[];
+  // Defined only when the set is the launcher's auto-detected default;
+  // the engine child is then launched with --resident-budget.
+  residentBudgetMiB?: number;
+}
+
+/**
+ * Flop class library directories the engine child is launched with.
+ *
+ * Precedence:
+ * 1. `config.flopLibraries` (explicit). An empty array is the config
+ *    opt-out: it wins and carries no budget.
+ * 2. `BIGSHARK_ENGINE_FLOP_LIBRARIES` env var (JSON array of directory
+ *    paths). A set-but-garbage value suppresses auto-detection (declared
+ *    fallback, never a crash). An empty array is the env opt-out.
+ * 3. Auto-detection: if `<repo>/artifacts/flop-library/manifest.json`
+ *    exists, the library is loaded with a 6 GiB resident budget.
+ *
+ * Each entry becomes a repeatable `--flop-library <dir>` child argument;
+ * the engine expands it into one resident root per class via
+ * `<dir>/manifest.json`.
+ */
+export function resolveFlopLibraries(
+  config: EngineConfig,
+  autoDetect: () => string | null = () => autoDetectedFlopLibrary(),
+): ResolvedFlopLibraries {
+  if (config.flopLibraries !== undefined) {
+    return {
+      libraries: config.flopLibraries.map(lib => {
+        if (typeof lib !== 'string' || lib.length === 0)
+          throw new Error('flop library entries must be non-empty strings');
+        return lib;
+      }),
+    };
+  }
+  const raw = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  if (raw !== undefined) {
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return { libraries: [] };
+    }
+    if (!Array.isArray(value))
+      return { libraries: [] };
+    return {
+      libraries: value.map(entry => {
+        if (typeof entry !== 'string' || entry.length === 0)
+          throw new Error('flop library entries must be non-empty strings');
+        return entry;
+      }),
+    };
+  }
+  const detected = autoDetect();
+  return detected
+    ? { libraries: [detected], residentBudgetMiB: AUTO_FLOP_LIBRARY_BUDGET_MIB }
+    : { libraries: [] };
+}
+
+/**
+ * Flop class library directories (backward-compatible delegate to
+ * resolveFlopLibraries). New code should use resolveFlopLibraries to
+ * also receive the auto-detected resident budget.
  */
 export function parseFlopLibraries(config: EngineConfig): string[] {
-  if (config.flopLibraries !== undefined)
-    return config.flopLibraries.map(lib => {
-      if (typeof lib !== 'string' || lib.length === 0)
-        throw new Error('flop library entries must be non-empty strings');
-      return lib;
-    });
-  const raw = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
-  if (!raw)
-    return [];
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(value))
-    return [];
-  return value.map(entry => {
-    if (typeof entry !== 'string' || entry.length === 0)
-      throw new Error('flop library entries must be non-empty strings');
-    return entry;
-  });
+  return resolveFlopLibraries(config).libraries;
 }
 
 function validateResidentRoot(spec: ResidentRootSpec): ResidentRootSpec {
@@ -159,30 +218,47 @@ function residentRootArgs(roots: readonly ResidentRootSpec[]): string[] {
  * RFC 0009 W1: the framed child's launch line. With no configured roots or
  * libraries this is exactly the historical `['--serve-proto']`; each root
  * appends the host's documented repeatable `--resident-root <path>=<sha256>`
- * argument, and each flop library appends `--flop-library <dir>`, in the
+ * argument, each flop library appends `--flop-library <dir>`, and a
+ * residentBudgetMiB appends `--resident-budget <MiB>`, in the
  * configuration's order. Exported so the launch line is asserted directly by
  * the wiring tests.
  */
 export function protoEngineLaunchArgs(
   roots: readonly ResidentRootSpec[],
   libraries: readonly string[] = [],
+  residentBudgetMiB?: number,
 ): string[] {
   return [
     '--serve-proto',
     ...residentRootArgs(roots),
     ...libraries.flatMap(lib => ['--flop-library', lib]),
+    ...(residentBudgetMiB !== undefined
+      ? ['--resident-budget', String(residentBudgetMiB)]
+      : []),
   ];
+}
+
+/**
+ * The warmup timeout for the framed child. A flop library loads ~1,755
+ * SQLite DBs before the engine's first frame (~55 s probe, longer to
+ * load), so the default 10 s would expire mid-handshake. Resident roots
+ * alone stay at 10 s. Exported for the wiring tests.
+ */
+export function warmupTimeoutMsFor(libraries: readonly string[]): number {
+  return libraries.length > 0 ? WARMUP_TIMEOUT_WITH_LIBRARY_MS : WARMUP_TIMEOUT_DEFAULT_MS;
 }
 
 function protoEngineClient(
   roots: readonly ResidentRootSpec[],
   libraries: readonly string[],
+  residentBudgetMiB?: number,
 ): ProtoEngineProcessClient | null {
   // The implicit client is keyed by its launch line: configuration is fixed
-  // for a runner's lifetime, and a different root or library set must not
-  // silently reuse the previous child. Default (no roots, no libraries) keeps
-  // the historical bare `--serve-proto` launch line.
-  const key = JSON.stringify({ roots, libraries });
+  // for a runner's lifetime, and a different root, library, or budget set
+  // must not silently reuse the previous child. Default (no roots, no
+  // libraries, no budget) keeps the historical bare `--serve-proto` launch
+  // line.
+  const key = JSON.stringify({ roots, libraries, residentBudgetMiB });
   if (defaultProtoClient && defaultProtoClientKey === key)
     return defaultProtoClient;
   if (!existsSync(defaultBinary))
@@ -198,9 +274,9 @@ function protoEngineClient(
   const hasResidentArtifacts = roots.length > 0 || libraries.length > 0;
   defaultProtoClient = new ProtoEngineProcessClient({
     command: defaultBinary,
-    args: protoEngineLaunchArgs(roots, libraries),
+    args: protoEngineLaunchArgs(roots, libraries, residentBudgetMiB),
     warmupEnvelope: warmup,
-    warmupTimeoutMs: 10_000,
+    warmupTimeoutMs: warmupTimeoutMsFor(libraries),
     // The framed path stays minor 0 by default; callers must explicitly
     // negotiate a higher minor before its features can be used. RFC 0009 W1:
     // a configured resident root set or flop library is that explicit opt-in
@@ -237,15 +313,18 @@ async function decideV1(
     );
   }
   let libraries: string[];
+  let residentBudgetMiB: number | undefined;
   try {
-    libraries = parseFlopLibraries(config);
+    const resolved = resolveFlopLibraries(config);
+    libraries = resolved.libraries;
+    residentBudgetMiB = resolved.residentBudgetMiB;
   } catch (error) {
     throw new Error(
       `invalid flop library configuration: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   const client = (config.protoEngineClient as V1EnvelopeClient | undefined)
-    ?? protoEngineClient(roots, libraries);
+    ?? protoEngineClient(roots, libraries, residentBudgetMiB);
   if (!client)
     return safeFallback(room);
   // The concrete process client completes its capability handshake at the end
