@@ -477,6 +477,18 @@ target_link_libraries(bigshark-preflop-profile-builder PRIVATE
   bigshark_artifacts
 )
 
+# RFC 0009 W4b: offline NashConv measurement for the published preflop
+# blueprint. Loads the schema-v2 artifact, rebuilds the game tree, and
+# computes a Monte Carlo NashConv via best-response and policy-following
+# walks over sampled joint deals. Manual target, NOT a CTest.
+add_executable(bigshark-preflop-nash-conv
+  benchmarks/preflop_nash_conv.cpp
+)
+target_link_libraries(bigshark-preflop-nash-conv PRIVATE
+  bigshark_solver
+  bigshark_artifacts
+)
+
 # RFC 0005 Stage 9 bounded-resolve microbenchmark. Tiny fixed-runout terminal
 # game; reports solve+cert wall time, worst bound slack, and iterations. Manual
 # target, NOT a registered CTest.
