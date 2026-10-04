@@ -1,7 +1,7 @@
 ---
 rfc: "0010"
 subject: "Multiway Frontier Evaluation and N-Way Preflop Training"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark maintainers"
 created: "2026-10-04"
 updated: "2026-10-04"
@@ -329,12 +329,18 @@ N=10: 29 cards, 406 combos. The total runout count shrinks as N grows; the
 per-runout cost grows linearly with N. The net cost is bounded.
 
 **Cache key:** replace the `uint64_t` 42-bit packing with an exact,
-collision-free key. The key is the sorted card vector: the 3 flop cards
-(ascending, as dealt) followed by all hole cards (sorted within seat, seats
-in order). Use `std::vector<int>` as the `unordered_map` key with a custom
-hash (FNV-1a over the card bytes). The map's `operator==` on vectors is
-exact, so a hash collision cannot return a wrong equity — it only degrades
-to a bucket collision resolved by equality.
+collision-free key. The key is a `std::vector<int>` containing: the 3 flop
+cards (sorted ascending by the implementation before keying; the walk
+samples the flop in deal order), followed by all hole cards (sorted within
+seat, seats in order), followed by the live-seat set — one byte per seat
+(0 = folded, 1 = live). The live-seat set is required because the cached
+equity depends on which seats compete: the same (flop, hands) pair can
+reach `evaluate()` with different fold patterns across sweeps, and a cache
+hit must not return equities computed for a different fold pattern. Use
+`std::vector<int>` as the `unordered_map` key with a custom hash (FNV-1a
+over the bytes). The map's `operator==` on vectors is exact, so a hash
+collision cannot return a wrong equity — it only degrades to a bucket
+collision resolved by equality.
 
 **Cache value:** replace `std::array<double, 2>` with `std::vector<double>`
 (N equity fractions).
@@ -433,9 +439,10 @@ The `walk_flop_deal()` path is unchanged — it already passes N hands to
 const Chips sb = game.big_blind / 2;
 const std::size_t sb_seat = poker::small_blind_seat(game);
 const std::size_t bb_seat = poker::big_blind_seat(game);
-const Chips sb_capped = std::min(sb, game.stacks[sb_seat]);  // mirror GameDef cap
+const Chips sb_capped = std::min(sb, game.stacks[sb_seat]);      // mirror GameDef cap
+const Chips bb_capped = std::min(game.big_blind, game.stacks[bb_seat]);
 check(game.blinds_posted[sb_seat] == sb_capped, ...);
-check(game.blinds_posted[bb_seat] == game.big_blind, ...);
+check(game.blinds_posted[bb_seat] == bb_capped, ...);
 // All other seats post 0.
 for (std::size_t s = 0; s < game.player_count; ++s)
   if (s != sb_seat && s != bb_seat)
@@ -653,8 +660,11 @@ A version bump would require a migration for no benefit.
     contributions stay in the pot as dead money). Pin exact fractions.
   - **Single live seat:** all but one seat fold; the live seat gets equity
     1.0 (guards the degenerate frontier case).
-  - Cache: repeated calls with the same (flop, hands) return identical
-    values; calls with different hands return different values.
+  - Cache: repeated calls with the same (flop, hands, live-set) return
+    identical values; calls with different hands return different values.
+  - Cache live-set keying: the same (flop, hands) pair with two different
+    folded-seat patterns returns different equities (forced-collision test
+    verifying the live-seat set is part of the cache key).
   - Cache cap: after the cap, new entries are not inserted but existing
     entries still hit.
   - Reject N < 2 and N > 10 with `std::invalid_argument`.
@@ -756,4 +766,9 @@ decision path is not changed in any stage.
 
 ## Decision
 
-Pending independent approval-agent review.
+Author agent: main session (RFC 0010 author)
+Approved by: independent approval agent a9f56a4c01a73c8aa
+Decision date: 2026-10-04
+Review outcome: Approved
+Reviewed scope: RFC 0010 full text (revisions committed 3e93507), verified against engine source (frontier.hpp, equity_frontier.cpp, nseat_trainer.cpp, game_definition.cpp, strategy_artifact.cpp, abstract_tree.cpp, preflop_nash_conv.cpp, flop_library.cpp, preflop_profile_builder.cpp), the published HU manifest, and existing flop-terminal consumers. Two review cycles: Changes Requested (1 blocking + 1 major + 5 minor), then Approved after all dispositions verified.
+Review summary: All eight dispositions from the Changes-Requested review are correctly and completely resolved: the folded-seat competition rule is specified end-to-end (evaluator, ledger contract, NashConv inheritance, three new tests), the HU baseline matches the published manifest exactly, the equal-stack single-pot precondition is verified safe against every existing flop-terminal consumer, and the remaining minors are fully addressed. The design is a strict backward-compatible generalization (no schema change, gates are strict supersets, HU round-trip byte-identical), rollout/rollback are credible, and there is no flag day. One MAJOR finding from the approval review (cache key must include the live-seat set) is folded into the cache-key design in section 2 and the verification plan; it is a one-line correction that does not change the design's shape. Implementation may proceed.
