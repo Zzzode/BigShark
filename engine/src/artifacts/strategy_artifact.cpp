@@ -1103,10 +1103,13 @@ void write_schema_v3(dt::Db& db) {
 // stacks/contributions verbatim, so the stack/contribution round-trip is the
 // identity), and no ante is declared until an ante profile ships.
 //
-// RFC 0007: a heads-up preflop root with flop-terminal depth is also accepted.
-// The root has board_size == 0, preflop == true, blinds posted (the GameState
-// constructor posts them from stacks), and terminal == Flop. The reader
-// derives blinds_posted deterministically from big_blind for 2-seat games.
+// RFC 0007 (scope extended by RFC 0010): a preflop root with flop-terminal
+// depth is accepted for 2..10 seats. The root has board_size == 0,
+// preflop == true, blinds posted (the GameState constructor posts them from
+// stacks), and terminal == Flop. The reader derives blinds_posted
+// deterministically from big_blind using the poker module's blind-seat
+// helpers, which encode the 2-seat (button posts SB) and 3..10-seat
+// (blinds clockwise of button) conventions.
 void validate_game_v2(const GameDef& game) {
   check(game.player_count >= 2 && game.player_count <= 10, ArtifactErrorKind::InvalidArgument,
         "player_count must be in 2..10");
@@ -1119,17 +1122,24 @@ void validate_game_v2(const GameDef& game) {
   const bool is_preflop_flop_terminal =
       game.board_size == 0 && game.preflop && game.terminal == TerminalDepth::Flop;
   if (is_preflop_flop_terminal) {
-    check(game.player_count == 2, ArtifactErrorKind::InvalidArgument,
-          "preflop flop-terminal artifacts are heads-up only (RFC 0007 frontier contract)");
-    // The reader derives blinds_posted deterministically from big_blind for
-    // 2-seat games (button posts SB = big_blind/2, other posts BB). Validate
-    // the stored game matches that convention so same_game_def round-trips.
+    // RFC 0010: preflop flop-terminal artifacts support 2..10 seats. Validate
+    // blinds_posted matches the convention the reader derives, so
+    // same_game_def round-trips. GameDef validation caps a blind at its
+    // poster's stack; mirror that cap here so a capped-blind game is accepted
+    // consistently.
     const Chips sb = game.big_blind / 2;
-    for (std::size_t seat = 0; seat < 2; ++seat) {
-      const Chips expected = (seat == game.button) ? sb : game.big_blind;
-      check(game.blinds_posted[seat] == expected, ArtifactErrorKind::InvalidArgument,
-            "preflop blinds_posted must match the standard 2-seat convention "
-            "(button posts big_blind/2, other posts big_blind)");
+    const std::size_t sb_seat = poker::small_blind_seat(game);
+    const std::size_t bb_seat = poker::big_blind_seat(game);
+    const Chips sb_capped = std::min(sb, game.stacks[sb_seat]);
+    const Chips bb_capped = std::min(game.big_blind, game.stacks[bb_seat]);
+    check(game.blinds_posted[sb_seat] == sb_capped, ArtifactErrorKind::InvalidArgument,
+          "preflop blinds_posted must match the derived small-blind convention");
+    check(game.blinds_posted[bb_seat] == bb_capped, ArtifactErrorKind::InvalidArgument,
+          "preflop blinds_posted must match the derived big-blind convention");
+    for (std::size_t seat = 0; seat < game.player_count; ++seat) {
+      if (seat != sb_seat && seat != bb_seat)
+        check(game.blinds_posted[seat] == 0, ArtifactErrorKind::InvalidArgument,
+              "preflop blinds_posted must be zero for non-blind seats");
     }
   } else {
     check(game.board_size == 3 || game.board_size == 4 || game.board_size == 5,
@@ -2045,8 +2055,8 @@ GameDef read_game_v2(dt::Db& db) {
   if (is_preflop) {
     check(root_street == 3, ArtifactErrorKind::InvalidSchema,
           "preflop rules identifier requires root_street == 3");
-    check(player_count_raw == 2, ArtifactErrorKind::InvalidSchema,
-          "preflop flop-terminal artifacts are heads-up only");
+    // RFC 0010: preflop flop-terminal artifacts support 2..10 seats. The
+    // player_count range is validated above (2..10); no seat-count gate here.
   } else {
     check(root_street <= 2, ArtifactErrorKind::UnsupportedVersion,
           "v2 reader supports rooted flop/turn/river games only (root_street 0..2)");
@@ -2067,11 +2077,15 @@ GameDef read_game_v2(dt::Db& db) {
     ++i;
     game.board_size = 0;
     game.preflop = true;
-    // Derive blinds_posted deterministically for 2-seat heads-up: the button
-    // posts the small blind (big_blind / 2), the other seat posts the big
-    // blind. This is the heads-up convention the GameState constructor uses.
-    game.blinds_posted[game.button] = game.big_blind / 2;
-    game.blinds_posted[1 - game.button] = game.big_blind;
+    // Derive blinds_posted deterministically from big_blind using the poker
+    // module's blind-seat helpers (RFC 0010). For 2 seats the button posts the
+    // small blind (big_blind / 2) and the other seat posts the big blind — the
+    // heads-up convention. For 3..10 seats the blinds sit clockwise of the
+    // button. This is the convention the GameState constructor uses.
+    const std::size_t sb_seat = poker::small_blind_seat(game);
+    const std::size_t bb_seat = poker::big_blind_seat(game);
+    game.blinds_posted[sb_seat] = game.big_blind / 2;
+    game.blinds_posted[bb_seat] = game.big_blind;
   } else {
     for (int flop_index = 0; flop_index < 3; ++flop_index) {
       const std::int64_t flop_card = query.column_i64(i++);

@@ -5,7 +5,7 @@
 // evaluator rather than by the rules' showdown. The evaluator produces per-seat
 // chip utility for a given flop and joint deal.
 //
-// Contract (RFC 0007):
+// Contract (RFC 0007, scope extended by RFC 0010):
 //  - Identity: the evaluator declares the game identity of its flop-rooted
 //    policy. Two evaluators with the same identity produce the same values.
 //  - Normalization: values are expectations over the policy's action
@@ -13,8 +13,13 @@
 //  - Conditioning: values are NOT conditioned on the acting player's own
 //    holding. The evaluator sees the joint deal but must not use a seat's
 //    knowledge of its own cards to condition the opponent's range.
-//  - Scope: two-player heads-up only. Multiway frontier evaluation is outside
-//    RFC 0007's scope.
+//  - Scope: 2..10 seats (RFC 0010). Implementations must reject
+//    player_count < 2 or player_count > kMaxUnifiedSeats. The
+//    DeclaredFrontierTable remains heads-up only (its Entry is fixed-size
+//    and keyed to a 2-seat blueprint).
+//  - Folded seats: only live seats (ledger.seats[s].folded == false)
+//    compete for the pot. Folded seats receive equity 0; their contributed
+//    chips remain in the pot as dead money.
 #pragma once
 
 #include <array>
@@ -28,17 +33,18 @@
 namespace bs::gto {
 
 // The frontier evaluator interface. Implementations supply per-seat chip
-// utility for a flop-terminal leaf. The interface is heads-up by contract;
-// implementations must reject player_count != 2.
+// utility for a flop-terminal leaf. The interface supports 2..10 seats
+// (RFC 0010); implementations must reject seat counts outside that range.
+// Folded seats (ledger.seats[s].folded == true) receive equity 0.
 class FrontierEvaluator {
  public:
   virtual ~FrontierEvaluator() = default;
 
   // Per-seat chip utility for the given flop and joint deal.
-  // `flop` is the 3-card board (card ids 0..51, ascending).
-  // `hands` is per-seat sorted hole cards (2 cards each, 2 entries for HU).
-  // `ledger` is the terminal payload's seat ledger.
-  // Returns 2 values in chip units for a heads-up game.
+  // `flop` is the 3-card board (card ids 0..51).
+  // `hands` is per-seat sorted hole cards (2 cards each, 2..10 entries).
+  // `ledger` is the terminal payload's seat ledger (folded flags + pot).
+  // Returns one value per seat in chip units.
   // Throws on a missing entry or unsupported seat count (fail closed).
   virtual std::vector<double> evaluate(std::span<const int> flop,
                                        std::span<const std::array<int, 2>> hands,
@@ -53,6 +59,10 @@ class FrontierEvaluator {
 // The table is the first implementation per RFC 0007's rollout plan. Option B
 // (nested evaluation, in-process blueprint lookup) is deferred to a future
 // stage; the option is chosen by measured cost (byte budget, then wall time).
+//
+// Heads-up only (RFC 0010): the Entry struct is fixed-size for 2 seats and
+// keyed to a 2-seat blueprint. N-way declared tables are future work if
+// nested evaluation is revived.
 class DeclaredFrontierTable : public FrontierEvaluator {
  public:
   // A single table entry: the 3 flop cards (ascending), each seat's 2 hole

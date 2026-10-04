@@ -138,6 +138,19 @@ void validate(const GameDef& def);
 // weights, sizing schedule, fixed runout) is composed on top by its owner.
 bool same_game_def(const GameDef& a, const GameDef& b);
 
+// Blind seats and the preflop opener.
+//
+// Heads-up is NOT the three-handed rule with the seat count turned down. With
+// two seats the BUTTON posts the small blind and the other seat posts the big
+// blind, which is what lets the button act first preflop; with three or more
+// the blinds sit clockwise of the button and the opener is the seat after the
+// big blind. These helpers are the single source of truth for the convention,
+// shared by GameDef validation, the GameState constructor, and the artifact
+// reader/writer (RFC 0010).
+std::size_t small_blind_seat(const GameDef& def);
+std::size_t big_blind_seat(const GameDef& def);
+std::size_t preflop_first_actor(const GameDef& def);
+
 // One seat's chip and action state.
 //
 // `PlayerChips` in the heads-up header is this record's strict prefix at the

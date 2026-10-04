@@ -1233,7 +1233,8 @@ int case_flop_terminal_frontier() {
     CHECK(s.street() == Street::Flop);
   }
 
-  // Flop-terminal is heads-up only.
+  // RFC 0010: flop-terminal games support 2..10 seats with equal stacks.
+  // A 3-seat preflop flop-terminal game is accepted.
   {
     GameDef d = def;
     d.player_count = 3;
@@ -1243,6 +1244,20 @@ int case_flop_terminal_frontier() {
     d.blinds_posted[2] = 1;
     d.blinds_posted[0] = 2;
     d.pot = 3;  // 1 + 2
+    const GameState s(d);
+    CHECK(s.street() == Street::Preflop);
+    CHECK(s.player_count() == 3);
+  }
+
+  // RFC 0010: flop-terminal games require equal stacks (single-pot settlement).
+  {
+    GameDef d = def;
+    d.player_count = 3;
+    d.stacks = {50, 50, 40, 0, 0, 0, 0, 0, 0, 0};  // unequal
+    d.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    d.blinds_posted[2] = 1;
+    d.blinds_posted[0] = 2;
+    d.pot = 3;
     CHECK(rejects(d));
   }
 

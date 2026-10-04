@@ -33,6 +33,8 @@ using detail::clockwise;
 using detail::require;
 using detail::use_card;
 
+}  // namespace
+
 // Blind seats and the preflop opener.
 //
 // Heads-up is NOT the three-handed rule with the seat count turned down. With
@@ -41,19 +43,19 @@ using detail::use_card;
 // blinds sit clockwise of the button and the opener is the seat after the big
 // blind. Deriving the two-seat case as `clockwise(count, button, 2)` returns the
 // button itself, so the distinction has to be written down rather than folded
-// into one formula.
+// into one formula. Exported (RFC 0010) so the artifact reader/writer derives
+// N-way blinds from the same source of truth as GameDef validation.
 std::size_t small_blind_seat(const GameDef& def) {
-  return def.player_count == 2 ? def.button : clockwise(def.player_count, def.button);
+  return def.player_count == 2 ? def.button : detail::clockwise(def.player_count, def.button);
 }
 std::size_t big_blind_seat(const GameDef& def) {
-  return def.player_count == 2 ? clockwise(def.player_count, def.button)
-                               : clockwise(def.player_count, def.button, 2);
+  return def.player_count == 2 ? detail::clockwise(def.player_count, def.button)
+                               : detail::clockwise(def.player_count, def.button, 2);
 }
 std::size_t preflop_first_actor(const GameDef& def) {
-  return def.player_count == 2 ? def.button : clockwise(def.player_count, big_blind_seat(def));
+  return def.player_count == 2 ? def.button
+                               : detail::clockwise(def.player_count, big_blind_seat(def));
 }
-
-}  // namespace
 
 void validate(const GameDef& def) {
   require(def.player_count >= kMinUnifiedSeats, "a game needs at least two seats");
@@ -62,18 +64,23 @@ void validate(const GameDef& def) {
   require(def.big_blind > 0 && def.big_blind <= kMaxHeadsUpChips, "invalid big blind");
   require(def.variant == RulesVariant::NoLimitHoldem, "unsupported rules variant");
 
-  // RFC 0007: a flop-terminal game is heads-up. The frontier evaluator is a
-  // two-player contract; multiway frontier evaluation is out of scope.
-  // W4c-iii extension: a flop-terminal game may start at the preflop root
-  // (board_size == 0, the W4b preflop profile) or on the flop (board_size == 3,
-  // the flop class library). The frontier evaluator takes a 3-card flop in
-  // both cases.
+  // RFC 0007 (scope extended by RFC 0010): a flop-terminal game ends at the
+  // flop; the frontier evaluator supplies leaf values. The root may be the
+  // preflop root (board_size == 0, the W4b preflop profile) or the flop
+  // (board_size == 3, the flop class library). The frontier evaluator takes a
+  // 3-card flop in both cases. Flop-terminal games support 2..10 seats and
+  // require equal stacks: the frontier settles a single pot with no side pots,
+  // and side pots form only with unequal stacks.
   if (def.terminal == TerminalDepth::Flop) {
-    require(def.player_count == 2,
-            "flop-terminal games are heads-up only; multiway frontier evaluation is out of scope");
+    require(def.player_count >= 2 && def.player_count <= kMaxUnifiedSeats,
+            "flop-terminal games support 2..10 seats");
     const bool valid_root =
         (def.preflop && def.board_size == 0) || (!def.preflop && def.board_size == 3);
     require(valid_root, "a flop-terminal game must start at the preflop root or on the flop");
+    const Chips stack0 = def.stacks[0];
+    for (std::size_t p = 1; p < def.player_count; ++p)
+      require(def.stacks[p] == stack0,
+              "flop-terminal games require equal stacks (single-pot settlement)");
   }
 
   const bool heads_up = def.player_count == 2;

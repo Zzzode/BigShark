@@ -539,18 +539,15 @@ void validate_request(const AbstractTree& tree,
   if (tree.action_id() != abstraction::identity_action_id())
     throw std::invalid_argument("nseat trainer solves only the identity action abstraction");
   if (def.board_size < 3 || def.board_size > 5) {
-    // RFC 0007: a heads-up preflop root with flop-terminal depth is accepted;
-    // the frontier evaluator supplies leaf values. Multiway flop-terminal is
-    // outside the frontier evaluator's two-player contract.
+    // RFC 0007 (scope extended by RFC 0010): a flop-terminal preflop root is
+    // accepted for 2..10 seats; the frontier evaluator supplies leaf values.
+    // GameDef validation enforces the equal-stack single-pot precondition.
     if (def.board_size == 0 && def.preflop && def.terminal == poker::TerminalDepth::Flop) {
-      if (def.player_count != 2)
-        throw std::invalid_argument(
-            "nseat trainer: frontier evaluation is heads-up only; multiway "
-            "flop-terminal is outside RFC 0007's scope");
+      // Flop-terminal preflop root: accepted for 2..10 seats.
     } else {
       throw std::invalid_argument(
           "nseat trainer requires a postflop root (3..5 public cards) or a "
-          "heads-up flop-terminal preflop root");
+          "flop-terminal preflop root");
     }
   }
   if (ranges.size() != def.player_count)
