@@ -15,6 +15,8 @@
 // Usage: bigshark-preflop-nash-conv [artifact-path] [deals] [flops] [seed]
 //
 // This is a manual offline measurement tool, NOT a CTest.
+#include <algorithm>
+#include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/equity_frontier.hpp>
 #include <bs/game_definition.hpp>
@@ -22,9 +24,6 @@
 #include <bs/prng.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
-
-#include <algorithm>
-#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -36,6 +35,7 @@
 
 namespace {
 
+using bs::gto::EquityFrontierEvaluator;
 using bs::poker::Action;
 using bs::poker::ActionType;
 using bs::poker::GameDef;
@@ -45,7 +45,6 @@ using bs::poker::PublicAction;
 using bs::tree::AbstractTree;
 using bs::tree::NodeKind;
 using bs::tree::TerminalPayload;
-using bs::gto::EquityFrontierEvaluator;
 
 // Legal runout cards: 0..51 minus board and every seat's hole cards.
 std::vector<int> legal_runout_cards(const GameState& state,
@@ -137,8 +136,7 @@ struct NashConvWalker {
   }
 
   double walk(const GameState& state, std::size_t node_index,
-              const std::vector<std::array<int, 2>>& holes,
-              const std::vector<PublicAction>& path) {
+              const std::vector<std::array<int, 2>>& holes, const std::vector<PublicAction>& path) {
     const auto& node = tree.node(node_index);
 
     if (node.kind == NodeKind::TerminalFold)
@@ -173,8 +171,7 @@ struct NashConvWalker {
         if (frontier_state.phase() != Phase::Frontier)
           throw std::runtime_error("nash-conv: flop-deal leaf did not reach the frontier");
         const TerminalPayload payload = bs::tree::make_frontier_payload(frontier_state);
-        const std::vector<int> flop(frontier_state.board().begin(),
-                                    frontier_state.board().end());
+        const std::vector<int> flop(frontier_state.board().begin(), frontier_state.board().end());
         std::vector<std::array<int, 2>> hands(frontier_state.player_count());
         for (std::size_t seat = 0; seat < frontier_state.player_count(); ++seat)
           hands[seat] = holes[seat];
@@ -200,9 +197,8 @@ struct NashConvWalker {
       double best = -std::numeric_limits<double>::infinity();
       for (std::size_t a = 0; a < menu.size(); ++a) {
         child_path.back().action = menu[a];
-        best = std::max(best,
-                        walk(state.after_action(actor, menu[a]), node.children[a], holes,
-                             child_path));
+        best = std::max(
+            best, walk(state.after_action(actor, menu[a]), node.children[a], holes, child_path));
       }
       return best;
     }
@@ -210,8 +206,7 @@ struct NashConvWalker {
     // Strategy walk (or BR at opponent nodes): sample one action, follow it.
     const std::size_t chosen = sample_action(probs, *rng);
     child_path.back().action = menu[chosen];
-    return walk(state.after_action(actor, menu[chosen]), node.children[chosen], holes,
-                child_path);
+    return walk(state.after_action(actor, menu[chosen]), node.children[chosen], holes, child_path);
   }
 };
 
@@ -264,11 +259,11 @@ int main(int argc, char** argv) {
     const GameState root(def);
     for (std::size_t p = 0; p < 2; ++p) {
       try {
-        NashConvWalker walker{tree, policy, frontier, p, /*best_response=*/false,
+        NashConvWalker walker{tree,         policy, frontier, p, /*best_response=*/false,
                               flop_samples, &rng};
         strategy_value[p] += walker.walk(root, tree.root_index(), holes, {});
         total_fallbacks += walker.fallbacks;
-        NashConvWalker br_walker{tree, policy, frontier, p, /*best_response=*/true,
+        NashConvWalker br_walker{tree,         policy, frontier, p, /*best_response=*/true,
                                  flop_samples, &rng};
         br_value[p] += br_walker.walk(root, tree.root_index(), holes, {});
         total_fallbacks += br_walker.fallbacks;
@@ -293,20 +288,18 @@ int main(int argc, char** argv) {
     strategy_value[p] /= static_cast<double>(valid);
     br_value[p] /= static_cast<double>(valid);
   }
-  const double nash_conv = (br_value[0] - strategy_value[0]) +
-                           (br_value[1] - strategy_value[1]);
+  const double nash_conv = (br_value[0] - strategy_value[0]) + (br_value[1] - strategy_value[1]);
   const double exploitability = nash_conv / 2.0;
   const double bb = static_cast<double>(def.big_blind);
 
-  std::printf("\nResults (%zu valid player-deals, %zu uncovered, %zu fallbacks):\n",
-              valid, uncovered, total_fallbacks);
-  std::printf("  player 0: strategy=%+.2f  br=%+.2f  gap=%+.2f\n",
-              strategy_value[0], br_value[0], br_value[0] - strategy_value[0]);
-  std::printf("  player 1: strategy=%+.2f  br=%+.2f  gap=%+.2f\n",
-              strategy_value[1], br_value[1], br_value[1] - strategy_value[1]);
+  std::printf("\nResults (%zu valid player-deals, %zu uncovered, %zu fallbacks):\n", valid,
+              uncovered, total_fallbacks);
+  std::printf("  player 0: strategy=%+.2f  br=%+.2f  gap=%+.2f\n", strategy_value[0], br_value[0],
+              br_value[0] - strategy_value[0]);
+  std::printf("  player 1: strategy=%+.2f  br=%+.2f  gap=%+.2f\n", strategy_value[1], br_value[1],
+              br_value[1] - strategy_value[1]);
   std::printf("  NashConv:       %.2f chips\n", nash_conv);
-  std::printf("  Exploitability: %.2f chips (%.3f BB)\n", exploitability,
-              exploitability / bb);
+  std::printf("  Exploitability: %.2f chips (%.3f BB)\n", exploitability, exploitability / bb);
   std::printf("  wall time:      %.1f s\n", elapsed.count() / 1000.0);
   return 0;
 }

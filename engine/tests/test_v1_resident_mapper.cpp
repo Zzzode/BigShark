@@ -179,10 +179,9 @@ pv::DecisionRequest buildRequest(const NodeSpec& spec) {
   // River uses RAISE for all preflop aggression (the engine types it as Bet
   // when due == 0, e.g. BB facing a limp). Postflop uses BET when opening the
   // street and RAISE when facing a bet.
-  const pv::ActionType aggressive =
-      spec.street == pv::STREET_PREFLOP ? pv::ACTION_TYPE_RAISE
-      : spec.toCall == 0               ? pv::ACTION_TYPE_BET
-                                       : pv::ACTION_TYPE_RAISE;
+  const pv::ActionType aggressive = spec.street == pv::STREET_PREFLOP ? pv::ACTION_TYPE_RAISE
+                                    : spec.toCall == 0                ? pv::ACTION_TYPE_BET
+                                                                      : pv::ACTION_TYPE_RAISE;
   pv::LegalAction* raise = state->add_legal_actions();
   raise->set_type(aggressive);
   raise->set_min_target_total(spec.toCall == 0 ? 20 : spec.toCall + 20);
