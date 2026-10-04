@@ -27,6 +27,7 @@ import {
   decide,
   resolveFlopLibraries,
   safeFallback,
+  warmEngine,
 } from '../../platforms/river-club/src/engine.js';
 import {
   isRecord,
@@ -166,6 +167,19 @@ if (cfg.residentRoots !== undefined && cfg.residentRoots.length === 0) {
 function note(value: Record<string, unknown>): void {
   process.stderr.write(`${JSON.stringify(value)}\n`);
 }
+
+// Kick off engine warmup in parallel with state loading and table join.
+// The engine loads all resident roots (~2 min for the full 1,755-class
+// library) before its first frame; starting here moves that cost off
+// the first hand's decision path. The client is a keyed singleton, so
+// decide() reuses the warmed child. A failure is logged, not thrown —
+// decide() falls back to the heuristic on error.
+const engineWarmup = warmEngine({
+  ...(cfg.residentRoots !== undefined ? { residentRoots: cfg.residentRoots } : {}),
+  ...(cfg.flopLibraries !== undefined ? { flopLibraries: cfg.flopLibraries } : {}),
+}).catch(error => {
+  note({ event: 'engine-warmup-failed', error: error instanceof Error ? error.message : String(error) });
+});
 
 function digest(room: RiverRoom): Record<string, unknown> {
   const h = room.hero;
@@ -471,6 +485,7 @@ if (baseline !== null && !existsSync(BASELINE_F)) {
   writeFileSync(BASELINE_F, JSON.stringify({ baseline, at: Date.now() }));
 }
 if (!s0.room) await findAndJoin();
+await engineWarmup;
 
 while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) {
   const nextResult = cli(['next', '--timeout', '6000']);

@@ -20,7 +20,7 @@ import {
   SolverSource,
   StrategySchema,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
-import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, warmupTimeoutMsFor, AUTO_FLOP_LIBRARY_BUDGET_MIB } from '../src/engine.js';
+import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, warmupTimeoutMsFor, residentBudgetMiB } from '../src/engine.js';
 import {
   decisionEnvelope,
   fromV1DecisionResponse,
@@ -211,11 +211,14 @@ test('resolveFlopLibraries auto-detects the bundled library and attaches the 6 G
   mkdirSync(libDir, { recursive: true });
   writeFileSync(join(libDir, 'manifest.json'), '{}');
 
-  // Detector fires: library path + 6 GiB budget.
+  // Detector fires: library path + auto-detected budget.
   const detected = resolveFlopLibraries({}, () => autoDetectedFlopLibrary(tempRoot));
   assert.deepEqual(detected.libraries, [libDir]);
-  assert.equal(detected.residentBudgetMiB, AUTO_FLOP_LIBRARY_BUDGET_MIB);
-  assert.equal(detected.residentBudgetMiB, 6144);
+  assert.equal(detected.residentBudgetMiB, residentBudgetMiB());
+  // The auto-detected budget is 1/8 of total RAM (≥ 1 GiB on any
+  // machine that can hold the library).
+  assert.ok(detected.residentBudgetMiB! >= 1024,
+    `expected budget >= 1024 MiB, got ${detected.residentBudgetMiB}`);
 
   // No manifest: no libraries, no budget.
   const emptyRoot = mkdtempSync(join(tmpdir(), 'bs-autodetect-empty-'));
@@ -249,6 +252,30 @@ test('resolveFlopLibraries auto-detects the bundled library and attaches the 6 G
   if (prior !== undefined) process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
   rmSync(tempRoot, { recursive: true, force: true });
   rmSync(emptyRoot, { recursive: true, force: true });
+});
+
+test('residentBudgetMiB auto-detects RAM and honors the env override', () => {
+  const prior = process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB;
+  delete process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB;
+
+  // Auto-detect: 1/8 of total RAM, at least 1 GiB.
+  const auto = residentBudgetMiB();
+  assert.ok(auto >= 1024, `expected auto budget >= 1024 MiB, got ${auto}`);
+
+  // Env override: explicit positive integer.
+  process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB = '2048';
+  assert.equal(residentBudgetMiB(), 2048);
+
+  // Env override: invalid values fall back to auto-detect.
+  process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB = 'abc';
+  assert.equal(residentBudgetMiB(), auto);
+  process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB = '0';
+  assert.equal(residentBudgetMiB(), auto);
+  process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB = '-5';
+  assert.equal(residentBudgetMiB(), auto);
+
+  delete process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB;
+  if (prior !== undefined) process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB = prior;
 });
 
 test('the launch line appends --resident-budget only when a budget is given', () => {

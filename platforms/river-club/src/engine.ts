@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { totalmem } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -42,14 +43,29 @@ const defaultBinary = process.env.BIGSHARK_ENGINE_BINARY || fileURLToPath(
 // flop class library at <repo>/artifacts/flop-library/manifest.json.
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 const AUTO_FLOP_LIBRARY_MANIFEST = 'artifacts/flop-library/manifest.json';
-// 6 GiB: the 1,755-class library measures ~2.7 MiB resident per class
-// (~4.8 GiB total), so 6 GiB advertises every class with headroom.
-export const AUTO_FLOP_LIBRARY_BUDGET_MIB = 6144;
 // The full library takes ~55 s to probe and longer to load; the default
 // 10 s warmup would expire mid-handshake. 300 s only when a flop library
 // is being launched; resident roots alone stay at 10 s.
 export const WARMUP_TIMEOUT_WITH_LIBRARY_MS = 300_000;
 const WARMUP_TIMEOUT_DEFAULT_MS = 10_000;
+
+/**
+ * The resident budget for auto-detected flop libraries, in MiB.
+ *
+ * Defaults to 1/8 of total system RAM (6 GiB on a 48 GB machine,
+ * 2 GiB on 16 GB). The engine loads classes that fit and reports the
+ * rest OverBudget, so a smaller budget means partial coverage, not a
+ * failure. Override with BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB (a
+ * positive integer in MiB).
+ */
+export function residentBudgetMiB(): number {
+  const raw = process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB;
+  if (raw !== undefined) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return Math.floor(totalmem() / 8 / (1024 * 1024));
+}
 let defaultClient: EngineProcessClient<V0DecisionContext, RawEngineDecision> | null = null;
 let defaultProtoClient: ProtoEngineProcessClient | null = null;
 let defaultProtoClientKey = '';
@@ -186,7 +202,7 @@ export function resolveFlopLibraries(
   }
   const detected = autoDetect();
   return detected
-    ? { libraries: [detected], residentBudgetMiB: AUTO_FLOP_LIBRARY_BUDGET_MIB }
+    ? { libraries: [detected], residentBudgetMiB: residentBudgetMiB() }
     : { libraries: [] };
 }
 
@@ -418,4 +434,32 @@ export function closeEngine(): void {
   defaultProtoClient?.stop();
   defaultProtoClient = null;
   defaultProtoClientKey = '';
+}
+
+/**
+ * Warm the framed engine client before the first decision. When the
+ * config carries resident roots or flop libraries, the engine child
+ * loads every resident root before answering its first frame (~2 min
+ * for the full 1,755-class library). Calling this during startup
+ * preflight moves that cost off the first hand's decision path.
+ *
+ * The client is a keyed singleton; decide() reuses the warmed child.
+ * A failure is logged by the caller and never thrown — the engine is
+ * an enhancement, and decide() falls back to the heuristic on error.
+ */
+export async function warmEngine(config: EngineConfig): Promise<void> {
+  let roots: ResidentRootSpec[];
+  let libraries: string[];
+  let budget: number | undefined;
+  try {
+    roots = parseResidentRoots(config);
+    const resolved = resolveFlopLibraries(config);
+    libraries = resolved.libraries;
+    budget = resolved.residentBudgetMiB;
+  } catch {
+    return; // Malformed config surfaces on the first decide() call
+  }
+  if (roots.length === 0 && libraries.length === 0) return;
+  const client = protoEngineClient(roots, libraries, budget);
+  if (client) await client.start?.();
 }
