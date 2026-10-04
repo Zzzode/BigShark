@@ -20,7 +20,7 @@ import {
   SolverSource,
   StrategySchema,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
-import { closeEngine, decide, parseResidentRoots, protoEngineLaunchArgs } from '../src/engine.js';
+import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs } from '../src/engine.js';
 import {
   decisionEnvelope,
   fromV1DecisionResponse,
@@ -132,6 +132,71 @@ test('parseResidentRoots rejects a malformed pin instead of silently dropping it
   assert.throws(() => parseResidentRoots({}), /64-lowercase-hex/);
   if (prior === undefined) delete process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS;
   else process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS = prior;
+});
+
+// ---- flop library launch-line and parsing --------------------------------
+
+test('the launch line appends --flop-library for each library directory', () => {
+  // No libraries: unchanged.
+  assert.deepEqual(protoEngineLaunchArgs([]), ['--serve-proto']);
+  // One library appends the flag and directory.
+  assert.deepEqual(
+    protoEngineLaunchArgs([], ['/path/to/library']),
+    ['--serve-proto', '--flop-library', '/path/to/library'],
+  );
+  // Multiple libraries append in order.
+  assert.deepEqual(
+    protoEngineLaunchArgs([], ['/lib/a', '/lib/b']),
+    ['--serve-proto', '--flop-library', '/lib/a', '--flop-library', '/lib/b'],
+  );
+  // Roots and libraries coexist on the same launch line.
+  assert.deepEqual(
+    protoEngineLaunchArgs(
+      [{ path: '/x/policy.db', sha256: ROOT_A }],
+      ['/lib/a'],
+    ),
+    [
+      '--serve-proto',
+      '--resident-root', `/x/policy.db=${ROOT_A}`,
+      '--flop-library', '/lib/a',
+    ],
+  );
+});
+
+test('parseFlopLibraries validates the config surface (explicit over env)', () => {
+  // Explicit config wins.
+  assert.deepEqual(
+    parseFlopLibraries({ flopLibraries: ['/path/to/library'] }),
+    ['/path/to/library'],
+  );
+  // Absent everywhere yields none.
+  const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  assert.deepEqual(parseFlopLibraries({}), []);
+  // Environment JSON array is accepted.
+  process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = JSON.stringify(['/env/lib']);
+  assert.deepEqual(parseFlopLibraries({}), ['/env/lib']);
+  // Unparseable environment yields none (declared fallback, never a crash).
+  process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = '{not json';
+  assert.deepEqual(parseFlopLibraries({}), []);
+  delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  if (prior !== undefined) process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
+});
+
+test('parseFlopLibraries rejects malformed entries instead of silently dropping them', () => {
+  assert.throws(
+    () => parseFlopLibraries({ flopLibraries: [''] }),
+    /non-empty strings/,
+  );
+  assert.throws(
+    () => parseFlopLibraries({ flopLibraries: [42] as unknown as string[] }),
+    /non-empty strings/,
+  );
+  const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = JSON.stringify(['ok', '']);
+  assert.throws(() => parseFlopLibraries({}), /non-empty strings/);
+  if (prior === undefined) delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  else process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
 });
 
 // ---- solve budget sanitizer ---------------------------------------------

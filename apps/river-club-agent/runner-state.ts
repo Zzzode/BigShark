@@ -132,6 +132,24 @@ export function parseConfigResidentRoots(value: unknown): ResidentRootSpec[] {
   });
 }
 
+// Flop class library directories the runtime config's `flopLibraries` value.
+// Pure and exported so the runner's startup preflight and the tests share one
+// definition. A malformed value THROWS: the runner fails fast rather than
+// silently playing without the configured library. Mirrors
+// `parseFlopLibraries` in platforms/river-club/src/engine.ts; the duplication
+// is deliberate (the runner imports only the engine entry points it needs).
+export function parseConfigFlopLibraries(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new Error('flopLibraries must be an array of directory path strings');
+  }
+  return value.map(entry => {
+    if (typeof entry !== 'string' || entry.length === 0) {
+      throw new Error('flopLibraries entries must be non-empty strings');
+    }
+    return entry;
+  });
+}
+
 // RFC 0008 stage 5 (R10/R13): pure builder for the .runtime/results.log entry.
 // Extracted verbatim from main.ts's two log sites so the journal schema is
 // unit-testable without spawning the runner: the failure `raw` payload is

@@ -310,6 +310,14 @@ export interface EngineConfig {
    */
   residentRoots?: readonly ResidentRootSpec[];
   /**
+   * Flop class library directories the engine child is launched with. Each
+   * entry becomes a repeatable `--flop-library <dir>` child argument; the
+   * engine expands it into one resident root per class via `<dir>/manifest.json`.
+   * Only the implicit process client consumes this; a caller-supplied
+   * `protoEngineClient` owns its own launch line.
+   */
+  flopLibraries?: readonly string[];
+  /**
    * RFC 0009 W1: the caller's real remaining-time budget in milliseconds for
    * this decision (the runner derives it from the server's timeLeftMs). It is
    * sanitized into the wire's declared 1..120000 range by the mapper

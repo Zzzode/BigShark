@@ -49,6 +49,7 @@ import {
 import {
   engineBudgetMs,
   overrideWindowMs,
+  parseConfigFlopLibraries,
   parseConfigResidentRoots,
   resultsLogEntry,
   selectCliFailureStep,
@@ -87,6 +88,12 @@ interface RunnerConfig {
    * sources with the decision labeled by its guarantee level.
    */
   residentRoots?: ResidentRootSpec[];
+  /**
+   * Flop class library directories the engine child is launched with. Each
+   * entry becomes a `--flop-library <dir>` child argument; the engine expands
+   * it into one resident root per class via `<dir>/manifest.json`.
+   */
+  flopLibraries?: string[];
 }
 
 interface ModelOverride {
@@ -299,6 +306,9 @@ function readRunnerConfig(path: string): RunnerConfig {
   if (value.residentRoots !== undefined) {
     config.residentRoots = parseConfigResidentRoots(value.residentRoots);
   }
+  if (value.flopLibraries !== undefined) {
+    config.flopLibraries = parseConfigFlopLibraries(value.flopLibraries);
+  }
   return config;
 }
 
@@ -359,25 +369,28 @@ function responseCode(value: unknown): string | undefined {
 }
 
 // RFC 0009 W1: one shared frame-path decision object. With at least one
-// configured resident root the runner opts into the framed v1 path so the
-// served decision's guarantee level and artifact digest are decoded and
-// journaled; without roots the call stays exactly as before (v0 unless the
-// caller opted in). `protoBlueprint` is deliberately NOT set: AUTOMATIC mode
-// already tries the resident blueprint first on minor 1+, and the minor-2
-// AUTOMATIC route keeps the demotion contract (a miss falls through to the
-// engine's declared fallback rather than failing the turn).
+// configured resident root or flop library the runner opts into the framed
+// v1 path so the served decision's guarantee level and artifact digest are
+// decoded and journaled; without artifacts the call stays exactly as before
+// (v0 unless the caller opted in). `protoBlueprint` is deliberately NOT set:
+// AUTOMATIC mode already tries the resident blueprint first on minor 1+, and
+// the minor-2 AUTOMATIC route keeps the demotion contract (a miss falls
+// through to the engine's declared fallback rather than failing the turn).
 function engineDecisionConfig(
   timeoutMs: number,
 ): Parameters<typeof decide>[1] {
   const roots = cfg.residentRoots;
+  const libraries = cfg.flopLibraries;
+  const hasArtifacts = (roots?.length ?? 0) > 0 || (libraries?.length ?? 0) > 0;
   return {
     style,
     heroName,
     timeoutMs,
-    ...(roots && roots.length > 0
+    ...(hasArtifacts
       ? {
           proto: true,
-          residentRoots: roots,
+          ...(roots && roots.length > 0 ? { residentRoots: roots } : {}),
+          ...(libraries && libraries.length > 0 ? { flopLibraries: libraries } : {}),
           solveTimeBudgetMs: timeoutMs,
         }
       : {}),

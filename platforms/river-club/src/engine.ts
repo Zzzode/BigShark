@@ -106,6 +106,40 @@ export function parseResidentRoots(
   });
 }
 
+/**
+ * Flop class library directories the engine child is launched with. The
+ * explicit `config.flopLibraries` wins over the
+ * `BIGSHARK_ENGINE_FLOP_LIBRARIES` environment variable (a JSON array of
+ * directory path strings). Each entry becomes a repeatable
+ * `--flop-library <dir>` child argument; the engine expands it into one
+ * resident root per class via `<dir>/manifest.json`. An unparseable
+ * environment value yields an empty list.
+ */
+export function parseFlopLibraries(config: EngineConfig): string[] {
+  if (config.flopLibraries !== undefined)
+    return config.flopLibraries.map(lib => {
+      if (typeof lib !== 'string' || lib.length === 0)
+        throw new Error('flop library entries must be non-empty strings');
+      return lib;
+    });
+  const raw = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  if (!raw)
+    return [];
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(value))
+    return [];
+  return value.map(entry => {
+    if (typeof entry !== 'string' || entry.length === 0)
+      throw new Error('flop library entries must be non-empty strings');
+    return entry;
+  });
+}
+
 function validateResidentRoot(spec: ResidentRootSpec): ResidentRootSpec {
   if (!spec.path)
     throw new Error('resident root requires a nonempty path');
@@ -122,22 +156,33 @@ function residentRootArgs(roots: readonly ResidentRootSpec[]): string[] {
 }
 
 /**
- * RFC 0009 W1: the framed child's launch line. With no configured roots this
- * is exactly the historical `['--serve-proto']`; each root appends the host's
- * documented repeatable `--resident-root <path>=<sha256>` argument, in the
+ * RFC 0009 W1: the framed child's launch line. With no configured roots or
+ * libraries this is exactly the historical `['--serve-proto']`; each root
+ * appends the host's documented repeatable `--resident-root <path>=<sha256>`
+ * argument, and each flop library appends `--flop-library <dir>`, in the
  * configuration's order. Exported so the launch line is asserted directly by
  * the wiring tests.
  */
-export function protoEngineLaunchArgs(roots: readonly ResidentRootSpec[]): string[] {
-  return ['--serve-proto', ...residentRootArgs(roots)];
+export function protoEngineLaunchArgs(
+  roots: readonly ResidentRootSpec[],
+  libraries: readonly string[] = [],
+): string[] {
+  return [
+    '--serve-proto',
+    ...residentRootArgs(roots),
+    ...libraries.flatMap(lib => ['--flop-library', lib]),
+  ];
 }
 
-function protoEngineClient(roots: readonly ResidentRootSpec[]): ProtoEngineProcessClient | null {
+function protoEngineClient(
+  roots: readonly ResidentRootSpec[],
+  libraries: readonly string[],
+): ProtoEngineProcessClient | null {
   // The implicit client is keyed by its launch line: configuration is fixed
-  // for a runner's lifetime, and a different root set must not silently reuse
-  // the previous child. Default (no roots) keeps the historical bare
-  // `--serve-proto` launch line.
-  const key = JSON.stringify(roots);
+  // for a runner's lifetime, and a different root or library set must not
+  // silently reuse the previous child. Default (no roots, no libraries) keeps
+  // the historical bare `--serve-proto` launch line.
+  const key = JSON.stringify({ roots, libraries });
   if (defaultProtoClient && defaultProtoClientKey === key)
     return defaultProtoClient;
   if (!existsSync(defaultBinary))
@@ -150,19 +195,20 @@ function protoEngineClient(roots: readonly ResidentRootSpec[]): ProtoEngineProce
     value: create(GetCapabilitiesRequestSchema),
   };
   warmup.requestId = 'warmup-capabilities';
+  const hasResidentArtifacts = roots.length > 0 || libraries.length > 0;
   defaultProtoClient = new ProtoEngineProcessClient({
     command: defaultBinary,
-    args: protoEngineLaunchArgs(roots),
+    args: protoEngineLaunchArgs(roots, libraries),
     warmupEnvelope: warmup,
     warmupTimeoutMs: 10_000,
     // The framed path stays minor 0 by default; callers must explicitly
     // negotiate a higher minor before its features can be used. RFC 0009 W1:
-    // a configured resident root set is that explicit opt-in to the minor-2
-    // guarantee-and-digest surface, so the runner's served decisions carry
-    // their provenance; without roots nothing changes.
-    negotiateMinor1: roots.length > 0
+    // a configured resident root set or flop library is that explicit opt-in
+    // to the minor-2 guarantee-and-digest surface, so the runner's served
+    // decisions carry their provenance; without artifacts nothing changes.
+    negotiateMinor1: hasResidentArtifacts
       || process.env.BIGSHARK_ENGINE_PROTO_MINOR1 === '1',
-    negotiateMinor2: roots.length > 0
+    negotiateMinor2: hasResidentArtifacts
       || process.env.BIGSHARK_ENGINE_PROTO_MINOR2 === '1',
   });
   defaultProtoClientKey = key;
@@ -190,8 +236,16 @@ async function decideV1(
       `invalid resident root configuration: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  let libraries: string[];
+  try {
+    libraries = parseFlopLibraries(config);
+  } catch (error) {
+    throw new Error(
+      `invalid flop library configuration: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
   const client = (config.protoEngineClient as V1EnvelopeClient | undefined)
-    ?? protoEngineClient(roots);
+    ?? protoEngineClient(roots, libraries);
   if (!client)
     return safeFallback(room);
   // The concrete process client completes its capability handshake at the end
@@ -250,11 +304,12 @@ export async function decide(
       if (error instanceof V1EngineError
         && error.code === ErrorCode.GUARANTEE_BELOW_REQUEST)
         throw error;
-      // RFC 0009 W1: a malformed resident-root configuration is likewise a
-      // caller error, not an outage; it must be visible rather than becoming
-      // a per-turn silent fallback.
+      // RFC 0009 W1: a malformed resident-root or flop-library configuration
+      // is a caller error, not an outage; it must be visible rather than
+      // becoming a per-turn silent fallback.
       if (error instanceof Error
-        && error.message.startsWith('invalid resident root configuration'))
+        && (error.message.startsWith('invalid resident root configuration')
+          || error.message.startsWith('invalid flop library configuration')))
         throw error;
       // Transport, validation, or capability failures are operational errors;
       // the v1 mapper never converts them into a strategic fold.

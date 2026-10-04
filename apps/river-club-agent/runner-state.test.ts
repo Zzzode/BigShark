@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   engineBudgetMs,
   overrideWindowMs,
+  parseConfigFlopLibraries,
   parseConfigResidentRoots,
   resultsLogEntry,
   selectCliFailureStep,
@@ -203,5 +204,21 @@ test('parseConfigResidentRoots accepts valid specs and rejects malformed ones', 
   assert.throws(
     () => parseConfigResidentRoots([{ path: '/x', sha256: pin }, { sha256: pin }]),
     /requires/,
+  );
+});
+
+test('parseConfigFlopLibraries accepts valid directories and rejects malformed ones', () => {
+  assert.deepEqual(parseConfigFlopLibraries([]), []);
+  assert.deepEqual(
+    parseConfigFlopLibraries(['/path/to/library', '/other/lib']),
+    ['/path/to/library', '/other/lib'],
+  );
+  assert.throws(() => parseConfigFlopLibraries('nope'), /must be an array/);
+  assert.throws(() => parseConfigFlopLibraries([null]), /non-empty strings/);
+  assert.throws(() => parseConfigFlopLibraries([42]), /non-empty strings/);
+  assert.throws(() => parseConfigFlopLibraries(['']), /non-empty strings/);
+  assert.throws(
+    () => parseConfigFlopLibraries(['ok', '']),
+    /non-empty strings/,
   );
 });
