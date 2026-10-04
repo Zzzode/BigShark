@@ -64,3 +64,6 @@ artifacts/flop-library/
 # Local preflop profile builds (schema-v2 artifacts and manifest; the
 # measurements are summarized in docs/design/gto-engine.md)
 artifacts/preflop-profile/
+
+# Local N-way preflop profile builds (RFC 0010; same schema-v2 format)
+artifacts/preflop-profile-3way/
