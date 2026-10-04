@@ -763,18 +763,24 @@ scratch buffer live in `ResidentScratch` alongside the reach and key
 buffers, so the warm query path still allocates no heap memory.
 
 The compact index flattens each artifact `std::map` into four contiguous
-buffers: a key blob (8-byte header plus the canonical key words), an action
-blob, a probability blob, fixed row records, and an open-addressing slot
-table at a 50 percent load factor. Lookup hashes the caller's fixed key
-span, linear-probes, and verifies every candidate with a full length and
-word comparison before resolving offsets; hash collisions can never return a
-wrong row. Action identity is action kind plus the exact street target
-total, never kind alone. Warm lookups perform no SQLite call, no lock, and
-no heap allocation: every buffer a query touches lives in a caller-owned
-`ResidentScratch` (per-player per-combo raw reach, marginals, per-card mass,
-partner mass, an action-probability scratch, a fixed 256-word key, and the
-v3 canonical-translation buffers: a 4-entry suit relabel, the 3-card
-canonical flop, and a 5-card canonical prefix-board scratch).
+buffers: a key blob (a 2-byte length prefix plus the compact key — a 4-byte
+header, the board cards, and 5 bytes per history action), an action blob of
+3-byte `CompactAction` records (kind plus target), a probability blob of exact
+doubles, fixed row records, and an open-addressing slot table at a 50 percent
+load factor (8 bytes per slot). Lookup compacts the caller's fixed key into a
+byte buffer, hashes that byte span, linear-probes, and verifies every
+candidate with a full length and byte comparison before resolving offsets;
+hash collisions can never return a wrong row. Action identity is action kind
+plus the exact street target total, never kind alone. Warm lookups perform no
+SQLite call, no lock, and no heap allocation: every buffer a query touches
+lives in a caller-owned `ResidentScratch` (per-player per-combo raw reach,
+marginals, per-card mass, partner mass, an action-probability scratch, a fixed
+256-word key, a compact-key byte buffer, an action-expansion scratch, and the
+v3 canonical-translation buffers: a 4-entry suit relabel, the 3-card canonical
+flop, and a 5-card canonical prefix-board scratch). The compact key and action
+formats are exact (no quantization); probabilities stay as doubles because the
+public-belief reach computation multiplies path probabilities and the resident
+contract is exact marginals, so a lossy probability encoding is not used.
 
 Public belief is computed once per public node with no hero hole-card
 input. Starting from the artifact's declared pair of weighted ranges, the
@@ -924,10 +930,10 @@ and the practice simulator CLI (`--flop-library DIR`) also support it.
 
 The engine's resident budget defaults to 256 MiB
 (`kDefaultResidentBudgetBytes`). Each flop class has a resident footprint of
-~2.7 MiB (2-seat) or ~8 MiB (3-seat), so the default budget advertises only
-~96 of 1,755 classes; the rest are reported `OverBudget` and silently
-skipped. A full 2-seat library needs ~4 GiB of resident memory; a full
-3-seat library needs ~14 GiB.
+~1.1 MiB (2-seat) or ~4.0 MiB (3-seat), so the default budget advertises only
+~240 of 1,755 classes; the rest are reported `OverBudget` and silently
+skipped. A full 2-seat library needs ~1.8 GiB of resident memory; a full
+3-seat library needs ~6.9 GiB.
 
 The engine host accepts `--resident-budget <MiB>` to override the default.
 The TypeScript launcher auto-detects every directory under `<repo>/artifacts/`

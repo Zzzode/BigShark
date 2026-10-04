@@ -174,6 +174,15 @@ struct ResidentScratch {
   // solver::information_key).
   std::array<std::uint64_t, 256> key{};
   std::size_t key_size = 0;
+  // Compact (compressed) information key for resident index lookup. Filled
+  // from `key` by compact_information_key before each index.find call.
+  std::array<std::uint8_t, 512> compact_key{};
+  std::size_t compact_key_size = 0;
+  // Expanded action scratch for the public ResidentRowView. The compact
+  // index stores 3-byte CompactActions; the public view exposes poker::Action,
+  // so this buffer holds the expanded values. Probabilities are stored as
+  // exact doubles and referenced directly, needing no scratch.
+  std::array<poker::Action, 32> action_scratch{};
   // RFC 0009 W4c-ii: canonical translation for class-based (v3) artifacts.
   // canonical_relabel[s] = canonical suit for concrete suit s (identity for
   // v2). canonical_flop is the artifact's canonical flop board, which equals

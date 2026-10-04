@@ -422,26 +422,28 @@ exports validate). Neither number is a strategy-quality claim.
 
 ### Measured results (Apple M5 Pro, 48 GB, macOS 26.5.1, Apple clang 21)
 
-Measured 2026-09-16 under the release preset. All numbers are observations,
-not portable gates except the 10 ms warm p99 promotion target from RFC 0005.
+Measured 2026-10-05 under the release preset, after the compact resident
+layout (5-byte history actions, 3-byte `CompactAction`, 8-byte slots; exact
+double probabilities). All numbers are observations, not portable gates
+except the 10 ms warm p99 promotion target from RFC 0005.
 
 | Metric | Value |
 | --- | ---: |
 | SPR-10 fixture information sets | 493,500 |
 | SPR-10 published file bytes | 184,516,608 (175.97 MiB) |
-| SPR-10 honest resident bytes | 315,855,352 (301.21 MiB) |
-| SPR-10 outcome vs 256 MiB budget | OverBudget, not advertised (correct) |
-| SPR-10 4-iteration train time | 42,854.9 ms |
+| SPR-10 honest resident bytes | 71,265,576 (67.97 MiB) |
+| SPR-10 outcome vs 256 MiB budget | Advertised (fits under the compact layout) |
+| SPR-10 4-iteration train time | 48,968.9 ms |
 | Aggregate roots | 6 |
 | Aggregate information sets | 115,056 (19,176 per root) |
 | Enumerated timed hit queries | 115,056 (asserted == information sets) |
-| Aggregate 6x100-iteration train time | 110,084.7 ms |
-| Cold construction (probe + verified load + index build) | 1,329.6 ms |
-| Aggregate honest resident bytes | 54,746,736 (52.21 MiB) of 256 MiB |
-| Process peak RSS (after all builds) | 2,936,078,336 bytes (2.73 GiB) |
-| Warm hit calls / time | 100,000 / 5,425.6 ms |
-| Warm hit p50 / p95 / p99 | 53.21 / 69.67 / 87.63 microseconds |
-| Warm miss calls / p99 | 20,000 / 16.54 microseconds |
+| Aggregate 6x100-iteration train time | 123,630.1 ms |
+| Cold construction (probe + verified load + index build) | 1,515.3 ms |
+| Aggregate honest resident bytes | 14,364,360 (13.699 MiB) of 256 MiB |
+| Process peak RSS (after all builds) | 2,974,711,808 bytes (2.77 GiB) |
+| Warm hit calls / time | 100,000 / 5,371.8 ms |
+| Warm hit p50 / p95 / p99 | 52.58 / 69.54 / 76.75 microseconds |
+| Warm miss calls / p99 | 20,000 / 16.42 microseconds |
 | Unexpected miss hits | 0 |
 | Heap allocations: hit batch / miss batch | 0 / 0 |
 | Warm p99 target (<= 10 ms) | MET |
@@ -451,14 +453,16 @@ The 256 MiB budget is enforced against honest in-memory resident records
 open-addressing slot table, plus the immutable game copy), never the file
 size or the SQLite page cache. A lightweight additive artifact probe
 (`probe_artifact`) performs every physical and schema validation and
-aggregates state/action/key sizes without materializing rows, so the
-over-budget SPR-10 root is refused by a conservative pre-gate before the
-full eager load; the final truth remains the exact measurement after the
-index is built. The single 493,500-set SPR-10 root needs 301.21 MiB
-resident against a 184.52 MiB file, so it is correctly withheld; the
-115,056-set six-root aggregate needs 52.21 MiB and advertises. Across the
-complete six-root working set, warm lookup p99 is 87.6 microseconds, far
-below the 10 ms RFC 0005 promotion target, with zero heap allocations
-across both the 100,000 hit and 20,000 miss calls. Peak RSS is dominated by
-training artifacts retained in the benchmark process and is not the
-resident footprint. Linux verification remains an external gate.
+aggregates state/action/key sizes without materializing rows; the final truth
+remains the exact measurement after the index is built. Under the compact
+layout the 493,500-set SPR-10 root needs 67.97 MiB resident against a
+184.52 MiB file and now advertises under the 256 MiB default (it was 301.21
+MiB and correctly withheld under the original word-key layout); the
+115,056-set six-root aggregate needs 13.699 MiB and advertises. The
+over-budget refusal path is covered by the unit suite (`budget_bytes=1`
+refuses a root and reports `OverBudget`). Across the complete six-root
+working set, warm lookup p99 is 76.75 microseconds, far below the 10 ms
+RFC 0005 promotion target, with zero heap allocations across both the
+100,000 hit and 20,000 miss calls. Peak RSS is dominated by training
+artifacts retained in the benchmark process and is not the resident
+footprint. Linux verification remains an external gate.

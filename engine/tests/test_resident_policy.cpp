@@ -2432,14 +2432,19 @@ namespace {
 
 bool index_matches_map(const ResidentIndex& index,
                        const std::map<InformationKey, PolicyRow>& rows) {
+  std::array<std::uint8_t, 512> compact_buf{};
   for (const auto& [key, row] : rows) {
+    const std::size_t compact_size = ResidentIndex::compact_information_key(
+        std::span<const std::uint64_t>(key.data(), key.size()),
+        std::span<std::uint8_t>(compact_buf.data(), compact_buf.size()));
+    CHECK(compact_size > 0);
     CompactRowView view;
-    CHECK(index.find(key, view));
+    CHECK(index.find({compact_buf.data(), compact_size}, view));
     CHECK(view.count == row.actions.size());
     double sum = 0;
     for (std::size_t i = 0; i < view.count; ++i) {
       CHECK(view.actions[i] == row.actions[i]);
-      CHECK(near(view.probabilities[i], row.probabilities[i]));
+      CHECK(view.probabilities[i] == row.probabilities[i]);
       sum += view.probabilities[i];
     }
     CHECK(near(sum, 1.0));
@@ -2452,8 +2457,11 @@ bool index_matches_map(const ResidentIndex& index,
   for (int trial = 0; trial < 5000; ++trial) {
     InformationKey candidate = present[rng() % present.size()];
     candidate[1 + rng() % 3] += 1 + static_cast<std::uint64_t>(rng() % 7);
+    const std::size_t csz = ResidentIndex::compact_information_key(
+        std::span<const std::uint64_t>(candidate.data(), candidate.size()),
+        std::span<std::uint8_t>(compact_buf.data(), compact_buf.size()));
     CompactRowView view;
-    const bool index_hit = index.find(candidate, view);
+    const bool index_hit = csz > 0 && index.find({compact_buf.data(), csz}, view);
     const bool map_hit = rows.contains(candidate);
     CHECK(index_hit == map_hit);
   }
@@ -2516,7 +2524,12 @@ struct ContinuityWalker {
       if (!has_static_partner(game, actor, hand.cards, state.board()))
         continue;
       CompactRowView view;
-      if (!index.find(information_key(state, hand.cards), view)) {
+      const auto ikey = information_key(state, hand.cards);
+      std::array<std::uint8_t, 512> cbuf{};
+      const std::size_t csz = ResidentIndex::compact_information_key(
+          std::span<const std::uint64_t>(ikey.data(), ikey.size()),
+          std::span<std::uint8_t>(cbuf.data(), cbuf.size()));
+      if (csz == 0 || !index.find({cbuf.data(), csz}, view)) {
         ok = false;
         return false;
       }

@@ -352,7 +352,11 @@ int main() {
   fs::remove_all(dir, ec);
   fs::create_directories(dir, ec);
 
-  // --- 1. SPR-10 over-budget evidence ------------------------------------
+  // --- 1. SPR-10 large-root evidence -------------------------------------
+  // The 493,500-set fixture was over-budget (301 MiB) under the original
+  // word-key/double layout. The compact layout reduces it to ~68 MiB, so it
+  // now advertises under the 256 MiB default. The over-budget refusal path
+  // is covered by the unit suite (budget_bytes=1 -> OverBudget).
   const HeadsUpGame spr10 = canonicalize(base_game({card_id("Ks"), card_id("7h"), card_id("2c")},
                                                    {100, 200}, {card_id("3s"), card_id("5h")}));
   const auto spr10_start = Clock::now();
@@ -362,15 +366,15 @@ int main() {
   std::vector<RootLoadResult> spr10_results;
   ResidentPolicySet spr10_set = ResidentPolicySet::build({{spr10_pub.path, spr10_pub.digest}},
                                                          ResidentOptions{}, &spr10_results);
-  if (spr10_results[0].status != RootStatus::OverBudget) {
-    std::fprintf(stderr, "expected SPR-10 over-budget, got status %d bytes %zu\n",
+  if (spr10_results[0].status != RootStatus::Advertised) {
+    std::fprintf(stderr, "expected SPR-10 advertised, got status %d bytes %zu\n",
                  static_cast<int>(spr10_results[0].status), spr10_results[0].resident_bytes);
     return 2;
   }
   std::printf("# SPR-10 single root (493500-set matrix fixture):\n");
   std::printf(
       "#   train_ms=%.3f file_bytes=%llu resident_bytes=%zu budget_bytes=%zu "
-      "advertised=no (correct over-budget refusal)\n\n",
+      "advertised=yes (fits under the compact layout)\n\n",
       spr10_train_ms, static_cast<unsigned long long>(spr10_pub.file_bytes),
       spr10_results[0].resident_bytes, static_cast<std::size_t>(kDefaultResidentBudgetBytes));
 

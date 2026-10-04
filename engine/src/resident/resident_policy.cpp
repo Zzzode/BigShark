@@ -152,6 +152,23 @@ bool fill_key(ResidentScratch& scratch, std::size_t actor, std::array<int, 2> ow
   return true;
 }
 
+// Compact the scratch's canonical information key into the compact key
+// buffer. Returns false when the key cannot be compacted (OffTree).
+bool compact_scratch_key(ResidentScratch& scratch) {
+  scratch.compact_key_size = ResidentIndex::compact_information_key(
+      std::span<const std::uint64_t>(scratch.key.data(), scratch.key_size),
+      std::span<std::uint8_t>(scratch.compact_key.data(), scratch.compact_key.size()));
+  return scratch.compact_key_size > 0;
+}
+
+// Expand compact actions into poker::Action for the public view.
+void expand_actions(const CompactRowView& row, std::span<poker::Action> out) {
+  for (std::size_t i = 0; i < row.count; ++i) {
+    out[i].type = static_cast<poker::ActionType>(row.actions[i].type);
+    out[i].target_total = row.actions[i].target;
+  }
+}
+
 const char* artifact_failure_detail(const artifacts::ArtifactError& error) {
   static const char* const names[] = {
       "io",
@@ -471,8 +488,10 @@ bool runout_matches(const UnifiedGame& game, const GameState& state,
 
 // Find an action by kind AND exact street target total in a resident row.
 bool locate_action(const CompactRowView& row, const Action& wanted, std::size_t& index) {
+  const auto wanted_type = static_cast<std::uint8_t>(wanted.type);
   for (std::size_t i = 0; i < row.count; ++i)
-    if (row.actions[i].type == wanted.type && row.actions[i].target_total == wanted.target_total) {
+    if (row.actions[i].type == wanted_type &&
+        static_cast<std::uint64_t>(row.actions[i].target) == wanted.target_total) {
       index = i;
       return true;
     }
@@ -518,8 +537,12 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
     std::array<int, 2> own{cards[0], cards[1]};
     if (!fill_key(scratch, actor, own, prefix_board, prefix))
       return MissReason::OffTree;
+    if (!compact_scratch_key(scratch))
+      return MissReason::OffTree;
     CompactRowView row;
-    if (!index.find(std::span<const std::uint64_t>(scratch.key.data(), scratch.key_size), row))
+    if (!index.find(
+            std::span<const std::uint8_t>(scratch.compact_key.data(), scratch.compact_key_size),
+            row))
       return MissReason::MissingHistory;
     std::size_t action_index = 0;
     if (!locate_action(row, event.action, action_index))
@@ -725,9 +748,12 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   const std::span<const int> canon_board(canon_board_buf.data(), canon_board_size);
   if (!fill_key(scratch, *state.actor(), canon_hero, canon_board, history))
     return miss_answer(MissReason::OffTree);
+  if (!compact_scratch_key(scratch))
+    return miss_answer(MissReason::OffTree);
   CompactRowView compact;
-  if (!record.index.find(std::span<const std::uint64_t>(scratch.key.data(), scratch.key_size),
-                         compact))
+  if (!record.index.find(
+          std::span<const std::uint8_t>(scratch.compact_key.data(), scratch.compact_key_size),
+          compact))
     return miss_answer(MissReason::UntrainedCombo);
   // Failure-safe private conditioning: even with a trained row, never return a
   // blueprint row for a hero combination whose reach along the OBSERVED public
@@ -739,8 +765,12 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   const int hero_combo = comboIndex(canon_hero[0], canon_hero[1]);
   if (scratch.raw[*state.actor()][hero_combo] == 0.0)
     return miss_answer(MissReason::ZeroProbabilityHeroCombination);
+  // Expand compact actions into scratch so the public view exposes
+  // poker::Action. Probabilities are stored as exact doubles and are
+  // referenced directly from the immutable blob.
+  expand_actions(compact, std::span<poker::Action>(scratch.action_scratch.data(), compact.count));
   answer.hero_row.size = compact.count;
-  answer.hero_row.actions = compact.actions;
+  answer.hero_row.actions = scratch.action_scratch.data();
   answer.hero_row.probabilities = compact.probabilities;
 
   // Hero-private opponent belief: blocker removal only, never renormalized
@@ -771,7 +801,12 @@ namespace {
 
 // Immutable resolver blueprint view over one advertised resident record. It
 // borrows the record's compact rows; no allocation happens per row lookup
-// beyond constructing the canonical information key for the query.
+// beyond constructing the canonical information key for the query. The
+// compact index stores 3-byte actions, so a mutable scratch buffer expands
+// them into the poker::Action the resolver expects; probabilities are exact
+// doubles referenced directly from the immutable blob. The resolver calls
+// row() one at a time (each view is consumed before the next call), so the
+// shared scratch is safe.
 class ResidentBlueprintSource final : public resolver::BlueprintSource {
  public:
   explicit ResidentBlueprintSource(const ResidentPolicySet::Record& record) : record_(&record) {}
@@ -815,11 +850,25 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
     const solver::InformationKey key = solver::make_information_key(
         player, canon_cards, std::span<const int>(canon_board_buf.data(), canon_board_size),
         history);
-    CompactRowView compact;
-    if (!record_->index.find(std::span<const std::uint64_t>(key.data(), key.size()), compact))
+    // Compact the information key for the compact index.
+    const std::size_t compact_size = ResidentIndex::compact_information_key(
+        std::span<const std::uint64_t>(key.data(), key.size()),
+        std::span<std::uint8_t>(compact_key_.data(), compact_key_.size()));
+    if (compact_size == 0)
       return std::nullopt;
+    CompactRowView compact;
+    if (!record_->index.find(std::span<const std::uint8_t>(compact_key_.data(), compact_size),
+                             compact))
+      return std::nullopt;
+    // Expand compact actions into the mutable scratch so the resolver sees
+    // poker::Action. Probabilities are exact doubles in the immutable blob
+    // and are referenced directly (valid for the set's lifetime).
+    for (std::size_t i = 0; i < compact.count; ++i) {
+      action_scratch_[i].type = static_cast<poker::ActionType>(compact.actions[i].type);
+      action_scratch_[i].target_total = compact.actions[i].target;
+    }
     resolver::BlueprintRowView view;
-    view.actions = compact.actions;
+    view.actions = action_scratch_.data();
     view.probabilities = compact.probabilities;
     view.size = compact.count;
     return view;
@@ -827,6 +876,10 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
 
  private:
   const ResidentPolicySet::Record* record_;
+  // Mutable scratch for compact→poker::Action expansion. The resolver
+  // calls row() one at a time on the calling thread, so this is safe.
+  mutable std::array<std::uint8_t, 512> compact_key_{};
+  mutable std::array<poker::Action, 32> action_scratch_{};
 };
 
 }  // namespace
