@@ -73,10 +73,15 @@ std::vector<solver::WeightedHand> declared_library_range();
 // the first `class_count` canonical classes (by board-id order). Writes
 // `class-NNNN.db` artifacts and `manifest.json` into `out_dir`. Throws on any
 // failure (no partial library is published).
+//
+// `player_count` sets the number of seats (2..10). All seats use the same
+// range and stack profile. The manifest records the player count so the
+// resident layer can select the right library for a multi-way hand.
 LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips stack, poker::Chips contribution,
-                              const std::vector<solver::WeightedHand>& range);
+                              const std::vector<solver::WeightedHand>& range,
+                              std::size_t player_count = 2);
 
 // Write the manifest as JSON to `out_dir / "manifest.json"`.
 void write_manifest(const LibraryManifest& manifest, const std::filesystem::path& out_dir);

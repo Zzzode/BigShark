@@ -62,14 +62,16 @@ std::vector<solver::WeightedHand> filter_range(const std::vector<solver::Weighte
 }
 
 poker::GameDef make_def(const std::array<int, 3>& board, poker::Chips stack,
-                        poker::Chips contribution) {
+                        poker::Chips contribution, std::size_t player_count) {
   poker::GameDef def{};
-  def.player_count = 2;
+  def.player_count = static_cast<std::uint8_t>(player_count);
   def.button = 0;
   def.big_blind = kDefaultBigBlind;
-  def.stacks = {stack, stack, 0, 0, 0, 0, 0, 0, 0, 0};
-  def.contributions = {contribution, contribution, 0, 0, 0, 0, 0, 0, 0, 0};
-  def.pot = 2 * contribution;  // two-seat rooted board: contributions equal, sum == pot
+  for (std::size_t s = 0; s < player_count; ++s) {
+    def.stacks[s] = stack;
+    def.contributions[s] = contribution;
+  }
+  def.pot = static_cast<poker::Chips>(player_count * contribution);
   def.board = {board[0], board[1], board[2], 0, 0};
   def.board_size = 3;
   // Flop-terminal: the tree stops after flop action. The frontier evaluator
@@ -180,7 +182,8 @@ std::vector<solver::WeightedHand> declared_library_range() {
 LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips stack, poker::Chips contribution,
-                              const std::vector<solver::WeightedHand>& range) {
+                              const std::vector<solver::WeightedHand>& range,
+                              std::size_t player_count) {
   if (class_count == 0)
     throw std::invalid_argument("class_count must be positive");
   if (iterations_per_class == 0)
@@ -189,6 +192,8 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
     throw std::invalid_argument("range must be non-empty");
   if (stack == 0 || contribution == 0)
     throw std::invalid_argument("stack and contribution must be positive");
+  if (player_count < 2 || player_count > 10)
+    throw std::invalid_argument("player_count must be in [2, 10]");
 
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
@@ -207,7 +212,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
 
   LibraryManifest manifest;
   manifest.card_id = card_id;
-  manifest.player_count = 2;
+  manifest.player_count = player_count;
   manifest.big_blind = kDefaultBigBlind;
   manifest.stack = stack;
   manifest.contribution = contribution;
@@ -222,11 +227,14 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   try {
     for (std::size_t i = 0; i < class_count; ++i) {
       const std::array<int, 3> board = classes[i];
-      const poker::GameDef def = make_def(board, stack, contribution);
+      const poker::GameDef def = make_def(board, stack, contribution, player_count);
       const std::vector<solver::WeightedHand> seat_range = filter_range(range, board);
       if (seat_range.empty())
         throw std::runtime_error("class " + std::to_string(i) + " has no off-board combos");
-      const std::vector<std::vector<solver::WeightedHand>> ranges{seat_range, seat_range};
+      std::vector<std::vector<solver::WeightedHand>> ranges;
+      ranges.reserve(player_count);
+      for (std::size_t s = 0; s < player_count; ++s)
+        ranges.push_back(seat_range);
 
       const tree::AbstractTree tree(def, abstraction::ActionAbstraction::identity());
       // Flop-terminal games require a frontier evaluator to supply leaf values.

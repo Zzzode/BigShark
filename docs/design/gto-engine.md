@@ -924,25 +924,33 @@ and the practice simulator CLI (`--flop-library DIR`) also support it.
 
 The engine's resident budget defaults to 256 MiB
 (`kDefaultResidentBudgetBytes`). Each flop class has a resident footprint of
-~2.7 MiB, so the default budget advertises only ~96 of 1,755 classes; the
-rest are reported `OverBudget` and silently skipped. A full library needs
-~4 GiB of resident memory.
+~2.7 MiB (2-seat) or ~8 MiB (3-seat), so the default budget advertises only
+~96 of 1,755 classes; the rest are reported `OverBudget` and silently
+skipped. A full 2-seat library needs ~4 GiB of resident memory; a full
+3-seat library needs ~14 GiB.
 
 The engine host accepts `--resident-budget <MiB>` to override the default.
-The TypeScript launcher auto-detects the bundled library at
-`<repo>/artifacts/flop-library/manifest.json` when no explicit
+The TypeScript launcher auto-detects every directory under `<repo>/artifacts/`
+whose name starts with `flop-library` and contains a `manifest.json` (e.g.
+`flop-library/` for heads-up, `flop-library-3p/` for 3-way) when no explicit
 `flopLibraries` config or env var is set, and launches the engine with a
-resident budget auto-detected from system RAM (1/8 of total memory, e.g.
-6 GiB on a 48 GB machine) and a 300 s warmup timeout (the engine probes and
-loads all 1,755 SQLite DBs before its first frame, ~55 s probe alone).
+resident budget auto-detected from system RAM (1/4 of total memory, e.g.
+12 GiB on a 48 GB machine) and a warmup timeout scaled to the library count
+(300 s for one library, 600 s for two or more). The engine probes and loads
+all SQLite DBs before its first frame (~55 s probe alone for one library).
 `BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB` overrides the auto-detected value.
 The C++ engine client gains `resident_budget_mib` and `startup_timeout_ms`
 fields; the practice simulator auto-bumps the startup timeout to 300 s when
 `--flop-library` is passed.
 
+The engine's root identity matching (`same_root`) compares `player_count`
+first, so a 2-seat artifact can never serve a 3-seat query and vice versa.
+The belief model and resolver are exact for 2–3 seats; 4+ seats are refused
+(`SeatCountNotSupported`).
+
 The runner warms the engine during startup, before the main loop, so the
-full library load (~2 min) does not block the first hand. The engine client
-is a keyed singleton; `decide()` reuses the warmed child.
+full library load does not block the first hand. The engine client is a
+keyed singleton; `decide()` reuses the warmed child.
 
 Opt-outs: `flopLibraries: []` in `.runtime/config.json`, or
 `BIGSHARK_ENGINE_FLOP_LIBRARIES=[]` in the environment.
