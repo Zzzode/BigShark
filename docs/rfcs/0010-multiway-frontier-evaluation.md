@@ -1,7 +1,7 @@
 ---
 rfc: "0010"
 subject: "Multiway Frontier Evaluation and N-Way Preflop Training"
-status: "Accepted"
+status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-04"
 updated: "2026-10-04"
@@ -793,6 +793,47 @@ decision path is not changed in any stage.
   fail; RFC check 0 fail.
 - Independent approval-agent review: Approved, with all blocking findings
   resolved.
+
+## Implementation Evidence
+
+Stages 1-3 committed as b61ce9f (evaluator + gates), b6e5441 (builder +
+NashConv tool), 4b966b3 (documentation). Stage 4 review findings resolved
+in ef4bc2c.
+
+The independent approval review (decision recorded below) returned one
+MAJOR finding and six MINOR findings. All are resolved:
+
+- **M1 (MAJOR) — missing N-way equity unit tests.** Added
+  `engine/tests/test_equity_frontier.cpp` (11 test cases): exact equity pins
+  (quads vs overcards, broadway tie, 3-way split), folded-seat exclusion
+  with dead-money settlement, single-live-seat equity, cache repeatability,
+  cache live-set keying (forced-collision test), cache cap, the rejection
+  contract (N<2, N>10, bad flop, player_count mismatch, no live seats), and
+  an independent brute-force oracle cross-check on three non-trivial deals.
+- **m2 — cache-key comment said "one byte per seat".** Corrected to "one int
+  per seat" in `equity_frontier.hpp`, `equity_frontier.cpp`, and RFCs 0007
+  and 0010.
+- **m3 — NashConv partial-accumulation bias.** `preflop_nash_conv.cpp` now
+  accumulates strategy and best-response values into locals and commits both
+  only after both walks succeed, so a failed BR walk never leaves a strategy
+  contribution with no matching BR contribution.
+- **m4 — coarse abstraction guard.** `preflop_profile_builder.cpp` now fails
+  fast with a clear message when the coarse DeclaredOnly menu is requested,
+  since the nseat trainer's `validate_request()` accepts only the identity
+  action abstraction.
+- **m5 — acceptance criterion said "100 BB".** Updated to "the deepest
+  identity-abstraction stack with HU-comparable info-set coverage (measured:
+  10 BB)", documenting that 100 BB is not reachable with identity
+  abstraction under the 2M-node limit.
+- **m6 — test coverage for the verification plan.** Extended
+  `test_game_definition.cpp` (6-seat and 10-seat flop-terminal validation,
+  1-seat and 11-seat rejection), `test_solve_nseat.cpp` (3-seat
+  flop-terminal training completes), and `test_artifacts.cpp` (3-way
+  preflop artifact round-trip; `ZeroFrontierEvaluator` made seat-generic).
+
+Verification matrix (ef4bc2c): release 75/75, debug 4/4 key tests, asan 4/4
+key tests, benchmark-multistreet PASS, npm check 0 fail, proto check 0 fail,
+replay 156 decisions 0 illegal, docs check 0 fail, RFC check 0 fail.
 
 ## Decision
 
