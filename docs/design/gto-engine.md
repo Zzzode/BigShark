@@ -896,6 +896,30 @@ remains River-terminal. The measurements above are the honest cost of the
 River-terminal shape; the class selection and storage budget for a larger
 library are decided by these measured costs, not estimated.
 
+### Engine Host `--flop-library` Flag
+
+The engine host (`apps/engine-host/main.cpp`) accepts a repeatable
+`--flop-library <dir>` flag that auto-loads a flop class library at startup.
+The host reads `<dir>/manifest.json`, expands each class entry into a
+`SupportedRootSpec` (path + SHA-256 pin), and loads them all through the
+existing `ResidentPolicySet::build()` path. One flag replaces 1,755
+`--resident-root` arguments.
+
+The manifest is a hand-written JSON document with a `classes` array; each
+entry has `artifact_name` (a bare filename) and `sha256_hex` (64 lowercase
+hex). The host validates the manifest at startup: a missing directory,
+missing manifest, invalid JSON, empty classes array, path-traversal
+`artifact_name`, or invalid `sha256_hex` aborts with exit code 2. Per-root
+load failures (missing .db file, digest mismatch, over budget) are reported
+individually on stderr and never disable another root.
+
+On the TypeScript side, `EngineConfig.flopLibraries` (a list of directory
+paths) or the `BIGSHARK_ENGINE_FLOP_LIBRARIES` environment variable (a JSON
+array of path strings) passes the flag to the engine child. The runner's
+`.runtime/config.json` accepts `flopLibraries` as a sibling of
+`residentRoots`. The C++ engine client (`EngineClientConfig.flop_libraries`)
+and the practice simulator CLI (`--flop-library DIR`) also support it.
+
 ## Bounded Resolving Gadget (RFC 0005 Stage 9)
 
 The resolver (`bs::resolver::Resolver`, static `bigshark_resolver`) re-solves a

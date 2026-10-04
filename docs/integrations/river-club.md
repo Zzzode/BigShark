@@ -122,7 +122,7 @@ All files below are local and ignored by Git:
 
 | Path | Purpose |
 | --- | --- |
-| `.runtime/config.json` | Runner mode, style, timing, stop-loss settings, and (RFC 0009 W1) `residentRoots`: `[{path, sha256}]` resident artifact roots, each a published strategy artifact and its mandatory 64-lowercase-hex whole-file pin. A malformed value fails the runner at startup (`runner-config-invalid`, exit 2) instead of silently running without the configured roots |
+| `.runtime/config.json` | Runner mode, style, timing, stop-loss settings, and (RFC 0009 W1) `residentRoots`: `[{path, sha256}]` resident artifact roots, each a published strategy artifact and its mandatory 64-lowercase-hex whole-file pin. A malformed value fails the runner at startup (`runner-config-invalid`, exit 2) instead of silently running without the configured roots. Also supports `flopLibraries`: `["<dir>", ...]` flop class library directories, each expanded by the engine into one resident root per class via `<dir>/manifest.json` |
 | `.runtime/pending.json` | Latest model decision opportunity, including the engine decision's `guaranteeLevel` and `artifactSha256` (W1; `null` when the decision carried none) |
 | `.runtime/pending.log` | Append-only decision opportunities |
 | `.runtime/action.json` | Model override for one hand and street |
@@ -131,13 +131,13 @@ All files below are local and ignored by Git:
 | `.runtime/resume` | Explicit approval to resume table selection |
 | `sessions/*.jsonl` | Full CLI command and response journal |
 
-With at least one configured resident root the runner uses the framed v1
-protocol at negotiated minor 2 (the guarantee-level and artifact-digest
-surface) and passes the server's remaining-time budget through as the solve
-budget. Since W3, v1 is the default protocol for the River Club runner;
-v0 NDJSON remains as the fallback path. On a minor-2 AUTOMATIC blueprint
-miss, the engine tries terminal-only resolving; if the resolver also misses,
-a labeled operational fallback (check/call/fold) is served (W4d).
+With at least one configured resident root or flop library the runner uses the
+framed v1 protocol at negotiated minor 2 (the guarantee-level and
+artifact-digest surface) and passes the server's remaining-time budget through
+as the solve budget. Since W3, v1 is the default protocol for the River Club
+runner; v0 NDJSON remains as the fallback path. On a minor-2 AUTOMATIC
+blueprint miss, the engine tries terminal-only resolving; if the resolver also
+misses, a labeled operational fallback (check/call/fold) is served (W4d).
 
 ## Credentials
 
