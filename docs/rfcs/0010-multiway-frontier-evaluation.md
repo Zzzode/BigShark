@@ -637,6 +637,16 @@ A version bump would require a migration for no benefit.
   reports tree size and the trainer's existing caps apply. The first target
   is N=3 at 100 BB, which is expected to fit comfortably (the HU tree is
   5,326 nodes; a 3-way tree is roughly 3x the action sequences).
+
+  **Measured (Stage 2):** the 3-way identity action tree grows ~4× per 2 BB
+  of stack depth, far faster than the "roughly 3x" estimate. At 10 BB the
+  tree is 23,404 nodes (8 MB); at 16 BB it is 1,476,160 nodes (523 MB); at
+  18 BB it exceeds the 2M-node cap. The 100 BB target is not reachable with
+  the identity abstraction. The coarse DeclaredOnly menu (RFC 0008) fits at
+  100 BB (1,800 nodes, 527 KB) but the n-seat trainer's identity-abstraction
+  gate (`validate_request` rejects non-identity action ids) blocks it.
+  Relaxing that gate is future work. The deepest 3-way identity profile with
+  HU-comparable info-set coverage is 10 BB.
 - **Training convergence at N-way.** MCCFR convergence may be slower for
   N-way games (more information sets, sparser visits per set). Mitigation:
   the builder reports termination phase and completed iterations; the
@@ -696,12 +706,29 @@ A version bump would require a migration for no benefit.
 - **3-way preflop profile:** train at 100 BB with 100K iterations (matching
   the HU profile). Report tree nodes, action nodes, information sets,
   artifact bytes, training wall time, and termination phase.
+
+  **Measured (Stage 2):** the 3-way identity action tree does not fit at 100
+  BB (see the N-way tree size risk above). The deepest identity-abstraction
+  3-way profile with HU-comparable info-set coverage is 10 BB: 23,404 tree
+  nodes (9,360 action), 118,581 information sets, 1,014,536 stored rows, 267
+  MB artifact, 118.6s wall, Complete termination.
 - **3-way NashConv:** run the generalized `bigshark-preflop-nash-conv` tool
   on the 3-way artifact. Report exploitability in chips and BB at 10K MC
   deals.
+
+  **Measured (Stage 2):** NashConv 11.79 chips, exploitability 3.93 chips
+  (1.964 BB) at 10K MC deals, 0 uncovered deals, 4,116 fallbacks (13.7% of
+  player-deals hit unvisited info sets and used the check>call>fold
+  fallback).
 - **HU regression:** re-run the HU NashConv tool on the existing HU artifact
   and verify the measured exploitability is unchanged (99.24 chips / 49.62
   BB within MC noise).
+
+  **Measured (Stage 2):** the generalized tool reports 2 seats and computes
+  the same NashConv formula (sum of 2 gaps / 2). At 100 deals the measured
+  NashConv is 102.09 chips (25.5 BB), consistent with the 10K-deal baseline
+  of 99.24 chips within MC noise. The HU tree is byte-identical (5,326
+  nodes, 1,776 action).
 
 ## Rollout Plan
 

@@ -1128,15 +1128,18 @@ The live preflop policy is an approximation for 6-max cash play near 100 BB:
 This policy is deterministic and range-based, but it is not a solved preflop
 equilibrium.
 
-### Trained heads-up preflop profile (RFC 0007 / W4b)
+### Trained preflop profile (RFC 0007 / W4b, extended by RFC 0010)
 
-A trained heads-up preflop profile is available as an offline artifact. It
-uses `TerminalDepth::Flop` game termination with frontier leaves valued by
-the `EquityFrontierEvaluator` (exact all-in-at-flop equity: enumerates all
-C(45,2) = 990 turn/river combos, returns equity × pot − contributed as the
-expected net chip delta). The profile trains the n-seat MCCFR trainer on a
-flop-terminal game and exports policy-derived continuation ranges
-(`PolicyReachRangePair`) for every flop reached with positive probability.
+A trained preflop profile is available as an offline artifact. It uses
+`TerminalDepth::Flop` game termination with frontier leaves valued by the
+`EquityFrontierEvaluator` (exact all-in-at-flop equity: enumerates all
+C(52−3−2N, 2) turn/river combos for N seats, returns equity × pot −
+contributed as the expected net chip delta). The evaluator supports 2..10
+seats (RFC 0010): only live seats compete for the pot, folded seats'
+contributions stay as dead money, and the cache key includes the live-seat
+set. The profile trains the n-seat MCCFR trainer on a flop-terminal game
+and exports policy-derived continuation ranges (`PolicyReachRangePair`) for
+every flop reached with positive probability.
 
 The virtual flop deal (`NodeKind::FlopDeal` leaf) replaces the 3-level chance
 subtree (52×51×50 = 132,600 frontier leaves per preflop line) with a single
@@ -1159,9 +1162,19 @@ A full-range 100 BB profile trained with 100,000 iterations and the
 (schema v2, `rules_id = "rfc0009-unified-preflop-v1"`): 126,317 information
 sets, 1,025,584 stored rows, 266 MB file, 111.6s wall. The offline builder
 is `bigshark-preflop-profile-builder` (usage: `<output-dir> [iterations]
-[stack-bb]`). The profile is a declared-profile coverage result, not a
-full-game GTO solution; the all-in-at-flop frontier approximation ignores
-postflop betting.
+[stack-bb] [seats] [abstraction]`). The profile is a declared-profile
+coverage result, not a full-game GTO solution; the all-in-at-flop frontier
+approximation ignores postflop betting.
+
+The builder and NashConv tool accept a `seats` argument (2..10) for
+multiway profiles (RFC 0010, `rules_id = "rfc0010-multiway-preflop-v1"`).
+The 3-way identity action tree grows ~4× per 2 BB (10 BB = 23K nodes,
+16 BB = 1.48M, 18 BB exceeds the 2M-node cap), so the deepest 3-way
+identity profile with HU-comparable coverage is 10 BB: 118,581 information
+sets, 1,014,536 stored rows, 267 MB file, 118.6s wall, NashConv 11.79 chips
+/ exploitability 1.964 BB (10K MC deals). The coarse DeclaredOnly menu
+(RFC 0008) fits at 100 BB (1,800 nodes) but the n-seat trainer's
+identity-abstraction gate blocks it; relaxing that gate is future work.
 
 ## Flop and Turn Policy
 

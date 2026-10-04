@@ -244,6 +244,25 @@ or different blind structure) reconstruct successfully but miss declared at
 the resident root match, falling back to the charts or operational fallback.
 The live six-max preflop charts remain in force for six-max play.
 
+**Implementation update: N-way frontier evaluation (RFC 0010, 2026-10-04).**
+The `EquityFrontierEvaluator` is generalized from heads-up to 2..10 seats.
+The turn/river pool is 52 − 3 (flop) − 2N (hole cards); only live seats
+(`ledger.seats[s].folded == false`) compete for the pot, and folded seats'
+contributions stay in the pot as dead money. The cache key includes the
+live-seat set (one byte per seat) so the same (flop, hands) pair with
+different fold patterns never shares a cache entry. A 1M-entry cap bounds
+memory for N-way training where the 1,326^N deal space makes revisits rare.
+
+The preflop profile builder and NashConv tool accept a `seats` argument
+(2..10). A 3-way 100 BB profile is not reachable with the identity action
+abstraction: the 3-way action tree grows ~4× per 2 BB (10 BB = 23K nodes,
+16 BB = 1.48M, 18 BB > 2M cap). The deepest identity-abstraction 3-way
+profile with HU-comparable info-set coverage is 10 BB: 118,581 information
+sets, 1,014,536 stored rows, 267 MB artifact, 118.6s wall, NashConv 11.79
+chips / exploitability 1.964 BB (10K MC deals). The coarse DeclaredOnly
+menu (RFC 0008) fits at 100 BB (1,800 nodes) but the n-seat trainer's
+identity-abstraction gate blocks it; relaxing that gate is future work.
+
 ## Design Principles
 
 1. Additive only. Existing artifacts, keys, roots, and wire bytes keep their
