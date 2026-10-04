@@ -762,12 +762,18 @@ unchanged. The relabel, the canonical flop, and a canonical prefix-board
 scratch buffer live in `ResidentScratch` alongside the reach and key
 buffers, so the warm query path still allocates no heap memory.
 
-The compact index flattens each artifact `std::map` into four contiguous
+The compact index flattens each artifact `std::map` into contiguous
 buffers: a key blob (a 2-byte length prefix plus the compact key — a 4-byte
 header, the board cards, and 5 bytes per history action), an action blob of
-3-byte `CompactAction` records (kind plus target), a probability blob of exact
-doubles, fixed row records, and an open-addressing slot table at a 50 percent
-load factor (8 bytes per slot). Lookup compacts the caller's fixed key into a
+3-byte `CompactAction` records (kind plus target), a probability store, fixed
+row records, and an open-addressing slot table at a 50 percent load factor (8
+bytes per slot). The probability store is lossless: a trained artifact has far
+fewer distinct probability values than actions (a few hundred at most), so
+when a root has at most 256 distinct values the index stores a per-root
+codebook of the distinct doubles plus one uint8 index per action; roots with
+more distinct values fall back to one exact double per action. The codebook is
+keyed by the probability's bit pattern, so a deferred value is always bitwise
+identical to the stored one. Lookup compacts the caller's fixed key into a
 byte buffer, hashes that byte span, linear-probes, and verifies every
 candidate with a full length and byte comparison before resolving offsets;
 hash collisions can never return a wrong row. Action identity is action kind
@@ -775,12 +781,13 @@ plus the exact street target total, never kind alone. Warm lookups perform no
 SQLite call, no lock, and no heap allocation: every buffer a query touches
 lives in a caller-owned `ResidentScratch` (per-player per-combo raw reach,
 marginals, per-card mass, partner mass, an action-probability scratch, a fixed
-256-word key, a compact-key byte buffer, an action-expansion scratch, and the
-v3 canonical-translation buffers: a 4-entry suit relabel, the 3-card canonical
-flop, and a 5-card canonical prefix-board scratch). The compact key and action
-formats are exact (no quantization); probabilities stay as doubles because the
-public-belief reach computation multiplies path probabilities and the resident
-contract is exact marginals, so a lossy probability encoding is not used.
+256-word key, a compact-key byte buffer, an action-expansion scratch, a
+probability-deference scratch, and the v3 canonical-translation buffers: a
+4-entry suit relabel, the 3-card canonical flop, and a 5-card canonical
+prefix-board scratch). The compact key and action formats are exact (no
+quantization); the boundary defers the codebook (or doubles) into the scratch
+so the public-belief reach computation, which multiplies path probabilities
+and requires exact marginals, sees bitwise-identical doubles.
 
 Public belief is computed once per public node with no hero hole-card
 input. Starting from the artifact's declared pair of weighted ranges, the
@@ -867,6 +874,17 @@ schema-v3 artifact with the suit-canonicalization `AbstractionId` as its card
 abstraction. Each artifact is checkpointed, published (SHA-256), and probed;
 the checkpoint is removed so the directory holds only immutable policies.
 
+The builder CLI is `bigshark-flop-library-builder <output-dir> [class-count]
+[iterations] [player-count] [stack] [contribution]`. The stack and contribution
+default to 4 and 2 chips (2 BB effective, SPR 1). Deeper stacks are supported
+but grow the tree and artifact roughly linearly with the number of betting
+actions: at 10 BB (stack 20) a class has ~157K stored rows and ~16 MiB resident
+(vs ~13K rows and ~0.6 MiB at 2 BB), and the probability codebook falls back
+to doubles because the deeper tree produces more than 256 distinct probability
+values (603 measured). A full 1,755-class library at 10 BB is therefore ~65 GB
+on disk and ~24 GiB resident; full deeper-stack coverage needs a coarser
+action abstraction to keep the tree manageable.
+
 The declared first-library range is a fixed premium set: AA, KK, QQ, JJ (24
 combos) plus AKs (4) and AKo (12) — 40 combos total, weight 1.0, used for every
 seat. Board-overlapping combos are filtered per class at build time.
@@ -930,10 +948,12 @@ and the practice simulator CLI (`--flop-library DIR`) also support it.
 
 The engine's resident budget defaults to 256 MiB
 (`kDefaultResidentBudgetBytes`). Each flop class has a resident footprint of
-~1.1 MiB (2-seat) or ~4.0 MiB (3-seat), so the default budget advertises only
-~240 of 1,755 classes; the rest are reported `OverBudget` and silently
-skipped. A full 2-seat library needs ~1.8 GiB of resident memory; a full
-3-seat library needs ~6.9 GiB.
+~0.6 MiB (2-seat) or ~2.6 MiB (3-seat) with the compact layout and probability
+codebook, so the default budget advertises only a few hundred of 1,755 classes;
+the rest are reported `OverBudget` and silently skipped. A full 2-seat library
+needs ~1.06 GiB of resident memory; a full 3-seat library needs ~4.47 GiB.
+Both libraries together (3,510 classes) need ~5.53 GiB and advertise fully
+under a 6 GiB budget (measured 2026-10-05).
 
 The engine host accepts `--resident-budget <MiB>` to override the default.
 The TypeScript launcher auto-detects every directory under `<repo>/artifacts/`

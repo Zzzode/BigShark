@@ -16,9 +16,14 @@
 //     (3 bytes), a 5x reduction on the action blob.
 //   - Hash slots are reduced from 16 to 8 bytes (32-bit hash), a 2x
 //     reduction on the slot table.
-// Probabilities stay as double: the public-belief reach computation multiplies
-// path probabilities and the resident contract is exact marginals, so a lossy
-// probability encoding is not acceptable here.
+// Probabilities are stored losslessly. A trained artifact has far fewer
+// distinct probability values than actions (a few hundred at most), so when a
+// root has at most 256 distinct values the index stores a per-root codebook of
+// the distinct doubles plus one uint8 index per action. Roots with more
+// distinct values fall back to one exact double per action. Either way the
+// boundary defers the exact doubles into a scratch buffer before exposing
+// them, so the public-belief reach computation (which multiplies path
+// probabilities and requires exact marginals) sees bitwise-identical values.
 #pragma once
 
 #include <bs/heads_up.hpp>
@@ -58,7 +63,15 @@ inline constexpr std::size_t kMaxResidentActions = 32;
 struct CompactRowView {
   std::uint16_t count = 0;
   const CompactAction* actions = nullptr;
+  // Probability access. Exactly one layout is active per index:
+  //   - codebook == nullptr: probabilities[i] is the exact double.
+  //   - codebook != nullptr: probability_indices[i] selects the exact double
+  //     from the per-root codebook.
+  // The resident boundary defers either layout into a double scratch before
+  // exposing probabilities to callers.
   const double* probabilities = nullptr;
+  const std::uint8_t* probability_indices = nullptr;
+  const double* codebook = nullptr;
 };
 
 class ResidentIndex {
@@ -95,15 +108,17 @@ class ResidentIndex {
   // Honest byte footprint of the resident buffers at their actual capacities.
   std::size_t resident_bytes() const noexcept;
 
-  // Conservative tight upper bound on the resident footprint of one root
-  // from an artifact probe's SQL aggregates, BEFORE the policy rows are
-  // materialized. It mirrors build()'s exact reservations (two key-header
-  // bytes plus compact key bytes, one 3-byte compact action and one exact
-  // double per stored action, one fixed record per state, and the
-  // 50 percent-load power-of-two slot table) and overcharges the immutable
-  // game-copy vectors with slack for their allocator capacities. Accepted
-  // roots are still measured exactly after the index is built; the pre-gate
-  // never accepts a root the exact measurement would refuse.
+  // Conservative upper bound on the resident footprint of one root from an
+  // artifact probe's SQL aggregates, BEFORE the policy rows are materialized.
+  // It mirrors build()'s exact reservations (two key-header bytes plus compact
+  // key bytes, one 3-byte compact action per stored action, one fixed record
+  // per state, and the 50 percent-load power-of-two slot table), charges the
+  // worst-case probability layout across both storage modes (one exact double
+  // per action in the fallback, or one uint8 index per action plus a 256-entry
+  // codebook in the compressed mode), and overcharges the immutable game-copy
+  // vectors with slack for their allocator capacities. Accepted roots are
+  // still measured exactly after the index is built; the pre-gate never
+  // accepts a root the exact measurement would refuse.
   static std::size_t estimate_bytes(std::size_t row_count, std::size_t action_count,
                                     std::size_t total_key_words, const solver::UnifiedGame& game);
 
@@ -133,12 +148,23 @@ class ResidentIndex {
 
   std::vector<std::uint8_t> key_blob_;      // [2-byte LE length][compact key] per row
   std::vector<CompactAction> action_blob_;  // 3 bytes per action
-  std::vector<double> probability_blob_;    // 8 bytes per action (exact)
+  // Probability storage. Exactly one layout is active per built index:
+  //   - codebook_ non-empty: per-root dictionary of distinct probability
+  //     doubles; probability_index_ holds one uint8 per action selecting from
+  //     it. Used when the row set has at most 256 distinct values (the common
+  //     case for trained artifacts).
+  //   - codebook_ empty: probability_blob_ holds one exact double per action.
+  std::vector<double> codebook_;
+  std::vector<std::uint8_t> probability_index_;
+  std::vector<double> probability_blob_;  // 8 bytes per action (fallback)
   std::vector<RowRecord> rows_;
   std::vector<Slot> slots_;
   std::size_t row_count_ = 0;
   std::size_t probability_count_ = 0;
   std::size_t slot_mask_ = 0;
+  // Explicit layout discriminator so resolve() does not infer the mode from
+  // codebook_.empty() (which disagrees for a degenerate zero-probability index).
+  bool use_codebook_ = false;
 };
 
 }  // namespace bs::resident

@@ -423,9 +423,17 @@ exports validate). Neither number is a strategy-quality claim.
 ### Measured results (Apple M5 Pro, 48 GB, macOS 26.5.1, Apple clang 21)
 
 Measured 2026-10-05 under the release preset, after the compact resident
-layout (5-byte history actions, 3-byte `CompactAction`, 8-byte slots; exact
-double probabilities). All numbers are observations, not portable gates
+layout (5-byte history actions, 3-byte `CompactAction`, 8-byte slots) and the
+lossless probability codebook (a per-root dictionary of distinct doubles plus
+one uint8 index per action, used when a root has at most 256 distinct
+probability values). All numbers are observations, not portable gates
 except the 10 ms warm p99 promotion target from RFC 0005.
+
+The synthetic SPR fixtures below have more than 256 distinct probability
+values, so they use the doubles fallback and their resident bytes are
+unchanged by the codebook. Trained artifacts (the flop class libraries) have
+63-175 distinct values and use the codebook, cutting their probability blob
+from 8 bytes to ~1 byte per action.
 
 | Metric | Value |
 | --- | ---: |
@@ -466,3 +474,25 @@ RFC 0005 promotion target, with zero heap allocations across both the
 100,000 hit and 20,000 miss calls. Peak RSS is dominated by training
 artifacts retained in the benchmark process and is not the resident
 footprint. Linux verification remains an external gate.
+
+### Full-library runtime smoke test (2026-10-05)
+
+Measured on the same machine under the release preset, launching
+`bigshark-engine --flop-library artifacts/flop-library --flop-library
+artifacts/flop-library-3p --resident-budget 12288 --proto` with the complete
+2-seat and 3-seat flop class libraries (1,755 classes each, 2 BB effective,
+1,000 iterations/class).
+
+| Metric | Value |
+| --- | ---: |
+| Roots advertised / total | 3,510 / 3,510 |
+| OverBudget or LoadFailed roots | 0 |
+| 2-seat resident bytes (1,755 classes) | 1,142,602,304 (1.06 GiB) |
+| 3-seat resident bytes (1,755 classes) | 4,797,586,254 (4.47 GiB) |
+| Total resident bytes | 5,940,188,558 (5.53 GiB) |
+| Budget | 12 GiB (12,288 MiB) |
+
+Every class advertised; no root was refused. The probability codebook is
+active on all classes (63-64 distinct values for 2-seat, 131-175 for 3-seat,
+all under the 256-entry cap), so the probability blob costs ~1 byte per action
+plus a small per-root dictionary instead of 8 bytes per action.

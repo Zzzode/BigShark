@@ -169,6 +169,26 @@ void expand_actions(const CompactRowView& row, std::span<poker::Action> out) {
   }
 }
 
+// Defer a row's exact probabilities into a caller-owned double buffer. The
+// codebook layout stores uint8 indices into a per-root dictionary; either way
+// the deferred values are bitwise identical to the stored doubles, so the
+// public-belief reach computation sees exact marginals.
+void defer_probabilities(const CompactRowView& row, std::span<double> out) {
+  if (row.codebook != nullptr) {
+    for (std::size_t i = 0; i < row.count; ++i)
+      out[i] = row.codebook[row.probability_indices[i]];
+  } else {
+    for (std::size_t i = 0; i < row.count; ++i)
+      out[i] = row.probabilities[i];
+  }
+}
+
+// Defer a single action's exact probability.
+double defer_probability(const CompactRowView& row, std::size_t action_index) {
+  return row.codebook != nullptr ? row.codebook[row.probability_indices[action_index]]
+                                 : row.probabilities[action_index];
+}
+
 const char* artifact_failure_detail(const artifacts::ArtifactError& error) {
   static const char* const names[] = {
       "io",
@@ -547,7 +567,7 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
     std::size_t action_index = 0;
     if (!locate_action(row, event.action, action_index))
       return MissReason::OffTreeAmount;
-    scratch.action_probability[combo] = row.probabilities[action_index];
+    scratch.action_probability[combo] = defer_probability(row, action_index);
   }
   return MissReason::None;
 }
@@ -766,12 +786,14 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   if (scratch.raw[*state.actor()][hero_combo] == 0.0)
     return miss_answer(MissReason::ZeroProbabilityHeroCombination);
   // Expand compact actions into scratch so the public view exposes
-  // poker::Action. Probabilities are stored as exact doubles and are
-  // referenced directly from the immutable blob.
+  // poker::Action. Probabilities are deferred from the codebook (or the
+  // doubles blob) into scratch so the public view sees exact doubles.
   expand_actions(compact, std::span<poker::Action>(scratch.action_scratch.data(), compact.count));
+  defer_probabilities(compact,
+                      std::span<double>(scratch.probability_scratch.data(), compact.count));
   answer.hero_row.size = compact.count;
   answer.hero_row.actions = scratch.action_scratch.data();
-  answer.hero_row.probabilities = compact.probabilities;
+  answer.hero_row.probabilities = scratch.probability_scratch.data();
 
   // Hero-private opponent belief: blocker removal only, never renormalized
   // into a relabeled equilibrium range. W2c-ii-b: with three seats there are
@@ -803,10 +825,11 @@ namespace {
 // borrows the record's compact rows; no allocation happens per row lookup
 // beyond constructing the canonical information key for the query. The
 // compact index stores 3-byte actions, so a mutable scratch buffer expands
-// them into the poker::Action the resolver expects; probabilities are exact
-// doubles referenced directly from the immutable blob. The resolver calls
-// row() one at a time (each view is consumed before the next call), so the
-// shared scratch is safe.
+// them into the poker::Action the resolver expects; probabilities are
+// deferred from the codebook (or the doubles blob) into a second scratch so
+// the resolver sees exact doubles. The resolver calls row() one at a time
+// (each view is consumed before the next call), so the shared scratch is
+// safe.
 class ResidentBlueprintSource final : public resolver::BlueprintSource {
  public:
   explicit ResidentBlueprintSource(const ResidentPolicySet::Record& record) : record_(&record) {}
@@ -861,25 +884,28 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
                              compact))
       return std::nullopt;
     // Expand compact actions into the mutable scratch so the resolver sees
-    // poker::Action. Probabilities are exact doubles in the immutable blob
-    // and are referenced directly (valid for the set's lifetime).
+    // poker::Action. Probabilities are deferred from the codebook (or the
+    // doubles blob) into scratch so the resolver sees exact doubles.
     for (std::size_t i = 0; i < compact.count; ++i) {
       action_scratch_[i].type = static_cast<poker::ActionType>(compact.actions[i].type);
       action_scratch_[i].target_total = compact.actions[i].target;
     }
+    defer_probabilities(compact, std::span<double>(prob_scratch_.data(), compact.count));
     resolver::BlueprintRowView view;
     view.actions = action_scratch_.data();
-    view.probabilities = compact.probabilities;
+    view.probabilities = prob_scratch_.data();
     view.size = compact.count;
     return view;
   }
 
  private:
   const ResidentPolicySet::Record* record_;
-  // Mutable scratch for compact→poker::Action expansion. The resolver
-  // calls row() one at a time on the calling thread, so this is safe.
+  // Mutable scratch for compact→poker::Action expansion and codebook
+  // deference. The resolver calls row() one at a time on the calling
+  // thread, so this is safe.
   mutable std::array<std::uint8_t, 512> compact_key_{};
   mutable std::array<poker::Action, 32> action_scratch_{};
+  mutable std::array<double, 32> prob_scratch_{};
 };
 
 }  // namespace

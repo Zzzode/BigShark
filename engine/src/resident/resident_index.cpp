@@ -1,8 +1,10 @@
 #include "resident_index.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -102,6 +104,11 @@ void ResidentIndex::build_rows(const std::map<solver::InformationKey, Row>& rows
 
   std::size_t total_key_bytes = 0;
   std::size_t total_actions = 0;
+  // Collect distinct probability bit patterns to decide on the codebook. A
+  // bitwise key keeps the codebook lossless: two doubles that compare equal
+  // but differ in their bits (for example +0.0 and -0.0) stay distinct, so a
+  // deferred value is always bitwise identical to the stored one.
+  std::map<std::uint64_t, std::uint8_t> codebook_index;
   for (const auto& [key, row] : rows) {
     if (row.actions.size() != row.probabilities.size() || row.actions.size() > kMaxResidentActions)
       throw std::invalid_argument("malformed resident policy row");
@@ -114,13 +121,39 @@ void ResidentIndex::build_rows(const std::map<solver::InformationKey, Row>& rows
       throw std::length_error("resident compact key too large");
     total_key_bytes += 2 + compact_size;  // 2-byte length prefix
     total_actions += row.actions.size();
+    for (double probability : row.probabilities) {
+      std::uint64_t bits;
+      std::memcpy(&bits, &probability, sizeof(bits));
+      codebook_index.emplace(bits, 0);  // index assigned below
+    }
   }
   if (total_key_bytes > 0xffffffffULL || total_actions > 0xffffffffULL)
     throw std::length_error("resident index exceeds 32-bit offsets");
 
+  // Use the per-root codebook when at most 256 distinct values exist (the
+  // common case for a trained artifact, which has a few hundred distinct
+  // probabilities at most). Otherwise fall back to one exact double per
+  // action. The codebook is built in sorted bit-pattern order so its layout
+  // is deterministic across builds.
+  const bool use_codebook = codebook_index.size() <= 256;
+  use_codebook_ = use_codebook;
+  if (use_codebook) {
+    codebook_.reserve(codebook_index.size());
+    std::uint8_t index = 0;
+    for (auto& [bits, slot] : codebook_index) {
+      slot = index++;
+      double probability;
+      std::memcpy(&probability, &bits, sizeof(probability));
+      codebook_.push_back(probability);
+    }
+  }
+
   key_blob_.reserve(total_key_bytes);
   action_blob_.reserve(total_actions);
-  probability_blob_.reserve(total_actions);
+  if (use_codebook)
+    probability_index_.reserve(total_actions);
+  else
+    probability_blob_.reserve(total_actions);
   rows_.reserve(row_count_);
 
   for (const auto& [key, row] : rows) {
@@ -146,9 +179,18 @@ void ResidentIndex::build_rows(const std::map<solver::InformationKey, Row>& rows
       action_blob_.push_back(compact);
     }
 
-    record.probabilities_offset = static_cast<std::uint32_t>(probability_blob_.size());
-    for (double probability : row.probabilities)
-      probability_blob_.push_back(probability);
+    if (use_codebook) {
+      record.probabilities_offset = static_cast<std::uint32_t>(probability_index_.size());
+      for (double probability : row.probabilities) {
+        std::uint64_t bits;
+        std::memcpy(&bits, &probability, sizeof(bits));
+        probability_index_.push_back(codebook_index.at(bits));
+      }
+    } else {
+      record.probabilities_offset = static_cast<std::uint32_t>(probability_blob_.size());
+      for (double probability : row.probabilities)
+        probability_blob_.push_back(probability);
+    }
     record.action_count = static_cast<std::uint16_t>(row.actions.size());
     rows_.push_back(record);
   }
@@ -209,7 +251,15 @@ std::vector<std::uint64_t> ResidentIndex::key_at(std::size_t row) const {
 void ResidentIndex::resolve(const RowRecord& record, CompactRowView& out) const {
   out.count = record.action_count;
   out.actions = action_blob_.data() + record.actions_offset;
-  out.probabilities = probability_blob_.data() + record.probabilities_offset;
+  if (use_codebook_) {
+    out.codebook = codebook_.data();
+    out.probability_indices = probability_index_.data() + record.probabilities_offset;
+    out.probabilities = nullptr;
+  } else {
+    out.codebook = nullptr;
+    out.probability_indices = nullptr;
+    out.probabilities = probability_blob_.data() + record.probabilities_offset;
+  }
 }
 
 bool ResidentIndex::find(std::span<const std::uint8_t> compact_key, CompactRowView& out) const {
@@ -237,7 +287,8 @@ bool ResidentIndex::find(std::span<const std::uint8_t> compact_key, CompactRowVi
 
 std::size_t ResidentIndex::resident_bytes() const noexcept {
   return key_blob_.capacity() + action_blob_.capacity() * sizeof(CompactAction) +
-         probability_blob_.capacity() * sizeof(double) + rows_.capacity() * sizeof(RowRecord) +
+         probability_blob_.capacity() * sizeof(double) + codebook_.capacity() * sizeof(double) +
+         probability_index_.capacity() + rows_.capacity() * sizeof(RowRecord) +
          slots_.capacity() * sizeof(Slot);
 }
 
@@ -250,8 +301,16 @@ std::size_t ResidentIndex::estimate_bytes(std::size_t row_count, std::size_t act
   std::size_t bytes = row_count * 2 + (total_key_words * 5 + 3) / 4;
   // Compact actions: 3 bytes each.
   bytes += action_count * sizeof(CompactAction);
-  // Probabilities: exact doubles.
-  bytes += action_count * sizeof(double);
+  // Probabilities: charge the worst case across both storage modes. The
+  // fallback stores one exact double per action (8*A bytes). The codebook
+  // stores one uint8 index per action (A bytes) plus a per-root dictionary of
+  // at most 256 distinct doubles (256*8 bytes, reserved exactly at build time
+  // so capacity equals the distinct count). The codebook is only active when
+  // the row set has at most 256 distinct values, so its dictionary cost is
+  // bounded; for small action counts the fixed dictionary can exceed the
+  // doubles layout, hence the max. This keeps the pre-gate a true upper bound:
+  // it never accepts a root the exact post-build measurement would refuse.
+  bytes += std::max(action_count * sizeof(double), action_count + 256 * sizeof(double));
   // Row records.
   bytes += row_count * sizeof(RowRecord);
   // Slot table: power-of-two at 50% load, 8 bytes per slot.

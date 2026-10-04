@@ -2444,8 +2444,11 @@ bool index_matches_map(const ResidentIndex& index,
     double sum = 0;
     for (std::size_t i = 0; i < view.count; ++i) {
       CHECK(view.actions[i] == row.actions[i]);
-      CHECK(view.probabilities[i] == row.probabilities[i]);
-      sum += view.probabilities[i];
+      // Defer the codebook (or doubles) layout so the comparison is exact.
+      const double stored = view.codebook != nullptr ? view.codebook[view.probability_indices[i]]
+                                                     : view.probabilities[i];
+      CHECK(stored == row.probabilities[i]);
+      sum += stored;
     }
     CHECK(near(sum, 1.0));
   }
@@ -2588,6 +2591,71 @@ static bool test_index_and_continuity(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// Codebook and fallback probability layouts. Synthetic rows with controlled
+// distinct-probability counts exercise both storage modes and pin the layout
+// discriminator and deference correctness.
+// ---------------------------------------------------------------------------
+
+static bool test_codebook_layouts(const fs::path&) {
+  // actor=0, cards {0,1}, preflop, one public action with a varying target so
+  // each key is distinct.
+  auto make_key = [](std::uint64_t tag) { return InformationKey{0, 0, 1, 0, 0, 0, 0, tag}; };
+  const Action check{ActionType::Check, 0};
+  const Action bet{ActionType::Bet, 100};
+
+  // Resolve the first row's view. A count of 0 signals a lookup failure.
+  auto first_view = [](const ResidentIndex& index,
+                       const std::map<InformationKey, PolicyRow>& rows) {
+    std::array<std::uint8_t, 512> compact_buf{};
+    const InformationKey& key = rows.begin()->first;
+    const std::size_t csz = ResidentIndex::compact_information_key(
+        std::span<const std::uint64_t>(key.data(), key.size()),
+        std::span<std::uint8_t>(compact_buf.data(), compact_buf.size()));
+    CompactRowView view;
+    if (csz == 0 || !index.find({compact_buf.data(), csz}, view))
+      return CompactRowView{};
+    return view;
+  };
+
+  // Codebook branch: 3 rows x 2 actions = 6 distinct values (<=256).
+  {
+    std::map<InformationKey, PolicyRow> rows;
+    for (int i = 0; i < 3; ++i) {
+      const double p = 0.1 + 0.1 * i;
+      rows[make_key(static_cast<std::uint64_t>(i))] =
+          PolicyRow{.actions = {check, bet}, .probabilities = {p, 1.0 - p}};
+    }
+    ResidentIndex index;
+    index.build(rows);
+    CHECK(index_matches_map(index, rows));
+    const CompactRowView view = first_view(index, rows);
+    CHECK(view.count > 0);
+    CHECK(view.codebook != nullptr);
+    CHECK(view.probability_indices != nullptr);
+    CHECK(view.probabilities == nullptr);
+  }
+
+  // Fallback branch: 130 rows x 2 actions = 259 distinct values (>256).
+  {
+    std::map<InformationKey, PolicyRow> rows;
+    for (int i = 1; i <= 130; ++i) {
+      const double p = static_cast<double>(i) / 260.0;
+      rows[make_key(static_cast<std::uint64_t>(i))] =
+          PolicyRow{.actions = {check, bet}, .probabilities = {p, 1.0 - p}};
+    }
+    ResidentIndex index;
+    index.build(rows);
+    CHECK(index_matches_map(index, rows));
+    const CompactRowView view = first_view(index, rows);
+    CHECK(view.count > 0);
+    CHECK(view.codebook == nullptr);
+    CHECK(view.probability_indices == nullptr);
+    CHECK(view.probabilities != nullptr);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // Empty bounds: v1 artifacts are advertised for blueprint lookup only and the
 // public header exposes no bound, guarantee, or certification symbol.
 // ---------------------------------------------------------------------------
@@ -2650,6 +2718,7 @@ int main() {
       {"cross-blocked root", test_cross_blocked_root},
       {"coverage misses", test_misses},
       {"index and continuity", test_index_and_continuity},
+      {"codebook layouts", test_codebook_layouts},
       {"blueprint only", [](const fs::path&) { return test_blueprint_only(); }},
   };
 

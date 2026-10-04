@@ -180,9 +180,12 @@ struct ResidentScratch {
   std::size_t compact_key_size = 0;
   // Expanded action scratch for the public ResidentRowView. The compact
   // index stores 3-byte CompactActions; the public view exposes poker::Action,
-  // so this buffer holds the expanded values. Probabilities are stored as
-  // exact doubles and referenced directly, needing no scratch.
+  // so this buffer holds the expanded values.
   std::array<poker::Action, 32> action_scratch{};
+  // Deference scratch for the codebook probability layout. When the resident
+  // index stores probabilities as uint8 indices into a per-root codebook, the
+  // boundary defers them here so the public view exposes exact doubles.
+  std::array<double, 32> probability_scratch{};
   // RFC 0009 W4c-ii: canonical translation for class-based (v3) artifacts.
   // canonical_relabel[s] = canonical suit for concrete suit s (identity for
   // v2). canonical_flop is the artifact's canonical flop board, which equals
