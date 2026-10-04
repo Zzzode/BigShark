@@ -191,10 +191,12 @@ cannot use them and instead hardcodes the 2-seat convention.
 
 ### HU baseline measurements
 
-The published heads-up preflop profile (100 BB, 100K iterations):
-- 5,326 tree nodes, 85,605 information sets, 75 MB trainer memory.
-- 126,317 stored info sets, 1,025,584 rows, 266 MB artifact.
-- Training wall time: ~0.53 s (virtual flop deal, Preflop169 abstraction).
+The published heads-up preflop profile (100 BB, 100K iterations), per
+`artifacts/preflop-profile/manifest.json`:
+- 5,326 tree nodes (1,776 action), 126,317 information sets.
+- 114,656,256 accounted bytes (~109 MiB) trainer memory.
+- 1,025,584 stored rows, 265,732,096 bytes (~253 MiB) artifact.
+- Training wall time: 111.598 s (virtual flop deal, Preflop169 abstraction).
 - NashConv: 99.24 chips (49.62 BB exploitability) at 10K MC deals.
 
 The FlopDeal leaf (virtual flop deal, committed a333bcc) eliminated the
@@ -255,33 +257,51 @@ if (flop.size() != 3)
   throw std::invalid_argument("equity frontier evaluator requires a 3-card flop");
 ```
 
-**Equity computation:** generalize the win/tie counting to N-way. For each
-turn/river combo, evaluate all N seven-card hands, find the maximum score,
-count the number of hands tied at the maximum (K), and award each tied seat
-a `1.0 / K` share of that runout:
+**Equity computation:** generalize the win/tie counting to N-way, with
+explicit folded-seat handling. In a multiway flop-terminal game the frontier
+is routinely reached after preflop folds: the TreeBuilder emits a `FlopDeal`
+leaf at any Deal phase, and `walk_flop_deal` passes every seat's hole cards
+to `evaluate()`, including folded seats. The evaluator must exclude folded
+seats from pot competition. A seat is live iff
+`ledger.seats[s].folded == false`. Only live seats' hands are evaluated and
+compared; folded seats receive equity 0. Folded seats' contributed chips
+remain in the pot (dead money) — the pot sum already includes them, so no
+special handling is needed. The runout pool blocks all dealt cards (board
+plus every seat's hole cards, including folded seats), matching the existing
+sampler's physical-deck interpretation.
+
+For each turn/river combo, evaluate all live seats' seven-card hands, find
+the maximum score among live seats, count the number of live seats tied at
+the maximum (K), and award each tied live seat a `1.0 / K` share of that
+runout. A single-pass variant stores scores in a local array to avoid
+redundant evaluations:
 
 ```cpp
 const std::size_t n = hands.size();
+// Determine live seats from the ledger.
+std::size_t live_count = 0;
+for (std::size_t s = 0; s < n; ++s)
+  if (!ledger.seats[s].folded) ++live_count;
+if (live_count == 0)
+  throw std::invalid_argument("equity frontier evaluator: no live seats at frontier");
+
 std::vector<double> equity_sum(n, 0.0);
 for (int i = 0; i < pool_size; ++i) {
   for (int j = i + 1; j < pool_size; ++j) {
+    std::uint32_t scores[kMaxUnifiedSeats] = {};
     std::uint32_t best = 0;
-    // First pass: find the best score.
     for (std::size_t s = 0; s < n; ++s) {
+      if (ledger.seats[s].folded) continue;  // folded seats do not compete
       const int cards[7] = {hands[s][0], hands[s][1], flop[0], flop[1], flop[2], pool[i], pool[j]};
-      best = std::max(best, bs::evaluate(cards, 7).score);
+      scores[s] = bs::evaluate(cards, 7).score;
+      best = std::max(best, scores[s]);
     }
-    // Second pass: award pot shares to tied winners.
     int tied = 0;
-    for (std::size_t s = 0; s < n; ++s) {
-      const int cards[7] = {hands[s][0], hands[s][1], flop[0], flop[1], flop[2], pool[i], pool[j]};
-      if (bs::evaluate(cards, 7).score == best) ++tied;
-    }
+    for (std::size_t s = 0; s < n; ++s)
+      if (!ledger.seats[s].folded && scores[s] == best) ++tied;
     const double share = 1.0 / tied;
-    for (std::size_t s = 0; s < n; ++s) {
-      const int cards[7] = {hands[s][0], hands[s][1], flop[0], flop[1], flop[2], pool[i], pool[j]};
-      if (bs::evaluate(cards, 7).score == best) equity_sum[s] += share;
-    }
+    for (std::size_t s = 0; s < n; ++s)
+      if (!ledger.seats[s].folded && scores[s] == best) equity_sum[s] += share;
   }
 }
 const int total = pool_size * (pool_size - 1) / 2;  // C(pool,2)
@@ -289,21 +309,19 @@ for (std::size_t s = 0; s < n; ++s)
   equity[s] = equity_sum[s] / total;
 ```
 
-The three-pass structure (find best, count tied, award) evaluates each hand
-up to 3 times per runout. A single-pass variant that stores scores in a
-local array is preferred to avoid redundant evaluations:
+In heads-up, a fold ends the hand at a `TerminalFold` leaf, so the frontier
+is only reached with both seats live. The folded-seat path is therefore a
+multiway-only concern; the HU behavior is unchanged.
 
-```cpp
-std::uint32_t scores[kMaxUnifiedSeats];
-for (std::size_t s = 0; s < n; ++s)
-  scores[s] = bs::evaluate(cards_for(s), 7).score;
-const std::uint32_t best = *std::max_element(scores, scores + n);
-int tied = 0;
-for (std::size_t s = 0; s < n; ++s) if (scores[s] == best) ++tied;
-for (std::size_t s = 0; s < n; ++s) if (scores[s] == best) equity_sum[s] += 1.0 / tied;
-```
-
-This evaluates each hand exactly once per runout (N evaluations per combo).
+**Single-pot settlement precondition:** the `equity * pot - contributed`
+formula settles a single pot with no side pots. Side pots form only when a
+player is all-in for less than another live player's contribution. With
+equal stacks (the builder's target), an all-in player commits the full
+stack and every caller matches it, so no side pot can form. To enforce this
+precondition, GameDef validation for flop-terminal games requires all seats
+to have equal stacks (see section 4). The evaluator documents this
+precondition; unequal-stack flop-terminal games are rejected at GameDef
+validation, never reaching the evaluator.
 
 **Runout count:** the pool is `52 - 3 - 2N` cards. For N=2: 45 cards, 990
 combos. For N=3: 43 cards, 903 combos. For N=6: 37 cards, 666 combos. For
@@ -311,12 +329,12 @@ N=10: 29 cards, 406 combos. The total runout count shrinks as N grows; the
 per-runout cost grows linearly with N. The net cost is bounded.
 
 **Cache key:** replace the `uint64_t` 42-bit packing with an exact,
-collision-free key. The key is the sorted card vector: 3 flop cards
-followed by all hole cards (sorted within seat, seats in order). Use
-`std::vector<int>` as the `unordered_map` key with a custom hash (FNV-1a
-over the card bytes). The map's `operator==` on vectors is exact, so a hash
-collision cannot return a wrong equity — it only degrades to a bucket
-collision resolved by equality.
+collision-free key. The key is the sorted card vector: the 3 flop cards
+(ascending, as dealt) followed by all hole cards (sorted within seat, seats
+in order). Use `std::vector<int>` as the `unordered_map` key with a custom
+hash (FNV-1a over the card bytes). The map's `operator==` on vectors is
+exact, so a hash collision cannot return a wrong equity — it only degrades
+to a bucket collision resolved by equality.
 
 **Cache value:** replace `std::array<double, 2>` with `std::vector<double>`
 (N equity fractions).
@@ -363,6 +381,21 @@ require(def.player_count >= 2 && def.player_count <= kMaxUnifiedSeats,
 The root validation (`preflop && board_size == 0` or `!preflop &&
 board_size == 3`) is unchanged.
 
+Add an equal-stack precondition for flop-terminal games. The frontier
+evaluator settles a single pot with no side pots; side pots form only when
+a player is all-in for less than another live player's contribution, which
+cannot happen with equal stacks. Reject unequal stacks at validation so the
+evaluator never sees a side-pot-shaped ledger:
+
+```cpp
+if (def.terminal == TerminalDepth::Flop) {
+  const Chips stack0 = def.stacks[0];
+  for (std::size_t s = 1; s < def.player_count; ++s)
+    require(def.stacks[s] == stack0,
+            "flop-terminal games require equal stacks (single-pot settlement)");
+}
+```
+
 ### 5. Trainer gate relaxation
 
 `engine/src/gto/nseat_trainer.cpp` `validate_request()`: remove the
@@ -389,14 +422,19 @@ The `walk_flop_deal()` path is unchanged — it already passes N hands to
 `engine/src/artifacts/strategy_artifact.cpp` `validate_game_v2()`:
 
 - Replace `check(game.player_count == 2, ...)` with
-  `check(game.player_count >= 2 && game.player_count <= 10, ...)`.
-- Replace the hardcoded 2-seat blinds validation with the exported helpers:
+  `check(game.player_count >= 2 && game.player_count <= poker::kMaxUnifiedSeats, ...)`.
+- Replace the hardcoded 2-seat blinds validation with the exported helpers.
+  GameDef validation caps the small blind at the seat's stack after ante
+  (`std::min(small_blind, stack_after_ante)`); the writer mirrors this rule
+  so a capped-blind game is accepted consistently rather than rejected by
+  the writer after passing GameDef validation:
 
 ```cpp
 const Chips sb = game.big_blind / 2;
 const std::size_t sb_seat = poker::small_blind_seat(game);
 const std::size_t bb_seat = poker::big_blind_seat(game);
-check(game.blinds_posted[sb_seat] == sb, ...);
+const Chips sb_capped = std::min(sb, game.stacks[sb_seat]);  // mirror GameDef cap
+check(game.blinds_posted[sb_seat] == sb_capped, ...);
 check(game.blinds_posted[bb_seat] == game.big_blind, ...);
 // All other seats post 0.
 for (std::size_t s = 0; s < game.player_count; ++s)
@@ -409,7 +447,7 @@ for (std::size_t s = 0; s < game.player_count; ++s)
 `engine/src/artifacts/strategy_artifact.cpp` reader:
 
 - Replace `check(player_count_raw == 2, ...)` with
-  `check(player_count_raw >= 2 && player_count_raw <= 10, ...)`.
+  `check(player_count_raw >= 2 && player_count_raw <= poker::kMaxUnifiedSeats, ...)`.
 - Replace the hardcoded 2-seat blind derivation with the exported helpers:
 
 ```cpp
@@ -438,14 +476,42 @@ BB), so existing HU artifacts round-trip byte-identically.
 
 The builder remains an offline tool, not a CTest.
 
+**Rules identifier divergence.** The DB-level rules identifier is
+`kRulesIdentifierPreflop` for all preflop games regardless of seat count;
+the reader determines `is_preflop` from it, not from seat count. The
+manifest's `rules_id` is a separate label: the HU artifact uses
+`rfc0009-unified-preflop-v1` and the N-way artifact uses
+`rfc0010-multiway-preflop-v1`. This is workable because readers key off the
+DB identifier plus the `player_count` column. It also provides
+forward-compatibility: an old reader that has not been generalized fails
+closed on an N-way artifact via its `player_count_raw == 2` check
+(strategy_artifact.cpp:2048), rejecting the artifact rather than
+misinterpreting it.
+
 ### 9. NashConv tool generalization
 
 `engine/benchmarks/preflop_nash_conv.cpp`: the walker already handles
-FlopDeal leaves and N-way tree structures. Generalize the policy lookup and
-fallback to N seats (the `check > call > fold` fallback is seat-agnostic).
-The `EquityFrontierEvaluator` the tool constructs now supports N-way. No
-structural change is needed beyond passing the artifact's `player_count`
-through.
+FlopDeal leaves and N-way tree structures. The following changes generalize
+it to N seats:
+
+- **Joint deal sampling:** `sample_joint_deal()` currently hardcodes 4
+  cards (2 per seat for 2 seats). Generalize to deal `2 * player_count`
+  cards from the shuffled deck.
+- **Value and aggregation arrays:** the per-seat value and gap arrays are
+  `std::array<double, 2>` and the aggregation loops are `p < 2`.
+  Generalize to `std::vector<double>` sized by `player_count`.
+- **Exploitability formula:** N-way NashConv sums N per-seat best-response
+  gaps; exploitability in BB is `NashConv / player_count` (each seat's
+  average incentive to deviate).
+- **Folded-seat handling:** the walker's FlopDeal leaf constructs the
+  payload via `make_frontier_payload(frontier_state)`, which carries
+  per-seat `folded` flags, and passes all seats' hole cards to
+  `evaluate()`. The folded-seat competition rule from section 2 is
+  inherited automatically — the evaluator excludes folded seats via the
+  ledger. No separate fix is needed in the walker, but a regression test
+  (below) pins the behavior.
+- **Fallback policy:** the `check > call > fold` fallback at uncovered nodes
+  is seat-agnostic and works unchanged for N seats.
 
 ## Dependency Rules
 
@@ -533,12 +599,17 @@ A version bump would require a migration for no benefit.
 ## Risks
 
 - **N-way equity correctness.** A bug in the multiway pot-splitting logic
-  (e.g., wrong tie counting, wrong pot share) would produce wrong frontier
-  values and a wrong policy. Mitigation: unit tests pin equity for known
-  scenarios (all-in with N players, split pots, side-pot-free all-in at
-  flop). The frontier evaluator assumes a single pot (no side pots) because
-  the flop-terminal model assumes all remaining players are all-in; this is
-  documented.
+  (e.g., wrong tie counting, wrong pot share, folded seats competing) would
+  produce wrong frontier values and a wrong policy. Mitigation: unit tests
+  pin equity for known scenarios (all-in with N players, split pots,
+  folded-seat exclusion, single-live-seat). The folded-seat rule is
+  explicit in the design (section 2) and covered by a regression test.
+- **Side-pot mis-settlement.** The `equity * pot - contributed` formula
+  settles a single pot. With unequal stacks, an all-in player could create
+  a side pot that the formula mis-settles. Mitigation: GameDef validation
+  requires equal stacks for flop-terminal games (section 4), so the
+  evaluator never sees a side-pot-shaped ledger. The precondition is
+  documented and tested.
 - **Cache key collision.** A hash collision in the cache key could
   theoretically return a wrong equity. Mitigation: the key is a
   `std::vector<int>` with exact `operator==` comparison in the
@@ -576,15 +647,24 @@ A version bump would require a migration for no benefit.
     paired board) each get 1/3 equity.
   - Two players tie, third has worse: the two tied players each get 0.5
     equity, third gets 0.
+  - **Folded-seat exclusion:** 3-way flop-terminal game where one seat
+    folds preflop. The frontier value excludes the folded hand: the folded
+    seat gets equity 0, and the two live seats' equities sum to 1 (their
+    contributions stay in the pot as dead money). Pin exact fractions.
+  - **Single live seat:** all but one seat fold; the live seat gets equity
+    1.0 (guards the degenerate frontier case).
   - Cache: repeated calls with the same (flop, hands) return identical
     values; calls with different hands return different values.
   - Cache cap: after the cap, new entries are not inserted but existing
     entries still hit.
   - Reject N < 2 and N > 10 with `std::invalid_argument`.
 - `test_game_definition.cpp`: flop-terminal games with player_count 3, 6,
-  10 validate; player_count 1 and 11 reject.
+  10 validate; player_count 1 and 11 reject. Flop-terminal games with
+  unequal stacks reject (single-pot settlement precondition).
 - `test_solve_nseat.cpp` (or `test_nseat_trainer.cpp`): train a 3-way
-  flop-terminal game; verify it completes and produces a policy.
+  flop-terminal game; verify it completes and produces a policy. Include a
+  case where one seat folds preflop and the frontier is reached with two
+  live seats.
 - `test_strategy_artifact.cpp`: write and read a 3-way preflop flop-terminal
   artifact; verify `same_game_def` round-trips. Verify the published HU
   artifact still round-trips byte-identically.
@@ -654,9 +734,12 @@ decision path is not changed in any stage.
 ## Acceptance Criteria
 
 - `EquityFrontierEvaluator` supports 2..10 seats with exact all-in-at-flop
-  equity and correct multiway pot splitting, verified by unit tests.
+  equity, correct multiway pot splitting, and folded-seat exclusion,
+  verified by unit tests.
 - The flop-terminal player-count gates in GameDef validation, the nseat
-  trainer, and the artifact reader/writer accept 2..10 seats.
+  trainer, and the artifact reader/writer accept 2..10 seats. Flop-terminal
+  games with unequal stacks are rejected (single-pot settlement
+  precondition).
 - The blind-seat helpers are exported from `bs::poker` and used by the
   artifact reader/writer; the published HU preflop artifact round-trips
   byte-identically.
