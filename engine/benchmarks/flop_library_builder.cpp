@@ -38,9 +38,10 @@ int main(int argc, char** argv) {
 
   const double coverage_pct = 100.0 * static_cast<double>(manifest.covered_flops) /
                               static_cast<double>(manifest.total_flops);
-  std::printf("flop library: %zu classes, %zu/%zu flops covered (%.4f%%), %llu bytes stored, %zu players\n",
-              manifest.class_count, manifest.covered_flops, manifest.total_flops, coverage_pct,
-              static_cast<unsigned long long>(manifest.storage_bytes), manifest.player_count);
+  std::printf(
+      "flop library: %zu classes, %zu/%zu flops covered (%.4f%%), %llu bytes stored, %zu players\n",
+      manifest.class_count, manifest.covered_flops, manifest.total_flops, coverage_pct,
+      static_cast<unsigned long long>(manifest.storage_bytes), manifest.player_count);
   for (const auto& c : manifest.classes) {
     std::printf("  class board {%d, %d, %d}: %s, %llu rows, %llu iterations\n",
                 c.canonical_board[0], c.canonical_board[1], c.canonical_board[2],
