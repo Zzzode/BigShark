@@ -87,6 +87,10 @@ struct EngineProcess::Impl {
         args.push_back("--flop-library");
         args.push_back(lib);
       }
+      if (config.resident_budget_mib > 0) {
+        args.push_back("--resident-budget");
+        args.push_back(std::to_string(config.resident_budget_mib));
+      }
       std::vector<char*> argv;
       argv.reserve(args.size() + 1);
       for (auto& a : args)
@@ -168,8 +172,11 @@ struct EngineProcess::Impl {
   }
 
   // Sends `request` and reads one response frame. Returns nullptr on any
-  // failure. A timeout kills the process.
-  std::unique_ptr<pv::Envelope> transact(const pv::Envelope& request) {
+  // failure. A timeout kills the process. timeout_ms_override > 0 replaces
+  // config.timeout_ms for this one transaction (used by the startup
+  // handshake, which must outlive resident-root loading).
+  std::unique_ptr<pv::Envelope> transact(const pv::Envelope& request,
+                                         std::uint32_t timeout_ms_override = 0) {
     last_error = TransactError::None;
     if (stdin_fd < 0 || stdout_fd < 0) {
       last_error = TransactError::NotRunning;
@@ -192,9 +199,11 @@ struct EngineProcess::Impl {
       return nullptr;
     }
 
+    const std::uint32_t effective_timeout =
+        timeout_ms_override != 0 ? timeout_ms_override : config.timeout_ms;
     std::string response_frame;
     const FrameStatus status =
-        read_frame(stdout_fd, response_frame, static_cast<int>(config.timeout_ms));
+        read_frame(stdout_fd, response_frame, static_cast<int>(effective_timeout));
     if (status != FrameStatus::Complete) {
       switch (status) {
         case FrameStatus::Timeout:
@@ -229,14 +238,16 @@ struct EngineProcess::Impl {
 
   // Performs the capabilities handshake at the given minor. Returns true on
   // success and populates caps + minor. A rejection (UNSUPPORTED_PROTOCOL for
-  // an older engine, or any other error) returns false.
-  bool handshake_at(std::uint32_t try_minor) {
+  // an older engine, or any other error) returns false. The handshake uses
+  // timeout_ms (the startup timeout) rather than the per-decision timeout,
+  // because the engine loads every resident root before its first frame.
+  bool handshake_at(std::uint32_t try_minor, std::uint32_t timeout_ms) {
     pv::Envelope request;
     request.set_protocol_minor(try_minor);
     request.set_request_id("cap-" + std::to_string(++request_counter));
     request.mutable_get_capabilities_request();
 
-    auto response = transact(request);
+    auto response = transact(request, timeout_ms);
     if (!response)
       return false;
 
@@ -264,13 +275,16 @@ bool EngineProcess::start() {
 
   // Try minor 2 first (resident blueprint + terminal-only resolver + labeled
   // operational fallback). On any failure, retry at minor 0 (blueprint +
-  // heuristic fallthrough).
-  if (impl_->handshake_at(2))
+  // heuristic fallthrough). The startup timeout (not the per-decision
+  // timeout) bounds the handshake because the engine loads every resident
+  // root before its first frame.
+  const std::uint32_t startup_timeout = impl_->config.startup_timeout_ms;
+  if (impl_->handshake_at(2, startup_timeout))
     return true;
   impl_->kill();
   if (!impl_->spawn())
     return false;
-  if (impl_->handshake_at(0))
+  if (impl_->handshake_at(0, startup_timeout))
     return true;
   impl_->kill();
   return false;

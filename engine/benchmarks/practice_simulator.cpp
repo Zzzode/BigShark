@@ -268,8 +268,11 @@ struct Args {
   std::string engine_path = "bin/bigshark-engine";
   std::vector<std::string> resident_roots;  // "<path>=<sha256>"; empty = none
   std::vector<std::string> flop_libraries;  // directory paths; empty = none
+  std::uint32_t resident_budget_mib = 0;    // 0 = engine default (256 MiB)
   std::uint32_t solve_budget_ms = 1000;
   std::uint32_t engine_timeout_ms = 30000;
+  std::uint32_t engine_startup_timeout_ms = 30000;
+  bool startup_timeout_explicit = false;
 };
 
 void usage() {
@@ -277,8 +280,9 @@ void usage() {
       "usage: bigshark-practice [--seats 2..10] [--difficulty easy|medium|engine]\n"
       "                        [--stack-bb N] [--hands N] [--seed S]\n"
       "                        [--engine-path PATH] [--resident-root PATH=SHA256]\n"
-      "                        [--flop-library DIR]\n"
-      "                        [--solve-budget-ms N] [--engine-timeout-ms N]\n");
+      "                        [--flop-library DIR] [--resident-budget MIB]\n"
+      "                        [--solve-budget-ms N] [--engine-timeout-ms N]\n"
+      "                        [--engine-startup-timeout-ms N]\n");
 }
 
 }  // namespace
@@ -317,11 +321,16 @@ int main(int argc, char** argv) {
         args.resident_roots.push_back(next());
       else if (arg == "--flop-library")
         args.flop_libraries.push_back(next());
+      else if (arg == "--resident-budget")
+        args.resident_budget_mib = static_cast<std::uint32_t>(std::stoul(next()));
       else if (arg == "--solve-budget-ms")
         args.solve_budget_ms = static_cast<std::uint32_t>(std::stoul(next()));
       else if (arg == "--engine-timeout-ms")
         args.engine_timeout_ms = static_cast<std::uint32_t>(std::stoul(next()));
-      else if (arg == "--help" || arg == "-h") {
+      else if (arg == "--engine-startup-timeout-ms") {
+        args.engine_startup_timeout_ms = static_cast<std::uint32_t>(std::stoul(next()));
+        args.startup_timeout_explicit = true;
+      } else if (arg == "--help" || arg == "-h") {
         usage();
         return 0;
       } else
@@ -368,12 +377,23 @@ int main(int argc, char** argv) {
   // takes ownership; the raw pointer is valid until the table is destroyed.
   bs::engine_client::EngineServedPolicy* engine_policy = nullptr;
   if (args.difficulty == PracticeDifficulty::Engine) {
+    // A flop library loads ~1,755 SQLite DBs before the engine's first
+    // frame (~55 s probe, longer to load); the default 30 s startup
+    // timeout would kill the handshake. Auto-bump unless the caller set
+    // --engine-startup-timeout-ms explicitly.
+    if (!args.flop_libraries.empty() && !args.startup_timeout_explicit) {
+      args.engine_startup_timeout_ms = 300000;
+      std::printf("Engine tier: flop library enabled; startup timeout raised to %u ms.\n",
+                  args.engine_startup_timeout_ms);
+    }
     bs::engine_client::EngineClientConfig ec;
     ec.engine_path = args.engine_path;
     ec.resident_roots = args.resident_roots;
     ec.flop_libraries = args.flop_libraries;
+    ec.resident_budget_mib = args.resident_budget_mib;
     ec.solve_budget_ms = args.solve_budget_ms;
     ec.timeout_ms = args.engine_timeout_ms;
+    ec.startup_timeout_ms = args.engine_startup_timeout_ms;
     auto policy = std::make_unique<bs::engine_client::EngineServedPolicy>(ec);
     engine_policy = policy.get();
     table.set_bot(1, std::move(policy));

@@ -47,9 +47,20 @@ struct EngineClientConfig {
   // `--flop-library <dir>` engine argument; the engine expands it into one
   // resident root per class via `<dir>/manifest.json`.
   std::vector<std::string> flop_libraries;
+  // Resident budget in MiB passed to the engine as --resident-budget.
+  // 0 omits the flag (engine default: 256 MiB). A full flop class library
+  // needs ~6 GiB (6144 MiB); below the library's footprint the engine
+  // advertises only the classes that fit and reports the rest OverBudget.
+  std::uint32_t resident_budget_mib = 0;
   // Per-decision IPC timeout in milliseconds. A timeout kills the engine
   // process; the next decision lazily respawns it.
   std::uint32_t timeout_ms = 30000;
+  // Capabilities-handshake timeout in milliseconds. Separate from
+  // timeout_ms because the engine loads every resident root before its
+  // first frame: a 1,755-class library takes ~55 s to probe, so a client
+  // launching flop libraries needs ~300 s here while per-decision
+  // timeouts can stay short.
+  std::uint32_t startup_timeout_ms = 30000;
   // Engine solve time budget in milliseconds. The loop is synchronous, so
   // this should be small (default 1000).
   std::uint32_t solve_budget_ms = 1000;
