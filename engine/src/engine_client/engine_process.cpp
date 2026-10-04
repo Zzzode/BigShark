@@ -83,6 +83,10 @@ struct EngineProcess::Impl {
         args.push_back("--resident-root");
         args.push_back(root);
       }
+      for (const auto& lib : config.flop_libraries) {
+        args.push_back("--flop-library");
+        args.push_back(lib);
+      }
       std::vector<char*> argv;
       argv.reserve(args.size() + 1);
       for (auto& a : args)

@@ -43,6 +43,10 @@ struct EngineClientConfig {
   // roots are advertised (the engine serves the labeled operational fallback
   // at minor 2).
   std::vector<std::string> resident_roots;
+  // Flop class library directories. Each entry becomes a repeatable
+  // `--flop-library <dir>` engine argument; the engine expands it into one
+  // resident root per class via `<dir>/manifest.json`.
+  std::vector<std::string> flop_libraries;
   // Per-decision IPC timeout in milliseconds. A timeout kills the engine
   // process; the next decision lazily respawns it.
   std::uint32_t timeout_ms = 30000;

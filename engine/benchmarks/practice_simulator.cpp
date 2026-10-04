@@ -267,6 +267,7 @@ struct Args {
   // Engine tier (--difficulty engine).
   std::string engine_path = "bin/bigshark-engine";
   std::vector<std::string> resident_roots;  // "<path>=<sha256>"; empty = none
+  std::vector<std::string> flop_libraries;  // directory paths; empty = none
   std::uint32_t solve_budget_ms = 1000;
   std::uint32_t engine_timeout_ms = 30000;
 };
@@ -276,6 +277,7 @@ void usage() {
       "usage: bigshark-practice [--seats 2..10] [--difficulty easy|medium|engine]\n"
       "                        [--stack-bb N] [--hands N] [--seed S]\n"
       "                        [--engine-path PATH] [--resident-root PATH=SHA256]\n"
+      "                        [--flop-library DIR]\n"
       "                        [--solve-budget-ms N] [--engine-timeout-ms N]\n");
 }
 
@@ -313,6 +315,8 @@ int main(int argc, char** argv) {
         args.engine_path = next();
       else if (arg == "--resident-root")
         args.resident_roots.push_back(next());
+      else if (arg == "--flop-library")
+        args.flop_libraries.push_back(next());
       else if (arg == "--solve-budget-ms")
         args.solve_budget_ms = static_cast<std::uint32_t>(std::stoul(next()));
       else if (arg == "--engine-timeout-ms")
@@ -367,6 +371,7 @@ int main(int argc, char** argv) {
     bs::engine_client::EngineClientConfig ec;
     ec.engine_path = args.engine_path;
     ec.resident_roots = args.resident_roots;
+    ec.flop_libraries = args.flop_libraries;
     ec.solve_budget_ms = args.solve_budget_ms;
     ec.timeout_ms = args.engine_timeout_ms;
     auto policy = std::make_unique<bs::engine_client::EngineServedPolicy>(ec);
