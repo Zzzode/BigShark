@@ -6,6 +6,7 @@
 // only: no service, host, protocol, network, or credentials.
 //
 // Usage: bigshark-flop-library-builder <output-dir> [class-count] [iterations] [player-count]
+// [stack] [contribution]
 #include <bs/flop_library.hpp>
 #include <bs/heads_up.hpp>  // poker::Chips
 #include <cstdint>
@@ -15,12 +16,15 @@
 #include <string>
 
 int main(int argc, char** argv) {
-  if (argc < 2 || argc > 5) {
+  if (argc < 2 || argc > 7) {
     std::fprintf(stderr,
-                 "usage: %s <output-dir> [class-count] [iterations] [player-count]\n"
+                 "usage: %s <output-dir> [class-count] [iterations] [player-count] [stack] "
+                 "[contribution]\n"
                  "  class-count   number of canonical classes to train (default 8)\n"
                  "  iterations    MCCFR iterations per class      (default 1000)\n"
-                 "  player-count  seats in the game, 2..10         (default 2)\n",
+                 "  player-count  seats in the game, 2..10         (default 2)\n"
+                 "  stack         starting stack in chips          (default 4 = 2 BB)\n"
+                 "  contribution  preflop contribution in chips    (default 2 = 1 BB)\n",
                  argv[0]);
     return 2;
   }
@@ -29,8 +33,10 @@ int main(int argc, char** argv) {
   const std::uint64_t iterations = argc > 3 ? std::strtoull(argv[3], nullptr, 10) : 1000;
   const std::size_t player_count = argc > 4 ? std::stoull(argv[4]) : 2;
   const std::uint64_t seed = 20261002;
-  const bs::poker::Chips stack = 4;
-  const bs::poker::Chips contribution = 2;
+  const bs::poker::Chips stack =
+      static_cast<bs::poker::Chips>(argc > 5 ? std::strtoull(argv[5], nullptr, 10) : 4);
+  const bs::poker::Chips contribution =
+      static_cast<bs::poker::Chips>(argc > 6 ? std::strtoull(argv[6], nullptr, 10) : 2);
 
   const auto range = bs::flop_library::declared_library_range();
   const bs::flop_library::LibraryManifest manifest = bs::flop_library::build_library(
