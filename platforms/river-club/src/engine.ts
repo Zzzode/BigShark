@@ -1,6 +1,6 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { totalmem } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { EngineProcessClient } from '../../../clients/node/engine-process-client.js';
@@ -39,21 +39,21 @@ const defaultBinary = process.env.BIGSHARK_ENGINE_BINARY || fileURLToPath(
   new URL('../../../../bin/bigshark-engine', import.meta.url),
 );
 // Repo root relative to the COMPILED module (dist/platforms/river-club/src/),
-// the same depth defaultBinary uses. Auto-detection looks for the bundled
-// flop class library at <repo>/artifacts/flop-library/manifest.json.
+// the same depth defaultBinary uses. Auto-detection looks for bundled flop
+// class libraries under <repo>/artifacts/flop-library*/manifest.json.
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
-const AUTO_FLOP_LIBRARY_MANIFEST = 'artifacts/flop-library/manifest.json';
 // The full library takes ~55 s to probe and longer to load; the default
-// 10 s warmup would expire mid-handshake. 300 s only when a flop library
-// is being launched; resident roots alone stay at 10 s.
+// 10 s warmup would expire mid-handshake. 300 s for one library, 600 s
+// for two or more (the 3-player library is ~3× larger).
 export const WARMUP_TIMEOUT_WITH_LIBRARY_MS = 300_000;
+const WARMUP_TIMEOUT_MULTI_LIBRARY_MS = 600_000;
 const WARMUP_TIMEOUT_DEFAULT_MS = 10_000;
 
 /**
  * The resident budget for auto-detected flop libraries, in MiB.
  *
- * Defaults to 1/8 of total system RAM (6 GiB on a 48 GB machine,
- * 2 GiB on 16 GB). The engine loads classes that fit and reports the
+ * Defaults to 1/4 of total system RAM (12 GiB on a 48 GB machine,
+ * 4 GiB on 16 GB). The engine loads classes that fit and reports the
  * rest OverBudget, so a smaller budget means partial coverage, not a
  * failure. Override with BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB (a
  * positive integer in MiB).
@@ -64,7 +64,7 @@ export function residentBudgetMiB(): number {
     const parsed = Number(raw);
     if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
   }
-  return Math.floor(totalmem() / 8 / (1024 * 1024));
+  return Math.floor(totalmem() / 4 / (1024 * 1024));
 }
 let defaultClient: EngineProcessClient<V0DecisionContext, RawEngineDecision> | null = null;
 let defaultProtoClient: ProtoEngineProcessClient | null = null;
@@ -137,13 +137,31 @@ export function parseResidentRoots(
 }
 
 /**
- * The bundled flop class library directory, or null when its manifest is
- * absent. Injectable so the wiring tests are deterministic on machines
- * without the 3 GB checkout.
+ * All bundled flop class library directories with a manifest.json,
+ * sorted by name for deterministic launch order. Returns an empty array
+ * when none are present. Injectable so the wiring tests are
+ * deterministic on machines without the 3 GB checkout.
+ */
+export function autoDetectedFlopLibraries(root: string = repoRoot): string[] {
+  const artifactsDir = join(root, 'artifacts');
+  if (!existsSync(artifactsDir)) return [];
+  const found: string[] = [];
+  for (const entry of readdirSync(artifactsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('flop-library')) continue;
+    const manifest = join(artifactsDir, entry.name, 'manifest.json');
+    if (existsSync(manifest))
+      found.push(join(artifactsDir, entry.name));
+  }
+  return found.sort();
+}
+
+/**
+ * The first auto-detected flop library, or null when none are present.
+ * Kept for backward compatibility with callers that expect a single path.
  */
 export function autoDetectedFlopLibrary(root: string = repoRoot): string | null {
-  const manifest = join(root, AUTO_FLOP_LIBRARY_MANIFEST);
-  return existsSync(manifest) ? dirname(manifest) : null;
+  const all = autoDetectedFlopLibraries(root);
+  return all.length > 0 ? all[0]! : null;
 }
 
 export interface ResolvedFlopLibraries {
@@ -162,16 +180,21 @@ export interface ResolvedFlopLibraries {
  * 2. `BIGSHARK_ENGINE_FLOP_LIBRARIES` env var (JSON array of directory
  *    paths). A set-but-garbage value suppresses auto-detection (declared
  *    fallback, never a crash). An empty array is the env opt-out.
- * 3. Auto-detection: if `<repo>/artifacts/flop-library/manifest.json`
- *    exists, the library is loaded with a 6 GiB resident budget.
+ * 3. Auto-detection: every directory under `<repo>/artifacts/` whose
+ *    name starts with `flop-library` and contains a `manifest.json`
+ *    (e.g. `flop-library/` for heads-up, `flop-library-3p/` for
+ *    3-way). All detected libraries are loaded with an auto-detected
+ *    resident budget.
  *
  * Each entry becomes a repeatable `--flop-library <dir>` child argument;
  * the engine expands it into one resident root per class via
- * `<dir>/manifest.json`.
+ * `<dir>/manifest.json`. The engine's root identity matching selects
+ * the right artifact per decision (2-seat queries match 2-seat
+ * artifacts, 3-seat queries match 3-seat artifacts).
  */
 export function resolveFlopLibraries(
   config: EngineConfig,
-  autoDetect: () => string | null = () => autoDetectedFlopLibrary(),
+  autoDetect: () => string[] = () => autoDetectedFlopLibraries(),
 ): ResolvedFlopLibraries {
   if (config.flopLibraries !== undefined) {
     return {
@@ -201,8 +224,8 @@ export function resolveFlopLibraries(
     };
   }
   const detected = autoDetect();
-  return detected
-    ? { libraries: [detected], residentBudgetMiB: residentBudgetMiB() }
+  return detected.length > 0
+    ? { libraries: detected, residentBudgetMiB: residentBudgetMiB() }
     : { libraries: [] };
 }
 
@@ -257,11 +280,15 @@ export function protoEngineLaunchArgs(
 /**
  * The warmup timeout for the framed child. A flop library loads ~1,755
  * SQLite DBs before the engine's first frame (~55 s probe, longer to
- * load), so the default 10 s would expire mid-handshake. Resident roots
- * alone stay at 10 s. Exported for the wiring tests.
+ * load), so the default 10 s would expire mid-handshake. One library
+ * gets 300 s; two or more (e.g. heads-up + 3-way) get 600 s. Resident
+ * roots alone stay at 10 s. Exported for the wiring tests.
  */
 export function warmupTimeoutMsFor(libraries: readonly string[]): number {
-  return libraries.length > 0 ? WARMUP_TIMEOUT_WITH_LIBRARY_MS : WARMUP_TIMEOUT_DEFAULT_MS;
+  if (libraries.length === 0) return WARMUP_TIMEOUT_DEFAULT_MS;
+  return libraries.length === 1
+    ? WARMUP_TIMEOUT_WITH_LIBRARY_MS
+    : WARMUP_TIMEOUT_MULTI_LIBRARY_MS;
 }
 
 function protoEngineClient(

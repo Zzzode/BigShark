@@ -20,7 +20,7 @@ import {
   SolverSource,
   StrategySchema,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
-import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, warmupTimeoutMsFor, residentBudgetMiB } from '../src/engine.js';
+import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, autoDetectedFlopLibraries, warmupTimeoutMsFor, residentBudgetMiB } from '../src/engine.js';
 import {
   decisionEnvelope,
   fromV1DecisionResponse,
@@ -172,13 +172,13 @@ test('parseFlopLibraries validates the config surface (explicit over env)', () =
   // Absent everywhere yields none (auto-detect suppressed via null detector).
   const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
-  assert.deepEqual(resolveFlopLibraries({}, () => null).libraries, []);
+  assert.deepEqual(resolveFlopLibraries({}, () => []).libraries, []);
   // Environment JSON array is accepted.
   process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = JSON.stringify(['/env/lib']);
-  assert.deepEqual(resolveFlopLibraries({}, () => null).libraries, ['/env/lib']);
+  assert.deepEqual(resolveFlopLibraries({}, () => []).libraries, ['/env/lib']);
   // Unparseable environment yields none (declared fallback, never a crash).
   process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = '{not json';
-  assert.deepEqual(resolveFlopLibraries({}, () => null).libraries, []);
+  assert.deepEqual(resolveFlopLibraries({}, () => []).libraries, []);
   delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   if (prior !== undefined) process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
 });
@@ -194,14 +194,14 @@ test('parseFlopLibraries rejects malformed entries instead of silently dropping 
   );
   const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = JSON.stringify(['ok', '']);
-  assert.throws(() => resolveFlopLibraries({}, () => null), /non-empty strings/);
+  assert.throws(() => resolveFlopLibraries({}, () => []), /non-empty strings/);
   if (prior === undefined) delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   else process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
 });
 
 // ---- auto-detection, budget, and warmup -----------------------------------
 
-test('resolveFlopLibraries auto-detects the bundled library and attaches the 6 GiB budget', () => {
+test('resolveFlopLibraries auto-detects bundled libraries and attaches the budget', () => {
   const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
 
@@ -212,24 +212,24 @@ test('resolveFlopLibraries auto-detects the bundled library and attaches the 6 G
   writeFileSync(join(libDir, 'manifest.json'), '{}');
 
   // Detector fires: library path + auto-detected budget.
-  const detected = resolveFlopLibraries({}, () => autoDetectedFlopLibrary(tempRoot));
+  const detected = resolveFlopLibraries({}, () => autoDetectedFlopLibraries(tempRoot));
   assert.deepEqual(detected.libraries, [libDir]);
   assert.equal(detected.residentBudgetMiB, residentBudgetMiB());
-  // The auto-detected budget is 1/8 of total RAM (≥ 1 GiB on any
+  // The auto-detected budget is 1/4 of total RAM (≥ 2 GiB on any
   // machine that can hold the library).
-  assert.ok(detected.residentBudgetMiB! >= 1024,
-    `expected budget >= 1024 MiB, got ${detected.residentBudgetMiB}`);
+  assert.ok(detected.residentBudgetMiB! >= 2048,
+    `expected budget >= 2048 MiB, got ${detected.residentBudgetMiB}`);
 
   // No manifest: no libraries, no budget.
   const emptyRoot = mkdtempSync(join(tmpdir(), 'bs-autodetect-empty-'));
-  const none = resolveFlopLibraries({}, () => autoDetectedFlopLibrary(emptyRoot));
+  const none = resolveFlopLibraries({}, () => autoDetectedFlopLibraries(emptyRoot));
   assert.deepEqual(none.libraries, []);
   assert.equal(none.residentBudgetMiB, undefined);
 
   // Explicit config wins over a firing detector (no budget attached).
   const explicit = resolveFlopLibraries(
     { flopLibraries: ['/explicit'] },
-    () => autoDetectedFlopLibrary(tempRoot),
+    () => autoDetectedFlopLibraries(tempRoot),
   );
   assert.deepEqual(explicit.libraries, ['/explicit']);
   assert.equal(explicit.residentBudgetMiB, undefined);
@@ -237,14 +237,14 @@ test('resolveFlopLibraries auto-detects the bundled library and attaches the 6 G
   // Explicit empty array is the config opt-out.
   const optedOut = resolveFlopLibraries(
     { flopLibraries: [] },
-    () => autoDetectedFlopLibrary(tempRoot),
+    () => autoDetectedFlopLibraries(tempRoot),
   );
   assert.deepEqual(optedOut.libraries, []);
   assert.equal(optedOut.residentBudgetMiB, undefined);
 
   // Env var set (even garbage) suppresses auto-detection.
   process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = '{not json';
-  const envSuppressed = resolveFlopLibraries({}, () => autoDetectedFlopLibrary(tempRoot));
+  const envSuppressed = resolveFlopLibraries({}, () => autoDetectedFlopLibraries(tempRoot));
   assert.deepEqual(envSuppressed.libraries, []);
   assert.equal(envSuppressed.residentBudgetMiB, undefined);
 
@@ -254,13 +254,33 @@ test('resolveFlopLibraries auto-detects the bundled library and attaches the 6 G
   rmSync(emptyRoot, { recursive: true, force: true });
 });
 
+test('autoDetectedFlopLibraries finds multiple libraries sorted by name', () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'bs-multilib-'));
+  const lib2p = join(tempRoot, 'artifacts', 'flop-library');
+  const lib3p = join(tempRoot, 'artifacts', 'flop-library-3p');
+  mkdirSync(lib2p, { recursive: true });
+  mkdirSync(lib3p, { recursive: true });
+  writeFileSync(join(lib2p, 'manifest.json'), '{}');
+  writeFileSync(join(lib3p, 'manifest.json'), '{}');
+
+  const found = autoDetectedFlopLibraries(tempRoot);
+  assert.deepEqual(found, [lib2p, lib3p]);
+
+  // A directory without a manifest is skipped.
+  const noManifest = join(tempRoot, 'artifacts', 'flop-library-empty');
+  mkdirSync(noManifest, { recursive: true });
+  assert.deepEqual(autoDetectedFlopLibraries(tempRoot), [lib2p, lib3p]);
+
+  rmSync(tempRoot, { recursive: true, force: true });
+});
+
 test('residentBudgetMiB auto-detects RAM and honors the env override', () => {
   const prior = process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB;
   delete process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB;
 
-  // Auto-detect: 1/8 of total RAM, at least 1 GiB.
+  // Auto-detect: 1/4 of total RAM, at least 2 GiB.
   const auto = residentBudgetMiB();
-  assert.ok(auto >= 1024, `expected auto budget >= 1024 MiB, got ${auto}`);
+  assert.ok(auto >= 2048, `expected auto budget >= 2048 MiB, got ${auto}`);
 
   // Env override: explicit positive integer.
   process.env.BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB = '2048';
@@ -305,10 +325,11 @@ test('the launch line appends --resident-budget only when a budget is given', ()
   );
 });
 
-test('warmupTimeoutMsFor scales with library presence', () => {
+test('warmupTimeoutMsFor scales with library count', () => {
   assert.equal(warmupTimeoutMsFor([]), 10_000);
   assert.equal(warmupTimeoutMsFor(['/lib']), 300_000);
-  assert.equal(warmupTimeoutMsFor(['/lib/a', '/lib/b']), 300_000);
+  assert.equal(warmupTimeoutMsFor(['/lib/a', '/lib/b']), 600_000);
+  assert.equal(warmupTimeoutMsFor(['/a', '/b', '/c']), 600_000);
 });
 
 // ---- solve budget sanitizer ---------------------------------------------
