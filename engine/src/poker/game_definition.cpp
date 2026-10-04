@@ -62,14 +62,18 @@ void validate(const GameDef& def) {
   require(def.big_blind > 0 && def.big_blind <= kMaxHeadsUpChips, "invalid big blind");
   require(def.variant == RulesVariant::NoLimitHoldem, "unsupported rules variant");
 
-  // RFC 0007: a flop-terminal game is a heads-up preflop root. The frontier
-  // evaluator is a two-player contract; multiway frontier evaluation is
-  // outside this RFC's scope.
+  // RFC 0007: a flop-terminal game is heads-up. The frontier evaluator is a
+  // two-player contract; multiway frontier evaluation is out of scope.
+  // W4c-iii extension: a flop-terminal game may start at the preflop root
+  // (board_size == 0, the W4b preflop profile) or on the flop (board_size == 3,
+  // the flop class library). The frontier evaluator takes a 3-card flop in
+  // both cases.
   if (def.terminal == TerminalDepth::Flop) {
     require(def.player_count == 2,
             "flop-terminal games are heads-up only; multiway frontier evaluation is out of scope");
-    require(def.preflop && def.board_size == 0,
-            "a flop-terminal game must start at the preflop root");
+    const bool valid_root =
+        (def.preflop && def.board_size == 0) || (!def.preflop && def.board_size == 3);
+    require(valid_root, "a flop-terminal game must start at the preflop root or on the flop");
   }
 
   const bool heads_up = def.player_count == 2;

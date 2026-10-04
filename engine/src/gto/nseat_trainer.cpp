@@ -405,8 +405,9 @@ double walk_chance(SweepContext& ctx, const GameState& state, std::size_t node_i
 }
 
 // Virtual flop deal: the tree stores a single FlopDeal leaf instead of the
-// 3-level chance subtree. Sample 3 cards inline, construct the frontier state,
-// and evaluate through the frontier evaluator.
+// 3-level chance subtree. For a preflop game (empty board), sample 3 cards
+// inline to deal the flop. For a flop-rooted game (board already has 3
+// cards), use the current state directly — no cards to deal.
 double walk_flop_deal(SweepContext& ctx, const GameState& state, std::size_t node_index,
                       double own_reach) {
   DepthGuard frame(ctx);
@@ -416,35 +417,45 @@ double walk_flop_deal(SweepContext& ctx, const GameState& state, std::size_t nod
   if (ctx.frontier == nullptr)
     throw std::runtime_error("nseat trainer reached a flop-deal leaf without a frontier evaluator");
 
-  // Sample 3 cards sequentially, removing each from the legal list.
-  GameState s1 = state;
-  {
-    const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
-    const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
-    s1 = s1.after_card(cards[idx]);
-  }
-  GameState s2 = s1;
-  {
-    const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
-    const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
-    s2 = s1.after_card(cards[idx]);
-  }
-  GameState frontier = s2;
-  {
-    const std::vector<int> cards = legal_runout_cards(s2, *ctx.holes);
-    const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
-    frontier = s2.after_card(cards[idx]);
-  }
-  if (frontier.phase() != Phase::Frontier)
-    throw std::runtime_error("nseat trainer flop-deal leaf did not reach the frontier");
+  const std::size_t board_size = state.board().size();
+  GameState frontier_state = state;  // overwritten below
 
-  const tree::TerminalPayload payload = make_frontier_payload(frontier);
-  const std::vector<int> flop(frontier.board().begin(), frontier.board().end());
-  std::vector<std::array<int, 2>> hands(frontier.player_count());
-  for (std::size_t seat = 0; seat < frontier.player_count(); ++seat)
+  if (board_size == 0) {
+    // Preflop game: sample 3 cards sequentially to deal the flop.
+    GameState s1 = state;
+    {
+      const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
+      const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
+      s1 = s1.after_card(cards[idx]);
+    }
+    GameState s2 = s1;
+    {
+      const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
+      const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
+      s2 = s1.after_card(cards[idx]);
+    }
+    {
+      const std::vector<int> cards = legal_runout_cards(s2, *ctx.holes);
+      const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
+      frontier_state = s2.after_card(cards[idx]);
+    }
+    if (frontier_state.phase() != Phase::Frontier)
+      throw std::runtime_error("nseat trainer flop-deal leaf did not reach the frontier");
+  } else if (board_size == 3) {
+    // Flop-rooted game: the flop is already dealt. Use the current state.
+    frontier_state = state;
+  } else {
+    throw std::runtime_error("nseat trainer flop-deal leaf with unexpected board size " +
+                             std::to_string(board_size));
+  }
+
+  const tree::TerminalPayload payload = make_frontier_payload(frontier_state);
+  const std::vector<int> flop(frontier_state.board().begin(), frontier_state.board().end());
+  std::vector<std::array<int, 2>> hands(frontier_state.player_count());
+  for (std::size_t seat = 0; seat < frontier_state.player_count(); ++seat)
     hands[seat] = (*ctx.holes)[seat];
   const std::vector<double> values = ctx.frontier->evaluate(flop, hands, payload);
-  if (values.size() != frontier.player_count())
+  if (values.size() != frontier_state.player_count())
     throw std::runtime_error("nseat trainer frontier evaluator returned the wrong seat count");
   // Chance is externally sampled; own reach is unchanged.
   return values[ctx.traverser];

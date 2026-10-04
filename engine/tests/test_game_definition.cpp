@@ -1107,8 +1107,9 @@ int case_construction_rejections() {
   {
     GameDef def = base;
     def.terminal = TerminalDepth::Flop;
-    // Flop-terminal requires a preflop root; base is flop-rooted.
-    CHECK(rejects(def));
+    // W4c-iii: flop-terminal games may start on the flop (flop class library).
+    const GameState state(def);
+    CHECK(state.street() == Street::Flop);
   }
   return 0;
 }
@@ -1219,7 +1220,7 @@ int case_flop_terminal_frontier() {
     return false;
   };
 
-  // Flop-terminal requires a preflop root.
+  // W4c-iii: flop-terminal games may start on the flop (flop class library).
   {
     GameDef d = def;
     d.preflop = false;
@@ -1228,7 +1229,8 @@ int case_flop_terminal_frontier() {
     d.contributions = {2, 2, 0, 0, 0, 0, 0, 0, 0, 0};
     d.pot = 4;
     d.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-    CHECK(rejects(d));
+    const GameState s(d);
+    CHECK(s.street() == Street::Flop);
   }
 
   // Flop-terminal is heads-up only.

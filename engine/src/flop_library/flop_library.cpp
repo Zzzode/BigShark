@@ -4,9 +4,11 @@
 // it links the solver and artifact libraries but never the service, host, or
 // protocol targets. Every measurement in the manifest is counted, never
 // estimated.
+#include <algorithm>
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
+#include <bs/equity_frontier.hpp>
 #include <bs/eval.hpp>
 #include <bs/flop_library.hpp>
 #include <bs/game_definition.hpp>
@@ -70,6 +72,11 @@ poker::GameDef make_def(const std::array<int, 3>& board, poker::Chips stack,
   def.pot = 2 * contribution;  // two-seat rooted board: contributions equal, sum == pot
   def.board = {board[0], board[1], board[2], 0, 0};
   def.board_size = 3;
+  // Flop-terminal: the tree stops after flop action. The frontier evaluator
+  // supplies exact all-in-at-flop equity, eliminating turn/river chance
+  // branching (1,980 runout paths per action line) that dominated the
+  // river-terminal artifact size (~597 MB/class → a few MB/class).
+  def.terminal = poker::TerminalDepth::Flop;
   return def;
 }
 
@@ -222,6 +229,10 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
       const std::vector<std::vector<solver::WeightedHand>> ranges{seat_range, seat_range};
 
       const tree::AbstractTree tree(def, abstraction::ActionAbstraction::identity());
+      // Flop-terminal games require a frontier evaluator to supply leaf values.
+      // The EquityFrontierEvaluator computes exact all-in-at-flop equity by
+      // enumerating all 990 turn/river combos.
+      const gto::EquityFrontierEvaluator frontier;
       // Offline training caps: the tree's own 1 GiB byte cap is the binding
       // memory bound; the trainer's node/information-set caps are raised well
       // above the defaults so a shallow-but-nontrivial stack profile completes.
@@ -230,7 +241,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
       limits.max_information_sets = 5'000'000;
       limits.wall = std::chrono::minutes{5};
       const solver::NSeatTrainingResult trained =
-          solver::train_nseat(tree, ranges, iterations_per_class, seed, limits);
+          solver::train_nseat(tree, ranges, iterations_per_class, seed, limits, &frontier);
       if (trained.termination != solver::NSeatTerminationPhase::Complete)
         throw std::runtime_error("class " + std::to_string(i) + " training did not complete");
 
