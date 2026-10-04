@@ -76,7 +76,8 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND TARGET engine-format)
   add_custom_target(format-check DEPENDS engine-format-check)
 endif()
 
-# Vendored yyjson is private to the v0 protocol boundary.
+# Vendored yyjson: used by the v0 protocol boundary and the engine host
+# composition root (flop-library manifest expansion). Nothing else links it.
 add_library(bigshark_yyjson STATIC third_party/yyjson/yyjson.c)
 target_include_directories(bigshark_yyjson PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(bigshark_yyjson PRIVATE -w)
@@ -1069,6 +1070,15 @@ if(BUILD_TESTING)
     ENGINE_PATH="$<TARGET_FILE:bigshark-engine>")
   add_dependencies(test_engine_client_live bigshark-engine)
   add_test(NAME engine_client_live COMMAND test_engine_client_live)
+
+  # Flop library loading integration test: spawns the real bigshark-engine
+  # binary with --flop-library and verifies manifest parsing, spec expansion,
+  # and error handling.
+  add_executable(test_flop_library_loading tests/test_flop_library_loading.cpp)
+  target_compile_definitions(test_flop_library_loading PRIVATE
+    ENGINE_PATH="$<TARGET_FILE:bigshark-engine>")
+  add_dependencies(test_flop_library_loading bigshark-engine)
+  add_test(NAME flop_library_loading COMMAND test_flop_library_loading)
 
   foreach(test_name gto multistreet_ref)
     add_executable(test_${test_name} tests/test_${test_name}.cpp)

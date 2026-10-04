@@ -14,6 +14,17 @@
 //                   unadvertised, and minor 0/v0/JSON paths unchanged. One bad
 //                   root never disables another; per-root load results are
 //                   reported on stderr only, never on framed stdout.
+//   --flop-library <dir>
+//                   Repeatable. Reads <dir>/manifest.json and expands each
+//                   class entry into a resident root spec (path + sha256
+//                   pin), loading the entire flop class library in one flag.
+//                   The manifest is written by the flop library builder
+//                   (engine/src/flop_library/flop_library.cpp). A missing
+//                   directory, unparseable manifest, or bad sha256 aborts
+//                   startup with exit code 2; per-root load failures are
+//                   reported individually and never disable another root.
+#include <third_party/yyjson/yyjson.h>
+
 #include <array>
 #include <bs/decision.hpp>
 #include <bs/resident_policy.hpp>
@@ -24,7 +35,10 @@
 #include <cctype>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -314,6 +328,84 @@ bool collectResidentSpecs(int argc, char** argv,
   return true;
 }
 
+// Expands --flop-library <dir> flags into resident root specs. Reads
+// <dir>/manifest.json (written by the flop library builder) and appends one
+// SupportedRootSpec per class entry: path = <dir>/<artifact_name>, sha256 =
+// the entry's pinned digest. Returns false on any startup configuration error
+// (missing directory, unparseable manifest, bad sha256); per-root load
+// failures are handled later by ResidentPolicySet::build and never abort.
+bool collectFlopLibrarySpecs(int argc, char** argv,
+                             std::vector<bs::resident::SupportedRootSpec>& specs) {
+  for (int i = 1; i < argc; ++i) {
+    const std::string argument = argv[i];
+    if (argument != "--flop-library")
+      continue;
+    if (i + 1 >= argc)
+      return false;
+    const std::filesystem::path dir = argv[++i];
+    std::error_code ec;
+    if (!std::filesystem::is_directory(dir, ec) || ec) {
+      std::cerr << "flop-library: not a directory: " << dir << '\n';
+      return false;
+    }
+    const std::filesystem::path manifest_path = dir / "manifest.json";
+    std::ifstream manifest_file(manifest_path, std::ios::binary);
+    if (!manifest_file) {
+      std::cerr << "flop-library: cannot open manifest: " << manifest_path << '\n';
+      return false;
+    }
+    std::string content((std::istreambuf_iterator<char>(manifest_file)),
+                        std::istreambuf_iterator<char>());
+
+    yyjson_doc* doc = yyjson_read(content.data(), content.size(), 0);
+    if (!doc) {
+      std::cerr << "flop-library: manifest is not valid JSON: " << manifest_path << '\n';
+      return false;
+    }
+    struct DocGuard {
+      yyjson_doc* d;
+      ~DocGuard() { yyjson_doc_free(d); }
+    } guard{doc};
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    yyjson_val* classes = yyjson_is_obj(root) ? yyjson_obj_get(root, "classes") : nullptr;
+    if (!yyjson_is_arr(classes) || yyjson_arr_size(classes) == 0) {
+      std::cerr << "flop-library: manifest has no non-empty classes array: " << manifest_path
+                << '\n';
+      return false;
+    }
+    const std::size_t count = yyjson_arr_size(classes);
+    for (std::size_t c = 0; c < count; ++c) {
+      yyjson_val* entry = yyjson_arr_get(classes, c);
+      yyjson_val* name_val =
+          yyjson_is_obj(entry) ? yyjson_obj_get(entry, "artifact_name") : nullptr;
+      yyjson_val* sha_val = yyjson_is_obj(entry) ? yyjson_obj_get(entry, "sha256_hex") : nullptr;
+      if (!yyjson_is_str(name_val) || yyjson_get_len(name_val) == 0) {
+        std::cerr << "flop-library: class " << c << " missing or empty artifact_name\n";
+        return false;
+      }
+      const std::string artifact_name = yyjson_get_str(name_val);
+      if (artifact_name == "." || artifact_name == ".." ||
+          artifact_name.find_first_of("/\\") != std::string::npos) {
+        std::cerr << "flop-library: class " << c << " artifact_name must be a bare filename\n";
+        return false;
+      }
+      if (!yyjson_is_str(sha_val)) {
+        std::cerr << "flop-library: class " << c << " (" << artifact_name
+                  << ") missing sha256_hex\n";
+        return false;
+      }
+      Sha256Digest digest{};
+      if (!parseSha256Hex(yyjson_get_str(sha_val), digest)) {
+        std::cerr << "flop-library: class " << c << " (" << artifact_name
+                  << ") invalid sha256_hex\n";
+        return false;
+      }
+      specs.push_back({dir / artifact_name, digest});
+    }
+  }
+  return true;
+}
+
 std::unique_ptr<ResidentHostServices> buildResidentServices(
     const std::vector<bs::resident::SupportedRootSpec>& specs) {
   if (specs.empty())
@@ -403,6 +495,10 @@ int main(int argc, char** argv) {
     std::vector<bs::resident::SupportedRootSpec> resident_specs;
     if (!collectResidentSpecs(argc, argv, resident_specs)) {
       std::cerr << "invalid --resident-root spec; expected <path>=<64 lowercase hex sha256>\n";
+      return 2;
+    }
+    if (!collectFlopLibrarySpecs(argc, argv, resident_specs)) {
+      std::cerr << "invalid --flop-library spec; expected <dir> with a valid manifest.json\n";
       return 2;
     }
     std::unique_ptr<ResidentHostServices> services;
