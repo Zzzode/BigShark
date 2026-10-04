@@ -327,7 +327,7 @@ SeatTrainingResult trained_seat_result_v3() {
 // --- RFC 0007 preflop flop-terminal fixtures --------------------------------
 
 // A trivial frontier evaluator for artifact round-trip tests: every frontier
-// leaf has zero chip utility for both seats. This is a valid (if trivial)
+// leaf has zero chip utility for every seat. This is a valid (if trivial)
 // evaluator — the artifact test verifies persistence, not policy quality.
 class ZeroFrontierEvaluator : public bs::gto::FrontierEvaluator {
  public:
@@ -335,8 +335,7 @@ class ZeroFrontierEvaluator : public bs::gto::FrontierEvaluator {
                                const bs::tree::TerminalPayload& ledger) const override {
     (void)flop;
     (void)hands;
-    (void)ledger;
-    return {0.0, 0.0};
+    return std::vector<double>(ledger.player_count, 0.0);
   }
 };
 
@@ -382,6 +381,48 @@ SeatTrainingResult trained_preflop_result_v2() {
       train_nseat(tree, ranges, 200, 20261003, NSeatTrainerLimits{}, &frontier);
   if (trained.termination != NSeatTerminationPhase::Complete)
     throw std::runtime_error("preflop fixture training did not complete");
+  return export_seat_policy(trained, tree, ranges);
+}
+
+// RFC 0010: a three-seat preflop flop-terminal game (3 BB stacks, blinds
+// clockwise of the button). Mirrors the two-seat fixture above so the 3-way
+// artifact round-trip exercises the same persistence path.
+GameDef three_seat_preflop_def_v2() {
+  GameDef def{};
+  def.player_count = 3;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {6, 6, 6, 0, 0, 0, 0, 0, 0, 0};
+  def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;  // SB 1 + BB 2
+  def.board = {-1, -1, -1, 0, 0};
+  def.board_size = 0;
+  def.preflop = true;
+  def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.blinds_posted[small_blind_seat(def)] = 1;
+  def.blinds_posted[big_blind_seat(def)] = 2;
+  def.terminal = TerminalDepth::Flop;
+  return def;
+}
+
+// Two combos per seat, all mutually card-distinct, in reader-canonical order.
+std::vector<std::vector<WeightedHand>> three_seat_preflop_ranges_v2() {
+  return {
+      {{{card("Ks"), card("Kd")}, 3}, {{card("As"), card("Ad")}, 2}},
+      {{{card("Js"), card("Jd")}, 7}, {{card("Qs"), card("Qd")}, 5}},
+      {{{card("Ts"), card("Td")}, 11}, {{card("Kh"), card("Ah")}, 13}},
+  };
+}
+
+SeatTrainingResult trained_preflop_result_v2_3way() {
+  const GameDef def = three_seat_preflop_def_v2();
+  const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+  const auto ranges = three_seat_preflop_ranges_v2();
+  const ZeroFrontierEvaluator frontier;
+  const NSeatTrainingResult trained =
+      train_nseat(tree, ranges, 200, 20261003, NSeatTrainerLimits{}, &frontier);
+  if (trained.termination != NSeatTerminationPhase::Complete)
+    throw std::runtime_error("3-way preflop fixture training did not complete");
   return export_seat_policy(trained, tree, ranges);
 }
 
@@ -1474,6 +1515,62 @@ static int test_roundtrip_preflop(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
+// test 1d: RFC 0010 3-way preflop flop-terminal checkpoint round trip
+// ---------------------------------------------------------------------------
+
+static int test_roundtrip_preflop_3way(const fs::path& dir) {
+  const SeatTrainingResult exported = trained_preflop_result_v2_3way();
+  CHECK(!exported.policy.rows().empty());
+  CHECK(exported.policy.game().player_count == 3);
+  CHECK(exported.policy.game().board_size == 0);
+  CHECK(exported.policy.game().preflop);
+  CHECK(exported.terminal_depth == TerminalDepth::Flop);
+
+  const fs::path path = dir / "roundtrip-preflop-3way-checkpoint.db";
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "roundtrip-preflop-3way-engine-1";
+  create_checkpoint(path, exported, provenance);
+
+  // Independent schema oracle through a raw connection.
+  {
+    RawDb raw(path, SQLITE_OPEN_READONLY);
+    CHECK(raw.scalar_i64("PRAGMA user_version") == 2);
+    // The writer stores the preflop rules identifier for all seat counts;
+    // the RFC 0010 multiway identifier lives in the builder's manifest, not
+    // in the artifact DB (the reader dispatches on this single identifier).
+    CHECK(raw.scalar_text("SELECT rules_id FROM game") == kRulesIdentifierPreflop);
+    CHECK(raw.scalar_i64("SELECT player_count FROM game") == 3);
+    CHECK(raw.scalar_i64("SELECT root_street FROM game") == 3);  // preflop
+    CHECK(raw.scalar_i64("SELECT terminal_depth FROM game") ==
+          static_cast<std::int64_t>(TerminalDepth::Flop));
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM game_seats") == 3);
+    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM information_states") ==
+          static_cast<std::int64_t>(exported.policy.rows().size()));
+  }
+
+  // Same-process lossless read: the 3-way GameDef round-trips exactly.
+  const LoadedArtifact loaded = load_artifact(path);
+  CHECK(loaded.bundle.nseat.has_value());
+  const GameDef& read_game = loaded.bundle.nseat->policy.game();
+  CHECK(read_game.player_count == 3);
+  CHECK(read_game.board_size == 0);
+  CHECK(read_game.preflop);
+  CHECK(read_game.terminal == TerminalDepth::Flop);
+  CHECK(read_game.big_blind == 2);
+  CHECK(read_game.pot == 3);
+  // 3-seat blinds: button=0, SB=1, BB=2 (clockwise of button).
+  CHECK(read_game.blinds_posted[0] == 0);
+  CHECK(read_game.blinds_posted[1] == 1);
+  CHECK(read_game.blinds_posted[2] == 2);
+  if (compare_seat_result_exact(exported, *loaded.bundle.nseat) != 0) {
+    std::printf("3-way preflop roundtrip seat-result comparison failed\n");
+    return 1;
+  }
+
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
 // test 2: canonical key oracle (hand-authored bytes + malformed rejection)
 // ---------------------------------------------------------------------------
 
@@ -2419,6 +2516,7 @@ int main() {
       {"roundtrip-v2", test_roundtrip_v2},
       {"roundtrip-v3", test_roundtrip_v3},
       {"roundtrip-preflop", test_roundtrip_preflop},
+      {"roundtrip-preflop-3way", test_roundtrip_preflop_3way},
       {"canonical-keys", test_canonical_keys},
       {"split-run", test_split_run},
       {"resume-identity", test_resume_identity},

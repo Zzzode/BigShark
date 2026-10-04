@@ -269,12 +269,16 @@ int main(int argc, char** argv) {
       try {
         NashConvWalker walker{tree,         policy, frontier, p, /*best_response=*/false,
                               flop_samples, &rng};
-        strategy_value[p] += walker.walk(root, tree.root_index(), holes, {});
-        total_fallbacks += walker.fallbacks;
+        const double sv = walker.walk(root, tree.root_index(), holes, {});
         NashConvWalker br_walker{tree,         policy, frontier, p, /*best_response=*/true,
                                  flop_samples, &rng};
-        br_value[p] += br_walker.walk(root, tree.root_index(), holes, {});
-        total_fallbacks += br_walker.fallbacks;
+        const double bv = br_walker.walk(root, tree.root_index(), holes, {});
+        // Commit both accumulators only after both walks succeed, so a failed
+        // BR walk never leaves a strategy contribution with no matching BR
+        // contribution (which would bias the per-player averages).
+        strategy_value[p] += sv;
+        br_value[p] += bv;
+        total_fallbacks += walker.fallbacks + br_walker.fallbacks;
       } catch (const std::exception& e) {
         ++uncovered;
         if (uncovered <= 3)

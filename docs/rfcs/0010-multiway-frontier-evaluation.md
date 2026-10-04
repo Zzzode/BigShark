@@ -332,7 +332,7 @@ per-runout cost grows linearly with N. The net cost is bounded.
 collision-free key. The key is a `std::vector<int>` containing: the 3 flop
 cards (sorted ascending by the implementation before keying; the walk
 samples the flop in deal order), followed by all hole cards (sorted within
-seat, seats in order), followed by the live-seat set — one byte per seat
+seat, seats in order), followed by the live-seat set — one int per seat
 (0 = folded, 1 = live). The live-seat set is required because the cached
 equity depends on which seats compete: the same (flop, hands) pair can
 reach `evaluate()` with different fold patterns across sweeps, and a cache
@@ -780,9 +780,12 @@ decision path is not changed in any stage.
 - The blind-seat helpers are exported from `bs::poker` and used by the
   artifact reader/writer; the published HU preflop artifact round-trips
   byte-identically.
-- A 3-way 100 BB preflop profile is trained and published, with reported
-  tree size, information sets, artifact bytes, wall time, and termination
-  phase.
+- A 3-way preflop profile is trained and published at the deepest
+  identity-abstraction stack with HU-comparable info-set coverage (measured:
+  10 BB), with reported tree size, information sets, artifact bytes, wall
+  time, and termination phase. The 100 BB target is not reachable with the
+  identity action abstraction (the 3-way tree exceeds the 2M-node cap past
+  ~16 BB); the coarse DeclaredOnly menu is documented as future work.
 - The generalized NashConv tool measures 3-way exploitability; the HU
   NashConv regression is within MC noise of the baseline (99.24 chips).
 - Full verification matrix green: release, debug, asan; benchmark-multistreet

@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <bs/abstract_tree.hpp>
+#include <bs/equity_frontier.hpp>
 #include <bs/eval.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>
@@ -1125,6 +1126,38 @@ int test_refusals() {
   return 0;
 }
 
+// RFC 0010: a 3-seat preflop flop-terminal game trains end-to-end with the
+// EquityFrontierEvaluator. Over enough iterations the walk samples preflop
+// folds, reaching FlopDeal leaves with two live seats (and the folded seat's
+// dead money), exercising the N-way frontier path inside the trainer.
+int test_three_seat_flop_terminal() {
+  GameDef def{};
+  def.player_count = 3;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {6, 6, 6, 0, 0, 0, 0, 0, 0, 0};  // 3 BB
+  def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;  // SB 1 + BB 2
+  def.board = {-1, -1, -1, 0, 0};
+  def.board_size = 0;
+  def.preflop = true;
+  def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.blinds_posted[small_blind_seat(def)] = 1;
+  def.blinds_posted[big_blind_seat(def)] = 2;
+  def.terminal = TerminalDepth::Flop;
+
+  const AbstractTree tree(def, abstraction::ActionAbstraction::identity());
+  CHECK(tree.size() > 0);
+
+  const auto ranges = three_seat_ranges();
+  const gto::EquityFrontierEvaluator frontier;
+  const NSeatTrainerLimits limits{};
+  const NSeatTrainingResult trained = train_nseat(tree, ranges, 200, 4242, limits, &frontier);
+  CHECK(trained.termination == NSeatTerminationPhase::Complete);
+  CHECK(trained.information_sets > 0);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1135,6 +1168,8 @@ int main() {
   if (test_refusals() != 0)
     return 1;
   if (test_two_seat_parity() != 0)
+    return 1;
+  if (test_three_seat_flop_terminal() != 0)
     return 1;
   std::printf("test_solve_nseat PASS\n");
   return 0;

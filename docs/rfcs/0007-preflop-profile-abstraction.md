@@ -249,7 +249,7 @@ The `EquityFrontierEvaluator` is generalized from heads-up to 2..10 seats.
 The turn/river pool is 52 − 3 (flop) − 2N (hole cards); only live seats
 (`ledger.seats[s].folded == false`) compete for the pot, and folded seats'
 contributions stay in the pot as dead money. The cache key includes the
-live-seat set (one byte per seat) so the same (flop, hands) pair with
+live-seat set (one int per seat) so the same (flop, hands) pair with
 different fold patterns never shares a cache entry. A 1M-entry cap bounds
 memory for N-way training where the 1,326^N deal space makes revisits rare.
 

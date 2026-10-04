@@ -37,7 +37,7 @@ class EquityFrontierEvaluator : public FrontierEvaluator {
 
  private:
   // The cache key: sorted flop (3 cards), per-seat sorted hole cards (2 each),
-  // then the live-seat set (one byte per seat: 0 = folded, 1 = live). The
+  // then the live-seat set (one int per seat: 0 = folded, 1 = live). The
   // live-set is required because the cached equity depends on which seats
   // compete: the same (flop, hands) pair can reach evaluate() with different
   // fold patterns.

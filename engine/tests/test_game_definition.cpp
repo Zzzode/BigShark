@@ -1261,6 +1261,32 @@ int case_flop_terminal_frontier() {
     CHECK(rejects(d));
   }
 
+  // RFC 0010: 6-seat and 10-seat flop-terminal games validate with equal
+  // stacks and correctly placed blinds (SB/BB clockwise of the button).
+  for (const int n : {6, 10}) {
+    GameDef d = def;
+    d.player_count = static_cast<std::size_t>(n);
+    d.stacks = {50, 50, 50, 50, 50, 50, 50, 50, 50, 50};
+    d.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const std::size_t sb = (d.button + 1) % d.player_count;
+    const std::size_t bb = (d.button + 2) % d.player_count;
+    d.blinds_posted[sb] = 1;
+    d.blinds_posted[bb] = 2;
+    d.pot = 3;
+    const GameState s(d);
+    CHECK(s.player_count() == static_cast<std::size_t>(n));
+  }
+
+  // RFC 0010: player_count 1 and 11 reject (the unified profile serves 2..10).
+  for (const int n : {1, 11}) {
+    GameDef d = def;
+    d.player_count = static_cast<std::size_t>(n);
+    d.stacks = {50, 50, 50, 50, 50, 50, 50, 50, 50, 50};
+    d.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    d.pot = 3;
+    CHECK(rejects(d));
+  }
+
   return 0;
 }
 

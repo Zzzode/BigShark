@@ -31,7 +31,7 @@ std::vector<int> EquityFrontierEvaluator::make_key(std::span<const int> flop,
                                                    std::span<const std::array<int, 2>> hands,
                                                    const bs::tree::TerminalPayload& ledger) {
   // The key is: sorted flop (3 cards), per-seat sorted hole cards (2 each),
-  // then the live-seat set (one byte per seat: 0 = folded, 1 = live). The
+  // then the live-seat set (one int per seat: 0 = folded, 1 = live). The
   // live-set is required because the cached equity depends on which seats
   // compete: the same (flop, hands) pair can reach evaluate() with different
   // fold patterns.

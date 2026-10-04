@@ -854,6 +854,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_frontier_table PRIVATE bigshark_solver)
   add_test(NAME frontier_table COMMAND test_frontier_table)
 
+  # RFC 0010: N-way equity frontier evaluator — exact equity pins, folded-seat
+  # exclusion, dead-money settlement, cache live-set keying and cap, rejection
+  # contract, and an independent brute-force oracle cross-check.
+  add_executable(test_equity_frontier tests/test_equity_frontier.cpp)
+  target_link_libraries(test_equity_frontier PRIVATE bigshark_solver)
+  add_test(NAME equity_frontier COMMAND test_equity_frontier)
+
   # RFC 0007 (W4b): continuation-range export — hand-derived marginal, card
   # removal, multi-line accumulation, and declared-profile training evidence.
   add_executable(test_continuation_range tests/test_continuation_range.cpp)

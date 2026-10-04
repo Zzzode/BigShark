@@ -100,6 +100,15 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "abstraction must be 'identity' or 'coarse' (got '%s')\n", argv[5]);
     return 1;
   }
+  if (coarse) {
+    // The nseat trainer's validate_request() accepts only the identity action
+    // abstraction; the coarse DeclaredOnly menu is future work (the 3+ way
+    // identity tree caps at ~16 BB under the 2M-node limit).
+    std::fprintf(stderr,
+                 "coarse abstraction is not yet supported by the nseat trainer "
+                 "(identity gate); use 'identity'\n");
+    return 1;
+  }
 
   std::filesystem::create_directories(out_dir);
 
