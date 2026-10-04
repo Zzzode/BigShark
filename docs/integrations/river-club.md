@@ -122,7 +122,7 @@ All files below are local and ignored by Git:
 
 | Path | Purpose |
 | --- | --- |
-| `.runtime/config.json` | Runner mode, style, timing, stop-loss settings, and (RFC 0009 W1) `residentRoots`: `[{path, sha256}]` resident artifact roots, each a published strategy artifact and its mandatory 64-lowercase-hex whole-file pin. A malformed value fails the runner at startup (`runner-config-invalid`, exit 2) instead of silently running without the configured roots. Also supports `flopLibraries`: `["<dir>", ...]` flop class library directories, each expanded by the engine into one resident root per class via `<dir>/manifest.json` |
+| `.runtime/config.json` | Runner mode, style, timing, stop-loss settings, and (RFC 0009 W1) `residentRoots`: `[{path, sha256}]` resident artifact roots, each a published strategy artifact and its mandatory 64-lowercase-hex whole-file pin. A malformed value fails the runner at startup (`runner-config-invalid`, exit 2) instead of silently running without the configured roots. Also supports `flopLibraries`: `["<dir>", ...]` flop class library directories, each expanded by the engine into one resident root per class via `<dir>/manifest.json`. When `flopLibraries` is unset and the `BIGSHARK_ENGINE_FLOP_LIBRARIES` env var is unset, the runner auto-detects the bundled library at `<repo>/artifacts/flop-library/manifest.json`; if present, the engine is launched with `--resident-budget 6144` (6 GiB) and a 300 s warmup timeout. Set `flopLibraries: []` (or the env var to `[]`) to disable auto-detection. The `BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB` env var overrides the 6 GiB default. |
 | `.runtime/pending.json` | Latest model decision opportunity, including the engine decision's `guaranteeLevel` and `artifactSha256` (W1; `null` when the decision carried none) |
 | `.runtime/pending.log` | Append-only decision opportunities |
 | `.runtime/action.json` | Model override for one hand and street |
@@ -131,7 +131,8 @@ All files below are local and ignored by Git:
 | `.runtime/resume` | Explicit approval to resume table selection |
 | `sessions/*.jsonl` | Full CLI command and response journal |
 
-With at least one configured resident root or flop library the runner uses the
+With at least one configured resident root, configured flop library, or
+auto-detected flop library the runner uses the
 framed v1 protocol at negotiated minor 2 (the guarantee-level and
 artifact-digest surface) and passes the server's remaining-time budget through
 as the solve budget. Since W3, v1 is the default protocol for the River Club

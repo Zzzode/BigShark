@@ -920,6 +920,29 @@ array of path strings) passes the flag to the engine child. The runner's
 `residentRoots`. The C++ engine client (`EngineClientConfig.flop_libraries`)
 and the practice simulator CLI (`--flop-library DIR`) also support it.
 
+### Resident Budget and Auto-Loading
+
+The engine's resident budget defaults to 256 MiB
+(`kDefaultResidentBudgetBytes`). Each flop class has a resident footprint of
+~2.7 MiB, so the default budget advertises only ~96 of 1,755 classes; the
+rest are reported `OverBudget` and silently skipped. A full library needs
+~6 GiB (6144 MiB).
+
+The engine host accepts `--resident-budget <MiB>` to override the default.
+The TypeScript launcher auto-detects the bundled library at
+`<repo>/artifacts/flop-library/manifest.json` when no explicit
+`flopLibraries` config or env var is set, and launches the engine with
+`--resident-budget 6144` (overridable via `BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB`)
+and a 300 s warmup timeout (the engine probes and loads all 1,755 SQLite DBs
+before its first frame, ~55 s probe alone). The C++ engine client gains
+`resident_budget_mib` and `startup_timeout_ms` fields; the practice simulator
+auto-bumps the startup timeout to 300 s when `--flop-library` is passed.
+
+Opt-outs: `flopLibraries: []` in `.runtime/config.json`, or
+`BIGSHARK_ENGINE_FLOP_LIBRARIES=[]` in the environment. The first decision
+after engine start blocks for the full library load (~1-2 min); subsequent
+decisions are fast because the client is a keyed singleton.
+
 ## Bounded Resolving Gadget (RFC 0005 Stage 9)
 
 The resolver (`bs::resolver::Resolver`, static `bigshark_resolver`) re-solves a
