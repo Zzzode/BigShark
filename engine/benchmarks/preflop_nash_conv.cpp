@@ -1,7 +1,10 @@
-// RFC 0009 W4b: offline NashConv measurement for the published preflop
-// blueprint. Loads the schema-v2 preflop artifact, rebuilds the game tree,
-// and computes a Monte Carlo NashConv by walking the tree with best-response
-// and policy-following traversals over sampled joint deals.
+// RFC 0009 W4b (extended by RFC 0010): offline NashConv measurement for a
+// published preflop blueprint. Loads the schema-v2 preflop artifact, rebuilds
+// the game tree, and computes a Monte Carlo NashConv by walking the tree with
+// best-response and policy-following traversals over sampled joint deals.
+// Heads-up and multiway (2..10 seats) artifacts are both supported: the joint
+// deal draws 2N cards and the NashConv is the sum of per-seat BR gaps divided
+// by N for exploitability.
 //
 // Walker design (standard MC NashConv):
 // - Strategy walk: sample one action at each node (following the policy),
@@ -65,8 +68,8 @@ std::vector<int> board_vector(const GameState& state) {
   return std::vector<int>(state.board().begin(), state.board().end());
 }
 
-// Sample one uniform joint deal: 4 cards from a shuffled deck, 2 per seat.
-std::vector<std::array<int, 2>> sample_joint_deal(bs::SplitMix64& rng) {
+// Sample one uniform joint deal: 2N cards from a shuffled deck, 2 per seat.
+std::vector<std::array<int, 2>> sample_joint_deal(bs::SplitMix64& rng, std::size_t n) {
   std::array<int, 52> deck;
   for (int i = 0; i < 52; ++i)
     deck[i] = i;
@@ -74,9 +77,12 @@ std::vector<std::array<int, 2>> sample_joint_deal(bs::SplitMix64& rng) {
     const std::size_t j = rng.next_u64() % static_cast<std::uint64_t>(i + 1);
     std::swap(deck[i], deck[j]);
   }
-  std::vector<std::array<int, 2>> holes(2);
-  holes[0] = {std::min(deck[0], deck[1]), std::max(deck[0], deck[1])};
-  holes[1] = {std::min(deck[2], deck[3]), std::max(deck[2], deck[3])};
+  std::vector<std::array<int, 2>> holes(n);
+  for (std::size_t s = 0; s < n; ++s) {
+    const int c0 = deck[2 * s];
+    const int c1 = deck[2 * s + 1];
+    holes[s] = {std::min(c0, c1), std::max(c0, c1)};
+  }
   return holes;
 }
 
@@ -242,22 +248,24 @@ int main(int argc, char** argv) {
   std::printf("  info sets:    %zu\n", policy.rows().size());
 
   const GameDef& def = policy.game();
+  const std::size_t seats = def.player_count;
   const AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
   std::printf("  tree nodes:   %zu\n", tree.size());
+  std::printf("  seats:        %zu\n", seats);
 
   const EquityFrontierEvaluator frontier;
 
   bs::SplitMix64 rng(seed);
-  std::array<double, 2> strategy_value{0.0, 0.0};
-  std::array<double, 2> br_value{0.0, 0.0};
+  std::vector<double> strategy_value(seats, 0.0);
+  std::vector<double> br_value(seats, 0.0);
   std::size_t uncovered = 0;
   std::size_t total_fallbacks = 0;
 
   const auto start = std::chrono::steady_clock::now();
   for (std::size_t d = 0; d < num_deals; ++d) {
-    const auto holes = sample_joint_deal(rng);
+    const auto holes = sample_joint_deal(rng, seats);
     const GameState root(def);
-    for (std::size_t p = 0; p < 2; ++p) {
+    for (std::size_t p = 0; p < seats; ++p) {
       try {
         NashConvWalker walker{tree,         policy, frontier, p, /*best_response=*/false,
                               flop_samples, &rng};
@@ -279,25 +287,27 @@ int main(int argc, char** argv) {
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start);
 
-  const std::size_t valid = num_deals * 2 - uncovered;
+  const std::size_t valid = num_deals * seats - uncovered;
   if (valid == 0) {
     std::fprintf(stderr, "all deals failed\n");
     return 1;
   }
-  for (std::size_t p = 0; p < 2; ++p) {
+  for (std::size_t p = 0; p < seats; ++p) {
     strategy_value[p] /= static_cast<double>(valid);
     br_value[p] /= static_cast<double>(valid);
   }
-  const double nash_conv = (br_value[0] - strategy_value[0]) + (br_value[1] - strategy_value[1]);
-  const double exploitability = nash_conv / 2.0;
+  double nash_conv = 0.0;
+  for (std::size_t p = 0; p < seats; ++p)
+    nash_conv += br_value[p] - strategy_value[p];
+  const double exploitability = nash_conv / static_cast<double>(seats);
   const double bb = static_cast<double>(def.big_blind);
 
   std::printf("\nResults (%zu valid player-deals, %zu uncovered, %zu fallbacks):\n", valid,
               uncovered, total_fallbacks);
-  std::printf("  player 0: strategy=%+.2f  br=%+.2f  gap=%+.2f\n", strategy_value[0], br_value[0],
-              br_value[0] - strategy_value[0]);
-  std::printf("  player 1: strategy=%+.2f  br=%+.2f  gap=%+.2f\n", strategy_value[1], br_value[1],
-              br_value[1] - strategy_value[1]);
+  for (std::size_t p = 0; p < seats; ++p) {
+    std::printf("  player %zu: strategy=%+.2f  br=%+.2f  gap=%+.2f\n", p, strategy_value[p],
+                br_value[p], br_value[p] - strategy_value[p]);
+  }
   std::printf("  NashConv:       %.2f chips\n", nash_conv);
   std::printf("  Exploitability: %.2f chips (%.3f BB)\n", exploitability, exploitability / bb);
   std::printf("  wall time:      %.1f s\n", elapsed.count() / 1000.0);
