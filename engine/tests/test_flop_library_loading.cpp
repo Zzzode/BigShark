@@ -238,6 +238,57 @@ void test_bad_sha256() {
   std::filesystem::remove_all(dir);
 }
 
+// ---- Resident budget: valid value starts engine, reports budget -------------
+
+void test_resident_budget_starts_engine() {
+  const auto dir = make_dummy_library(2);
+  CHECK(!dir.empty());
+
+  const RunResult result = run_engine({
+      "--flop-library",
+      dir.string(),
+      "--resident-budget",
+      "6144",
+      "--serve-proto",
+  });
+  CHECK(result.exit_code == 0);
+  CHECK(result.stderr_output.find("resident-budget 6144 MiB") != std::string::npos);
+
+  std::filesystem::remove_all(dir);
+}
+
+// ---- Resident budget: invalid values exit 2 ---------------------------------
+
+void test_resident_budget_invalid() {
+  // Non-numeric value.
+  CHECK(run_engine({"--resident-budget", "abc", "--serve-proto"}).exit_code == 2);
+  // Zero.
+  CHECK(run_engine({"--resident-budget", "0", "--serve-proto"}).exit_code == 2);
+  // Missing value (must include --serve-proto so the proto branch parses it).
+  CHECK(run_engine({"--resident-budget", "--serve-proto"}).exit_code == 2);
+  // Overflow (far beyond size_t max in bytes).
+  CHECK(run_engine({"--resident-budget", "99999999999999999999", "--serve-proto"}).exit_code == 2);
+}
+
+// ---- Resident budget: default (no flag) still works --------------------------
+
+void test_resident_budget_default() {
+  const auto dir = make_dummy_library(1);
+  CHECK(!dir.empty());
+
+  // No --resident-budget flag: the engine uses its 256 MiB default and still
+  // starts. The budget line is always printed when roots are loaded.
+  const RunResult result = run_engine({
+      "--flop-library",
+      dir.string(),
+      "--serve-proto",
+  });
+  CHECK(result.exit_code == 0);
+  CHECK(result.stderr_output.find("resident-budget 256 MiB") != std::string::npos);
+
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -247,6 +298,9 @@ int main() {
   test_invalid_json();
   test_empty_classes();
   test_bad_sha256();
+  test_resident_budget_starts_engine();
+  test_resident_budget_invalid();
+  test_resident_budget_default();
 
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

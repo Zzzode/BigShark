@@ -23,6 +23,14 @@
 //                   directory, unparseable manifest, or bad sha256 aborts
 //                   startup with exit code 2; per-root load failures are
 //                   reported individually and never disable another root.
+//   --resident-budget <MiB>
+//                   Total resident budget shared across all advertised roots.
+//                   Defaults to 256 MiB (bs::resident::kDefaultResidentBudgetBytes).
+//                   A full flop class library needs ~6 GiB (6144 MiB); below
+//                   the library's footprint the engine advertises only the
+//                   classes that fit and reports the rest OverBudget. A
+//                   missing value, non-numeric value, zero, or overflow aborts
+//                   startup with exit code 2.
 #include <third_party/yyjson/yyjson.h>
 
 #include <array>
@@ -33,13 +41,16 @@
 #include <bs/v0_protocol.hpp>
 #include <bs/v1_protocol.hpp>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -328,6 +339,34 @@ bool collectResidentSpecs(int argc, char** argv,
   return true;
 }
 
+// Parses --resident-budget <MiB>. Last occurrence wins. Returns the budget in
+// bytes on success, std::nullopt when the flag is absent, and false on a
+// missing value, non-numeric value, zero, or a value that overflows size_t
+// when converted to bytes.
+std::optional<std::size_t> collectResidentBudget(int argc, char** argv) {
+  std::optional<std::size_t> budget_bytes;
+  for (int i = 1; i < argc; ++i) {
+    const std::string argument = argv[i];
+    if (argument != "--resident-budget")
+      continue;
+    if (i + 1 >= argc)
+      return std::nullopt;
+    const std::string_view text = argv[++i];
+    std::uint64_t mib = 0;
+    const char* begin = text.data();
+    const char* end = begin + text.size();
+    const auto [ptr, ec] = std::from_chars(begin, end, mib);
+    if (ec != std::errc{} || ptr != end || mib == 0)
+      return std::nullopt;
+    constexpr std::uint64_t max_mib =
+        static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() >> 20);
+    if (mib > max_mib)
+      return std::nullopt;
+    budget_bytes = static_cast<std::size_t>(mib) << 20;
+  }
+  return budget_bytes;
+}
+
 // Expands --flop-library <dir> flags into resident root specs. Reads
 // <dir>/manifest.json (written by the flop library builder) and appends one
 // SupportedRootSpec per class entry: path = <dir>/<artifact_name>, sha256 =
@@ -407,11 +446,15 @@ bool collectFlopLibrarySpecs(int argc, char** argv,
 }
 
 std::unique_ptr<ResidentHostServices> buildResidentServices(
-    const std::vector<bs::resident::SupportedRootSpec>& specs) {
+    const std::vector<bs::resident::SupportedRootSpec>& specs, std::size_t budget_bytes) {
   if (specs.empty())
     return nullptr;
   std::vector<bs::resident::RootLoadResult> results;
-  bs::resident::ResidentPolicySet set = bs::resident::ResidentPolicySet::build(specs, {}, &results);
+  bs::resident::ResidentOptions options;
+  options.budget_bytes = budget_bytes;
+  bs::resident::ResidentPolicySet set =
+      bs::resident::ResidentPolicySet::build(specs, options, &results);
+  std::cerr << "resident-budget " << (budget_bytes >> 20) << " MiB\n";
   for (const bs::resident::RootLoadResult& result : results) {
     std::cerr << "resident-root " << result.path << " " << bs::resident::to_string(result.status);
     if (!result.sha256_hex.empty())
@@ -501,9 +544,22 @@ int main(int argc, char** argv) {
       std::cerr << "invalid --flop-library spec; expected <dir> with a valid manifest.json\n";
       return 2;
     }
+    const std::optional<std::size_t> resident_budget = collectResidentBudget(argc, argv);
+    if (!resident_budget) {
+      // collectResidentBudget returns nullopt both when the flag is absent
+      // (use the default) and when it is present but invalid (abort). Re-scan
+      // to distinguish the two.
+      for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--resident-budget") {
+          std::cerr << "invalid --resident-budget; expected a positive MiB value\n";
+          return 2;
+        }
+      }
+    }
     std::unique_ptr<ResidentHostServices> services;
     try {
-      services = buildResidentServices(resident_specs);
+      services = buildResidentServices(
+          resident_specs, resident_budget.value_or(bs::resident::kDefaultResidentBudgetBytes));
     } catch (const std::exception& error) {
       std::cerr << "resident startup failed: " << error.what() << '\n';
       return 2;
