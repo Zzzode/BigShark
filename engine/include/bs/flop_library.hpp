@@ -84,13 +84,12 @@ std::vector<solver::WeightedHand> declared_library_range();
 // explodes the tree at deeper stacks. The declared-coarse abstraction
 // (RFC 0008 DeclaredOnly) removes those forced seeds, making 10 BB+ training
 // practical at the cost of a coarser menu.
-LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
-                              std::uint64_t iterations_per_class, std::uint64_t seed,
-                              poker::Chips stack, poker::Chips contribution,
-                              const std::vector<solver::WeightedHand>& range,
-                              std::size_t player_count = 2,
-                              abstraction::ActionAbstraction action =
-                                  abstraction::ActionAbstraction::identity());
+LibraryManifest build_library(
+    const std::filesystem::path& out_dir, std::size_t class_count,
+    std::uint64_t iterations_per_class, std::uint64_t seed, poker::Chips stack,
+    poker::Chips contribution, const std::vector<solver::WeightedHand>& range,
+    std::size_t player_count = 2,
+    abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity());
 
 // Write the manifest as JSON to `out_dir / "manifest.json"`.
 void write_manifest(const LibraryManifest& manifest, const std::filesystem::path& out_dir);

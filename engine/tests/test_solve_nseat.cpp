@@ -1029,9 +1029,8 @@ int test_refusals() {
 
   // Declared-coarse action abstraction: accepted on both routes.
   {
-    abstraction::ActionAbstraction coarse =
-        abstraction::ActionAbstraction::declared(abstraction::default_size_schedule(),
-                                                 abstraction::CoverSeeds::DeclaredOnly);
+    abstraction::ActionAbstraction coarse = abstraction::ActionAbstraction::declared(
+        abstraction::default_size_schedule(), abstraction::CoverSeeds::DeclaredOnly);
     CHECK(coarse.id() != abstraction::identity_action_id());
     AbstractTree coarse_hu(hu, coarse);
     SolveRequest req = base_request(coarse_hu);

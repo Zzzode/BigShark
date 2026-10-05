@@ -183,8 +183,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips stack, poker::Chips contribution,
                               const std::vector<solver::WeightedHand>& range,
-                              std::size_t player_count,
-                              abstraction::ActionAbstraction action) {
+                              std::size_t player_count, abstraction::ActionAbstraction action) {
   if (class_count == 0)
     throw std::invalid_argument("class_count must be positive");
   if (iterations_per_class == 0)

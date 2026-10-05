@@ -46,15 +46,14 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "abstraction must be 'identity' or 'coarse' (got '%s')\n", argv[7]);
     return 2;
   }
-  const auto action =
-      coarse ? bs::abstraction::ActionAbstraction::declared(
-                   bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly)
-             : bs::abstraction::ActionAbstraction::identity();
+  const auto action = coarse ? bs::abstraction::ActionAbstraction::declared(
+                                   bs::abstraction::default_size_schedule(),
+                                   bs::abstraction::CoverSeeds::DeclaredOnly)
+                             : bs::abstraction::ActionAbstraction::identity();
 
   const auto range = bs::flop_library::declared_library_range();
-  const bs::flop_library::LibraryManifest manifest =
-      bs::flop_library::build_library(out_dir, class_count, iterations, seed, stack, contribution,
-                                      range, player_count, action);
+  const bs::flop_library::LibraryManifest manifest = bs::flop_library::build_library(
+      out_dir, class_count, iterations, seed, stack, contribution, range, player_count, action);
 
   const double coverage_pct = 100.0 * static_cast<double>(manifest.covered_flops) /
                               static_cast<double>(manifest.total_flops);
