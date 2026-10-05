@@ -768,12 +768,14 @@ header, the board cards, and 5 bytes per history action), an action blob of
 3-byte `CompactAction` records (kind plus target), a probability store, fixed
 row records, and an open-addressing slot table at a 50 percent load factor (8
 bytes per slot). The probability store is lossless: a trained artifact has far
-fewer distinct probability values than actions (a few hundred at most), so
-when a root has at most 256 distinct values the index stores a per-root
-codebook of the distinct doubles plus one uint8 index per action; roots with
-more distinct values fall back to one exact double per action. The codebook is
-keyed by the probability's bit pattern, so a deferred value is always bitwise
-identical to the stored one. Lookup compacts the caller's fixed key into a
+fewer distinct probability values than actions (a few hundred at most for
+shallow-stack libraries), so when a root has at most 256 distinct values the
+index stores a per-root codebook of the distinct doubles plus one uint8 index
+per action; roots with 257..65536 distinct values use a uint16 index per
+action (Codebook16, serving deeper-stack libraries whose distinct count
+exceeds the uint8 cap); roots with more than 65536 distinct values fall back
+to one exact double per action. The codebook is keyed by the probability's bit
+pattern, so a deferred value is always bitwise identical to the stored one. Lookup compacts the caller's fixed key into a
 byte buffer, hashes that byte span, linear-probes, and verifies every
 candidate with a full length and byte comparison before resolving offsets;
 hash collisions can never return a wrong row. Action identity is action kind

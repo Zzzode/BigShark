@@ -170,23 +170,37 @@ void expand_actions(const CompactRowView& row, std::span<poker::Action> out) {
 }
 
 // Defer a row's exact probabilities into a caller-owned double buffer. The
-// codebook layout stores uint8 indices into a per-root dictionary; either way
-// the deferred values are bitwise identical to the stored doubles, so the
-// public-belief reach computation sees exact marginals.
+// codebook layouts store uint8 or uint16 indices into a per-root dictionary;
+// either way the deferred values are bitwise identical to the stored doubles,
+// so the public-belief reach computation sees exact marginals.
 void defer_probabilities(const CompactRowView& row, std::span<double> out) {
-  if (row.codebook != nullptr) {
-    for (std::size_t i = 0; i < row.count; ++i)
-      out[i] = row.codebook[row.probability_indices[i]];
-  } else {
-    for (std::size_t i = 0; i < row.count; ++i)
-      out[i] = row.probabilities[i];
+  switch (row.prob_layout) {
+    case ProbabilityLayout::Codebook8:
+      for (std::size_t i = 0; i < row.count; ++i)
+        out[i] = row.codebook[row.probability_indices[i]];
+      break;
+    case ProbabilityLayout::Codebook16:
+      for (std::size_t i = 0; i < row.count; ++i)
+        out[i] = row.codebook[row.probability_indices_16[i]];
+      break;
+    case ProbabilityLayout::Doubles:
+      for (std::size_t i = 0; i < row.count; ++i)
+        out[i] = row.probabilities[i];
+      break;
   }
 }
 
 // Defer a single action's exact probability.
 double defer_probability(const CompactRowView& row, std::size_t action_index) {
-  return row.codebook != nullptr ? row.codebook[row.probability_indices[action_index]]
-                                 : row.probabilities[action_index];
+  switch (row.prob_layout) {
+    case ProbabilityLayout::Codebook8:
+      return row.codebook[row.probability_indices[action_index]];
+    case ProbabilityLayout::Codebook16:
+      return row.codebook[row.probability_indices_16[action_index]];
+    case ProbabilityLayout::Doubles:
+      return row.probabilities[action_index];
+  }
+  return 0.0;  // unreachable
 }
 
 const char* artifact_failure_detail(const artifacts::ArtifactError& error) {

@@ -425,15 +425,17 @@ exports validate). Neither number is a strategy-quality claim.
 Measured 2026-10-05 under the release preset, after the compact resident
 layout (5-byte history actions, 3-byte `CompactAction`, 8-byte slots) and the
 lossless probability codebook (a per-root dictionary of distinct doubles plus
-one uint8 index per action, used when a root has at most 256 distinct
-probability values). All numbers are observations, not portable gates
-except the 10 ms warm p99 promotion target from RFC 0005.
+one uint8 or uint16 index per action, used when a root has at most 256 or
+65536 distinct probability values respectively). All numbers are observations,
+not portable gates except the 10 ms warm p99 promotion target from RFC 0005.
 
-The synthetic SPR fixtures below have more than 256 distinct probability
+The synthetic SPR fixtures below have more than 65536 distinct probability
 values, so they use the doubles fallback and their resident bytes are
 unchanged by the codebook. Trained artifacts (the flop class libraries) have
-63-175 distinct values and use the codebook, cutting their probability blob
-from 8 bytes to ~1 byte per action.
+63-175 distinct values and use the uint8 codebook, cutting their probability
+blob from 8 bytes to ~1 byte per action. Deeper-stack coarse libraries
+(25 BB+) have 451-1068 distinct values and use the uint16 codebook, cutting
+their probability blob from 8 bytes to ~2 bytes per action.
 
 | Metric | Value |
 | --- | ---: |

@@ -17,13 +17,17 @@
 //   - Hash slots are reduced from 16 to 8 bytes (32-bit hash), a 2x
 //     reduction on the slot table.
 // Probabilities are stored losslessly. A trained artifact has far fewer
-// distinct probability values than actions (a few hundred at most), so when a
-// root has at most 256 distinct values the index stores a per-root codebook of
-// the distinct doubles plus one uint8 index per action. Roots with more
-// distinct values fall back to one exact double per action. Either way the
-// boundary defers the exact doubles into a scratch buffer before exposing
-// them, so the public-belief reach computation (which multiplies path
-// probabilities and requires exact marginals) sees bitwise-identical values.
+// distinct probability values than actions (a few hundred at most for
+// shallow-stack libraries), so when a root has at most 256 distinct values
+// the index stores a per-root codebook of the distinct doubles plus one
+// uint8 index per action. Roots with 257..65536 distinct values use a
+// uint16 index per action (Codebook16), which serves deeper-stack
+// libraries whose distinct count exceeds the uint8 cap. Roots with more
+// than 65536 distinct values fall back to one exact double per action.
+// Either way the boundary defers the exact doubles into a scratch buffer
+// before exposing them, so the public-belief reach computation (which
+// multiplies path probabilities and requires exact marginals) sees
+// bitwise-identical values.
 #pragma once
 
 #include <bs/heads_up.hpp>
@@ -60,17 +64,29 @@ static_assert(sizeof(CompactAction) == 3);
 // row that would overflow the scratch can never be stored.
 inline constexpr std::size_t kMaxResidentActions = 32;
 
+// Probability storage layout for a built resident index. The layout is chosen
+// at build time from the count of distinct probability bit patterns:
+//   - Codebook8:  <= 256 distinct values (uint8 index per action)
+//   - Codebook16: <= 65536 distinct values (uint16 index per action)
+//   - Doubles:    > 65536 distinct values (one exact double per action)
+// Codebook16 activates compression for deeper-stack libraries whose distinct
+// probability count exceeds the uint8 cap but stays within uint16 range.
+enum class ProbabilityLayout : std::uint8_t { Doubles, Codebook8, Codebook16 };
+
 struct CompactRowView {
   std::uint16_t count = 0;
   const CompactAction* actions = nullptr;
-  // Probability access. Exactly one layout is active per index:
-  //   - codebook == nullptr: probabilities[i] is the exact double.
-  //   - codebook != nullptr: probability_indices[i] selects the exact double
-  //     from the per-root codebook.
+  // Probability access. Exactly one layout is active per index, selected by
+  // prob_layout:
+  //   - Doubles: probabilities[i] is the exact double.
+  //   - Codebook8: probability_indices[i] (uint8) selects from codebook.
+  //   - Codebook16: probability_indices_16[i] (uint16) selects from codebook.
   // The resident boundary defers either layout into a double scratch before
   // exposing probabilities to callers.
+  ProbabilityLayout prob_layout = ProbabilityLayout::Doubles;
   const double* probabilities = nullptr;
   const std::uint8_t* probability_indices = nullptr;
+  const std::uint16_t* probability_indices_16 = nullptr;
   const double* codebook = nullptr;
 };
 
@@ -113,12 +129,13 @@ class ResidentIndex {
   // It mirrors build()'s exact reservations (two key-header bytes plus compact
   // key bytes, one 3-byte compact action per stored action, one fixed record
   // per state, and the 50 percent-load power-of-two slot table), charges the
-  // worst-case probability layout across both storage modes (one exact double
-  // per action in the fallback, or one uint8 index per action plus a 256-entry
-  // codebook in the compressed mode), and overcharges the immutable game-copy
-  // vectors with slack for their allocator capacities. Accepted roots are
-  // still measured exactly after the index is built; the pre-gate never
-  // accepts a root the exact measurement would refuse.
+  // worst-case probability layout across all three storage modes (one exact
+  // double per action in the fallback, one uint8 index per action plus a
+  // 256-entry codebook in the Codebook8 mode, or one uint16 index per action
+  // plus a 65536-entry codebook in the Codebook16 mode), and overcharges the
+  // immutable game-copy vectors with slack for their allocator capacities.
+  // Accepted roots are still measured exactly after the index is built; the
+  // pre-gate never accepts a root the exact measurement would refuse.
   static std::size_t estimate_bytes(std::size_t row_count, std::size_t action_count,
                                     std::size_t total_key_words, const solver::UnifiedGame& game);
 
@@ -149,13 +166,16 @@ class ResidentIndex {
   std::vector<std::uint8_t> key_blob_;      // [2-byte LE length][compact key] per row
   std::vector<CompactAction> action_blob_;  // 3 bytes per action
   // Probability storage. Exactly one layout is active per built index:
-  //   - codebook_ non-empty: per-root dictionary of distinct probability
-  //     doubles; probability_index_ holds one uint8 per action selecting from
-  //     it. Used when the row set has at most 256 distinct values (the common
-  //     case for trained artifacts).
-  //   - codebook_ empty: probability_blob_ holds one exact double per action.
+  //   - Codebook8: codebook_ + probability_index_ (uint8 per action)
+  //   - Codebook16: codebook_ + probability_index_16_ (uint16 per action)
+  //   - Doubles: probability_blob_ (one exact double per action)
+  // Codebook8 is the common case for shallow-stack artifacts (a few hundred
+  // distinct probabilities at most). Codebook16 serves deeper-stack libraries
+  // whose distinct count exceeds 256 but stays within 65536. Doubles is the
+  // fallback for very large distinct counts.
   std::vector<double> codebook_;
   std::vector<std::uint8_t> probability_index_;
+  std::vector<std::uint16_t> probability_index_16_;
   std::vector<double> probability_blob_;  // 8 bytes per action (fallback)
   std::vector<RowRecord> rows_;
   std::vector<Slot> slots_;
@@ -164,7 +184,7 @@ class ResidentIndex {
   std::size_t slot_mask_ = 0;
   // Explicit layout discriminator so resolve() does not infer the mode from
   // codebook_.empty() (which disagrees for a degenerate zero-probability index).
-  bool use_codebook_ = false;
+  ProbabilityLayout prob_layout_ = ProbabilityLayout::Doubles;
 };
 
 }  // namespace bs::resident

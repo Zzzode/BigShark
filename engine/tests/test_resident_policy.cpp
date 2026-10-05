@@ -2445,8 +2445,17 @@ bool index_matches_map(const ResidentIndex& index,
     for (std::size_t i = 0; i < view.count; ++i) {
       CHECK(view.actions[i] == row.actions[i]);
       // Defer the codebook (or doubles) layout so the comparison is exact.
-      const double stored = view.codebook != nullptr ? view.codebook[view.probability_indices[i]]
-                                                     : view.probabilities[i];
+      const double stored = [&] {
+        switch (view.prob_layout) {
+          case ProbabilityLayout::Codebook8:
+            return view.codebook[view.probability_indices[i]];
+          case ProbabilityLayout::Codebook16:
+            return view.codebook[view.probability_indices_16[i]];
+          case ProbabilityLayout::Doubles:
+            return view.probabilities[i];
+        }
+        return 0.0;  // unreachable
+      }();
       CHECK(stored == row.probabilities[i]);
       sum += stored;
     }
@@ -2617,7 +2626,7 @@ static bool test_codebook_layouts(const fs::path&) {
     return view;
   };
 
-  // Codebook branch: 3 rows x 2 actions = 6 distinct values (<=256).
+  // Codebook8 branch: 3 rows x 2 actions = 6 distinct values (<=256).
   {
     std::map<InformationKey, PolicyRow> rows;
     for (int i = 0; i < 3; ++i) {
@@ -2630,12 +2639,15 @@ static bool test_codebook_layouts(const fs::path&) {
     CHECK(index_matches_map(index, rows));
     const CompactRowView view = first_view(index, rows);
     CHECK(view.count > 0);
+    CHECK(view.prob_layout == ProbabilityLayout::Codebook8);
     CHECK(view.codebook != nullptr);
     CHECK(view.probability_indices != nullptr);
+    CHECK(view.probability_indices_16 == nullptr);
     CHECK(view.probabilities == nullptr);
   }
 
-  // Fallback branch: 130 rows x 2 actions = 259 distinct values (>256).
+  // Codebook16 branch: 130 rows x 2 actions = 259 distinct values
+  // (256 < 259 <= 65536).
   {
     std::map<InformationKey, PolicyRow> rows;
     for (int i = 1; i <= 130; ++i) {
@@ -2648,8 +2660,33 @@ static bool test_codebook_layouts(const fs::path&) {
     CHECK(index_matches_map(index, rows));
     const CompactRowView view = first_view(index, rows);
     CHECK(view.count > 0);
+    CHECK(view.prob_layout == ProbabilityLayout::Codebook16);
+    CHECK(view.codebook != nullptr);
+    CHECK(view.probability_indices == nullptr);
+    CHECK(view.probability_indices_16 != nullptr);
+    CHECK(view.probabilities == nullptr);
+  }
+
+  // Doubles fallback branch: 33000 rows x 2 actions = 66000 distinct values
+  // (>65536). The probabilities use disjoint numerator ranges (1..33000 and
+  // 33001..66000) so no value overlaps.
+  {
+    constexpr int kRows = 33000;
+    std::map<InformationKey, PolicyRow> rows;
+    for (int i = 1; i <= kRows; ++i) {
+      const double p = static_cast<double>(i) / (2.0 * kRows + 1.0);
+      rows[make_key(static_cast<std::uint64_t>(i))] =
+          PolicyRow{.actions = {check, bet}, .probabilities = {p, 1.0 - p}};
+    }
+    ResidentIndex index;
+    index.build(rows);
+    CHECK(index_matches_map(index, rows));
+    const CompactRowView view = first_view(index, rows);
+    CHECK(view.count > 0);
+    CHECK(view.prob_layout == ProbabilityLayout::Doubles);
     CHECK(view.codebook == nullptr);
     CHECK(view.probability_indices == nullptr);
+    CHECK(view.probability_indices_16 == nullptr);
     CHECK(view.probabilities != nullptr);
   }
   return true;
