@@ -119,6 +119,11 @@ void require_same_abstraction(const AbstractionId& requested, const AbstractionI
 // `default_size_schedule()`, so changing a fraction changes the digest.
 AbstractionId identity_action_id();
 
+// True when `id` names the declared-coarse action abstraction family
+// (RFC 0008 DeclaredOnly menu). The trainer accepts any schedule in this
+// family; the digest still pins the exact schedule for artifact compatibility.
+bool is_declared_coarse_action_id(const AbstractionId& id);
+
 // Card abstraction families. `Identity` maps a holding to its current
 // made-hand evaluator score (strictly strength-order-preserving: it never
 // merges two DISTINCT made strengths). That is a zero-error representation of

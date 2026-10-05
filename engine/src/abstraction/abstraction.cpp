@@ -157,6 +157,10 @@ AbstractionId identity_action_id() {
   return ActionAbstraction::identity().id();
 }
 
+bool is_declared_coarse_action_id(const AbstractionId& id) {
+  return id.name == "rfc0008-declared-coarse";
+}
+
 AbstractionId card_abstraction_id(CardBucketKind kind) {
   AbstractionId id;
   switch (kind) {

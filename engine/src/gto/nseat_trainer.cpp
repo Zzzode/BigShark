@@ -536,8 +536,15 @@ void validate_request(const AbstractTree& tree,
   const poker::GameDef& def = tree.def();
   if (def.player_count < 2 || def.player_count > poker::kMaxUnifiedSeats)
     throw std::invalid_argument("nseat trainer supports 2..10 seats");
-  if (tree.action_id() != abstraction::identity_action_id())
-    throw std::invalid_argument("nseat trainer solves only the identity action abstraction");
+  // The trainer accepts the identity action abstraction and any declared-coarse
+  // abstraction (RFC 0008 DeclaredOnly menu). The coarse path removes the
+  // forced min-bet/jam seeds that explode the abstract tree at deeper stacks,
+  // making 10 BB+ library training practical. Custom-schedule identity-style
+  // abstractions (same name, different digest) are still refused.
+  if (tree.action_id() != abstraction::identity_action_id() &&
+      !abstraction::is_declared_coarse_action_id(tree.action_id()))
+    throw std::invalid_argument(
+        "nseat trainer requires the identity or a declared-coarse action abstraction");
   if (def.board_size < 3 || def.board_size > 5) {
     // RFC 0007 (scope extended by RFC 0010): a flop-terminal preflop root is
     // accepted for 2..10 seats; the frontier evaluator supplies leaf values.

@@ -1027,6 +1027,31 @@ int test_refusals() {
     CHECK(expect_shape(req3));
   }
 
+  // Declared-coarse action abstraction: accepted on both routes.
+  {
+    abstraction::ActionAbstraction coarse =
+        abstraction::ActionAbstraction::declared(abstraction::default_size_schedule(),
+                                                 abstraction::CoverSeeds::DeclaredOnly);
+    CHECK(coarse.id() != abstraction::identity_action_id());
+    AbstractTree coarse_hu(hu, coarse);
+    SolveRequest req = base_request(coarse_hu);
+    req.ranges = {heads_up_range0(), heads_up_range1()};
+    req.iterations = 1;
+    req.solver = SolverKind::NSeatCfr;
+    SolveResult result = solve(req);
+    CHECK(!result.is_heads_up());
+    CHECK(result.nseat().completed_iterations == 1);
+    // Auto with 3 seats routes to the n-seat trainer.
+    AbstractTree coarse_three(three, coarse);
+    SolveRequest req3 = base_request(coarse_three);
+    req3.ranges = three_seat_ranges();
+    req3.iterations = 1;
+    req3.solver = SolverKind::Auto;
+    SolveResult result3 = solve(req3);
+    CHECK(!result3.is_heads_up());
+    CHECK(result3.nseat().completed_iterations == 1);
+  }
+
   // Zero iterations: invalid_argument on every route that gets that far.
   {
     SolveRequest req = base_request(hu_tree);

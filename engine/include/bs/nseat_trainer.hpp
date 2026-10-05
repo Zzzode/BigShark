@@ -254,7 +254,8 @@ struct NSeatTrainingResult {
 // card abstraction is defined on a complete flop) OR a heads-up preflop root
 // with `terminal == TerminalDepth::Flop` (RFC 0007; the frontier evaluator
 // supplies leaf values and must be non-null), a positive iteration count, and
-// the tree's identity action abstraction. Resource caps throw
+// the identity or a declared-coarse (RFC 0008) action abstraction. Resource
+// caps throw
 // `nseat_training_exhausted`; the wall cap instead returns the last completed
 // iteration counts with phase WallClock.
 NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,

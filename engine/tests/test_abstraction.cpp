@@ -540,6 +540,10 @@ int test_declared_only_coarse_menu() {
     CHECK(seeded.id() != coarse.id());
     // And neither collides with the RFC 0007 identity despite equal fractions.
     CHECK(seeded.id() != identity_action_id());
+    // The family predicate recognizes the coarse name and rejects identity.
+    CHECK(is_declared_coarse_action_id(coarse.id()));
+    CHECK(is_declared_coarse_action_id(seeded.id()));
+    CHECK(!is_declared_coarse_action_id(identity_action_id()));
   }
 
   // Identity is byte-identical: same schedule, MinAndCap, golden digest.
