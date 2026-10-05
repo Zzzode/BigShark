@@ -183,7 +183,8 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips stack, poker::Chips contribution,
                               const std::vector<solver::WeightedHand>& range,
-                              std::size_t player_count) {
+                              std::size_t player_count,
+                              abstraction::ActionAbstraction action) {
   if (class_count == 0)
     throw std::invalid_argument("class_count must be positive");
   if (iterations_per_class == 0)
@@ -212,6 +213,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
 
   LibraryManifest manifest;
   manifest.card_id = card_id;
+  manifest.action_id = action.id();
   manifest.player_count = player_count;
   manifest.big_blind = kDefaultBigBlind;
   manifest.stack = stack;
@@ -236,7 +238,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
       for (std::size_t s = 0; s < player_count; ++s)
         ranges.push_back(seat_range);
 
-      const tree::AbstractTree tree(def, abstraction::ActionAbstraction::identity());
+      const tree::AbstractTree tree(def, action);
       // Flop-terminal games require a frontier evaluator to supply leaf values.
       // The EquityFrontierEvaluator computes exact all-in-at-flop equity by
       // enumerating all 990 turn/river combos.
@@ -252,6 +254,10 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
           solver::train_nseat(tree, ranges, iterations_per_class, seed, limits, &frontier);
       if (trained.termination != solver::NSeatTerminationPhase::Complete)
         throw std::runtime_error("class " + std::to_string(i) + " training did not complete");
+
+      std::printf("  class %zu: %zu nodes, %zu info sets, %zu bytes, %llu iterations\n", i,
+                  trained.nodes, trained.information_sets, trained.accounted_bytes,
+                  static_cast<unsigned long long>(trained.completed_iterations));
 
       const solver::SeatTrainingResult exported =
           solver::export_seat_policy(trained, tree, ranges, card_id);
@@ -317,6 +323,11 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
   out << "  \"card_abstraction_parameters\": \"" << json_escape(manifest.card_id.parameters)
       << "\",\n";
   out << "  \"card_abstraction_digest\": \"" << digest_hex(manifest.card_id.digest) << "\",\n";
+  out << "  \"action_abstraction_name\": \"" << json_escape(manifest.action_id.name) << "\",\n";
+  out << "  \"action_abstraction_version\": " << manifest.action_id.version << ",\n";
+  out << "  \"action_abstraction_parameters\": \"" << json_escape(manifest.action_id.parameters)
+      << "\",\n";
+  out << "  \"action_abstraction_digest\": \"" << digest_hex(manifest.action_id.digest) << "\",\n";
   out << "  \"player_count\": " << manifest.player_count << ",\n";
   out << "  \"big_blind\": " << manifest.big_blind << ",\n";
   out << "  \"stack\": " << manifest.stack << ",\n";

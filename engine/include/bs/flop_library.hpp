@@ -42,7 +42,8 @@ struct ClassEntry {
 // artifacts. Every measurement is exact (counted, not estimated); the
 // coverage fraction is covered_flops / total_flops.
 struct LibraryManifest {
-  abstraction::AbstractionId card_id;  // suit-canonical-v1
+  abstraction::AbstractionId card_id;    // suit-canonical-v1
+  abstraction::AbstractionId action_id;  // identity or declared-coarse
   std::size_t player_count = 0;
   poker::Chips big_blind = 0;
   poker::Chips stack = 0;         // remaining per seat (chips)
@@ -77,11 +78,19 @@ std::vector<solver::WeightedHand> declared_library_range();
 // `player_count` sets the number of seats (2..10). All seats use the same
 // range and stack profile. The manifest records the player count so the
 // resident layer can select the right library for a multi-way hand.
+//
+// `action` selects the action abstraction. The identity (default) seeds the
+// legal minimum and all-in cap at every aggressive node, which is exact but
+// explodes the tree at deeper stacks. The declared-coarse abstraction
+// (RFC 0008 DeclaredOnly) removes those forced seeds, making 10 BB+ training
+// practical at the cost of a coarser menu.
 LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips stack, poker::Chips contribution,
                               const std::vector<solver::WeightedHand>& range,
-                              std::size_t player_count = 2);
+                              std::size_t player_count = 2,
+                              abstraction::ActionAbstraction action =
+                                  abstraction::ActionAbstraction::identity());
 
 // Write the manifest as JSON to `out_dir / "manifest.json"`.
 void write_manifest(const LibraryManifest& manifest, const std::filesystem::path& out_dir);

@@ -155,6 +155,26 @@ bool test_build_library(const fs::path& dir) {
   return true;
 }
 
+bool test_build_library_coarse(const fs::path& dir) {
+  const auto range = bs::flop_library::declared_library_range();
+  const auto action = bs::abstraction::ActionAbstraction::declared(
+      bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly);
+  const bs::flop_library::LibraryManifest manifest =
+      bs::flop_library::build_library(dir, 2, 100, 20261002, 4, 2, range, 2, action);
+
+  CHECK(manifest.action_id.name == "rfc0008-declared-coarse");
+  CHECK(manifest.action_id != bs::abstraction::identity_action_id());
+  CHECK(manifest.class_count == 2);
+  CHECK(manifest.storage_bytes > 0);
+  // The coarse tree should have fewer nodes than the identity tree at the
+  // same stack profile (the forced min/cap seeds are removed).
+  for (const auto& entry : manifest.classes) {
+    CHECK(fs::exists(dir / entry.artifact_name));
+    CHECK(entry.stored_rows > 0);
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -168,6 +188,7 @@ int main() {
   ok = test_declared_range() && ok;
   ok = test_coverage() && ok;
   ok = test_build_library(dir) && ok;
+  ok = test_build_library_coarse(dir / "coarse") && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {

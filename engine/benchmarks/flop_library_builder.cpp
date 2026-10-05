@@ -6,7 +6,10 @@
 // only: no service, host, protocol, network, or credentials.
 //
 // Usage: bigshark-flop-library-builder <output-dir> [class-count] [iterations] [player-count]
-// [stack] [contribution]
+// [stack] [contribution] [abstraction]
+//   abstraction  action abstraction: 'identity' (default) or 'coarse'
+//                (RFC 0008 DeclaredOnly — no forced min-bet/jam, practical at 10 BB+)
+#include <bs/abstraction.hpp>
 #include <bs/flop_library.hpp>
 #include <bs/heads_up.hpp>  // poker::Chips
 #include <cstdint>
@@ -16,15 +19,16 @@
 #include <string>
 
 int main(int argc, char** argv) {
-  if (argc < 2 || argc > 7) {
+  if (argc < 2 || argc > 8) {
     std::fprintf(stderr,
                  "usage: %s <output-dir> [class-count] [iterations] [player-count] [stack] "
-                 "[contribution]\n"
+                 "[contribution] [abstraction]\n"
                  "  class-count   number of canonical classes to train (default 8)\n"
                  "  iterations    MCCFR iterations per class      (default 1000)\n"
                  "  player-count  seats in the game, 2..10         (default 2)\n"
                  "  stack         starting stack in chips          (default 4 = 2 BB)\n"
-                 "  contribution  preflop contribution in chips    (default 2 = 1 BB)\n",
+                 "  contribution  preflop contribution in chips    (default 2 = 1 BB)\n"
+                 "  abstraction   'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)\n",
                  argv[0]);
     return 2;
   }
@@ -37,17 +41,29 @@ int main(int argc, char** argv) {
       static_cast<bs::poker::Chips>(argc > 5 ? std::strtoull(argv[5], nullptr, 10) : 4);
   const bs::poker::Chips contribution =
       static_cast<bs::poker::Chips>(argc > 6 ? std::strtoull(argv[6], nullptr, 10) : 2);
+  const bool coarse = argc > 7 && std::string(argv[7]) == "coarse";
+  if (argc > 7 && !coarse && std::string(argv[7]) != "identity") {
+    std::fprintf(stderr, "abstraction must be 'identity' or 'coarse' (got '%s')\n", argv[7]);
+    return 2;
+  }
+  const auto action =
+      coarse ? bs::abstraction::ActionAbstraction::declared(
+                   bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly)
+             : bs::abstraction::ActionAbstraction::identity();
 
   const auto range = bs::flop_library::declared_library_range();
-  const bs::flop_library::LibraryManifest manifest = bs::flop_library::build_library(
-      out_dir, class_count, iterations, seed, stack, contribution, range, player_count);
+  const bs::flop_library::LibraryManifest manifest =
+      bs::flop_library::build_library(out_dir, class_count, iterations, seed, stack, contribution,
+                                      range, player_count, action);
 
   const double coverage_pct = 100.0 * static_cast<double>(manifest.covered_flops) /
                               static_cast<double>(manifest.total_flops);
   std::printf(
-      "flop library: %zu classes, %zu/%zu flops covered (%.4f%%), %llu bytes stored, %zu players\n",
+      "flop library: %zu classes, %zu/%zu flops covered (%.4f%%), %llu bytes stored, %zu players, "
+      "%s\n",
       manifest.class_count, manifest.covered_flops, manifest.total_flops, coverage_pct,
-      static_cast<unsigned long long>(manifest.storage_bytes), manifest.player_count);
+      static_cast<unsigned long long>(manifest.storage_bytes), manifest.player_count,
+      manifest.action_id.name.c_str());
   for (const auto& c : manifest.classes) {
     std::printf("  class board {%d, %d, %d}: %s, %llu rows, %llu iterations\n",
                 c.canonical_board[0], c.canonical_board[1], c.canonical_board[2],
