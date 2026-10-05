@@ -875,15 +875,25 @@ abstraction. Each artifact is checkpointed, published (SHA-256), and probed;
 the checkpoint is removed so the directory holds only immutable policies.
 
 The builder CLI is `bigshark-flop-library-builder <output-dir> [class-count]
-[iterations] [player-count] [stack] [contribution]`. The stack and contribution
-default to 4 and 2 chips (2 BB effective, SPR 1). Deeper stacks are supported
-but grow the tree and artifact roughly linearly with the number of betting
-actions: at 10 BB (stack 20) a class has ~157K stored rows and ~16 MiB resident
-(vs ~13K rows and ~0.6 MiB at 2 BB), and the probability codebook falls back
-to doubles because the deeper tree produces more than 256 distinct probability
-values (603 measured). A full 1,755-class library at 10 BB is therefore ~65 GB
-on disk and ~24 GiB resident; full deeper-stack coverage needs a coarser
-action abstraction to keep the tree manageable.
+[iterations] [player-count] [stack] [contribution] [abstraction]`. The stack
+and contribution default to 4 and 2 chips (2 BB effective, SPR 1). Deeper
+stacks are supported but grow the tree and artifact roughly linearly with the
+number of betting actions: at 10 BB (stack 20) a class has ~157K stored rows
+and ~16 MiB resident (vs ~13K rows and ~0.6 MiB at 2 BB), and the probability
+codebook falls back to doubles because the deeper tree produces more than 256
+distinct probability values (603 measured). A full 1,755-class library at 10 BB
+is therefore ~65 GB on disk and ~24 GiB resident with the identity abstraction.
+
+The `abstraction` arg (default `identity`) selects the action abstraction.
+`coarse` uses `ActionAbstraction::declared(default_size_schedule(),
+DeclaredOnly)` (RFC 0008), which removes the forced min-bet/jam seeds that
+explode the tree at deeper stacks. At 10 BB the coarse tree is ~4x smaller
+(111 nodes, 76 info sets vs 453 nodes, 284 info sets for identity), with ~41K
+rows/class (vs ~157K) and 218 distinct probability values — under the 256-entry
+codebook cap, so the resident index uses the compact codebook layout instead
+of the doubles fallback. The n-seat trainer's identity gate was relaxed to
+accept declared-coarse abstractions (commit 7585989); the `solve()` route
+accepts them on both NSeatCfr and Auto (3+ seats) paths.
 
 The declared first-library range is a fixed premium set: AA, KK, QQ, JJ (24
 combos) plus AKs (4) and AKo (12) — 40 combos total, weight 1.0, used for every
@@ -891,9 +901,11 @@ seat. Board-overlapping combos are filtered per class at build time.
 
 The manifest (`manifest.json`) records the honest measurements: the class
 count, the covered-flop count (of 22,100), the per-class stored-row count and
-SHA-256, and the total storage in bytes. Coverage is measured, never estimated:
-`count_covered_flops` enumerates all 22,100 concrete flops and counts those
-whose canonical class is in the library.
+SHA-256, and the total storage in bytes. It also records the card abstraction
+(suit-canonical-v1) and the action abstraction (identity or declared-coarse)
+with their full ids (name, version, parameters, digest) for traceability.
+Coverage is measured, never estimated: `count_covered_flops` enumerates all
+22,100 concrete flops and counts those whose canonical class is in the library.
 
 **First library measurements (2026-10-02).** Four classes, 1,000 iterations
 each, stack 4 / contribution 2 (SPR 1), seed 20261002:
@@ -1258,8 +1270,10 @@ The 3-way identity action tree grows ~4× per 2 BB (10 BB = 23K nodes,
 identity profile with HU-comparable coverage is 10 BB: 118,581 information
 sets, 1,014,536 stored rows, 267 MB file, 118.6s wall, NashConv 11.79 chips
 / exploitability 1.964 BB (10K MC deals). The coarse DeclaredOnly menu
-(RFC 0008) fits at 100 BB (1,800 nodes) but the n-seat trainer's
-identity-abstraction gate blocks it; relaxing that gate is future work.
+(RFC 0008) fits at 100 BB (1,800 nodes); the n-seat trainer's identity gate
+was relaxed to accept declared-coarse abstractions (commit 7585989), so the
+`coarse` abstraction arg is now available in both the preflop profile builder
+and the flop library builder.
 
 ## Flop and Turn Policy
 
