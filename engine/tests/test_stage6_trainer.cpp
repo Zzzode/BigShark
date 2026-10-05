@@ -687,9 +687,16 @@ int test_contract() {
   check(threw, "training a bucket without its big blind is refused");
 
   // P1-2: a wall cap that lets ZERO iterations finish must refuse rather than
-  // seal an empty artifact whose manifest claims the requested count.
+  // seal an empty artifact whose manifest claims the requested count. A 0ms
+  // cap is nondeterministic: the wall is probed only every 256 iterations, so
+  // when the first probe reads the same clock tick as the run start (elapsed
+  // == 0, not > 0) a full batch of 256 iterations completes before the next
+  // probe and the trainer seals a partial artifact instead of refusing. An
+  // already-expired (negative) cap makes the first probe trip unconditionally
+  // (elapsed is always >= 0 for a monotonic clock), so exactly zero iterations
+  // finish and the refusal path is exercised on every run.
   TrainingConfig exhausted = make_config(100'000, 1);
-  exhausted.limits.wall = std::chrono::milliseconds(0);
+  exhausted.limits.wall = std::chrono::milliseconds(-1);
   threw = false;
   try {
     (void)train_bucket(b2, exhausted);
