@@ -61,6 +61,7 @@ artifacts/stage6/
 # the measurements are summarized in docs/design/gto-engine.md)
 artifacts/flop-library/
 artifacts/flop-library-25bb/
+artifacts/flop-library-3p/
 
 # Local preflop profile builds (schema-v2 artifacts and manifest; the
 # measurements are summarized in docs/design/gto-engine.md)
