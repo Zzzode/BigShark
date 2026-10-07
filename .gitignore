@@ -62,6 +62,9 @@ artifacts/stage6/
 artifacts/flop-library/
 artifacts/flop-library-25bb/
 artifacts/flop-library-3p/
+artifacts/flop-library-50bb/
+artifacts/flop-library-100bb/
+artifacts/flop-library-3p-10bb/
 
 # Local preflop profile builds (schema-v2 artifacts and manifest; the
 # measurements are summarized in docs/design/gto-engine.md)
@@ -69,3 +72,14 @@ artifacts/preflop-profile/
 
 # Local N-way preflop profile builds (RFC 0010; same schema-v2 format)
 artifacts/preflop-profile-3way/
+
+# RFC 0012: packed mmap binary libraries and parallel-training verification
+# output. The .bin is a derived acceleration layer; the SQLite artifacts
+# remain canonical. Never commit files under artifacts/.
+artifacts/flop-library-25bb.bin
+artifacts/flop-library-25bb.bin.sha256
+artifacts/ac1-16w/
+
+# Catch-all: never commit anything under artifacts/ (the specific patterns
+# above document the expected contents; this guards against stray files).
+artifacts/

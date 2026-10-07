@@ -54,7 +54,9 @@ for src in "$@"; do
   dep="$tmpdir/$(echo "$src" | tr '/ ' '__').d"
   # Resolve includes; -MMD emits only user (non-system) headers, which is
   # exactly the closure we police (standard library/system headers are out).
-  if ! "$CXX" "$STD" -I "$INCDIR" -MMD -MF "$dep" -c "$src" -o /dev/null >/dev/null 2>"$dep.err"; then
+  # -x c++ keeps GCC from treating a .hpp input as a header to precompile
+  # (it would otherwise try to write a PCH to /dev/null and fail).
+  if ! "$CXX" "$STD" -x c++ -I "$INCDIR" -MMD -MF "$dep" -c "$src" -o /dev/null >/dev/null 2>"$dep.err"; then
     echo "RFC 0008 L3 boundary guard: cannot preprocess '$src' for the dependency check:" >&2
     cat "$dep.err" >&2
     rc=1

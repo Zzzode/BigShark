@@ -232,7 +232,10 @@ inline std::uint64_t iteration_cap_for_budget(std::chrono::milliseconds budget,
       units * static_cast<std::uint64_t>(kGadgetIterationUnitCost.count());
   if (per_iteration_ns == 0)
     return 0;
-  const auto total_ns = static_cast<std::uint64_t>(micros) * 1000ULL;
+  // uint64_t{1000} (not 1000ULL) keeps the product uint64_t: on Linux
+  // uint64_t is unsigned long, so a ULL literal would promote the division
+  // result to unsigned long long and break std::min's same-type requirement.
+  const auto total_ns = static_cast<std::uint64_t>(micros) * std::uint64_t{1000};
   return std::min(total_ns / per_iteration_ns, configured_cap);
 }
 

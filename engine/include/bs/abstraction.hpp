@@ -58,7 +58,11 @@ struct StreetSizes {
 
 // Indexed by bs::poker::Street (Flop=0, Turn=1, River=2, Preflop=3).
 using SizeSchedule = std::array<StreetSizes, 4>;
-static_assert(SizeSchedule{}.size() == static_cast<std::size_t>(poker::Street::Preflop) + 1,
+// tuple_size avoids constructing the array here: StreetSizes holds vectors,
+// and GCC 12's libstdc++ rejects a constexpr default-constructed array of a
+// type with non-trivial members in a static_assert (Apple Clang accepts it).
+static_assert(std::tuple_size_v<SizeSchedule> ==
+                  static_cast<std::size_t>(poker::Street::Preflop) + 1,
               "SizeSchedule must index every poker::Street");
 
 // The schedule a new game starts from: default pot fractions on the postflop

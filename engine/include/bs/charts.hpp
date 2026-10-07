@@ -62,7 +62,16 @@ inline const std::unordered_map<std::string, double>& preflopPctTable() {
           all.emplace_back(chenScore(base + 'o'), base + 'o');
         }
       }
-    std::sort(all.begin(), all.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    // Tiebreak on the hand key so the percentile table is deterministic
+    // across STL implementations: std::sort is not stable, and 20 Chen-score
+    // groups have ties (e.g. J3o/J4o/42o all score 1.0). Without the
+    // tiebreak the tied order is unspecified and the chart digest differs
+    // between Apple Clang and GCC builds.
+    std::sort(all.begin(), all.end(), [](auto& a, auto& b) {
+      if (a.first != b.first)
+        return a.first > b.first;
+      return a.second < b.second;
+    });
     const double n = (double)all.size();
     for (size_t i = 0; i < all.size(); i++)
       table[all[i].second] = 1.0 - (double)i / n;

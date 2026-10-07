@@ -34,7 +34,11 @@ int main() {
   // + four standalone sets) and the 169-entry percentile table, computed at
   // the stage-start baseline. If this changes, the chart source changed and the
   // stage-6 evidence pin must be updated deliberately, never silently.
-  const std::string golden = "cb2da0d1b99f6e3ef1912fcd83c14234dc71c118eb954fe3da3d875ef6898bda";
+  // Golden pin updated for the deterministic Chen-score tiebreaker
+  // (charts.hpp): std::sort is not stable, so the tied-entry order differed
+  // between Apple Clang and GCC, producing a different percentile table and
+  // digest. The tiebreaker makes the order and the digest platform-independent.
+  const std::string golden = "30d605008cc809f2c807b68cd875cb7d79ff32f8f6d87154ddb6cb5e2021373f";
   check(d1 == golden, "the baseline chart digest matches the recorded golden pin");
 
   // Structural confirmation that the digest really spans all 24 fields and the

@@ -87,7 +87,9 @@ for src in "$@"; do
   dep="$tmpdir/$(echo "$src" | tr '/ ' '__').d"
   extras="$(extra_flags "$src")"
   # shellcheck disable=SC2086
-  if ! eval "\"\$CXX\" $extras \"\$STD\" -I \"\$INCDIR\" -MMD -MF \"\$dep\" -c \"\$src\" -o /dev/null" >/dev/null 2>"$dep.err"; then
+  # -x c++ keeps GCC from treating a .hpp input as a header to precompile
+  # (it would otherwise try to write a PCH to /dev/null and fail).
+  if ! eval "\"\$CXX\" $extras \"\$STD\" -x c++ -I \"\$INCDIR\" -MMD -MF \"\$dep\" -c \"\$src\" -o /dev/null" >/dev/null 2>"$dep.err"; then
     echo "RFC 0008 stage-6 trainer edge guard: cannot preprocess '$src':" >&2
     cat "$dep.err" >&2
     rc=1
