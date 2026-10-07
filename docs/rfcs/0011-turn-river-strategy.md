@@ -931,6 +931,36 @@ The river-rooted fixtures have no chance nodes (the river card is fixed).
   is 0.872 BB, a 72.8% reduction from the uniform baseline (3.209 BB).
 - **Coverage:** 98.8% (169 / 171 action nodes).
 
+#### 4-seat turn-rooted (blueprint-free mode)
+
+- **Subgame tree size:** 686,013 nodes (depth 19), 288,852 action nodes,
+  1,233 chance nodes, 92,328 fold leaves, 303,600 showdown leaves,
+  371,600 KiB (362.9 MiB) accounted memory. The tree is ~5.8× larger than
+  the 3-seat tree but well within the 1 GiB byte cap.
+- **Solve time:** 231 ms at 1,000 iterations (50,539 info sets). Within the
+  `ResolveLimits::time` budget (default 2 seconds).
+- **Exploitability:** at 1,000 iterations, the CFR policy's exploitability
+  is 4.393 BB, a 19.9% reduction from the uniform baseline (5.487 BB).
+- **Coverage:** at 1,000 iterations, 11.3% of action nodes have at least
+  one policy row (32,660 / 288,852). The root decision has full coverage.
+- **Significance:** this is the go/no-go gate for 4-seat flop library
+  training. The tree fits in 1 GiB, the solve is real-time (231 ms), and
+  the CFR policy improves over uniform by ~20%. The blueprint-free
+  `resolve_uniform` mode is viable for 4-seat turn decisions.
+
+#### 4-seat river-rooted (blueprint-free mode)
+
+- **Subgame tree size:** 2,829 nodes (depth 14), 1,236 action nodes,
+  0 chance nodes, 360 fold leaves, 1,233 showdown leaves, 1,462 KiB
+  (1.4 MiB) accounted memory.
+- **Solve time:** 66 ms at 1,000 iterations (2,238 info sets).
+- **Exploitability:** at 1,000 iterations, the CFR policy's exploitability
+  is 1.387 BB, a 70.4% reduction from the uniform baseline (4.692 BB).
+- **Coverage:** 86.2% (1,065 / 1,236 action nodes).
+- **Significance:** river decisions are production-quality at all seat
+  counts. The river-rooted subgame has no chance subtree, so CFR converges
+  very fast and the exploitability is under 1.5 BB even at 1,000 iterations.
+
 ## Rollout Plan
 
 1. **Stage 1 — Subgame tree builder + prior range derivation.** Implement the
@@ -942,14 +972,18 @@ The river-rooted fixtures have no chance nodes (the river card is fixed).
    Add unit tests. Measure tree size, solve time, and coverage. Enable
    behind the `BIGSHARK_SUBGAME_RESOLVER` flag.
 3. **Stage 3 — Measurement and documentation (Complete).** Generalized the
-   NashConv tool to 2..3 seats and turn/river subgames
+   NashConv tool to 2..4 seats and turn/river subgames
    (`engine/benchmarks/subgame_nash_conv.cpp`): recursive N-way joint-deal
-   enumeration, four fixtures (2-seat turn, 3-seat turn, 2-seat river,
-   3-seat river). Measured tree size, solve time, coverage, and
+   enumeration, eight fixtures (2/3/4-seat turn, 2/3/4-seat river, plus
+   folded-seat variants). Measured tree size, solve time, coverage, and
    exploitability. Generalized the subgame resolver to 2..3 seats and added
-   river support via the "always turn-rooted" tree-walk approach. Updated
-   `docs/design/gto-engine.md` (subgame resolver section) and this RFC.
-   Doc/RFC checks pass.
+   river support via the "always turn-rooted" tree-walk approach. Added the
+   blueprint-free `resolve_uniform` mode (2..10 seats, uniform priors,
+   street-start only) with the `BIGSHARK_SUBGAME_UNIFORM` host flag.
+   4-seat turn measurement: 686K nodes (362.9 MiB, fits 1 GiB cap),
+   231 ms solve, 4.393 BB exploitability (19.9% reduction vs uniform).
+   Updated `docs/design/gto-engine.md` (subgame resolver section) and this
+   RFC. Doc/RFC checks pass.
 4. **Stage 4 — Gadget re-solving (Phase 2, optional).** Implement the
    Brown & Sandholm gadget with trunk value approximation. Add certification
    tests. Measure the exploitability reduction vs Phase 1.
