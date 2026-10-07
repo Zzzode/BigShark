@@ -116,6 +116,14 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
     subgame_enabled_ = true;
     if (const char* env = std::getenv("BIGSHARK_SUBGAME_RESOLVER"))
       subgame_enabled_ = (std::string_view(env) == "1");
+    // RFC 0011 blueprint-free mode: when no blueprint source is available
+    // (e.g. seat counts without a production flop library), the subgame
+    // resolver can build the subgame directly from the live node state with
+    // uniform prior ranges. Uniform priors are a weaker model than
+    // blueprint-derived ranges, so this is opt-in (default off).
+    subgame_uniform_enabled_ = false;
+    if (const char* env = std::getenv("BIGSHARK_SUBGAME_UNIFORM"))
+      subgame_uniform_enabled_ = (std::string_view(env) == "1");
   }
 
   bool blueprintAdvertised() const noexcept override { return set_.advertised_roots() > 0; }
@@ -166,6 +174,34 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
                                              ? std::optional<std::string_view>{}
                                              : std::optional<std::string_view>{pinned_sha256});
       if (!source) {
+        // RFC 0011 blueprint-free mode: no blueprint source is available for
+        // this node (e.g. a seat count without a production flop library).
+        // When BIGSHARK_SUBGAME_UNIFORM is set, the subgame resolver builds
+        // the subgame directly from the live node state with uniform prior
+        // ranges and serves at approximate. There is no artifact digest, so
+        // the row's artifact_sha256 is empty and the seed is a deterministic
+        // constant. Any non-Solved status falls through to Unsupported.
+        if (subgame_uniform_enabled_) {
+          bs::resolver::ResolveLimits limits;
+          limits.time = std::chrono::milliseconds(std::max<std::uint32_t>(deadline_ms, 1));
+          limits.public_seed = 0;  // no artifact digest; deterministic seed
+          subgame_scratch_ = subgame_resolver_.resolve_uniform(state, history, limits);
+          if (subgame_scratch_.status == bs::resolver::SubgameResolveStatus::Solved) {
+            const auto key = bs::solver::make_information_key(*state.actor(), hero_cards,
+                                                              state.board(), history);
+            const auto found = subgame_scratch_.candidate.find(key);
+            if (found != subgame_scratch_.candidate.end()) {
+              result.outcome = bs::v1::V1ResolveOutcome::Approximate;
+              result.miss = bs::v1::V1BlueprintMiss::None;
+              result.row.size = found->second.probabilities.size();
+              result.row.actions = found->second.actions.data();
+              result.row.probabilities = found->second.probabilities.data();
+              result.row.artifact_sha256 = {};
+              result.row.diagnostic = bs::resolver::kSubgameResolveToken;
+              return result;
+            }
+          }
+        }
         result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
         result.miss = bs::v1::V1BlueprintMiss::RootNotSupported;
         return result;
@@ -379,6 +415,10 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
   // by the BIGSHARK_SUBGAME_RESOLVER environment variable. Same single-threaded
   // scratch contract as the terminal-only resolver above.
   bool subgame_enabled_ = false;
+  // RFC 0011 blueprint-free mode: opt-in via BIGSHARK_SUBGAME_UNIFORM. When
+  // set, a nullopt resolver_source triggers resolve_uniform instead of an
+  // immediate Unsupported.
+  bool subgame_uniform_enabled_ = false;
   mutable bs::resolver::SubgameResolver subgame_resolver_;
   mutable bs::resolver::SubgameResolveResult subgame_scratch_;
 };

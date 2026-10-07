@@ -1,12 +1,13 @@
 // RFC 0011 Stage 3: NashConv measurement for the turn-rooted subgame resolver.
 //
-// Builds representative 2-seat and 3-seat, turn-rooted and river-rooted
-// River-terminal subgames, solves with CFR (train_nseat), and computes an
-// exact NashConv by enumerating every card-compatible joint deal and every
-// legal river card. Chance nodes are enumerated exactly (the river chance is
-// bounded at 44 cards for 2 seats, 42 for 3), so the only approximation is
-// the CFR policy itself. Reports tree size, solve time, coverage, and
-// exploitability at N iterations, plus a uniform-policy baseline.
+// Builds representative 2-seat, 3-seat, and 4-seat, turn-rooted and
+// river-rooted River-terminal subgames, solves with CFR (train_nseat), and
+// computes an exact NashConv by enumerating every card-compatible joint deal
+// and every legal river card. Chance nodes are enumerated exactly (the river
+// chance is bounded at 44 cards for 2 seats, 42 for 3, 40 for 4), so the only
+// approximation is the CFR policy itself. Reports tree size, solve time,
+// coverage, and exploitability at N iterations, plus a uniform-policy
+// baseline.
 //
 // The fixture is a flop check-through on 2c 3d 7h that reaches the turn Js
 // (and optionally the river 9c), with 10 BB behind and a 1 BB pot per seat.
@@ -150,6 +151,24 @@ GameDef make_subgame_def_3p_turn() {
   return def;
 }
 
+// 4-seat, 10 BB behind, 1 BB pot each, flop check-through to the turn Js.
+// Button=3 so seat 0 acts first postflop, matching the multiway convention.
+GameDef make_subgame_def_4p_turn() {
+  GameDef def{};
+  def.player_count = 4;
+  def.button = 3;  // seat 0 acts first postflop
+  def.big_blind = 2;
+  def.ante = 0;
+  def.stacks = {20, 20, 20, 20};
+  def.contributions = {1, 1, 1, 1};
+  def.pot = 4;
+  def.board = {card("2c"), card("3d"), card("7h"), card("Js"), 0};
+  def.board_size = 4;
+  def.preflop = false;
+  def.terminal = TerminalDepth::River;
+  return def;
+}
+
 // 2-seat, river-rooted: flop check-through, turn check-through, river 9c.
 GameDef make_subgame_def_2p_river() {
   GameDef def = make_subgame_def_2p_turn();
@@ -161,6 +180,14 @@ GameDef make_subgame_def_2p_river() {
 // 3-seat, river-rooted: flop check-through, turn check-through, river 9c.
 GameDef make_subgame_def_3p_river() {
   GameDef def = make_subgame_def_3p_turn();
+  def.board = {card("2c"), card("3d"), card("7h"), card("Js"), card("9c")};
+  def.board_size = 5;
+  return def;
+}
+
+// 4-seat, river-rooted: flop check-through, turn check-through, river 9c.
+GameDef make_subgame_def_4p_river() {
+  GameDef def = make_subgame_def_4p_turn();
   def.board = {card("2c"), card("3d"), card("7h"), card("Js"), card("9c")};
   def.board_size = 5;
   return def;
@@ -483,6 +510,16 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::unique_ptr<AbstractTree> tree_ptr;
   try {
     tree_ptr = std::make_unique<AbstractTree>(def, action, tree_limits);
+  } catch (const tree_resource_exhausted& e) {
+    // Exceeding the 1 GiB TreeLimits::max_bytes cap is a measurement result,
+    // not a benchmark failure: report it as a finding and move on.
+    std::fprintf(stderr, "  tree build exceeded the 1 GiB cap: %s\n", e.what());
+    std::fprintf(stderr,
+                 "  FINDING: the %zu-seat %s subgame tree does NOT fit the 1 GiB "
+                 "TreeLimits::max_bytes cap at this abstraction; the resolver "
+                 "cannot build it without a smaller action schedule.\n",
+                 seat_count, river_rooted ? "river-rooted" : "turn-rooted");
+    return 0;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "  tree build failed: %s\n", e.what());
     return 1;
@@ -493,6 +530,8 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::printf("  nodes:        %zu\n", tree.size());
   std::printf("  depth:        %zu\n", tree.depth());
   std::printf("  accounted:    %.1f KiB\n", tree.accounted_bytes() / 1024.0);
+  std::printf("  1 GiB cap:    fits (%.1f MiB of 1024 MiB)\n",
+              tree.accounted_bytes() / (1024.0 * 1024.0));
 
   std::size_t action_nodes = 0, chance_nodes = 0, fold_leaves = 0, showdown_leaves = 0;
   for (const auto& node : tree.nodes()) {
@@ -609,16 +648,20 @@ int main(int argc, char** argv) {
   const auto schedule = make_coarse_schedule();
 
   std::printf("RFC 0011 Stage 3: Subgame Resolver NashConv Measurement\n");
-  std::printf("  2-seat and 3-seat, turn-rooted and river-rooted subgames\n");
+  std::printf("  2-seat, 3-seat, and 4-seat, turn-rooted and river-rooted subgames\n");
 
   int failures = 0;
   failures += run_fixture("2-seat turn-rooted", make_subgame_def_2p_turn(), range, schedule,
                           iterations, seed);
   failures += run_fixture("3-seat turn-rooted", make_subgame_def_3p_turn(), range, schedule,
                           iterations, seed);
+  failures += run_fixture("4-seat turn-rooted", make_subgame_def_4p_turn(), range, schedule,
+                          iterations, seed);
   failures += run_fixture("2-seat river-rooted", make_subgame_def_2p_river(), range, schedule,
                           iterations, seed);
   failures += run_fixture("3-seat river-rooted", make_subgame_def_3p_river(), range, schedule,
+                          iterations, seed);
+  failures += run_fixture("4-seat river-rooted", make_subgame_def_4p_river(), range, schedule,
                           iterations, seed);
   failures += run_fixture("3-seat turn-rooted, 1 folded", make_subgame_def_3p_turn_folded(), range,
                           schedule, iterations, seed);

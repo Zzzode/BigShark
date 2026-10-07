@@ -4,7 +4,7 @@ subject: "Turn and River Continuation Strategy"
 status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-06"
-updated: "2026-10-07"
+updated: "2026-10-08"
 owners: "engine, solver, resolver, artifact boundary, benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -41,6 +41,23 @@ bitmap: the GameState constructor seeds `players_[p].folded`, and the
 existing fold-aware machinery (next_actor, refresh_live, settlement,
 trainer) handles them correctly. Folded seats keep their gross
 contributions as dead money and never become the actor.
+
+A blueprint-free mode (`resolve_uniform`) bypasses the flop blueprint
+entirely: it builds the subgame directly from the live node state with
+uniform prior ranges (all 1,326 combos, board-filtered, weight 1.0) and
+roots the subgame at the current street-start node. It supports 2..10
+seats, covering seat counts that have no production flop library. The
+blueprint-derived `resolve` path's seat gate was relaxed in step: from
+`> 3` to `> kMaxUnifiedSeats` (10), so a 4+ seat blueprint works when one
+exists. The blueprint-free mode is weaker than the blueprint-derived path
+(uniform priors do not condition on the observed action line, and river
+decisions root at the river rather than the turn) but is bounded by the
+same CFR convergence guarantees. The tree-build + CFR-solve +
+candidate-extraction logic is shared between both paths through a
+`solve_rooted_subgame` helper. Host activation is behind a
+`BIGSHARK_SUBGAME_UNIFORM` flag (default off): when the resident set has no
+blueprint for the node (`resolver_source()` returns `nullopt`) and the flag
+is on, the engine-host calls `resolve_uniform` and serves at `approximate`.
 
 ## Motivation
 
@@ -95,8 +112,10 @@ storage-infeasible at the depths the production libraries target.
   `RiverFrontierEvaluator` for virtual-deal leaves.
 - Phase 1 supports 2..3 seats and both turn (board_size=4) and river
   (board_size=5) decisions. The resolver is seat-count-agnostic internally;
-  the gate matches the belief model's exact range (2..3). 4+ seat support
-  requires a 4+ seat flop library, which does not exist.
+  the gate matches the belief model's exact range (2..3). The blueprint-free
+  mode (`resolve_uniform`) extends coverage to 2..10 seats without a
+  blueprint, and the `resolve` seat gate was relaxed to `kMaxUnifiedSeats`
+  (10) so a 4+ seat flop library works when one exists.
 - Measure the continuation strategy's exploitability and decision quality
   against the flop-terminal-only baseline.
 - Keep the live v1 protocol and the artifact schema unchanged.
@@ -109,8 +128,12 @@ storage-infeasible at the depths the production libraries target.
 - **Neural network or learned leaf evaluation.** The leaf valuation is exact
   equity enumeration, following the existing `EquityFrontierEvaluator`
   design. A learned continuation-value model is a separate research direction.
-- **Multiplayer (4+ seats) turn/river.** The production libraries are 2-seat
-  and 3-seat. The resolver generalization to 4..10 seats is future work.
+- **Multiplayer (4+ seats) turn/river with a blueprint trunk.** The
+  production libraries are 2-seat and 3-seat. The blueprint-free
+  `resolve_uniform` mode covers 2..10 seats without a blueprint (uniform
+  priors, street-start only); the blueprint-derived `resolve` path accepts
+  2..10 seats but still needs a matching flop library, which does not exist
+  for 4+ seats.
 - **Preflop continuation.** The preflop profile is a separate artifact
   (RFCs 0007/0010). This RFC covers postflop (turn/river) only.
 - **River-terminal library training.** The virtual turn/river deal mechanism
@@ -236,9 +259,13 @@ flowchart TD
     Check -->|No| TermCheck{Terminal-only?}
     TermCheck -->|Yes| TermResolve[Terminal-only resolver W4d]
     TermCheck -->|No| Subgame[Subgame resolver RFC 0011]
-    Subgame --> Build[Build remaining-street subtree]
+    Subgame --> Mode{Blueprint available?}
+    Mode -->|Yes| Build[Build remaining-street subtree]
     Build --> Ranges[Derive prior ranges from blueprint]
+    Mode -->|No, uniform flag on| Uniform[resolve_uniform: uniform priors]
+    Uniform --> UBuild[Build subtree from live node]
     Ranges --> Solve[CFR solve with settle_showdown leaves]
+    UBuild --> Solve
     Solve --> Approx[Serve at approximate]
     Approx --> Fallback[Operational fallback on failure]
 ```
@@ -458,6 +485,127 @@ the river's 5-card board), so hands that block the river card are correctly
 retained — the river card is dealt by the tree's chance node, not known at
 the turn root.
 
+### Blueprint-free mode: `resolve_uniform`
+
+Status: Current. Implemented in `SubgameResolver::resolve_uniform`
+(`engine/include/bs/subgame_resolver.hpp`,
+`engine/src/resolver/subgame_resolver.cpp`) and wired into the engine-host
+behind `BIGSHARK_SUBGAME_UNIFORM`.
+
+When no flop blueprint is available for the table's seat count (e.g. a 4+
+seat table, for which no production flop library exists), the
+blueprint-derived `resolve` path cannot run: it needs a `BlueprintSource`
+for the game identity, the action abstraction, and the prior ranges. The
+`resolve_uniform` method bypasses the flop blueprint entirely.
+
+1. **Uniform prior ranges.** Every seat receives the same range: all
+   C(52,2) = 1,326 combos with weight 1.0, filtered to remove combos that
+   share a card with the board (the `blocks_board` filter). Folded seats
+   receive the same range: the trainer requires one non-empty range per
+   seat, and the GameDef folded bitmap keeps the folded seat from acting.
+2. **Roots at the current street-start node.** Unlike `resolve` (which
+   always roots at the turn, even for river decisions, because the
+   blueprint is flop-terminal), `resolve_uniform` builds the subgame def
+   directly from the live node state (`build_subgame_def_from_node`). For a
+   turn decision the subgame is turn-rooted with the river chance
+   materialized; for a river decision the subgame is river-rooted with no
+   chance nodes (the river card is fixed). The candidate is always
+   extracted at the tree root; the `walk_to_river` tree walk is not used.
+3. **Identity action abstraction.** With no blueprint sizing schedule to
+   reconstruct, the subgame uses the identity (MinAndCap) action menu.
+4. **Supports 2..10 seats.** The seat gate is `2 <= seats <=
+   kMaxUnifiedSeats` (10), matching the unified game's seat range. No
+   blueprint is consulted, so the `CoverageMiss` path is unreachable.
+
+#### Street-start-only limitation
+
+`resolve_uniform` requires `node.legal().check == true` (the hero can
+check): the node must be a street-start node. A mid-street decision (the
+hero faces a bet) returns `Ineligible`. The reason is representational:
+`GameDef` carries only `stacks`, `contributions`, and `pot` at the root,
+and the tree builder opens action at the street start. It cannot represent
+`street_committed > 0` at a rooted board — the chips already committed
+mid-street have no home in the GameDef fields. The blueprint-derived
+`resolve` path does not have this limitation because it roots at the turn
+start: the flop line is replayed from the blueprint, not reconstructed
+from a live mid-street node.
+
+#### Solution quality tradeoff
+
+Uniform priors are weaker than blueprint-derived priors, for two reasons:
+
+1. **No action-line conditioning.** The blueprint-derived priors condition
+   on the observed flop action line: each hand's weight is its prefix
+   reach under the blueprint policy, so the ranges reflect what the
+   players actually did. Uniform priors assign weight 1.0 to every combo,
+   so the subgame solves against opponents who could hold anything —
+   including hands that would never have reached this spot under a sane
+   policy.
+2. **River decisions root at the river.** For a river decision, `resolve`
+   still roots at the turn and solves the full turn+river subgame, so the
+   river policy is conditioned on the turn action structure.
+   `resolve_uniform` roots at the river, so the river policy is solved in
+   isolation: it does not account for the turn action that led to the
+   river.
+
+The exploitability is higher than the blueprint-derived path but bounded
+by the CFR convergence guarantees: as iterations increase, the solved
+policy converges to a Nash equilibrium of the subgame against the uniform
+priors. The uniform-policy NashConv is the relevant baseline; the
+blueprint-derived path's measured reductions (24–28% at 2 seats, 20.9% at
+3 seats) are against that same baseline.
+
+#### Relaxed seat-count gate in `resolve`
+
+The existing `resolve` method's seat gate was relaxed from `> 3` to
+`> kMaxUnifiedSeats` (10). Previously the gate matched the belief model's
+exact range (2..3); now any 2..10-seat blueprint can drive the
+blueprint-derived path. This is forward-looking: 4+ seat flop libraries
+do not exist today, but when one is published, `resolve` works without a
+code change. The `resolve_uniform` path already covers 2..10 seats without
+a blueprint.
+
+#### Shared `solve_rooted_subgame` helper
+
+The tree-build + CFR-solve + candidate-extraction logic was refactored
+into a shared private helper, `solve_rooted_subgame`. Both `resolve` and
+`resolve_uniform` call it:
+
+- `resolve` passes the blueprint-derived subgame def, the reconstructed
+  action abstraction, the blueprint-derived prior ranges, and
+  `walk_to_river = (board.size() == 5)` (river decisions walk the solved
+  tree to the river node).
+- `resolve_uniform` passes the node-derived subgame def, the identity
+  action abstraction, the uniform prior ranges, and `walk_to_river =
+  false` (the candidate is always at the root).
+
+The helper builds the `AbstractTree` (mapping `tree_resource_exhausted`
+to `Ineligible`), solves with `train_nseat` (mapping
+`nseat_training_exhausted` to `SolveDeadline`), optionally walks to the
+river node, and extracts the whole-range candidate keyed by
+`information_key(state, hero_cards)`.
+
+#### Host integration
+
+The engine-host (`apps/engine-host/main.cpp`) activates the blueprint-free
+mode behind a second runtime flag, `BIGSHARK_SUBGAME_UNIFORM` (default
+off). When the resident set has no blueprint for the node
+(`resolver_source()` returns `nullopt`) and the flag is on, the host calls
+`resolve_uniform` instead of returning `Unsupported`. The flag is
+default-off because the uniform-prior policy is weaker than the
+blueprint-derived path; it is an escape hatch for seat counts without a
+production library, not a replacement for the blueprint trunk. Set
+`BIGSHARK_SUBGAME_UNIFORM=1` to enable. When off, the engine behaves
+exactly as before (a node without a blueprint source falls through to
+`Unsupported`, and the operational fallback applies).
+
+On a `Solved` status the host serves the candidate at
+`V1ResolveOutcome::Approximate` with the `subgame-resolve:approximate`
+diagnostic token (the same token as the blueprint-derived path). There is
+no artifact digest, so the row's `artifact_sha256` is empty and the
+resolve seed is a deterministic constant (`public_seed = 0`). Any
+non-`Solved` status falls through to `Unsupported`.
+
 ### Failure behavior
 
 - **Subgame build failure** (tree exceeds limits, invalid GameDef): the
@@ -467,7 +615,13 @@ the turn root.
   returns `SolveDeadline`; the engine falls to the operational fallback.
 - **Coverage miss** (blueprint row missing for range derivation): the
   resolver returns `CoverageMiss`; the engine falls to the operational
-  fallback.
+  fallback. This path is reachable only in the blueprint-derived `resolve`
+  mode; `resolve_uniform` consults no blueprint and cannot return
+  `CoverageMiss`.
+- **Mid-street node (uniform mode only):** `resolve_uniform` requires
+  `node.legal().check == true` (street-start). A mid-street decision (the
+  hero faces a bet) returns `Ineligible`; the engine falls through to
+  `Unsupported` and the operational fallback.
 
 Phase 1 has no certification path: the flop-terminal blueprint has no row at
 a turn/river node, so the non-regression bound is undefined. All Phase 1
@@ -519,6 +673,18 @@ behaves exactly as before (blueprint -> terminal-only resolver -> operational
 fallback). When on, the subgame resolver inserts between the terminal-only
 resolver and the operational fallback.
 
+The blueprint-free mode is behind a second runtime flag,
+`BIGSHARK_SUBGAME_UNIFORM` (default off). It activates only when
+`resolver_source()` returns `nullopt` (no blueprint for the node). When off,
+a node without a blueprint source falls through to `Unsupported` and the
+operational fallback, exactly as before. When on, the engine-host calls
+`resolve_uniform` and serves at `approximate`. The two flags are
+independent: `BIGSHARK_SUBGAME_RESOLVER` gates the blueprint-derived path
+(on a blueprint miss after the terminal-only resolver is `Ineligible`), and
+`BIGSHARK_SUBGAME_UNIFORM` gates the blueprint-free path (on a nullopt
+blueprint source). Setting `BIGSHARK_SUBGAME_UNIFORM=1` alone does not
+enable the blueprint-derived path.
+
 ## Security and Operational Impact
 
 - **Credentials:** no change. The subgame resolver is an offline component
@@ -541,7 +707,10 @@ resolver and the operational fallback.
   original `source=subgame` results.log value was not added to the TypeScript
   runner; the diagnostic token provides equivalent observability.)
 - **Deployment:** the subgame resolver is linked into the engine host. It is
-  not a separate service. No deployment change is required beyond the flag.
+  not a separate service. No deployment change is required beyond the flags.
+  The blueprint-derived path is gated by `BIGSHARK_SUBGAME_RESOLVER` (default
+  on); the blueprint-free `resolve_uniform` path is gated by
+  `BIGSHARK_SUBGAME_UNIFORM` (default off).
 
 ## Alternatives Considered
 
@@ -593,6 +762,14 @@ or certifiable.
   be inaccurate if the blueprint's flop policy is weak. Mitigation: the
   ranges are derived from the trained blueprint, not a heuristic. The
   certifier's non-regression bound (Phase 2) guards against a weak blueprint.
+- **Uniform-prior weakness (blueprint-free mode).** The `resolve_uniform`
+  mode solves against uniform priors, which do not condition on the observed
+  action line and (for river decisions) root at the river rather than the
+  turn. The resulting policy is weaker than the blueprint-derived path.
+  Mitigation: the mode is opt-in (`BIGSHARK_SUBGAME_UNIFORM`, default off)
+  and serves only seat counts without a production library; the
+  exploitability is bounded by the CFR convergence guarantees and measured
+  against the uniform-policy NashConv baseline.
 - **3-seat tree size.** A 3-seat River-terminal tree has more action nodes
   than a 2-seat tree (the action subtree branches over 3 actors per street).
   With deep stacks the tree can exceed the builder's 1 GiB byte cap.
@@ -633,6 +810,20 @@ or certifiable.
     `SolveDeadline`.
   - Coverage miss: a missing blueprint row for range derivation returns
     `CoverageMiss`.
+  - Blueprint-free turn solve: `resolve_uniform` on a 2-seat street-start
+    turn node (check is legal) solves and returns a candidate at the root
+    with `seat_count == 2`.
+  - Blueprint-free river solve: `resolve_uniform` on a 2-seat street-start
+    river node solves and returns a candidate at the root (no river walk).
+  - Blueprint-free 4+ seat solve: `resolve_uniform` on a 4-seat (or more,
+    up to 10) street-start node solves and returns a candidate, exercising
+    the 2..10-seat gate that the blueprint-derived path cannot reach
+    without a matching library.
+  - Blueprint-free mid-street ineligible: `resolve_uniform` on a node where
+    the hero faces a bet (`node.legal().check == false`) returns
+    `Ineligible` (GameDef cannot represent mid-street committed chips).
+  - Blueprint-free seat gate: `resolve_uniform` on a 1-seat or 11-seat
+    node returns `Ineligible`.
 - `test_continuation_range.cpp` (extended):
   - Turn-rooted continuation range export: verify the ranges match a
     brute-force enumeration for a 2-seat spot.
@@ -795,7 +986,10 @@ is not changed in any stage.
   self-contained `derive_prior_ranges` method is seat-generic (iterates
   `game.def.player_count`), so no N-way continuation range export is needed.
   The 3-seat flop class library provides the blueprint trunk. 4+ seat support
-  requires a 4+ seat flop library, which does not exist.
+  is covered by the blueprint-free `resolve_uniform` mode (2..10 seats,
+  uniform priors, street-start only); the blueprint-derived `resolve` path
+  accepts 2..10 seats but still needs a matching flop library, which does not
+  exist for 4+ seats.
 - **Live budget.** The live decision budget for a subgame resolve is not yet
   measured. The resolver's `ResolveLimits` default to 2 seconds; the actual
   budget depends on the table clock. This is a measurement question,
@@ -814,6 +1008,13 @@ is not changed in any stage.
   (default on after NashConv measurement). When off (`=0`), the engine
   behaves exactly as before. When on, the resolver inserts between the
   terminal-only resolver and the operational fallback.
+- The blueprint-free mode (`resolve_uniform`) builds a subgame directly from
+  the live node state with uniform prior ranges (all 1,326 combos,
+  board-filtered, weight 1.0), supports 2..10 seats, and requires a
+  street-start node (`node.legal().check == true`); a mid-street decision
+  returns `Ineligible`. It is behind the `BIGSHARK_SUBGAME_UNIFORM` flag
+  (default off) and activates only when `resolver_source()` returns
+  `nullopt`. When off, the engine behaves exactly as before.
 - The subgame tree size, solve time, and coverage are measured and reported
   for representative 2-seat and 3-seat spots (turn and river). The p95 solve
   time at the configured iteration cap is within the `ResolveLimits::time`

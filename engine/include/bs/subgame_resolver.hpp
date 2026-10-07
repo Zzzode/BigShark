@@ -15,11 +15,20 @@
 //      evaluator).
 //   4. Serves the candidate at `approximate` (no certification in Phase 1).
 //
-// Supports 2..3 seats. For a river decision the resolver still builds a
+// Supports 2..10 seats. For a river decision the resolver still builds a
 // turn-rooted subgame (the blueprint is flop-terminal and has no turn rows),
 // solves it once, then walks the solved tree — following the observed turn
 // actions and the observed river card — to extract the candidate at the
 // river action node.
+//
+// Blueprint-free mode (resolve_uniform): when no flop blueprint is available
+// (e.g. seat counts without a production flop library), the resolver can
+// build the subgame directly from the live node state with uniform prior
+// ranges (every combo weight 1.0, board blockers removed). This mode roots
+// the subgame at the CURRENT street-start node (no turn-root reconstruction)
+// and supports 2..10 seats. It requires a street-start node
+// (node.legal().check == true) because GameDef cannot represent mid-street
+// committed chips; the CoverageMiss path is unreachable.
 //
 // The resolver is offline (no wire, no credentials) and thread-affine (call
 // from one thread). Folded seats are carried through the GameDef folded
@@ -107,6 +116,14 @@ class SubgameResolver {
                                std::span<const poker::PublicAction> history,
                                const BlueprintSource& blueprint, const ResolveLimits& limits) const;
 
+  // Blueprint-free resolution: uniform prior ranges, rooted at the current
+  // street-start node. Supports 2..10 seats. Requires node.legal().check
+  // (street-start only; GameDef cannot represent mid-street committed chips).
+  // No blueprint is consulted; the CoverageMiss path is unreachable.
+  SubgameResolveResult resolve_uniform(const poker::GameState& node,
+                                       std::span<const poker::PublicAction> history,
+                                       const ResolveLimits& limits) const;
+
  private:
   // Build the River-terminal GameDef for the subgame rooted at the turn state.
   // The subgame is a standalone game: stacks and pot come from the current
@@ -151,6 +168,33 @@ class SubgameResolver {
   static std::size_t walk_to_river_node(const tree::AbstractTree& tree, std::size_t root_index,
                                         std::span<const poker::PublicAction> turn_history,
                                         int river_card, const poker::GameDef& subgame_def);
+
+  // Build the River-terminal GameDef for a subgame rooted at the current
+  // node. Unlike build_subgame_def (which takes a blueprint-derived turn
+  // root), this builds the def directly from the live node state.
+  static poker::GameDef build_subgame_def_from_node(const poker::GameState& node, std::size_t hero);
+
+  // Build uniform prior ranges: all C(52,2)=1326 combos with weight 1.0,
+  // filtered to remove combos sharing a card with the board. The same
+  // range is assigned to every seat (including folded seats — the trainer
+  // requires one non-empty range per seat).
+  static std::vector<std::vector<solver::WeightedHand>> uniform_prior_ranges(
+      std::span<const int> board, std::size_t seats);
+
+  // Shared tree-build + CFR-solve + candidate-extraction logic. If
+  // walk_to_river is true, walks the solved tree from the turn root along
+  // the observed turn actions and river card to extract the candidate at
+  // the river action node. Otherwise extracts at the tree root. `board` is
+  // the decision node's board (used for information keys and the river
+  // card); it may be longer than the subgame def's board in the blueprint
+  // path, where the subgame is turn-rooted but the decision is on the river.
+  void solve_rooted_subgame(const poker::GameDef& subgame_def,
+                            const abstraction::ActionAbstraction& action,
+                            const std::vector<std::vector<solver::WeightedHand>>& prior_ranges,
+                            std::span<const int> board,
+                            std::span<const poker::PublicAction> history, std::size_t hero,
+                            bool walk_to_river, const ResolveLimits& limits,
+                            SubgameResolveResult& result) const;
 };
 
 }  // namespace bs::resolver

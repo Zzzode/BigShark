@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <exception>
 #include <map>
 #include <optional>
 #include <span>
@@ -597,6 +598,162 @@ int test_solve_deadline() {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Blueprint-free (resolve_uniform) tests.
+//
+// resolve_uniform builds the subgame directly from the live node state with
+// uniform prior ranges (every combo weight 1.0, board blockers removed). It
+// roots the subgame at the current street-start node and supports 2..10
+// seats. No blueprint is consulted; the CoverageMiss path is unreachable.
+// ---------------------------------------------------------------------------
+
+// Build a street-start GameState on the turn (board_size=4) or river
+// (board_size=5) for N seats. Every seat posted 1 chip as dead money; the
+// pot equals the sum of contributions. The button is 0 for two seats (the
+// BB acts first postflop, matching the heads-up convention) and N-1 for 3+
+// seats (seat 0 acts first, matching the multiway convention). The state
+// opens in Action phase with legal().check == true.
+GameState make_uniform_state(std::size_t seats, bool river, Chips stack = 10) {
+  GameDef def{};
+  def.player_count = seats;
+  def.button = seats == 2 ? 0 : seats - 1;
+  def.big_blind = 2;
+  for (std::size_t s = 0; s < seats; ++s) {
+    def.stacks[s] = stack;
+    def.contributions[s] = 1;
+  }
+  def.pot = static_cast<Chips>(seats);
+  if (river) {
+    def.board = {card("2c"), card("3d"), card("7h"), card("Js"), card("9c")};
+    def.board_size = 5;
+  } else {
+    def.board = {card("2c"), card("3d"), card("7h"), card("Js"), 0};
+    def.board_size = 4;
+  }
+  def.preflop = false;
+  def.terminal = TerminalDepth::River;
+  return GameState(def);
+}
+
+// Verify that the candidate is non-empty and every row is a valid probability
+// distribution over the node's ordered abstract actions.
+int check_valid_candidate(const SubgameResolveResult& result) {
+  CHECK(!result.node_actions.empty());
+  CHECK(!result.candidate.empty());
+  for (const auto& [key, row] : result.candidate) {
+    CHECK(!row.actions.empty());
+    CHECK(row.actions.size() == row.probabilities.size());
+    double sum = 0.0;
+    for (double p : row.probabilities) {
+      CHECK(p >= 0.0);
+      CHECK(p <= 1.0);
+      sum += p;
+    }
+    CHECK(near(sum, 1.0, 1e-9));
+  }
+  return 0;
+}
+
+// (viii) Uniform 2-seat turn: resolve_uniform with uniform prior ranges on a
+// 2-seat turn decision produces a valid candidate with seat_count == 2.
+int test_uniform_2seat_turn() {
+  GameState state = make_uniform_state(2, /*river=*/false);
+  CHECK(state.legal().check);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  return check_valid_candidate(result);
+}
+
+// (ix) Uniform 3-seat turn: same but with 3 seats.
+int test_uniform_3seat_turn() {
+  GameState state = make_uniform_state(3, /*river=*/false);
+  CHECK(state.legal().check);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 3);
+  return check_valid_candidate(result);
+}
+
+// (x) Uniform 4-seat turn: the key new capability — resolve_uniform supports
+// 4 seats (the production flop blueprint library has no 4-seat rows, so the
+// blueprint path cannot serve this seat count). Stacks are 6 (3 BB) to keep
+// the River-terminal subtree under the byte cap — a 4-seat tree with deeper
+// stacks exceeds the default 1 GB.
+int test_uniform_4seat_turn() {
+  GameState state = make_uniform_state(4, /*river=*/false, /*stack=*/6);
+  CHECK(state.legal().check);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 4);
+  return check_valid_candidate(result);
+}
+
+// (xi) Uniform river: a river decision (board_size=5) with uniform priors
+// roots the subgame at the river street-start node (no chance subtree).
+int test_uniform_river() {
+  GameState state = make_uniform_state(2, /*river=*/true);
+  CHECK(state.legal().check);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  return check_valid_candidate(result);
+}
+
+// (xii) Uniform mid-street ineligible: a turn state where the hero faces a
+// bet (legal().check == false) is Ineligible — the uniform resolver roots
+// the subgame at a street-start node, and GameDef cannot represent mid-street
+// committed chips.
+int test_uniform_mid_street_ineligible() {
+  GameState state = make_uniform_state(2, /*river=*/false);
+  // The first actor bets, so the next actor faces a bet and cannot check.
+  const std::size_t bettor = *state.actor();
+  state = state.after_action(bettor, {ActionType::Bet, 2});
+  CHECK(state.phase() == Phase::Action);
+  CHECK(!state.legal().check);
+
+  const std::vector<PublicAction> history = {{Street::Turn, bettor, {ActionType::Bet, 2}}};
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, history, test_limits());
+  CHECK(result.status == SubgameResolveStatus::Ineligible);
+  return 0;
+}
+
+// (xiii) Uniform 11-seat ineligible: GameDef validation rejects
+// player_count > kMaxUnifiedSeats (10), so an 11-seat state cannot reach
+// resolve_uniform. This test pins the validation gate that backs the
+// resolver's seat-count guard.
+int test_uniform_11seat_ineligible() {
+  GameDef def{};
+  def.player_count = 11;  // exceeds kMaxUnifiedSeats (10)
+  // All other fields stay default; validate() rejects the seat count before
+  // touching any per-seat array.
+  bool threw = false;
+  try {
+    GameState state(def);
+  } catch (const std::exception&) {
+    threw = true;
+  }
+  CHECK(threw);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -609,6 +766,12 @@ int main() {
   failures += test_folded_player_solve();
   failures += test_folded_player_river_solve();
   failures += test_solve_deadline();
+  failures += test_uniform_2seat_turn();
+  failures += test_uniform_3seat_turn();
+  failures += test_uniform_4seat_turn();
+  failures += test_uniform_river();
+  failures += test_uniform_mid_street_ineligible();
+  failures += test_uniform_11seat_ineligible();
   if (failures == 0)
     std::printf("All subgame resolver tests passed.\n");
   else

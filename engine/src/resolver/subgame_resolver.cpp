@@ -303,15 +303,107 @@ std::size_t SubgameResolver::walk_to_river_node(const tree::AbstractTree& tree,
   return chance_node.children[ordinal];
 }
 
+poker::GameDef SubgameResolver::build_subgame_def_from_node(const poker::GameState& node,
+                                                            std::size_t hero) {
+  poker::GameDef def{};
+  def.player_count = node.player_count();
+  def.big_blind = node.def().big_blind;
+  def.ante = node.def().ante;
+  const std::size_t n = def.player_count;
+  def.button = (hero + n - 1) % n;
+  for (std::size_t s = 0; s < def.player_count; ++s) {
+    def.stacks[s] = node.players()[s].stack;
+    def.contributions[s] = node.players()[s].net_contributed();
+    def.folded[s] = node.players()[s].folded;
+  }
+  def.pot = node.pot();
+  const auto board = node.board();
+  for (std::size_t i = 0; i < board.size() && i < 5; ++i)
+    def.board[i] = board[i];
+  def.board_size = static_cast<std::uint8_t>(board.size());
+  def.preflop = false;
+  def.terminal = poker::TerminalDepth::River;
+  return def;
+}
+
+std::vector<std::vector<solver::WeightedHand>> SubgameResolver::uniform_prior_ranges(
+    std::span<const int> board, std::size_t seats) {
+  std::vector<solver::WeightedHand> range;
+  for (int c0 = 0; c0 < 52; ++c0) {
+    for (int c1 = c0 + 1; c1 < 52; ++c1) {
+      const std::array<int, 2> cards{c0, c1};
+      if (blocks_board(board, cards))
+        continue;
+      range.push_back({cards, 1.0});
+    }
+  }
+  return std::vector<std::vector<solver::WeightedHand>>(seats, range);
+}
+
+SubgameResolveResult SubgameResolver::resolve_uniform(const poker::GameState& node,
+                                                      std::span<const poker::PublicAction> history,
+                                                      const ResolveLimits& limits) const {
+  SubgameResolveResult result;
+
+  // The node must be an action node on the turn (board_size = 4) or river
+  // (board_size = 5).
+  if (node.phase() != poker::Phase::Action || !node.actor()) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+  const auto board = node.board();
+  if (board.size() != 4 && board.size() != 5) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+
+  // Supports 2..10 seats.
+  const std::size_t seats = node.player_count();
+  if (seats < 2 || seats > poker::kMaxUnifiedSeats) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+
+  // Street-start only: GameDef cannot represent mid-street committed chips.
+  if (!node.legal().check) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+
+  const std::size_t hero = *node.actor();
+
+  // Build uniform prior ranges (same range for every seat).
+  const std::vector<int> board_vec(board.begin(), board.end());
+  const auto prior_ranges = uniform_prior_ranges(board_vec, seats);
+
+  // Build the subgame def directly from the live node state.
+  poker::GameDef subgame_def;
+  try {
+    subgame_def = build_subgame_def_from_node(node, hero);
+    poker::validate(subgame_def);
+  } catch (const std::exception&) {
+    result.status = SubgameResolveStatus::InvalidInput;
+    return result;
+  }
+
+  // Identity action abstraction (no blueprint sizing schedule).
+  const abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity();
+
+  // The candidate is always extracted at the tree root (no river walk).
+  solve_rooted_subgame(subgame_def, action, prior_ranges, board, history, hero,
+                       /*walk_to_river=*/false, limits, result);
+  return result;
+}
+
 SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
                                               std::span<const poker::PublicAction> history,
                                               const BlueprintSource& blueprint,
                                               const ResolveLimits& limits) const {
   SubgameResolveResult result;
 
-  // Supports 2..3 seats (matching the belief model's exact range).
+  // Supports 2..10 seats (matching the unified game's seat range).
   const solver::UnifiedGame& game = blueprint.game();
-  if (game.def.player_count < 2 || game.def.player_count > 3) {
+  if (game.def.player_count < 2 || game.def.player_count > poker::kMaxUnifiedSeats) {
     result.status = SubgameResolveStatus::Ineligible;
     return result;
   }
@@ -384,6 +476,18 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
   abstraction::ActionAbstraction action =
       reconstruct_action_abstraction(game.action_id, game.sizes);
 
+  // For a river decision, walk the solved tree along the observed turn
+  // actions and river card to extract the candidate at the river node.
+  solve_rooted_subgame(subgame_def, action, prior_ranges, board, history, hero,
+                       /*walk_to_river=*/board.size() == 5, limits, result);
+  return result;
+}
+
+void SubgameResolver::solve_rooted_subgame(
+    const poker::GameDef& subgame_def, const abstraction::ActionAbstraction& action,
+    const std::vector<std::vector<solver::WeightedHand>>& prior_ranges, std::span<const int> board,
+    std::span<const poker::PublicAction> history, std::size_t hero, bool walk_to_river,
+    const ResolveLimits& limits, SubgameResolveResult& result) const {
   std::unique_ptr<tree::AbstractTree> tree_ptr;
   try {
     tree::TreeLimits tree_limits;
@@ -393,10 +497,10 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
     tree_ptr = std::make_unique<tree::AbstractTree>(subgame_def, action, tree_limits);
   } catch (const tree::tree_resource_exhausted&) {
     result.status = SubgameResolveStatus::Ineligible;
-    return result;
+    return;
   } catch (const std::exception&) {
     result.status = SubgameResolveStatus::InvalidInput;
-    return result;
+    return;
   }
   const tree::AbstractTree& tree = *tree_ptr;
 
@@ -414,22 +518,22 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
                                        trainer_limits, nullptr, nullptr);
   } catch (const solver::nseat_training_exhausted&) {
     result.status = SubgameResolveStatus::SolveDeadline;
-    return result;
+    return;
   } catch (const std::exception&) {
     result.status = SubgameResolveStatus::InvalidInput;
-    return result;
+    return;
   }
 
   if (train_result.termination == solver::NSeatTerminationPhase::ResourceLimit) {
     result.status = SubgameResolveStatus::SolveDeadline;
-    return result;
+    return;
   }
 
   // Determine the candidate node: the root for a turn decision, the river
   // action node for a river decision (reached by walking the solved tree
   // along the observed turn actions and river card).
   std::size_t candidate_node = tree.root_index();
-  if (board.size() == 5) {
+  if (walk_to_river) {
     std::vector<poker::PublicAction> turn_history;
     for (const auto& pa : history) {
       if (pa.street == poker::Street::Turn)
@@ -439,7 +543,7 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
         walk_to_river_node(tree, tree.root_index(), turn_history, board[4], subgame_def);
     if (river_node == static_cast<std::size_t>(-1)) {
       result.status = SubgameResolveStatus::Ineligible;
-      return result;
+      return;
     }
     candidate_node = river_node;
   }
@@ -447,8 +551,8 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
   // Extract the candidate at the candidate node.
   const tree::TreeNode& candidate_tree_node = tree.node(candidate_node);
   result.node_actions = candidate_tree_node.actions;
-  result.root_pot = static_cast<double>(turn_root.pot());
-  result.seat_count = game.def.player_count;
+  result.root_pot = static_cast<double>(subgame_def.pot);
+  result.seat_count = subgame_def.player_count;
   result.nodes = tree.size();
   result.information_sets = train_result.information_sets;
   result.completed_iterations = train_result.completed_iterations;
@@ -473,11 +577,10 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
 
   if (result.candidate.empty()) {
     result.status = SubgameResolveStatus::SolveDeadline;
-    return result;
+    return;
   }
 
   result.status = SubgameResolveStatus::Solved;
-  return result;
 }
 
 SubgameResolver::SubgameResolver() = default;
