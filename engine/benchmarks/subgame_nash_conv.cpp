@@ -75,14 +75,20 @@ bool blocks_board(const std::array<int, 2>& h, const std::array<int, 5>& board,
   return false;
 }
 
-// Legal runout cards: {0..51} minus the board and every seat's hole cards.
+// Legal runout cards: {0..51} minus the board and every live seat's hole
+// cards. Folded seats carry a placeholder {-1, -1} — their cards are dead
+// and must not block the runout deck.
 std::vector<int> legal_runout_cards(const GameState& state,
                                     const std::vector<std::array<int, 2>>& holes) {
   std::array<bool, 52> used{};
   for (int c : state.board())
     used[c] = true;
-  for (const auto& h : holes)
-    used[h[0]] = used[h[1]] = true;
+  for (const auto& h : holes) {
+    if (h[0] >= 0)
+      used[h[0]] = true;
+    if (h[1] >= 0)
+      used[h[1]] = true;
+  }
   std::vector<int> cards;
   for (int c = 0; c < 52; ++c)
     if (!used[c])
@@ -157,6 +163,22 @@ GameDef make_subgame_def_3p_river() {
   GameDef def = make_subgame_def_3p_turn();
   def.board = {card("2c"), card("3d"), card("7h"), card("Js"), card("9c")};
   def.board_size = 5;
+  return def;
+}
+
+// 3-seat, turn-rooted, seat 2 folded on the flop. The folded seat's 1 BB
+// contribution is dead money. Two live seats play for the 3 BB pot.
+GameDef make_subgame_def_3p_turn_folded() {
+  GameDef def = make_subgame_def_3p_turn();
+  def.folded[2] = true;
+  return def;
+}
+
+// 3-seat, river-rooted, seat 2 folded on the flop. Two live seats play
+// through the turn and reach the river.
+GameDef make_subgame_def_3p_river_folded() {
+  GameDef def = make_subgame_def_3p_river();
+  def.folded[2] = true;
   return def;
 }
 
@@ -289,17 +311,21 @@ struct NashConvResult {
 };
 
 // Recursive N-way joint-deal enumerator. For each card-compatible assignment
-// of one hand per seat, walks the tree once per seat for strategy value and
-// once for best-response value. Accumulates into the output sums.
+// of one hand per LIVE seat, walks the tree once per live seat for strategy
+// value and once for best-response value. Folded seats carry a placeholder
+// {-1, -1} — their cards are dead and do not block live seats' hands.
+// Accumulates into the output sums.
 void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
                            const std::vector<std::array<int, 2>>& range, const GameState& root,
-                           std::size_t seat_count, std::size_t current_seat,
-                           std::vector<std::array<int, 2>>& holes,
+                           const std::array<bool, kMaxUnifiedSeats>& folded, std::size_t seat_count,
+                           std::size_t current_seat, std::vector<std::array<int, 2>>& holes,
                            std::vector<double>& strategy_sum, std::vector<double>& br_sum,
                            std::size_t& joint_deals, std::size_t& total_fallbacks) {
   if (current_seat == seat_count) {
     ++joint_deals;
     for (std::size_t p = 0; p < seat_count; ++p) {
+      if (folded[p])
+        continue;  // folded seat: no strategy, no best response
       NashConvWalker walker{tree, policy, p, /*best_response=*/false};
       const double sv = walker.walk(root, tree.root_index(), holes);
       NashConvWalker br_walker{tree, policy, p, /*best_response=*/true};
@@ -310,9 +336,19 @@ void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
     }
     return;
   }
+  if (folded[current_seat]) {
+    // Folded seat: push a placeholder, skip collision check and enumeration.
+    holes.push_back({-1, -1});
+    enumerate_joint_deals(tree, policy, range, root, folded, seat_count, current_seat + 1, holes,
+                          strategy_sum, br_sum, joint_deals, total_fallbacks);
+    holes.pop_back();
+    return;
+  }
   for (const auto& h : range) {
     bool collides = false;
     for (std::size_t s = 0; s < current_seat; ++s) {
+      if (folded[s])
+        continue;  // folded seat's placeholder cannot collide
       if (hands_collide(h, holes[s])) {
         collides = true;
         break;
@@ -320,7 +356,7 @@ void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
     }
     if (!collides) {
       holes.push_back(h);
-      enumerate_joint_deals(tree, policy, range, root, seat_count, current_seat + 1, holes,
+      enumerate_joint_deals(tree, policy, range, root, folded, seat_count, current_seat + 1, holes,
                             strategy_sum, br_sum, joint_deals, total_fallbacks);
       holes.pop_back();
     }
@@ -348,21 +384,27 @@ NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* po
   std::vector<std::array<int, 2>> holes;
   holes.reserve(seat_count);
 
-  enumerate_joint_deals(tree, policy, live_range, root, seat_count, 0, holes, strategy_sum, br_sum,
-                        joint_deals, total_fallbacks);
+  enumerate_joint_deals(tree, policy, live_range, root, def.folded, seat_count, 0, holes,
+                        strategy_sum, br_sum, joint_deals, total_fallbacks);
 
   NashConvResult result;
   result.strategy_value.resize(seat_count);
   result.br_value.resize(seat_count);
   result.joint_deals = joint_deals;
   result.fallbacks = total_fallbacks;
+  std::size_t live_seats = 0;
   for (std::size_t p = 0; p < seat_count; ++p) {
+    if (def.folded[p]) {
+      result.strategy_value[p] = 0.0;
+      result.br_value[p] = 0.0;
+      continue;
+    }
+    ++live_seats;
     result.strategy_value[p] = strategy_sum[p] / static_cast<double>(joint_deals);
     result.br_value[p] = br_sum[p] / static_cast<double>(joint_deals);
-  }
-  for (std::size_t p = 0; p < seat_count; ++p)
     result.nash_conv += result.br_value[p] - result.strategy_value[p];
-  result.exploitability = result.nash_conv / static_cast<double>(seat_count);
+  }
+  result.exploitability = result.nash_conv / static_cast<double>(live_seats);
   result.exploitability_bb = result.exploitability / bb;
   return result;
 }
@@ -419,6 +461,12 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::printf("========================================================================\n");
   std::printf("  seats:        %zu (%s)\n", seat_count,
               river_rooted ? "river-rooted" : "turn-rooted");
+  std::size_t folded_count = 0;
+  for (std::size_t p = 0; p < seat_count; ++p)
+    if (def.folded[p])
+      ++folded_count;
+  if (folded_count > 0)
+    std::printf("  folded:       %zu seat(s) (dead money)\n", folded_count);
   std::printf("  stacks:       %.0f BB each (%.0f chips)\n",
               def.stacks[0] / static_cast<double>(def.big_blind),
               static_cast<double>(def.stacks[0]));
@@ -572,6 +620,10 @@ int main(int argc, char** argv) {
                           iterations, seed);
   failures += run_fixture("3-seat river-rooted", make_subgame_def_3p_river(), range, schedule,
                           iterations, seed);
+  failures += run_fixture("3-seat turn-rooted, 1 folded", make_subgame_def_3p_turn_folded(), range,
+                          schedule, iterations, seed);
+  failures += run_fixture("3-seat river-rooted, 1 folded", make_subgame_def_3p_river_folded(),
+                          range, schedule, iterations, seed);
 
   if (failures == 0)
     std::printf("\nAll fixtures completed.\n");
