@@ -1316,9 +1316,10 @@ blueprint → terminal-only resolver → subgame resolver → operational fallba
 
 The subgame resolver inserts between the terminal-only resolver and the
 operational fallback. It is activated by the `BIGSHARK_SUBGAME_RESOLVER`
-environment variable (default off). When off, the engine behaves exactly as
-before. A build failure, solve deadline, or coverage miss returns the typed
-status so the engine falls through.
+environment variable (default on after NashConv measurement). Set `=0` to
+disable. When off, the engine behaves exactly as before. A build failure,
+solve deadline, or coverage miss returns the typed status so the engine
+falls through.
 
 ### Wire protocol
 
@@ -1338,20 +1339,23 @@ operators to distinguish subgame-sourced decisions from blueprint hits.
 - Folded-seat support. The GameDef folded bitmap carries mid-hand folds to
   the subgame root; the existing fold-aware machinery handles them.
 - No certification. All candidates serve at `approximate`.
-- Runtime flag. `BIGSHARK_SUBGAME_RESOLVER=1` enables the resolver.
+- Runtime flag. `BIGSHARK_SUBGAME_RESOLVER=0` disables the resolver (default on).
 
 ### Measurements
 
 The NashConv benchmark (`engine/benchmarks/subgame_nash_conv.cpp`,
-`bigshark-subgame-nash-conv`) builds four representative subgames — 2-seat
-turn-rooted, 3-seat turn-rooted, 2-seat river-rooted, and 3-seat
-river-rooted — solves each with CFR, and computes an exact NashConv by
+`bigshark-subgame-nash-conv`) builds six representative subgames — 2-seat
+turn-rooted, 3-seat turn-rooted, 2-seat river-rooted, 3-seat river-rooted,
+3-seat turn-rooted with one folded seat, and 3-seat river-rooted with one
+folded seat — solves each with CFR, and computes an exact NashConv by
 enumerating every card-compatible joint deal and every legal river card.
 The 2-seat turn fixture uses a flop check-through on 2c 3d 7h → turn Js,
 10 BB behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise
 abstraction, 10 hands per seat (70 joint deals, 44 river cards). The 3-seat
 fixtures use the same board with 3 seats (342 joint deals, 42 river cards).
-The river-rooted fixtures have no chance nodes (the river card is fixed).
+The folded-seat fixtures have one seat folded on the flop (dead money),
+reducing the joint-deal count to 70 (turn) and 38 (river). The
+river-rooted fixtures have no chance nodes (the river card is fixed).
 
 #### 2-seat turn-rooted
 

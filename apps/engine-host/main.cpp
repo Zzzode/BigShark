@@ -107,10 +107,13 @@ bool parseSha256Hex(std::string_view text, Sha256Digest& digest) {
 class ResidentHostServices final : public bs::v1::V1HostServices {
  public:
   explicit ResidentHostServices(bs::resident::ResidentPolicySet set) : set_(std::move(set)) {
-    // RFC 0011 Phase 1: the subgame resolver is behind a runtime flag
+    // RFC 0011: the subgame resolver is behind a runtime flag
     // (environment variable), not a compile-time switch, so it can be toggled
-    // without a rebuild and the rollback is a config change. When off (the
-    // default), the engine behaves exactly as before.
+    // without a rebuild and the rollback is a config change. The resolver is
+    // enabled by default after NashConv measurement confirmed exploitability
+    // reduction vs uniform baseline (RFC 0011 Stage 3). Set
+    // BIGSHARK_SUBGAME_RESOLVER=0 to disable.
+    subgame_enabled_ = true;
     if (const char* env = std::getenv("BIGSHARK_SUBGAME_RESOLVER"))
       subgame_enabled_ = (std::string_view(env) == "1");
   }

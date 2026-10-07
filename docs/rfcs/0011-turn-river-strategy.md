@@ -510,11 +510,12 @@ subgame resolver is a new code path that activates only when the blueprint
 and the terminal-only resolver do not cover the spot.
 
 **Backward-compatible activation.** The subgame resolver is behind a runtime
-flag (environment variable `BIGSHARK_SUBGAME_RESOLVER=1`, default off in
-Phase 1, enabled after measurement). A runtime flag (not a compile-time
-`#ifdef`) is chosen so the resolver can be toggled without a rebuild and so
-the rollback is a config change, not a redeploy. When off, the engine behaves
-exactly as before (blueprint -> terminal-only resolver -> operational
+flag (environment variable `BIGSHARK_SUBGAME_RESOLVER`, default on after
+NashConv measurement confirmed exploitability reduction vs uniform baseline).
+A runtime flag (not a compile-time `#ifdef`) is chosen so the resolver can be
+toggled without a rebuild and so the rollback is a config change, not a
+redeploy. Set `BIGSHARK_SUBGAME_RESOLVER=0` to disable. When off, the engine
+behaves exactly as before (blueprint -> terminal-only resolver -> operational
 fallback). When on, the subgame resolver inserts between the terminal-only
 resolver and the operational fallback.
 
@@ -810,9 +811,9 @@ is not changed in any stage.
   equity with correct tie splitting and dead-money handling). No new
   evaluator is required for Phase 1.
 - The subgame resolver is behind the `BIGSHARK_SUBGAME_RESOLVER` flag
-  (default off). When off, the engine behaves exactly as before. When on,
-  the resolver inserts between the terminal-only resolver and the
-  operational fallback.
+  (default on after NashConv measurement). When off (`=0`), the engine
+  behaves exactly as before. When on, the resolver inserts between the
+  terminal-only resolver and the operational fallback.
 - The subgame tree size, solve time, and coverage are measured and reported
   for representative 2-seat and 3-seat spots (turn and river). The p95 solve
   time at the configured iteration cap is within the `ResolveLimits::time`
