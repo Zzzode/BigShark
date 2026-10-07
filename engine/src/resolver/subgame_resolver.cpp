@@ -23,8 +23,11 @@
 // the GTO policy for that node, so the river node's policy is correct.
 //
 // The resolver is offline (no wire, no credentials) and thread-affine (call
-// from one thread). A folded seat returns Ineligible: the GameDef has no fold
-// field, so a folded player would be treated as live in the subgame tree.
+// from one thread). Folded seats are carried through the GameDef folded
+// bitmap: the constructor seeds players_[p].folded, and the existing
+// fold-aware machinery (next_actor, refresh_live, settlement, trainer)
+// handles them correctly. Folded seats keep their gross contributions as
+// dead money and never become the actor.
 //
 // The fallback chain is: blueprint -> terminal-only resolver -> subgame
 // resolver -> operational fallback. A build failure, solve deadline, or
@@ -94,6 +97,7 @@ poker::GameDef SubgameResolver::build_subgame_def(const poker::GameState& turn_r
   for (std::size_t s = 0; s < def.player_count; ++s) {
     def.stacks[s] = turn_root.players()[s].stack;
     def.contributions[s] = turn_root.players()[s].net_contributed();
+    def.folded[s] = turn_root.players()[s].folded;
   }
   def.pot = turn_root.pot();
   const auto board = turn_root.board();
@@ -324,18 +328,12 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
     return result;
   }
 
-  // A folded seat would be treated as live in the subgame tree (the GameDef
-  // has no fold field). Return Ineligible rather than build a wrong tree.
-  // Also guard against a node/blueprint seat-count mismatch.
+  // Guard against a node/blueprint seat-count mismatch. Folded seats are
+  // carried through the GameDef folded bitmap and handled by the existing
+  // fold-aware machinery, so no Ineligible guard is needed for them.
   if (node.player_count() != game.def.player_count) {
     result.status = SubgameResolveStatus::InvalidInput;
     return result;
-  }
-  for (std::size_t s = 0; s < node.player_count(); ++s) {
-    if (node.players()[s].folded) {
-      result.status = SubgameResolveStatus::Ineligible;
-      return result;
-    }
   }
 
   // Extract the flop action line from the history. The flop root is the

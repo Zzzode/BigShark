@@ -422,12 +422,12 @@ int test_three_seat_river_solve() {
 }
 
 // (vi) Folded player: a 3-seat game where one player folded on the flop is
-// Ineligible — the GameDef has no fold field, so a folded seat would be
-// treated as live in the subgame tree.
-int test_folded_player_ineligible() {
+// Solved — the GameDef folded bitmap carries the fold to the subgame tree,
+// and the existing fold-aware machinery (next_actor, refresh_live,
+// settlement, trainer) handles the folded seat as dead money.
+int test_folded_player_solve() {
   FlopCheckThrough3P f;
   MapBlueprint bp(f.unified);
-  install_flop_rows_3p(bp, f);
 
   // Use a River-terminal flop root so after_card opens Action (not Frontier)
   // after the flop line completes. The blueprint is flop-terminal, but the
@@ -439,9 +439,6 @@ int test_folded_player_ineligible() {
 
   // Advance through a legal line where seat 2 folds:
   // seat 0 checks, seat 1 bets 2, seat 2 folds, seat 0 calls.
-  // The fold is tracked in the PlayerState, so the resolver's folded-player
-  // check detects it (a GameDef constructed from scratch would lose the fold
-  // because GameDef has no fold field).
   GameState cursor(flop_root_rt);
   cursor = cursor.after_action(0, {ActionType::Check});
   cursor = cursor.after_action(1, {ActionType::Bet, 2});
@@ -450,16 +447,136 @@ int test_folded_player_ineligible() {
   // Deal the turn card to reach a turn action node.
   cursor = cursor.after_card(card("Js"));
 
-  // History: seat 0 checks, seat 1 bets, seat 2 folds, seat 0 calls.
+  // History: seat 0 checks, seat 1 bets 2, seat 2 folds, seat 0 calls.
   std::vector<PublicAction> fold_history = {{Street::Flop, 0, {ActionType::Check}},
                                             {Street::Flop, 1, {ActionType::Bet, 2}},
                                             {Street::Flop, 2, {ActionType::Fold}},
                                             {Street::Flop, 0, {ActionType::Call}}};
 
+  // Install blueprint rows for the fold line. The resolver's
+  // derive_prior_ranges walks this line and looks up a row at each step;
+  // each row must include the observed action in its menu.
+  // Seat 0 checks at the flop root.
+  bp.set_row(flop_root_rt, {}, 0, f.hand0, {{ActionType::Check}, {ActionType::Bet, 2}}, {1.0, 0.0});
+  // Seat 1 bets 2 after seat 0's check.
+  const GameState after_0 = flop_root_rt.after_action(0, {ActionType::Check});
+  const std::vector<PublicAction> prefix0 = {{Street::Flop, 0, {ActionType::Check}}};
+  bp.set_row(after_0, prefix0, 1, f.hand1, {{ActionType::Check}, {ActionType::Bet, 2}}, {0.0, 1.0});
+  // Seat 2 folds after seat 1's bet.
+  const GameState after_01 = after_0.after_action(1, {ActionType::Bet, 2});
+  const std::vector<PublicAction> prefix01 = {{Street::Flop, 0, {ActionType::Check}},
+                                              {Street::Flop, 1, {ActionType::Bet, 2}}};
+  bp.set_row(after_01, prefix01, 2, f.hand2, {{ActionType::Fold}, {ActionType::Call}}, {1.0, 0.0});
+  // Seat 0 calls after seat 2's fold.
+  const GameState after_012 = after_01.after_action(2, {ActionType::Fold});
+  const std::vector<PublicAction> prefix012 = {{Street::Flop, 0, {ActionType::Check}},
+                                               {Street::Flop, 1, {ActionType::Bet, 2}},
+                                               {Street::Flop, 2, {ActionType::Fold}}};
+  bp.set_row(after_012, prefix012, 0, f.hand0, {{ActionType::Fold}, {ActionType::Call}},
+             {0.0, 1.0});
+
   SubgameResolver resolver;
   const auto result = resolver.resolve(cursor, fold_history, bp, test_limits());
 
-  CHECK(result.status == SubgameResolveStatus::Ineligible);
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 3);
+  CHECK(result.nodes > 0);
+  CHECK(result.information_sets > 0);
+  CHECK(result.completed_iterations > 0);
+  CHECK(!result.node_actions.empty());
+  CHECK(!result.candidate.empty());
+
+  // Every candidate row is a valid probability distribution.
+  for (const auto& [key, row] : result.candidate) {
+    CHECK(!row.actions.empty());
+    CHECK(row.actions.size() == row.probabilities.size());
+    double sum = 0.0;
+    for (double p : row.probabilities) {
+      CHECK(p >= 0.0);
+      CHECK(p <= 1.0);
+      sum += p;
+    }
+    CHECK(near(sum, 1.0, 1e-9));
+  }
+
+  return 0;
+}
+
+// (vi-b) Folded player on the river: a 3-seat river decision where one player
+// folded on the flop builds a turn-rooted subgame, solves it, and walks the
+// tree to the river node. The folded bitmap must survive the walk — the
+// cursor's actor rotation skips the folded seat on the turn.
+int test_folded_player_river_solve() {
+  FlopCheckThrough3P f;
+  MapBlueprint bp(f.unified);
+
+  // Use a River-terminal flop root so after_card opens Action (not Frontier)
+  // after the flop line completes.
+  GameDef rt_def = f.unified.def;
+  rt_def.terminal = TerminalDepth::River;
+  GameState flop_root_rt(rt_def);
+
+  // Flop line: seat 0 checks, seat 1 bets 2, seat 2 folds, seat 0 calls.
+  GameState cursor(flop_root_rt);
+  cursor = cursor.after_action(0, {ActionType::Check});
+  cursor = cursor.after_action(1, {ActionType::Bet, 2});
+  cursor = cursor.after_action(2, {ActionType::Fold});
+  cursor = cursor.after_action(0, {ActionType::Call});
+  // Deal the turn card.
+  cursor = cursor.after_card(card("Js"));
+  // Turn line: seat 0 checks, seat 1 checks (seat 2 is folded, skipped).
+  cursor = cursor.after_action(0, {ActionType::Check});
+  cursor = cursor.after_action(1, {ActionType::Check});
+  // Deal the river card to reach a river action node.
+  cursor = cursor.after_card(card("9c"));
+
+  // Full history: flop fold line + turn check-through.
+  std::vector<PublicAction> full_history = {
+      {Street::Flop, 0, {ActionType::Check}}, {Street::Flop, 1, {ActionType::Bet, 2}},
+      {Street::Flop, 2, {ActionType::Fold}},  {Street::Flop, 0, {ActionType::Call}},
+      {Street::Turn, 0, {ActionType::Check}}, {Street::Turn, 1, {ActionType::Check}},
+  };
+
+  // Install blueprint rows for the flop fold line (same as test_folded_player_solve).
+  bp.set_row(flop_root_rt, {}, 0, f.hand0, {{ActionType::Check}, {ActionType::Bet, 2}}, {1.0, 0.0});
+  const GameState after_0 = flop_root_rt.after_action(0, {ActionType::Check});
+  const std::vector<PublicAction> prefix0 = {{Street::Flop, 0, {ActionType::Check}}};
+  bp.set_row(after_0, prefix0, 1, f.hand1, {{ActionType::Check}, {ActionType::Bet, 2}}, {0.0, 1.0});
+  const GameState after_01 = after_0.after_action(1, {ActionType::Bet, 2});
+  const std::vector<PublicAction> prefix01 = {{Street::Flop, 0, {ActionType::Check}},
+                                              {Street::Flop, 1, {ActionType::Bet, 2}}};
+  bp.set_row(after_01, prefix01, 2, f.hand2, {{ActionType::Fold}, {ActionType::Call}}, {1.0, 0.0});
+  const GameState after_012 = after_01.after_action(2, {ActionType::Fold});
+  const std::vector<PublicAction> prefix012 = {{Street::Flop, 0, {ActionType::Check}},
+                                               {Street::Flop, 1, {ActionType::Bet, 2}},
+                                               {Street::Flop, 2, {ActionType::Fold}}};
+  bp.set_row(after_012, prefix012, 0, f.hand0, {{ActionType::Fold}, {ActionType::Call}},
+             {0.0, 1.0});
+
+  SubgameResolver resolver;
+  const auto result = resolver.resolve(cursor, full_history, bp, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 3);
+  CHECK(result.nodes > 0);
+  CHECK(result.information_sets > 0);
+  CHECK(result.completed_iterations > 0);
+  CHECK(!result.node_actions.empty());
+  CHECK(!result.candidate.empty());
+
+  // Every candidate row is a valid probability distribution.
+  for (const auto& [key, row] : result.candidate) {
+    CHECK(!row.actions.empty());
+    CHECK(row.actions.size() == row.probabilities.size());
+    double sum = 0.0;
+    for (double p : row.probabilities) {
+      CHECK(p >= 0.0);
+      CHECK(p <= 1.0);
+      sum += p;
+    }
+    CHECK(near(sum, 1.0, 1e-9));
+  }
+
   return 0;
 }
 
@@ -489,7 +606,8 @@ int main() {
   failures += test_coverage_miss();
   failures += test_three_seat_turn_solve();
   failures += test_three_seat_river_solve();
-  failures += test_folded_player_ineligible();
+  failures += test_folded_player_solve();
+  failures += test_folded_player_river_solve();
   failures += test_solve_deadline();
   if (failures == 0)
     std::printf("All subgame resolver tests passed.\n");

@@ -791,6 +791,56 @@ int main() {
     assertMiss("turn event without turn card", spec, V1BlueprintMiss::OffTree);
   }
 
+  // --- RFC 0011 folded-seat resolver-path admission ------------------------
+  // The blueprint path rejects any folded seat (RootNotSupported). The
+  // resolver path (reconstructPostflopForResolve) admits them so the subgame
+  // resolver can carry the folded bitmap through the GameDef. Three seats,
+  // seat 2 folds facing a bet on the flop, hero (seat 1) faces a turn
+  // decision with 2 live opponents.
+  {
+    NodeSpec spec;
+    spec.playerCount = 3;
+    spec.hero = "p1";
+    spec.street = pv::STREET_TURN;
+    spec.stacks = {1960, 1960};
+    spec.pot = 100;
+    spec.preflop = {
+        {pv::STREET_PREFLOP, "p2", pv::ACTION_TYPE_CALL, std::nullopt, 20, 0},
+        {pv::STREET_PREFLOP, "p0", pv::ACTION_TYPE_CALL, std::nullopt, 10, 0},
+    };
+    // Flop: p1 bets 20, p2 folds (facing the bet), p0 calls 20.
+    spec.events = {
+        {pv::STREET_FLOP, "p1", pv::ACTION_TYPE_BET, 20, 20, 60},
+        {pv::STREET_FLOP, "p2", pv::ACTION_TYPE_FOLD, std::nullopt, std::nullopt, 80},
+        {pv::STREET_FLOP, "p0", pv::ACTION_TYPE_CALL, std::nullopt, 20, 80},
+    };
+    pv::DecisionRequest request = buildRequest(spec);
+    // buildRequest hardcodes third seats to ACTIVE; mark seat 2 as folded.
+    request.mutable_state()->mutable_players(2)->set_status(pv::PLAYER_STATUS_FOLDED);
+
+    // The blueprint path still rejects the folded seat.
+    {
+      ReconstructedPostflop bp;
+      V1BlueprintMiss bpMiss = V1BlueprintMiss::None;
+      const bool bpOk = bs::v1::reconstructPostflop(request, bp, bpMiss);
+      check(!bpOk && bpMiss == V1BlueprintMiss::RootNotSupported,
+            "blueprint path rejects folded seat");
+    }
+    // The resolver path admits it.
+    {
+      ReconstructedPostflop rp;
+      V1BlueprintMiss rpMiss = V1BlueprintMiss::None;
+      const bool rpOk = bs::v1::reconstructPostflopForResolve(request, rp, rpMiss);
+      check(rpOk, "resolver path admits folded seat");
+      if (rpOk) {
+        check(rp.state.has_value(), "resolver folded seat state present");
+        if (rp.state)
+          check(rp.state->live_players().size() == 2,
+                "resolver folded seat reconstructs 2 live players");
+      }
+    }
+  }
+
   if (failures != 0) {
     std::fprintf(stderr, "V1 RESIDENT MAPPER TESTS FAILED: %d\n", failures);
     return 1;

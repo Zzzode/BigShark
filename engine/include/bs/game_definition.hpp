@@ -114,6 +114,16 @@ struct GameDef {
   // amount while a 3+ blind may be capped by its poster's stack after the ante.
   std::array<Chips, kMaxUnifiedSeats> blinds_posted{};
 
+  // Per-seat folded flag at the root. A rooted board cannot normally carry a
+  // folded seat (the fold happens during the hand, not at the root), but the
+  // subgame resolver rebuilds a GameDef from a mid-hand state where some seats
+  // may have folded on an earlier street. The constructor seeds
+  // `players_[p].folded` from this field, unlocking the existing fold-aware
+  // machinery (next_actor, refresh_live, settlement, trainer). Defaults to
+  // false so every existing construction site is unaffected. Blueprints never
+  // set this field (flop-terminal libraries have no folded seats).
+  std::array<bool, kMaxUnifiedSeats> folded{};
+
   // Selects the two-seat preflop shape explicitly: blinds posted, no board,
   // the button acts first, and the big blind keeps its option after a limp.
   // For 3..10 seats the profile is implied by board emptiness instead, matching

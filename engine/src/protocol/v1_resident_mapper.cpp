@@ -132,9 +132,13 @@ bool reconstructPostflopImpl(const pv::DecisionRequest& request, ReconstructedPo
     out.hero_actor = found->second;
   }
   // A folded seat carries dead money into a pot the equal-matched root cannot
-  // express, so the profile admits live seats only.
+  // express, so the BLUEPRINT path admits live seats only. The resolver path
+  // (allow_facing_all_in=true) admits folded seats: the terminal-only resolver
+  // replays the fold through its cursor, and the subgame resolver carries the
+  // folded bitmap through the GameDef so the existing fold-aware machinery
+  // (next_actor, settlement, trainer) handles them.
   for (std::size_t i = 0; i < seat_count; ++i)
-    if (actorPlayer[i]->status() == pv::PLAYER_STATUS_FOLDED)
+    if (actorPlayer[i]->status() == pv::PLAYER_STATUS_FOLDED && !allow_facing_all_in)
       return fail(V1BlueprintMiss::RootNotSupported);
   // A postflop decision with any player all-in is outside the resident
   // blueprint profile. The resolver path additionally admits the canonical

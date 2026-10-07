@@ -1422,6 +1422,137 @@ int validation_rejections() {
   return 0;
 }
 
+// RFC 0011 folded-seat support: a 3-seat turn-rooted GameDef with one folded
+// seat constructs a valid state. The folded seat is excluded from the actor
+// rotation and the live-player set.
+int folded_seat_constructs() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.folded[2] = true;
+  const GameState state(def);
+  CHECK(state.player_count() == 3);
+  CHECK(state.live_players().size() == 2);
+  // Button=2, so seat 0 acts first postflop. Seat 2 is folded and skipped.
+  CHECK(state.actor() == 0);
+  CHECK(state.players()[2].folded);
+  CHECK(!state.players()[2].pending);
+  // The folded seat keeps its gross contribution as dead money.
+  CHECK(state.pot() == 3);
+  return 0;
+}
+
+// RFC 0011 folded-seat support: when the hand ends by a fold, the folded
+// seat's gross contributions stay in the pot as dead money and are awarded
+// to the winner. The winner's unmatched bet is refunded before settlement.
+int folded_seat_dead_money_settlement() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.folded[2] = true;
+  GameState state(def);
+  // Seat 0 bets 2, seat 1 folds. Seat 0 is the only live seat and wins.
+  state = state.after_action(0, {ActionType::Bet, 2});
+  state = state.after_action(1, {ActionType::Fold});
+  CHECK(state.phase() == Phase::Folded);
+  // Seat 0's unmatched bet of 2 is refunded; the pot is the dead money
+  // (1 from each seat = 3).
+  CHECK(state.pot() == 3);
+  const ContributionSettlement settlement = state.settle_fold();
+  // Seat 0 wins the entire pot (3).
+  CHECK(settlement.awards[0] == 3);
+  CHECK(settlement.awards[1] == 0);
+  CHECK(settlement.awards[2] == 0);
+  return 0;
+}
+
+// RFC 0011 folded-seat support: a 2-seat GameDef with a folded seat is
+// rejected by validate() — a folded seat at a two-seat root is a completed
+// hand, not a subgame.
+int folded_seat_two_seat_rejected() {
+  GameDef def = make_rooted(2, 0, 2, 4, flat(2, 20), flat(2, 1));
+  def.folded[0] = true;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// RFC 0011 folded-seat support: same_game_def distinguishes the folded
+// bitmap — two defs identical except for a folded seat are different games.
+int folded_seat_same_game_def() {
+  GameDef a = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  GameDef b = a;
+  CHECK(same_game_def(a, b));
+  b.folded[2] = true;
+  CHECK(!same_game_def(a, b));
+  return 0;
+}
+
+// RFC 0011 folded-seat support: a folded seat at a preflop root is rejected —
+// no seat can fold before the flop.
+int folded_seat_preflop_rejected() {
+  GameDef def = make_preflop(3, 2, 2, flat(3, 20), 0);
+  def.folded[0] = true;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// RFC 0011 folded-seat support: a folded seat with zero stack is rejected —
+// a zero-stack seat is all-in, not folded.
+int folded_seat_zero_stack_rejected() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.folded[0] = true;
+  def.stacks[0] = 0;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// RFC 0011 folded-seat support: a rooted subgame needs at least two live
+// seats. All-folded and single-live roots are rejected — they have no
+// decision and crash the trainer's runout enumeration.
+int folded_seat_all_folded_rejected() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.folded[0] = true;
+  def.folded[1] = true;
+  def.folded[2] = true;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+int folded_seat_single_live_rejected() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.folded[0] = true;
+  def.folded[1] = true;
+  // Seat 2 is the only live seat.
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1429,7 +1560,7 @@ int main() {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 6> cases{{
+  const std::array<Case, 14> cases{{
       {"sweep", sweep},
       {"differentiated_three_way_showdown_matches_shipped",
        differentiated_three_way_showdown_matches_shipped},
@@ -1437,6 +1568,14 @@ int main() {
       {"fold_as_last_pending_closes_street", fold_as_last_pending_action_closes_street},
       {"three_seats_now_construct", three_seats_now_construct},
       {"validation_rejections", validation_rejections},
+      {"folded_seat_constructs", folded_seat_constructs},
+      {"folded_seat_dead_money_settlement", folded_seat_dead_money_settlement},
+      {"folded_seat_two_seat_rejected", folded_seat_two_seat_rejected},
+      {"folded_seat_same_game_def", folded_seat_same_game_def},
+      {"folded_seat_preflop_rejected", folded_seat_preflop_rejected},
+      {"folded_seat_zero_stack_rejected", folded_seat_zero_stack_rejected},
+      {"folded_seat_all_folded_rejected", folded_seat_all_folded_rejected},
+      {"folded_seat_single_live_rejected", folded_seat_single_live_rejected},
   }};
   int failures = 0;
   for (const Case& item : cases) {

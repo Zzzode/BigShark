@@ -22,8 +22,11 @@
 // river action node.
 //
 // The resolver is offline (no wire, no credentials) and thread-affine (call
-// from one thread). A folded seat returns Ineligible: the GameDef has no fold
-// field, so a folded player would be treated as live in the subgame tree.
+// from one thread). Folded seats are carried through the GameDef folded
+// bitmap: the GameState constructor seeds players_[p].folded, and the
+// existing fold-aware machinery (next_actor, refresh_live, settlement,
+// trainer) handles them correctly. Folded seats keep their gross
+// contributions as dead money and never become the actor.
 //
 // The fallback chain is: blueprint -> terminal-only resolver -> subgame
 // resolver -> operational fallback. A build failure, solve deadline, or

@@ -202,6 +202,26 @@ void validate(const GameDef& def) {
   for (std::size_t p = 0; p < def.player_count; ++p)
     total = add(total, def.stacks[p]);
   require(total <= kMaxHeadsUpChips, "root exceeds exact numeric profile");
+
+  // Folded-seat guards. A folded seat at the root is valid only for the
+  // subgame resolver (3+ seats, rooted board). The two-seat profile ends the
+  // hand immediately on a fold, so a folded seat at a 2-seat root represents
+  // a completed hand with no decision. No seat can fold preflop (no action has
+  // occurred), and a seat with zero stack is all-in, not folded. At least two
+  // live seats must remain — a subgame with one or zero live seats has no
+  // decision and crashes the trainer's runout enumeration.
+  std::size_t live_seats = 0;
+  for (std::size_t p = 0; p < def.player_count; ++p) {
+    if (!def.folded[p]) {
+      ++live_seats;
+      continue;
+    }
+    require(def.player_count > 2,
+            "a folded seat at a two-seat root is a completed hand, not a subgame");
+    require(!def.preflop, "no seat can fold before the flop");
+    require(def.stacks[p] > 0, "a zero-stack seat is all-in, not folded");
+  }
+  require(live_seats >= 2, "a rooted subgame needs at least two live seats");
 }
 
 bool same_game_def(const GameDef& a, const GameDef& b) {
@@ -219,7 +239,7 @@ bool same_game_def(const GameDef& a, const GameDef& b) {
       return false;
   for (std::size_t p = 0; p < a.player_count; ++p)
     if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p] ||
-        a.blinds_posted[p] != b.blinds_posted[p])
+        a.blinds_posted[p] != b.blinds_posted[p] || a.folded[p] != b.folded[p])
       return false;
   return true;
 }
@@ -238,6 +258,7 @@ GameState::GameState(const GameDef& def) : def_(def) {
   for (std::size_t p = 0; p < def_.player_count; ++p) {
     players_[p].stack = def_.stacks[p];
     players_[p].contributed = def_.contributions[p];
+    players_[p].folded = def_.folded[p];
   }
 
   if (def_.preflop) {
@@ -305,13 +326,13 @@ GameState::GameState(const GameDef& def) : def_(def) {
     street_ = board_size_ == 3 ? Street::Flop : (board_size_ == 4 ? Street::Turn : Street::River);
     last_full_raise_ = def_.big_blind;
     // A rooted board carries chips behind, so an empty stack here marks an
-    // all-in seat from an earlier street. `GameDef` has no folded field, so no
-    // seat can start a rooted street folded; pending therefore keys off the
-    // stack alone.
+    // all-in seat from an earlier street. A seat may also start folded (the
+    // subgame resolver rebuilds a GameDef from a mid-hand state); pending
+    // therefore keys off both the stack and the folded flag.
     for (std::size_t p = 0; p < def_.player_count; ++p) {
       players_[p].all_in = players_[p].stack == 0;
       players_[p].pending = players_[p].stack > 0 && !players_[p].folded;
-      players_[p].raise_rights = true;
+      players_[p].raise_rights = !players_[p].folded;
     }
     refresh_live();
     if (heads_up_profile_) {

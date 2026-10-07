@@ -36,9 +36,11 @@ change the live v1 protocol.
 Phase 1 supports 2..3 seats and both turn (board_size=4) and river
 (board_size=5) decisions. The resolver generalizes to N seats via the
 multiway state machine; the seat-count gate matches the belief model's
-exact range (2..3). A folded seat returns `Ineligible` (the GameDef has no
-fold field, so a folded player would be treated as live in the subgame
-tree).
+exact range (2..3). Folded seats are carried through the GameDef folded
+bitmap: the GameState constructor seeds `players_[p].folded`, and the
+existing fold-aware machinery (next_actor, refresh_live, settlement,
+trainer) handles them correctly. Folded seats keep their gross
+contributions as dead money and never become the actor.
 
 ## Motivation
 
@@ -409,6 +411,14 @@ River-terminal `GameDef`:
 - **Stacks and pot:** the current stacks and pot, derived from the live
   state. The subgame is a standalone game: it does not reference the flop
   blueprint's game definition.
+- **Folded seats:** the `GameDef` folded bitmap carries mid-hand folds to
+  the subgame root. The `GameState` constructor seeds `players_[p].folded`,
+  and the existing fold-aware machinery (next_actor skips folded seats,
+  refresh_live excludes them, settlement awards them nothing, the trainer
+  removes their cards from runouts) handles them correctly. Folded seats
+  keep their gross contributions as dead money and never become the actor.
+  `validate()` rejects a folded seat at a 2-seat root (a completed hand, not
+  a subgame) and at a preflop root.
 - **Action abstraction:** the same coarse `ActionAbstraction` as the
   production libraries (declared-coarse for 25 BB+, identity for 2 BB).
 - **Tree limits:** the builder's existing `TreeLimits` apply (2M nodes, 256
@@ -613,9 +623,10 @@ or certifiable.
     check-through history solves and returns a candidate at the river node.
   - 3-seat turn solve: a 3-seat turn decision solves with `seat_count == 3`.
   - 3-seat river solve: a 3-seat river decision solves with `seat_count == 3`.
-  - Folded player: a 3-seat spot where one player folded on the flop returns
-    `Ineligible` (the GameDef has no fold field; a folded seat would be
-    treated as live in the subgame tree).
+  - Folded player: a 3-seat spot where one player folded on the flop solves
+    and returns a candidate. The GameDef folded bitmap carries the fold to
+    the subgame tree; the folded seat's gross contributions are dead money
+    and the seat never becomes the actor.
   - Ineligible: a subgame that exceeds the tree limits returns `Ineligible`.
   - Deadline: a subgame that exceeds the wall-time cap returns
     `SolveDeadline`.

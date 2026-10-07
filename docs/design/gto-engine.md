@@ -1292,13 +1292,19 @@ component that depends only on the solver layer:
    Every positive-reach hero combo appears; probabilities are over the
    node's ordered abstract actions.
 
-### Folded-player check
+### Folded-seat support
 
-The `GameDef` has no fold field, so a folded seat would be treated as live
-in the subgame tree, producing a wrong tree. The resolver checks
-`players()[s].folded` for every seat and returns `Ineligible` if any player
-folded. This is safe (falls through to the next resolver in the chain) but
-conservative; remapping to live-only seats is a future improvement.
+The `GameDef` carries a per-seat `folded` bitmap (defaulting to false) that
+the subgame resolver sets from the mid-hand state. The `GameState`
+constructor seeds `players_[p].folded` from this field, unlocking the
+existing fold-aware machinery: `next_actor` skips folded seats,
+`refresh_live` excludes them, settlement awards them nothing, and the
+trainer removes their cards from runouts. Folded seats keep their gross
+contributions as dead money and never become the actor. The rooted-board
+constructor sets `raise_rights = !folded` so a folded seat cannot raise.
+`validate()` rejects a folded seat at a 2-seat root (a completed hand, not
+a subgame) and at a preflop root. Blueprints never set this field
+(flop-terminal libraries have no folded seats).
 
 ### Fallback chain
 
@@ -1329,7 +1335,8 @@ operators to distinguish subgame-sourced decisions from blueprint hits.
   seat support requires a 4+ seat flop library, which does not exist.
 - Turn and river. A river decision (board_size=5) builds a turn-rooted
   subgame, solves it, and walks the solved tree to the river node.
-- Folded-player check. A spot where any player folded returns `Ineligible`.
+- Folded-seat support. The GameDef folded bitmap carries mid-hand folds to
+  the subgame root; the existing fold-aware machinery handles them.
 - No certification. All candidates serve at `approximate`.
 - Runtime flag. `BIGSHARK_SUBGAME_RESOLVER=1` enables the resolver.
 
