@@ -57,11 +57,13 @@
 #include <bs/resident_policy.hpp>
 #include <bs/service.hpp>
 #include <bs/strategy_artifact.hpp>
+#include <bs/subgame_resolver.hpp>
 #include <bs/v0_protocol.hpp>
 #include <bs/v1_protocol.hpp>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -104,7 +106,14 @@ bool parseSha256Hex(std::string_view text, Sha256Digest& digest) {
 // scratch is reused for every blueprint decision.
 class ResidentHostServices final : public bs::v1::V1HostServices {
  public:
-  explicit ResidentHostServices(bs::resident::ResidentPolicySet set) : set_(std::move(set)) {}
+  explicit ResidentHostServices(bs::resident::ResidentPolicySet set) : set_(std::move(set)) {
+    // RFC 0011 Phase 1: the subgame resolver is behind a runtime flag
+    // (environment variable), not a compile-time switch, so it can be toggled
+    // without a rebuild and the rollback is a config change. When off (the
+    // default), the engine behaves exactly as before.
+    if (const char* env = std::getenv("BIGSHARK_SUBGAME_RESOLVER"))
+      subgame_enabled_ = (std::string_view(env) == "1");
+  }
 
   bool blueprintAdvertised() const noexcept override { return set_.advertised_roots() > 0; }
 
@@ -232,6 +241,35 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
           result.outcome = bs::v1::V1ResolveOutcome::DeadlineExceeded;
           return result;
         case bs::resolver::ResolveStatus::Ineligible:
+          // RFC 0011 Phase 1: when the terminal-only resolver cannot handle
+          // the spot (remaining opponent actions), try the turn-rooted
+          // subgame resolver. It builds a River-terminal subtree, derives
+          // prior ranges from the blueprint, solves with CFR, and serves at
+          // approximate (no certification in Phase 1). The fallback chain is
+          // blueprint -> terminal-only resolver -> subgame resolver ->
+          // operational fallback.
+          if (subgame_enabled_) {
+            bs::resolver::ResolveLimits subgame_limits;
+            subgame_limits.time =
+                std::chrono::milliseconds(std::max<std::uint32_t>(deadline_ms, 1));
+            subgame_limits.public_seed = publicSeed(*source, state, history);
+            subgame_scratch_ = subgame_resolver_.resolve(state, history, *source, subgame_limits);
+            if (subgame_scratch_.status == bs::resolver::SubgameResolveStatus::Solved) {
+              const auto key = bs::solver::make_information_key(*state.actor(), hero_cards,
+                                                                state.board(), history);
+              const auto found = subgame_scratch_.candidate.find(key);
+              if (found != subgame_scratch_.candidate.end()) {
+                result.outcome = bs::v1::V1ResolveOutcome::Approximate;
+                result.miss = bs::v1::V1BlueprintMiss::None;
+                result.row.size = found->second.probabilities.size();
+                result.row.actions = found->second.actions.data();
+                result.row.probabilities = found->second.probabilities.data();
+                result.row.artifact_sha256 = source->artifact_digest();
+                result.row.diagnostic = bs::resolver::kSubgameResolveToken;
+                return result;
+              }
+            }
+          }
           result.outcome = bs::v1::V1ResolveOutcome::Unsupported;
           result.miss = bs::v1::V1BlueprintMiss::RootNotSupported;
           return result;
@@ -334,6 +372,12 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
   // are consumed synchronously by the response mapper.
   mutable bs::resolver::Resolver resolver_;
   mutable bs::resolver::ResolveResult resolve_scratch_;
+  // RFC 0011 Phase 1: subgame resolver and its per-request result, activated
+  // by the BIGSHARK_SUBGAME_RESOLVER environment variable. Same single-threaded
+  // scratch contract as the terminal-only resolver above.
+  bool subgame_enabled_ = false;
+  mutable bs::resolver::SubgameResolver subgame_resolver_;
+  mutable bs::resolver::SubgameResolveResult subgame_scratch_;
 };
 
 // Parses --resident-root path=sha256-hex entries. Returns false on a malformed

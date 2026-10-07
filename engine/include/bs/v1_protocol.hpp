@@ -125,6 +125,7 @@ enum class V1ResolveOutcome : std::uint8_t {
   Certified,          // independent bounds passed; source RESOLVING
   DeadlineBlueprint,  // deadline during solve/certify; complete baseline row
   DeadlineExceeded,   // forced resolving with no validated baseline available
+  Approximate,        // RFC 0011: subgame resolver candidate at approximate
 };
 
 struct V1ResolveResult {

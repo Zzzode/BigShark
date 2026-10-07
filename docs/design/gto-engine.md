@@ -1241,6 +1241,140 @@ operational fallback chain. See [the practice-table
 doc](../development/practice-table.md) and [the protobuf protocol
 reference](../reference/protobuf-engine-protocol.md#c-process-client-rfc-0009-w4e).
 
+## Turn-Rooted Subgame Resolver (RFC 0011 Phase 1)
+
+When a turn decision arises that the flop-terminal blueprint does not cover
+and the terminal-only resolver cannot handle (remaining opponent actions),
+the subgame resolver builds a turn-rooted River-terminal subtree, derives
+prior ranges from the blueprint, solves with CFR, and serves the candidate
+at `approximate` (no certification in Phase 1).
+
+### Architecture
+
+The resolver (`engine/include/bs/subgame_resolver.hpp`,
+`engine/src/resolver/subgame_resolver.cpp`) is an offline, thread-affine
+component that depends only on the solver layer:
+
+1. **Subgame construction.** `build_subgame_def` creates a standalone
+   River-terminal `GameDef` from the current turn `GameState`: stacks and
+   pot come from the state, the board carries the observed turn card, and
+   the terminal depth is `River` so the builder materializes the full chance
+   subtree (44 river cards for 2 seats). The action abstraction is
+   reconstructed from the blueprint's `action_id` and sizes so the subgame
+   tree uses the same menu as the blueprint.
+
+2. **Prior range derivation.** `derive_prior_ranges` walks the observed
+   flop action line in the blueprint policy. For each seat, the per-hand
+   reach is the product of blueprint action probabilities along the path.
+   A missing blueprint row at any step returns `CoverageMiss`.
+
+3. **CFR solve.** The subtree is solved by `train_nseat` (the existing
+   external-sampling MCCFR trainer). River leaves are valued by the existing
+   `settle_showdown` settlement (exact equity, no new evaluator). The solve
+   is whole-range and hero-card independent: the seed and iteration cap
+   depend only on public context.
+
+4. **Candidate extraction.** The hero's root decision rows are extracted
+   from the trained policy by `(card_bucket, node_index)` key. Every
+   positive-reach hero combo appears; probabilities are over the node's
+   ordered abstract actions.
+
+### Fallback chain
+
+The engine's resolving decision follows this chain:
+
+```
+blueprint → terminal-only resolver → subgame resolver → operational fallback
+```
+
+The subgame resolver inserts between the terminal-only resolver and the
+operational fallback. It is activated by the `BIGSHARK_SUBGAME_RESOLVER`
+environment variable (default off). When off, the engine behaves exactly as
+before. A build failure, solve deadline, or coverage miss returns the typed
+status so the engine falls through.
+
+### Wire protocol
+
+No protocol change. The candidate is served at `Guarantee::Approximate` with
+`solver_source = SOLVER_SOURCE_BLUEPRINT` via the existing
+`mapGuaranteedDeadlineResponse` path. A diagnostic token
+(`subgame-resolve:approximate`) is attached to the row's `diagnostic` field,
+which surfaces as `metadata.diagnostic_reason` on the wire, allowing
+operators to distinguish subgame-sourced decisions from blueprint hits.
+
+### Phase 1 scope
+
+- 2-seat only. A 3-seat turn/river decision is `Ineligible` until the N-way
+  continuation-range export lands.
+- Turn-rooted only. A river decision (board_size=5) is `Ineligible`.
+- No certification. All candidates serve at `approximate`.
+- Runtime flag. `BIGSHARK_SUBGAME_RESOLVER=1` enables the resolver.
+
+### Measurements
+
+The NashConv benchmark (`engine/benchmarks/subgame_nash_conv.cpp`,
+`bigshark-subgame-nash-conv`) builds a representative 2-seat turn-rooted
+River-terminal subgame (flop check-through on 2c 3d 7h → turn Js, 10 BB
+behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise abstraction,
+10 hands per seat), solves with CFR, and computes an exact NashConv by
+enumerating every card-compatible joint deal (70) and every legal river
+card (44).
+
+**Tree size:**
+
+| Metric | Value |
+| --- | --- |
+| Nodes | 5,739 |
+| Depth | 10 |
+| Action nodes | 2,218 |
+| Chance nodes | 9 |
+| Fold leaves | 1,544 |
+| Showdown leaves | 1,968 |
+| Accounted memory | 2,925 KiB |
+
+**Solve time (10K iterations, 10 seeds):**
+
+| Metric | Value |
+| --- | --- |
+| Min | 250 ms |
+| Median | 269 ms |
+| p95 | 319 ms |
+| Max | 319 ms |
+
+All within the `ResolveLimits::time` budget (default 2 seconds).
+
+**Exploitability (10K iterations, 5 seeds):**
+
+| Seed | CFR (BB) | Uniform (BB) | Reduction |
+| --- | --- | --- | --- |
+| 1 | 1.435 | 1.973 | 27.3% |
+| 2 | 1.415 | 1.973 | 28.3% |
+| 3 | 1.501 | 1.973 | 24.0% |
+| 4 | 1.420 | 1.973 | 28.1% |
+| 5 | 1.488 | 1.973 | 24.6% |
+
+The CFR policy is 24–28% less exploitable than the uniform baseline at 10K
+iterations. At 100K iterations the exploitability drops to 0.819 BB (58.5%
+reduction) but the solve time (2,260 ms) exceeds the 2-second budget, so 10K
+iterations is the practical cap for live play.
+
+**Coverage (10K iterations):** 99.8% of action nodes have at least one
+policy row (2,214 / 2,218). The 0.2% uncovered nodes use the trainer's
+uniform fallback.
+
+**Convergence:**
+
+| Iterations | Solve time | Exploitability (BB) | vs uniform |
+| --- | --- | --- | --- |
+| 100 | 3 ms | 1.991 | −0.9% (not converged) |
+| 1,000 | 33 ms | 2.042 | −3.5% (not converged) |
+| 10,000 | 266 ms | 1.511 | +23.4% |
+| 100,000 | 2,260 ms | 0.819 | +58.5% |
+
+The policy needs ~10K iterations to converge below the uniform baseline.
+Below that, the coarse card abstraction (CategoryTiersV1, 9 buckets at
+postflop) and the high fallback rate make the policy worse than uniform.
+
 ## Multiway Rules (RFC 0006 Stage 13)
 
 `bs::poker::MultiwayState` is the 3..6-player no-limit rules sibling of

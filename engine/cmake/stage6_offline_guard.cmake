@@ -131,10 +131,16 @@ set(_stage6_guarded_sources
   "${CMAKE_SOURCE_DIR}/engine/src/protocol/v1_resident_mapper.cpp"
   "${CMAKE_SOURCE_DIR}/engine/src/protocol/v1_envelope.cpp"
 )
+# Clang 14-16 accepts -std=c++2b for C++23; GCC 12+ and Clang 17+ use -std=c++23.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
+  set(_bs_cxx23_flag "-std=c++2b")
+else()
+  set(_bs_cxx23_flag "-std=c++23")
+endif()
 add_custom_command(
   OUTPUT "${_stage6_guard_stamp}"
   COMMAND bash "${CMAKE_SOURCE_DIR}/engine/cmake/stage6_boundary_guard.sh"
-          "${CMAKE_CXX_COMPILER}" "-std=c++23"
+          "${CMAKE_CXX_COMPILER}" "${_bs_cxx23_flag}"
           "${CMAKE_SOURCE_DIR}/engine/include"
           "${_stage6_guard_stamp}" ${_stage6_guarded_sources}
   DEPENDS ${_stage6_guarded_sources}

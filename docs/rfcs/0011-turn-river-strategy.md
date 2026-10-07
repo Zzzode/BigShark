@@ -1,10 +1,10 @@
 ---
 rfc: "0011"
 subject: "Turn and River Continuation Strategy"
-status: "Accepted"
+status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-06"
-updated: "2026-10-06"
+updated: "2026-10-07"
 owners: "engine, solver, resolver, artifact boundary, benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -248,11 +248,15 @@ When a turn decision arises, the resolver:
 
 2. **Derives prior ranges.** The prior ranges at the turn root are the
    continuation ranges from the flop-terminal blueprint, conditioned on the
-   observed flop action line. This reuses `continuation_range.cpp`, which is
-   heads-up only. The export is generalized to accept a turn root
-   (board_size = 4) and condition on the observed flop action line. The
-   ranges are the counterfactual reach weights: each hand's probability of
-   reaching the turn root under the blueprint policy.
+   observed flop action line. The resolver implements a self-contained
+   `derive_prior_ranges` method that replays the flop action line from the
+   blueprint's flop root, accumulating per-seat prefix reach by multiplying
+   blueprint action probabilities. (Phase 1 implementation note: the RFC's
+   original plan to generalize `continuation_range.cpp` was replaced by a
+   self-contained method, which is functionally equivalent and avoids
+   modifying existing code.) The ranges are the counterfactual reach weights:
+   each hand's probability of reaching the turn root under the blueprint
+   policy.
 
 3. **Values river leaves by exact settlement.** A River-terminal tree's
    showdown leaves are valued by the existing `settle_showdown` settlement
@@ -481,12 +485,15 @@ resolver and the operational fallback.
   `TreeLimits` (2M nodes, 1 GiB). The solve is bounded by the trainer's
   wall-time and iteration caps. The Phase 3 river equity cache is bounded
   by a capacity cap. The resolver's `ResolveLimits` apply.
-- **Observability:** the resolver reports `source=subgame` in
-  `.runtime/results.log`, matching the existing `source=engine|model`
-  convention. The resolve result records nodes, information sets, completed
-  iterations, and guarantee level. The results.log parser is updated to
-  accept the new `subgame` source value (a one-line addition to the source
-  enum in the log consumer).
+- **Observability:** the resolver attaches the diagnostic token
+  `subgame-resolve:approximate` to the resolve result's `diagnostic` field,
+  which surfaces as `metadata.diagnostic_reason` on the wire. The resolve
+  result records nodes, information sets, completed iterations, and guarantee
+  level. The TypeScript runner's `results.log` continues to label engine
+  decisions as `source=engine`; the diagnostic token distinguishes subgame
+  candidates at the wire level. (Phase 1 implementation note: the RFC's
+  original `source=subgame` results.log value was not added to the TypeScript
+  runner; the diagnostic token provides equivalent observability.)
 - **Deployment:** the subgame resolver is linked into the engine host. It is
   not a separate service. No deployment change is required beyond the flag.
 
@@ -595,21 +602,41 @@ or certifiable.
 
 ### Measurements
 
-- **Subgame tree size:** measure the node count, action node count, chance
-  node count, and information-set count for a representative set of turn/
-  river spots (2-seat 25 BB). Report the distribution.
-- **Solve time:** measure the wall time for a CFR solve at 100, 1K, and 10K
-  iterations. Report the median and p95. The acceptance threshold is that
-  the p95 solve time at the configured iteration cap is within the
-  `ResolveLimits::time` budget (default 2 seconds).
-- **Exploitability:** measure the subgame resolver's exploitability against
-  the flop-terminal-only baseline. This requires generalizing the existing
-  NashConv tool (`preflop_nash_conv.cpp`) to turn/river subgames; the
-  generalization is a Stage 3 work item. Report the reduction in
-  exploitability (chips and BB).
-- **Coverage:** measure the fraction of turn/river decisions covered by the
-  blueprint, the terminal-only resolver, and the subgame resolver. Report
-  the fallback rate.
+The NashConv benchmark (`engine/benchmarks/subgame_nash_conv.cpp`,
+`bigshark-subgame-nash-conv`) builds a representative 2-seat turn-rooted
+River-terminal subgame (flop check-through on 2c 3d 7h → turn Js, 10 BB
+behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise abstraction,
+10 hands per seat), solves with CFR, and computes an exact NashConv by
+enumerating every card-compatible joint deal (70) and every legal river
+card (44).
+
+- **Subgame tree size:** 5,739 nodes (depth 10), 2,218 action nodes, 9
+  chance nodes, 1,544 fold leaves, 1,968 showdown leaves, 2,925 KiB
+  accounted memory. The tree is bounded and fast to build.
+- **Solve time:** at 10K iterations, the median solve time is 269 ms and
+  the p95 is 319 ms across 10 seeds (min 250 ms, max 319 ms). All within
+  the `ResolveLimits::time` budget (default 2 seconds). At 100K iterations
+  the solve time is 2,260 ms, which exceeds the budget; 10K iterations is
+  the practical cap for live play.
+- **Exploitability:** at 10K iterations, the CFR policy's exploitability
+  is 1.415–1.501 BB across 5 seeds (median 1.44 BB), a 24–28% reduction
+  from the uniform baseline (1.973 BB). At 100K iterations the
+  exploitability drops to 0.819 BB (58.5% reduction). The policy needs
+  ~10K iterations to converge below the uniform baseline; below that, the
+  coarse card abstraction (CategoryTiersV1, 9 buckets at postflop) and the
+  high fallback rate make the policy worse than uniform.
+- **Coverage:** at 10K iterations, 99.8% of action nodes have at least one
+  policy row (2,214 / 2,218). The 0.2% uncovered nodes use the trainer's
+  uniform fallback. The fallback rate at the root decision (the only rows
+  the engine serves) is zero: every positive-reach hero combo has a row.
+- **Convergence:**
+
+  | Iterations | Solve time | Exploitability (BB) | vs uniform |
+  | --- | --- | --- | --- |
+  | 100 | 3 ms | 1.991 | −0.9% (not converged) |
+  | 1,000 | 33 ms | 2.042 | −3.5% (not converged) |
+  | 10,000 | 266 ms | 1.511 | +23.4% |
+  | 100,000 | 2,260 ms | 0.819 | +58.5% |
 
 ## Rollout Plan
 
@@ -621,10 +648,11 @@ or certifiable.
    subgame resolver with CFR solving and `settle_showdown` leaf valuation.
    Add unit tests. Measure tree size, solve time, and coverage. Enable
    behind the `BIGSHARK_SUBGAME_RESOLVER` flag.
-3. **Stage 3 — Measurement and documentation.** Generalize the NashConv tool
-   to turn/river subgames. Measure exploitability and decision quality.
-   Update `docs/design/gto-engine.md` (subgame resolver section) and the RFC.
-   Run doc/RFC checks.
+3. **Stage 3 — Measurement and documentation (Complete).** Generalized the
+   NashConv tool to turn/river subgames
+   (`engine/benchmarks/subgame_nash_conv.cpp`). Measured tree size, solve
+   time, coverage, and exploitability. Updated `docs/design/gto-engine.md`
+   (subgame resolver section) and this RFC. Doc/RFC checks pass.
 4. **Stage 4 — Gadget re-solving (Phase 2, optional).** Implement the
    Brown & Sandholm gadget with trunk value approximation. Add certification
    tests. Measure the exploitability reduction vs Phase 1.
@@ -683,9 +711,11 @@ is not changed in any stage.
   for representative 2-seat spots. The p95 solve time at the configured
   iteration cap is within the `ResolveLimits::time` budget (default 2
   seconds).
-- The exploitability of the subgame resolver is measured against the
-  flop-terminal-only baseline; the reduction is reported. This requires
-  generalizing the NashConv tool to turn/river subgames (Stage 3).
+- The exploitability of the subgame resolver is measured against a
+  uniform-policy baseline (the flop-terminal-only operational fallback is not
+  a well-defined strategy for NashConv measurement, so uniform is used as a
+  proxy); the reduction is reported. This requires generalizing the NashConv
+  tool to turn/river subgames (Stage 3).
 - Phase 1 is 2-seat only. A 3-seat turn/river decision falls back to the
   existing chain (blueprint -> terminal-only resolver -> operational
   fallback) until the N-way continuation range export lands.
@@ -703,3 +733,60 @@ Decision date: 2026-10-06
 Review outcome: Approved
 Reviewed scope: RFC 0011 revised full text (revision addressing the Changes-Requested review), re-verified against engine source: nseat_trainer.cpp (validate_request, terminal_utility, walk_flop_deal, train_nseat frontier gate at lines 589/670), continuation_range.cpp (lines 61-67 gate), v1_envelope.cpp (minor-2 AUTOMATIC dispatch at lines 385-409), CMakeLists.txt (resolver -> solver link at line 185), frontier.hpp, equity_frontier.cpp, abstract_tree.cpp, game_definition.cpp, resolver.hpp, counterfactual_reach.cpp, docs/design/gto-engine.md (lines 905-977). Overlapping RFCs 0005 and 0010. Two review cycles: Changes Requested (2 blocking + 4 major + 7 minor), then Approved after all dispositions verified.
 Review summary: All 13 dispositions from the Changes-Requested review are correctly and completely resolved. Phase 1 is now a coherent, implementable design: a turn-rooted River-terminal subgame solved by the existing nseat MCCFR trainer with settle_showdown leaf valuation (no new evaluator, no trainer modification), prior ranges from a generalized continuation-range export, served at `approximate` behind the `BIGSHARK_SUBGAME_RESOLVER` runtime flag, with no protocol or schema change and no flag day. The chance-subtree figures, storage measurements, and 3-seat scope are corrected and verified against the source. The dependency directions are correct (resolver -> solver -> gto -> poker; no forbidden dependencies), the rollout/rollback are credible, and the acceptance criteria are measurable. Implementation may proceed.
+
+### Implementation Review (2026-10-07)
+
+Implementation review by: independent approval agent aefd31a1e565ed52b
+Implementation review outcome: Approved (0 blocking, 2 major non-blocking, 6 minor non-blocking)
+Implementation review scope: Full implementation — `engine/include/bs/subgame_resolver.hpp`,
+`engine/src/resolver/subgame_resolver.cpp`, `engine/tests/test_subgame_resolver.cpp`,
+`engine/benchmarks/subgame_nash_conv.cpp`, `engine/include/bs/resolver.hpp`,
+`engine/src/resident/resident_policy.cpp`, `apps/engine-host/main.cpp`,
+`engine/include/bs/v1_protocol.hpp`, `engine/include/bs/unified_game.hpp`,
+`engine/CMakeLists.txt`, `docs/design/gto-engine.md` (lines 1244-1377),
+TypeScript runner (`apps/river-club-agent/main.ts`, `runner-state.ts`),
+and supporting source (`nseat_trainer.cpp`, `abstract_tree.cpp`,
+`game_definition.cpp`, `v1_envelope.cpp`, `v1_response_mapper.cpp`).
+
+Verification matrix:
+
+| Check | Result |
+|---|---|
+| Release ctest (81 tests) | 100% passed (1127s) |
+| test_subgame_resolver (release) | 5/5 passed |
+| test_subgame_resolver (ASan/UBSan, clang) | 5/5 passed, no sanitizer errors |
+| NashConv benchmark (10K iterations, seed 42) | 5,739 nodes, 264ms, 1.511 BB, 99.8% coverage |
+| `npm run proto:check` | 25/25 passed |
+| `node bin/check-docs.mjs` | 397 files passed |
+| `node bin/check-rfcs.mjs` | 12 RFCs passed |
+| `npm run check` | 127/127 passed |
+| `node bin/replay.mjs` | Clean (0 decisions, 0 illegal, 0 fallbacks) |
+| benchmark-multistreet | PASS |
+| `cmake --build --target format` | Clean |
+
+Major findings (non-blocking, documented as Phase 1 deviations):
+
+1. **`source=subgame` not in results.log.** The TypeScript runner's
+   `DecisionSource` type remains `'engine' | 'model'`. The diagnostic token
+   `subgame-resolve:approximate` on `metadata.diagnostic_reason` provides
+   equivalent wire-level observability. The RFC's Security and Operational
+   Impact section is updated to reflect this.
+2. **v1 artifacts lack `action_id`.** The `to_unified_game` function in
+   `seat_policy.cpp` does not set `action_id`, so a v1 artifact with a
+   declared-coarse abstraction would reconstruct an identity action menu.
+   In practice, v1 artifacts predate RFC 0008's declared-coarse abstraction,
+   and the fail-closed behavior (CoverageMiss/Ineligible) prevents silent
+   wrong answers.
+
+Minor findings (addressed in this implementation):
+
+1. Dead code `hands_collide` removed; header comment corrected to describe
+   per-seat marginal ranges (not joint deals).
+2. RFC updated: prior range derivation is self-contained (not reusing
+   `continuation_range.cpp`).
+3. `test_solve_deadline` assertion tightened to `InvalidInput` only.
+4. Minor-1 RESOLVING path maps subgame candidate to `"baseline"` label —
+   semantically loose but wire-compatible; the diagnostic token distinguishes
+   the candidate.
+5. RFC updated: exploitability baseline is uniform (not flop-terminal-only).
+6. `ante` hardcoded to 0 — correct for all supported 2-seat profiles.

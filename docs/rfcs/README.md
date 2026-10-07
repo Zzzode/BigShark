@@ -24,7 +24,7 @@ their own RFC.
 | [0008](0008-unified-n-player-architecture.md) | Unified N-Player Engine Architecture | Implementing | Poker, solver, policy, service, protocol, artifact boundary |
 | [0009](0009-unified-engine-delivery.md) | Unified Engine Delivery and Live Promotion | Implementing | Poker, solver, abstraction, artifact boundary, resolver, resident, protocol, engine host, River adapter, benchmarks |
 | [0010](0010-multiway-frontier-evaluation.md) | Multiway Frontier Evaluation and N-Way Preflop Training | Accepted | Engine, solver, artifact boundary, benchmarks |
-| [0011](0011-turn-river-strategy.md) | Turn and River Continuation Strategy | Accepted | Engine, solver, resolver, artifact boundary, benchmarks |
+| [0011](0011-turn-river-strategy.md) | Turn and River Continuation Strategy | Implemented | Engine, solver, resolver, artifact boundary, benchmarks |
 | [0012](0012-flop-library-performance.md) | Flop Library Performance Optimization | Implemented | Engine, solver, artifact boundary, resident, benchmarks |
 
 `0000-template.md` is the authoring template and does not consume an RFC

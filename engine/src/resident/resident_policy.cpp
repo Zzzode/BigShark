@@ -351,6 +351,7 @@ const ResidentPolicySet::LazyEntry* ResidentPolicySet::ensure_lazy_loaded(
     auto entry = std::make_unique<LazyEntry>();
     const auto& policy = loaded.bundle.nseat->policy;
     entry->game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
+    entry->game.action_id = policy.action_id();
     entry->index.build(policy.rows());
     entry->card_abstraction = loaded.bundle.nseat->card_id;
 
@@ -513,10 +514,16 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
       // build the unified view of every flop-rooted source. A 3..10-seat
       // source loads and advertises; its belief and hero-decision queries
       // miss declared until W2c-ii-b. Turn/river-rooted shapes stay refused.
-      if (probe.game_def)
+      if (probe.game_def) {
         record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
-      else
+        // RFC 0011: reconstruct the action abstraction id from the manifest
+        // fields so the subgame resolver can rebuild the matching menu.
+        record.game.action_id = abstraction::AbstractionId{
+            probe.manifest.abstraction_name, probe.manifest.abstraction_version,
+            probe.manifest.abstraction_parameters, probe.manifest.abstraction_digest};
+      } else {
         record.game = solver::to_unified_game(probe.game);
+      }
       // W4c-ii: a v3 probe carries the declared card abstraction; a v2 probe
       // leaves it at nullopt (exact board).
       record.card_abstraction = probe.manifest.card_abstraction;
@@ -560,6 +567,7 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
             // view and build the index from the concrete seat-indexed rows.
             const auto& policy = loaded.bundle.nseat->policy;
             record.game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
+            record.game.action_id = policy.action_id();
             record.index.build(policy.rows());
             // W4c-ii: the v3 reader reconstructs the card abstraction from the
             // manifest; the v2 reader leaves it at nullopt.

@@ -99,6 +99,12 @@ inline constexpr double kEquilibriumPotTolerance = 1e-8;
 // carries it so the frozen two-seat wire bytes are unchanged.
 inline constexpr std::string_view kMultiwayCertificationToken =
     "multiway-certified:per-seat-unilateral-non-regression";
+// RFC 0011 Phase 1: diagnostic token attached to a subgame resolver candidate,
+// identifying it as an approximate (uncertified) turn/river continuation
+// produced by on-demand subgame resolving rather than a blueprint hit or a
+// terminal-only certified resolve. The host attaches it when the subgame
+// resolver produces the candidate; the wire protocol is unchanged.
+inline constexpr std::string_view kSubgameResolveToken = "subgame-resolve:approximate";
 
 enum class ResolveStatus {
   // Whole-range candidate passed independent bounds. At two seats this is the

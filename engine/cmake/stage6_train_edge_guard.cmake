@@ -103,10 +103,16 @@ endforeach()
 if(NOT _train_guarded_sources)
   message(FATAL_ERROR "stage-6 train edge guard: bigshark_stage6_train has no sources to scan")
 endif()
+# Clang 14-16 accepts -std=c++2b for C++23; GCC 12+ and Clang 17+ use -std=c++23.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
+  set(_bs_cxx23_flag "-std=c++2b")
+else()
+  set(_bs_cxx23_flag "-std=c++23")
+endif()
 add_custom_command(
   OUTPUT "${_train_guard_stamp}"
   COMMAND bash "${CMAKE_SOURCE_DIR}/engine/cmake/stage6_train_edge_guard.sh"
-          "${CMAKE_CXX_COMPILER}" "-std=c++23"
+          "${CMAKE_CXX_COMPILER}" "${_bs_cxx23_flag}"
           "${CMAKE_SOURCE_DIR}/engine/include"
           "${_train_guard_stamp}" ${_train_guarded_sources}
   DEPENDS ${_train_guarded_sources}

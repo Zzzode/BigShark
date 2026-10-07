@@ -104,6 +104,19 @@ The preset enables AddressSanitizer and UndefinedBehaviorSanitizer through the
 failure. Leak detection is not enabled because Apple AddressSanitizer does not
 support it on the current development platform.
 
+GCC 12 + ASan + abseil (open_spiel third-party) has a known constant-expression
+compilation bug. On GCC 12 hosts, configure the ASan preset with Clang
+instead:
+
+```bash
+cmake --preset asan -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+```
+
+Clang 14-16 uses `-std=c++2b` for C++23; the build system detects this
+automatically. When network access is unavailable (FetchContent cannot
+download protobuf), pre-populate `build/asan/_deps/` from a debug or release
+build and add `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`.
+
 The RFC 0002 framed protocol parsers are native untrusted-input code, so the
 full ASan ctest (not only the new targets) is required after changes to
 `engine/src/protocol/v1_*`.

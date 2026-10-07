@@ -32,6 +32,12 @@ struct UnifiedGame {
   // `0 .. def.player_count - 1` are populated.
   std::array<std::vector<WeightedHand>, poker::kMaxUnifiedSeats> ranges{};
   abstraction::SizeSchedule sizes = abstraction::default_size_schedule();
+  // RFC 0011: the action abstraction identity of the artifact that produced
+  // this game. The subgame resolver reconstructs the matching ActionAbstraction
+  // (schedule + CoverSeeds) from this id and `sizes` so the turn/river subtree
+  // uses the same menu as the blueprint. Default-constructed (identity) for
+  // callers that do not set it, matching the pre-RFC-0011 behavior.
+  abstraction::AbstractionId action_id{};
   // A fixed runout defines a different, conditional validation game. All fixed
   // cards are reserved before dealing private hands or any earlier public card.
   // v1 artifacts may carry one; v2 artifacts leave it empty.

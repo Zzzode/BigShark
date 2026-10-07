@@ -176,6 +176,7 @@ add_library(bigshark_resolver STATIC
   src/resolver/gadget_cfr.cpp
   src/resolver/certifier.cpp
   src/resolver/resolver.cpp
+  src/resolver/subgame_resolver.cpp
 )
 target_include_directories(bigshark_resolver
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -278,10 +279,16 @@ set(_l3_sources
   "${CMAKE_CURRENT_SOURCE_DIR}/include/bs/abstract_tree.hpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/tree/abstract_tree.cpp")
 set(_l3_guard_stamp "${CMAKE_CURRENT_BINARY_DIR}/l3_boundary_guard.stamp")
+# Clang 14-16 accepts -std=c++2b for C++23; GCC 12+ and Clang 17+ use -std=c++23.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
+  set(_bs_cxx23_flag "-std=c++2b")
+else()
+  set(_bs_cxx23_flag "-std=c++23")
+endif()
 add_custom_command(
   OUTPUT "${_l3_guard_stamp}"
   COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/cmake/l3_boundary_guard.sh"
-          "${CMAKE_CXX_COMPILER}" "-std=c++23"
+          "${CMAKE_CXX_COMPILER}" "${_bs_cxx23_flag}"
           "${CMAKE_CURRENT_SOURCE_DIR}/include"
           "${_l3_guard_stamp}" ${_l3_sources}
   DEPENDS ${_l3_sources} "${CMAKE_CURRENT_SOURCE_DIR}/cmake/l3_boundary_guard.sh"
@@ -500,6 +507,17 @@ add_executable(bigshark-preflop-nash-conv
 target_link_libraries(bigshark-preflop-nash-conv PRIVATE
   bigshark_solver
   bigshark_artifacts
+)
+
+# RFC 0011 Stage 3: offline NashConv measurement for the turn-rooted subgame
+# resolver. Builds a representative 2-seat River-terminal subgame, solves with
+# CFR, and computes an exact NashConv by enumerating every card-compatible
+# joint deal and every legal river card. Manual target, NOT a CTest.
+add_executable(bigshark-subgame-nash-conv
+  benchmarks/subgame_nash_conv.cpp
+)
+target_link_libraries(bigshark-subgame-nash-conv PRIVATE
+  bigshark_solver
 )
 
 # RFC 0005 Stage 9 bounded-resolve microbenchmark. Tiny fixed-runout terminal
@@ -1056,6 +1074,13 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_resolver PRIVATE bigshark_resolver)
   add_test(NAME resolver COMMAND test_resolver)
+
+  # RFC 0011 Phase 1: turn-rooted subgame resolver.
+  add_executable(test_subgame_resolver
+    tests/test_subgame_resolver.cpp
+  )
+  target_link_libraries(test_subgame_resolver PRIVATE bigshark_resolver)
+  add_test(NAME subgame_resolver COMMAND test_subgame_resolver)
 
   add_executable(test_equity tests/test_equity.cpp)
   target_link_libraries(test_equity PRIVATE bigshark_poker)
