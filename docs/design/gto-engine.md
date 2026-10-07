@@ -1243,11 +1243,12 @@ reference](../reference/protobuf-engine-protocol.md#c-process-client-rfc-0009-w4
 
 ## Turn-Rooted Subgame Resolver (RFC 0011 Phase 1)
 
-When a turn decision arises that the flop-terminal blueprint does not cover
-and the terminal-only resolver cannot handle (remaining opponent actions),
-the subgame resolver builds a turn-rooted River-terminal subtree, derives
-prior ranges from the blueprint, solves with CFR, and serves the candidate
-at `approximate` (no certification in Phase 1).
+When a turn or river decision arises that the flop-terminal blueprint does
+not cover and the terminal-only resolver cannot handle (remaining opponent
+actions), the subgame resolver builds a turn-rooted River-terminal subtree,
+derives prior ranges from the blueprint, solves with CFR, and serves the
+candidate at `approximate` (no certification in Phase 1). Supports 2..3
+seats and both turn (board_size=4) and river (board_size=5) decisions.
 
 ### Architecture
 
@@ -1256,17 +1257,26 @@ The resolver (`engine/include/bs/subgame_resolver.hpp`,
 component that depends only on the solver layer:
 
 1. **Subgame construction.** `build_subgame_def` creates a standalone
-   River-terminal `GameDef` from the current turn `GameState`: stacks and
-   pot come from the state, the board carries the observed turn card, and
-   the terminal depth is `River` so the builder materializes the full chance
-   subtree (44 river cards for 2 seats). The action abstraction is
-   reconstructed from the blueprint's `action_id` and sizes so the subgame
-   tree uses the same menu as the blueprint.
+   River-terminal `GameDef` from the turn-root `GameState`: stacks and pot
+   come from the state, the board carries the observed turn card, and the
+   terminal depth is `River` so the builder materializes the full chance
+   subtree (44 river cards for 2 seats, 42 for 3). The button is set so the
+   hero (the decision node's actor) is the first to act postflop:
+   `button = (hero + N - 1) % N`. The action abstraction is reconstructed
+   from the blueprint's `action_id` and sizes so the subgame tree uses the
+   same menu as the blueprint. The subgame is always turn-rooted, even for
+   river decisions, because the blueprint is flop-terminal and has zero
+   turn rows — the turn-rooted subgame's CFR policy supplies the turn/river
+   strategy at every node.
 
 2. **Prior range derivation.** `derive_prior_ranges` walks the observed
    flop action line in the blueprint policy. For each seat, the per-hand
    reach is the product of blueprint action probabilities along the path.
-   A missing blueprint row at any step returns `CoverageMiss`.
+   The method is seat-generic (iterates `game.def.player_count`), so it
+   supports 2..3 seats without modification. A missing blueprint row at any
+   step returns `CoverageMiss`. For a river decision, the method is called
+   with flop-only history; the `blocks_board` check uses the turn root's
+   4-card board so hands that block the river card are correctly retained.
 
 3. **CFR solve.** The subtree is solved by `train_nseat` (the existing
    external-sampling MCCFR trainer). River leaves are valued by the existing
@@ -1274,10 +1284,21 @@ component that depends only on the solver layer:
    is whole-range and hero-card independent: the seed and iteration cap
    depend only on public context.
 
-4. **Candidate extraction.** The hero's root decision rows are extracted
-   from the trained policy by `(card_bucket, node_index)` key. Every
-   positive-reach hero combo appears; probabilities are over the node's
-   ordered abstract actions.
+4. **Candidate extraction.** For a turn decision, the hero's root decision
+   rows are extracted from the trained policy by `(card_bucket, node_index)`
+   key. For a river decision, `walk_to_river_node` walks the solved tree
+   from the turn root — following the observed turn actions and river card —
+   to reach the river action node, and the candidate is extracted there.
+   Every positive-reach hero combo appears; probabilities are over the
+   node's ordered abstract actions.
+
+### Folded-player check
+
+The `GameDef` has no fold field, so a folded seat would be treated as live
+in the subgame tree, producing a wrong tree. The resolver checks
+`players()[s].folded` for every seat and returns `Ineligible` if any player
+folded. This is safe (falls through to the next resolver in the chain) but
+conservative; remapping to live-only seats is a future improvement.
 
 ### Fallback chain
 
@@ -1304,21 +1325,28 @@ operators to distinguish subgame-sourced decisions from blueprint hits.
 
 ### Phase 1 scope
 
-- 2-seat only. A 3-seat turn/river decision is `Ineligible` until the N-way
-  continuation-range export lands.
-- Turn-rooted only. A river decision (board_size=5) is `Ineligible`.
+- 2..3 seats. The gate matches the belief model's exact range (2..3). 4+
+  seat support requires a 4+ seat flop library, which does not exist.
+- Turn and river. A river decision (board_size=5) builds a turn-rooted
+  subgame, solves it, and walks the solved tree to the river node.
+- Folded-player check. A spot where any player folded returns `Ineligible`.
 - No certification. All candidates serve at `approximate`.
 - Runtime flag. `BIGSHARK_SUBGAME_RESOLVER=1` enables the resolver.
 
 ### Measurements
 
 The NashConv benchmark (`engine/benchmarks/subgame_nash_conv.cpp`,
-`bigshark-subgame-nash-conv`) builds a representative 2-seat turn-rooted
-River-terminal subgame (flop check-through on 2c 3d 7h → turn Js, 10 BB
-behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise abstraction,
-10 hands per seat), solves with CFR, and computes an exact NashConv by
-enumerating every card-compatible joint deal (70) and every legal river
-card (44).
+`bigshark-subgame-nash-conv`) builds four representative subgames — 2-seat
+turn-rooted, 3-seat turn-rooted, 2-seat river-rooted, and 3-seat
+river-rooted — solves each with CFR, and computes an exact NashConv by
+enumerating every card-compatible joint deal and every legal river card.
+The 2-seat turn fixture uses a flop check-through on 2c 3d 7h → turn Js,
+10 BB behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise
+abstraction, 10 hands per seat (70 joint deals, 44 river cards). The 3-seat
+fixtures use the same board with 3 seats (342 joint deals, 42 river cards).
+The river-rooted fixtures have no chance nodes (the river card is fixed).
+
+#### 2-seat turn-rooted
 
 **Tree size:**
 
@@ -1374,6 +1402,100 @@ uniform fallback.
 The policy needs ~10K iterations to converge below the uniform baseline.
 Below that, the coarse card abstraction (CategoryTiersV1, 9 buckets at
 postflop) and the high fallback rate make the policy worse than uniform.
+
+#### 3-seat turn-rooted
+
+**Tree size:**
+
+| Metric | Value |
+| --- | --- |
+| Nodes | 119,266 |
+| Depth | 16 |
+| Action nodes | 48,987 |
+| Chance nodes | 169 |
+| Fold leaves | 21,534 |
+| Showdown leaves | 48,576 |
+| Accounted memory | 77,231 KiB |
+
+The tree is ~21× larger than the 2-seat tree but well within the 1 GiB byte
+cap.
+
+**Solve time:** 101 ms at 1,000 iterations (22,021 info sets). Within the
+`ResolveLimits::time` budget (default 2 seconds).
+
+**Exploitability (1,000 iterations):**
+
+| Policy | NashConv (chips) | Exploitability (BB) |
+| --- | --- | --- |
+| CFR | 20.24 | 3.373 |
+| Uniform | 25.58 | 4.264 |
+| Reduction | | 20.9% |
+
+The 3-seat turn tree converges faster than the 2-seat turn tree (which
+needs ~10K iterations) because the multiway action structure provides more
+learning signal per iteration.
+
+**Coverage (1,000 iterations):** 26.2% of action nodes have at least one
+policy row (12,850 / 48,987). The low coverage is expected at 1,000
+iterations on a 119K-node tree; the root decision has full coverage.
+
+#### 2-seat river-rooted
+
+**Tree size:**
+
+| Metric | Value |
+| --- | --- |
+| Nodes | 27 |
+| Depth | 7 |
+| Action nodes | 10 |
+| Chance nodes | 0 |
+| Fold leaves | 8 |
+| Showdown leaves | 9 |
+| Accounted memory | 18.9 KiB |
+
+The river-rooted tree is tiny because there is no chance subtree (the river
+card is fixed).
+
+**Solve time:** 10 ms at 1,000 iterations (30 info sets).
+
+**Exploitability (1,000 iterations):**
+
+| Policy | NashConv (chips) | Exploitability (BB) |
+| --- | --- | --- |
+| CFR | 1.96 | 0.489 |
+| Uniform | 5.37 | 1.344 |
+| Reduction | | 63.6% |
+
+The river-rooted subgame converges very fast because the tree is small and
+the exact settlement leaves provide direct terminal feedback.
+
+**Coverage (1,000 iterations):** 100% (10 / 10 action nodes).
+
+#### 3-seat river-rooted
+
+**Tree size:**
+
+| Metric | Value |
+| --- | --- |
+| Nodes | 418 |
+| Depth | 12 |
+| Action nodes | 171 |
+| Chance nodes | 0 |
+| Fold leaves | 78 |
+| Showdown leaves | 169 |
+| Accounted memory | 185.4 KiB |
+
+**Solve time:** 28 ms at 1,000 iterations (439 info sets).
+
+**Exploitability (1,000 iterations):**
+
+| Policy | NashConv (chips) | Exploitability (BB) |
+| --- | --- | --- |
+| CFR | 5.23 | 0.872 |
+| Uniform | 19.26 | 3.209 |
+| Reduction | | 72.8% |
+
+**Coverage (1,000 iterations):** 98.8% (169 / 171 action nodes).
 
 ## Multiway Rules (RFC 0006 Stage 13)
 

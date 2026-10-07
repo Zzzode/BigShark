@@ -1,18 +1,19 @@
 // RFC 0011 Stage 3: NashConv measurement for the turn-rooted subgame resolver.
 //
-// Builds a representative 2-seat turn-rooted River-terminal subgame, solves
-// with CFR (train_nseat), and computes an exact NashConv by enumerating every
-// card-compatible joint deal and every legal river card. Chance nodes are
-// enumerated exactly (the river chance is bounded at 44 cards for 2 seats),
-// so the only approximation is the CFR policy itself. Reports tree size,
-// solve time, coverage, and exploitability at 100, 1K, and 10K iterations,
-// plus a uniform-policy baseline.
+// Builds representative 2-seat and 3-seat, turn-rooted and river-rooted
+// River-terminal subgames, solves with CFR (train_nseat), and computes an
+// exact NashConv by enumerating every card-compatible joint deal and every
+// legal river card. Chance nodes are enumerated exactly (the river chance is
+// bounded at 44 cards for 2 seats, 42 for 3), so the only approximation is
+// the CFR policy itself. Reports tree size, solve time, coverage, and
+// exploitability at N iterations, plus a uniform-policy baseline.
 //
-// The fixture is a heads-up flop check-through on 2c 3d 7h that reaches the
-// turn Js, with 10 BB behind and a 1 BB pot. The action abstraction is a
-// declared-only schedule with one 1/2-pot bet and one 1/2-pot raise per
-// street, which keeps the tree small enough for exact enumeration while
-// still exercising the full turn → river → showdown structure.
+// The fixture is a flop check-through on 2c 3d 7h that reaches the turn Js
+// (and optionally the river 9c), with 10 BB behind and a 1 BB pot per seat.
+// The action abstraction is a declared-only schedule with one 1/2-pot bet and
+// one 1/2-pot raise per street, which keeps the tree small enough for exact
+// enumeration while still exercising the full turn → river → showdown
+// structure.
 //
 // Usage: bigshark-subgame-nash-conv [iterations] [seed]
 //
@@ -32,6 +33,7 @@
 #include <cstdio>
 #include <limits>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -104,11 +106,11 @@ std::size_t board_only_ordinal(const GameState& state, int card) {
 }
 
 // ---------------------------------------------------------------------------
-// Representative fixture
+// Representative fixtures
 // ---------------------------------------------------------------------------
 
 // 2-seat, 10 BB behind, 1 BB pot, flop check-through to the turn Js.
-GameDef make_subgame_def() {
+GameDef make_subgame_def_2p_turn() {
   GameDef def{};
   def.player_count = 2;
   def.button = 0;  // seat 1 acts first postflop in heads-up
@@ -121,6 +123,40 @@ GameDef make_subgame_def() {
   def.board_size = 4;
   def.preflop = false;
   def.terminal = TerminalDepth::River;
+  return def;
+}
+
+// 3-seat, 10 BB behind, 1 BB pot each, flop check-through to the turn Js.
+// Button=2 so seat 0 acts first postflop, matching the multiway convention.
+GameDef make_subgame_def_3p_turn() {
+  GameDef def{};
+  def.player_count = 3;
+  def.button = 2;  // seat 0 acts first postflop
+  def.big_blind = 2;
+  def.ante = 0;
+  def.stacks = {20, 20, 20};
+  def.contributions = {1, 1, 1};
+  def.pot = 3;
+  def.board = {card("2c"), card("3d"), card("7h"), card("Js"), 0};
+  def.board_size = 4;
+  def.preflop = false;
+  def.terminal = TerminalDepth::River;
+  return def;
+}
+
+// 2-seat, river-rooted: flop check-through, turn check-through, river 9c.
+GameDef make_subgame_def_2p_river() {
+  GameDef def = make_subgame_def_2p_turn();
+  def.board = {card("2c"), card("3d"), card("7h"), card("Js"), card("9c")};
+  def.board_size = 5;
+  return def;
+}
+
+// 3-seat, river-rooted: flop check-through, turn check-through, river 9c.
+GameDef make_subgame_def_3p_river() {
+  GameDef def = make_subgame_def_3p_turn();
+  def.board = {card("2c"), card("3d"), card("7h"), card("Js"), card("9c")};
+  def.board_size = 5;
   return def;
 }
 
@@ -239,7 +275,7 @@ struct NashConvWalker {
 };
 
 // ---------------------------------------------------------------------------
-// NashConv computation over all card-compatible joint deals
+// NashConv computation over all card-compatible joint deals (N-way)
 // ---------------------------------------------------------------------------
 
 struct NashConvResult {
@@ -248,49 +284,85 @@ struct NashConvResult {
   double exploitability_bb = 0.0;
   std::size_t joint_deals = 0;
   std::size_t fallbacks = 0;
-  std::array<double, 2> strategy_value{};
-  std::array<double, 2> br_value{};
+  std::vector<double> strategy_value;
+  std::vector<double> br_value;
 };
+
+// Recursive N-way joint-deal enumerator. For each card-compatible assignment
+// of one hand per seat, walks the tree once per seat for strategy value and
+// once for best-response value. Accumulates into the output sums.
+void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
+                           const std::vector<std::array<int, 2>>& range, const GameState& root,
+                           std::size_t seat_count, std::size_t current_seat,
+                           std::vector<std::array<int, 2>>& holes,
+                           std::vector<double>& strategy_sum, std::vector<double>& br_sum,
+                           std::size_t& joint_deals, std::size_t& total_fallbacks) {
+  if (current_seat == seat_count) {
+    ++joint_deals;
+    for (std::size_t p = 0; p < seat_count; ++p) {
+      NashConvWalker walker{tree, policy, p, /*best_response=*/false};
+      const double sv = walker.walk(root, tree.root_index(), holes);
+      NashConvWalker br_walker{tree, policy, p, /*best_response=*/true};
+      const double bv = br_walker.walk(root, tree.root_index(), holes);
+      strategy_sum[p] += sv;
+      br_sum[p] += bv;
+      total_fallbacks += walker.fallbacks + br_walker.fallbacks;
+    }
+    return;
+  }
+  for (const auto& h : range) {
+    bool collides = false;
+    for (std::size_t s = 0; s < current_seat; ++s) {
+      if (hands_collide(h, holes[s])) {
+        collides = true;
+        break;
+      }
+    }
+    if (!collides) {
+      holes.push_back(h);
+      enumerate_joint_deals(tree, policy, range, root, seat_count, current_seat + 1, holes,
+                            strategy_sum, br_sum, joint_deals, total_fallbacks);
+      holes.pop_back();
+    }
+  }
+}
 
 NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* policy,
                                  const std::vector<std::array<int, 2>>& range, const GameDef& def) {
   const GameState root(def);
   const double bb = static_cast<double>(def.big_blind);
+  const std::size_t seat_count = def.player_count;
 
-  std::array<double, 2> strategy_sum{0.0, 0.0};
-  std::array<double, 2> br_sum{0.0, 0.0};
-  std::size_t joint_deals = 0;
-  std::size_t total_fallbacks = 0;
-
-  for (const auto& hero_hand : range) {
-    for (const auto& opp_hand : range) {
-      if (hands_collide(hero_hand, opp_hand))
-        continue;
-      const std::vector<std::array<int, 2>> holes = {hero_hand, opp_hand};
-      ++joint_deals;
-
-      for (std::size_t p = 0; p < 2; ++p) {
-        NashConvWalker walker{tree, policy, p, /*best_response=*/false};
-        const double sv = walker.walk(root, tree.root_index(), holes);
-        NashConvWalker br_walker{tree, policy, p, /*best_response=*/true};
-        const double bv = br_walker.walk(root, tree.root_index(), holes);
-        strategy_sum[p] += sv;
-        br_sum[p] += bv;
-        total_fallbacks += walker.fallbacks + br_walker.fallbacks;
-      }
-    }
+  // Filter out hands that block the board — they cannot be dealt in a real
+  // game and would produce incorrect showdown settlements.
+  std::vector<std::array<int, 2>> live_range;
+  for (const auto& h : range) {
+    if (!blocks_board(h, def.board, def.board_size))
+      live_range.push_back(h);
   }
 
+  std::vector<double> strategy_sum(seat_count, 0.0);
+  std::vector<double> br_sum(seat_count, 0.0);
+  std::size_t joint_deals = 0;
+  std::size_t total_fallbacks = 0;
+  std::vector<std::array<int, 2>> holes;
+  holes.reserve(seat_count);
+
+  enumerate_joint_deals(tree, policy, live_range, root, seat_count, 0, holes, strategy_sum, br_sum,
+                        joint_deals, total_fallbacks);
+
   NashConvResult result;
+  result.strategy_value.resize(seat_count);
+  result.br_value.resize(seat_count);
   result.joint_deals = joint_deals;
   result.fallbacks = total_fallbacks;
-  for (std::size_t p = 0; p < 2; ++p) {
+  for (std::size_t p = 0; p < seat_count; ++p) {
     result.strategy_value[p] = strategy_sum[p] / static_cast<double>(joint_deals);
     result.br_value[p] = br_sum[p] / static_cast<double>(joint_deals);
   }
-  result.nash_conv = (result.br_value[0] - result.strategy_value[0]) +
-                     (result.br_value[1] - result.strategy_value[1]);
-  result.exploitability = result.nash_conv / 2.0;
+  for (std::size_t p = 0; p < seat_count; ++p)
+    result.nash_conv += result.br_value[p] - result.strategy_value[p];
+  result.exploitability = result.nash_conv / static_cast<double>(seat_count);
   result.exploitability_bb = result.exploitability / bb;
   return result;
 }
@@ -333,28 +405,26 @@ CoverageResult compute_coverage(const AbstractTree& tree, const NSeatPolicy& pol
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Fixture runner
 // ---------------------------------------------------------------------------
 
-}  // namespace
+int run_fixture(const std::string& label, const GameDef& def,
+                const std::vector<std::array<int, 2>>& range, const SizeSchedule& schedule,
+                std::uint64_t iterations, std::uint64_t seed) {
+  const std::size_t seat_count = def.player_count;
+  const bool river_rooted = def.board_size == 5;
 
-int main(int argc, char** argv) {
-  const std::uint64_t iterations = argc > 1 ? std::stoull(argv[1]) : 1000;
-  const std::uint64_t seed = argc > 2 ? std::stoull(argv[2]) : 42;
-
-  const GameDef def = make_subgame_def();
-  const auto range = make_representative_range();
-  const auto schedule = make_coarse_schedule();
-
-  std::printf("RFC 0011 Stage 3: Subgame Resolver NashConv Measurement\n");
-  std::printf("  fixture:      2-seat, flop check-through 2c 3d 7h -> turn Js\n");
+  std::printf("\n========================================================================\n");
+  std::printf("  %s\n", label.c_str());
+  std::printf("========================================================================\n");
+  std::printf("  seats:        %zu (%s)\n", seat_count,
+              river_rooted ? "river-rooted" : "turn-rooted");
   std::printf("  stacks:       %.0f BB each (%.0f chips)\n",
               def.stacks[0] / static_cast<double>(def.big_blind),
               static_cast<double>(def.stacks[0]));
   std::printf("  pot:          %.1f BB (%lld chips)\n",
               def.pot / static_cast<double>(def.big_blind), static_cast<long long>(def.pot));
   std::printf("  abstraction:  declared-only, 1/2-pot bet + 1/2-pot raise\n");
-  std::printf("  range:        %zu hands per seat\n", range.size());
   std::printf("  iterations:   %llu\n", static_cast<unsigned long long>(iterations));
   std::printf("  seed:         %llu\n", static_cast<unsigned long long>(seed));
   std::fflush(stdout);
@@ -362,7 +432,14 @@ int main(int argc, char** argv) {
   // Build the tree.
   ActionAbstraction action = ActionAbstraction::declared(schedule, CoverSeeds::DeclaredOnly);
   TreeLimits tree_limits;
-  AbstractTree tree(def, action, tree_limits);
+  std::unique_ptr<AbstractTree> tree_ptr;
+  try {
+    tree_ptr = std::make_unique<AbstractTree>(def, action, tree_limits);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "  tree build failed: %s\n", e.what());
+    return 1;
+  }
+  const AbstractTree& tree = *tree_ptr;
 
   std::printf("\nTree:\n");
   std::printf("  nodes:        %zu\n", tree.size());
@@ -394,9 +471,9 @@ int main(int argc, char** argv) {
   std::printf("  showdown:     %zu\n", showdown_leaves);
   std::fflush(stdout);
 
-  // Build ranges.
-  std::vector<std::vector<WeightedHand>> ranges(2);
-  for (std::size_t p = 0; p < 2; ++p) {
+  // Build ranges (filtered by blocks_board).
+  std::vector<std::vector<WeightedHand>> ranges(seat_count);
+  for (std::size_t p = 0; p < seat_count; ++p) {
     for (const auto& h : range) {
       if (blocks_board(h, def.board, def.board_size))
         continue;
@@ -408,14 +485,14 @@ int main(int argc, char** argv) {
 
   // Solve with CFR.
   NSeatTrainerLimits trainer_limits;
-  trainer_limits.wall = std::chrono::seconds(60);
+  trainer_limits.wall = std::chrono::seconds(120);
 
   const auto solve_start = std::chrono::steady_clock::now();
   NSeatTrainingResult train_result;
   try {
     train_result = train_nseat(tree, ranges, iterations, seed, trainer_limits, nullptr, nullptr);
   } catch (const std::exception& e) {
-    std::fprintf(stderr, "train_nseat failed: %s\n", e.what());
+    std::fprintf(stderr, "  train_nseat failed: %s\n", e.what());
     return 1;
   }
   const auto solve_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -449,10 +526,11 @@ int main(int argc, char** argv) {
   const auto cfr_result = compute_nash_conv(tree, &train_result.policy, range, def);
   std::printf("  joint deals:  %zu\n", cfr_result.joint_deals);
   std::printf("  fallbacks:    %zu\n", cfr_result.fallbacks);
-  std::printf("  player 0:     strategy=%+.2f  br=%+.2f  gap=%+.2f\n", cfr_result.strategy_value[0],
-              cfr_result.br_value[0], cfr_result.br_value[0] - cfr_result.strategy_value[0]);
-  std::printf("  player 1:     strategy=%+.2f  br=%+.2f  gap=%+.2f\n", cfr_result.strategy_value[1],
-              cfr_result.br_value[1], cfr_result.br_value[1] - cfr_result.strategy_value[1]);
+  for (std::size_t p = 0; p < seat_count; ++p) {
+    std::printf("  player %zu:     strategy=%+.2f  br=%+.2f  gap=%+.2f\n", p,
+                cfr_result.strategy_value[p], cfr_result.br_value[p],
+                cfr_result.br_value[p] - cfr_result.strategy_value[p]);
+  }
   std::printf("  CFR NashConv:       %.2f chips\n", cfr_result.nash_conv);
   std::printf("  CFR Exploitability: %.2f chips (%.3f BB)\n", cfr_result.exploitability,
               cfr_result.exploitability_bb);
@@ -471,4 +549,33 @@ int main(int argc, char** argv) {
               reduction_bb, reduction_pct);
 
   return 0;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  const std::uint64_t iterations = argc > 1 ? std::stoull(argv[1]) : 1000;
+  const std::uint64_t seed = argc > 2 ? std::stoull(argv[2]) : 42;
+
+  const auto range = make_representative_range();
+  const auto schedule = make_coarse_schedule();
+
+  std::printf("RFC 0011 Stage 3: Subgame Resolver NashConv Measurement\n");
+  std::printf("  2-seat and 3-seat, turn-rooted and river-rooted subgames\n");
+
+  int failures = 0;
+  failures += run_fixture("2-seat turn-rooted", make_subgame_def_2p_turn(), range, schedule,
+                          iterations, seed);
+  failures += run_fixture("3-seat turn-rooted", make_subgame_def_3p_turn(), range, schedule,
+                          iterations, seed);
+  failures += run_fixture("2-seat river-rooted", make_subgame_def_2p_river(), range, schedule,
+                          iterations, seed);
+  failures += run_fixture("3-seat river-rooted", make_subgame_def_3p_river(), range, schedule,
+                          iterations, seed);
+
+  if (failures == 0)
+    std::printf("\nAll fixtures completed.\n");
+  else
+    std::printf("\n%d fixture(s) failed.\n", failures);
+  return failures;
 }

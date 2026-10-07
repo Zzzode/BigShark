@@ -18,15 +18,27 @@ Extend the flop-terminal strategy to cover turn and river decisions through
 on-demand subgame resolving, using the flop-terminal blueprint as the trunk.
 The core mechanism is a bounded subgame resolver that, when a turn or river
 decision arises, builds the remaining-street subtree, derives prior ranges
-from the blueprint, and solves the subtree with CFR. The turn-rooted
-subgame's chance subtree is only the river card (44 cards for 2 seats),
-which is bounded and fast; the much larger flop-rooted chance explosion
+from the blueprint, and solves the subtree with CFR. The subgame is always
+turn-rooted (even for river decisions): the blueprint is flop-terminal and
+has no turn rows, so the turn-rooted subgame's CFR policy supplies the
+turn/river strategy at every node. For a river decision, the resolver walks
+the solved tree along the observed turn actions and river card to extract
+the candidate at the river action node. The turn-rooted subgame's chance
+subtree is only the river card (44 cards for 2 seats, 42 for 3), which is
+bounded and fast; the much larger flop-rooted chance explosion
 (45x44 = 1,980 runouts per action path for 2 seats) is the offline-library
 problem addressed by Phase 3's virtual turn/river deals. Phase 1 serves all
 candidates at `approximate` (no certification); Phase 2 adds the
 Brown & Sandholm gadget for certified non-regression. This RFC defines the
 design space, the phased rollout, and the measurement plan; it does not
 change the live v1 protocol.
+
+Phase 1 supports 2..3 seats and both turn (board_size=4) and river
+(board_size=5) decisions. The resolver generalizes to N seats via the
+multiway state machine; the seat-count gate matches the belief model's
+exact range (2..3). A folded seat returns `Ineligible` (the GameDef has no
+fold field, so a folded player would be treated as live in the subgame
+tree).
 
 ## Motivation
 
@@ -79,8 +91,10 @@ storage-infeasible at the depths the production libraries target.
 - Value river leaves by exact equity (no Monte Carlo, no interpolation).
   Phase 1 reuses the existing `settle_showdown` settlement; Phase 3 adds a
   `RiverFrontierEvaluator` for virtual-deal leaves.
-- Phase 1 supports 2-seat games only. 3-seat support is deferred until the
-  N-way continuation-range export (deferred from RFC 0010) lands.
+- Phase 1 supports 2..3 seats and both turn (board_size=4) and river
+  (board_size=5) decisions. The resolver is seat-count-agnostic internally;
+  the gate matches the belief model's exact range (2..3). 4+ seat support
+  requires a 4+ seat flop library, which does not exist.
 - Measure the continuation strategy's exploitability and decision quality
   against the flop-terminal-only baseline.
 - Keep the live v1 protocol and the artifact schema unchanged.
@@ -178,7 +192,10 @@ turn/river chance subtree.
 `engine/src/gto/continuation_range.cpp` exports the range of hands that
 reach a flop-terminal frontier, conditioned on the blueprint policy. This
 is the existing mechanism for deriving prior ranges at a subgame root. It
-is heads-up only (RFC 0010 deferred the N-way generalization).
+is heads-up only (RFC 0010 deferred the N-way generalization). The
+subgame resolver does not use this offline export; it implements a
+self-contained, seat-generic `derive_prior_ranges` method (see Prior range
+derivation below).
 
 ## Design Principles
 
@@ -233,18 +250,23 @@ that dispatches to the terminal-only resolver on a blueprint miss). Minor-1
 AUTOMATIC falls through to the operational fallback without resolving and is
 unchanged.
 
-### Phase 1: Turn-rooted subgame resolving (2-seat, approximate)
+### Phase 1: Turn-rooted subgame resolving (2..3 seats, turn/river, approximate)
 
-When a turn decision arises, the resolver:
+When a turn or river decision arises, the resolver:
 
-1. **Builds the subgame tree.** Constructs a `GameDef` rooted at the turn
-   (board_size = 4, `!preflop`, `terminal = TerminalDepth::River`) with the
-   current stacks, pot, and actor. The `AbstractTree` builder materializes
-   the turn action subtree, the river chance (one Chance node per turn
-   action, with 44 river-card edges for 2 seats), the river action subtree,
-   and the showdown leaves. The tree size is bounded: for a typical spot
-   with 5-10 turn actions and 5-10 river actions, this is ~221-481 action
-   nodes plus ~5-10 chance nodes (one per turn action).
+1. **Builds the subgame tree.** The subgame is always turn-rooted
+   (board_size = 4, `!preflop`, `terminal = TerminalDepth::River`), even for
+   river decisions. The blueprint is flop-terminal and has zero turn rows,
+   so the turn-rooted subgame's CFR policy supplies the turn/river strategy
+   at every node. The `AbstractTree` builder materializes the turn action
+   subtree, the river chance (one Chance node per turn action, with 44
+   river-card edges for 2 seats, 42 for 3), the river action subtree, and
+   the showdown leaves. The button is set so the hero (the decision node's
+   actor) is the first to act postflop: `button = (hero + N - 1) % N`,
+   consistent with the multiway state constructor's
+   `next_actor(button) = (button + 1) % N` rule. For a river decision, the
+   resolver walks the solved tree along the observed turn actions and river
+   card to extract the candidate at the river action node.
 
 2. **Derives prior ranges.** The prior ranges at the turn root are the
    continuation ranges from the flop-terminal blueprint, conditioned on the
@@ -378,8 +400,12 @@ trainer's walk is extended to handle the new node kind.
 The subgame tree is built by the `AbstractTree` builder with a
 River-terminal `GameDef`:
 
-- **Root:** the current turn/river `GameState` (board_size = 4 or 5,
-  `!preflop`, `terminal = TerminalDepth::River`).
+- **Root:** the turn-root `GameState` (board_size = 4, `!preflop`,
+  `terminal = TerminalDepth::River`). The subgame is always turn-rooted,
+  even for river decisions: the blueprint is flop-terminal and has zero
+  turn rows, so the turn-rooted subgame's CFR policy supplies the
+  turn/river strategy at every node. For a river decision, the resolver
+  walks the solved tree to the river node after solving.
 - **Stacks and pot:** the current stacks and pot, derived from the live
   state. The subgame is a standalone game: it does not reference the flop
   blueprint's game definition.
@@ -398,20 +424,29 @@ bounded by the abstraction.
 ### Prior range derivation
 
 The prior ranges at the turn root are the continuation ranges from the
-flop-terminal blueprint:
-
-- **2-seat (Phase 1):** `continuation_range.cpp` already exports the range
-  of hands that reach a flop-terminal frontier, conditioned on the blueprint
-  policy. The export is generalized to accept a turn root (board_size = 4)
-  and condition on the observed flop action line.
-- **3-seat (deferred):** RFC 0010 deferred the N-way continuation range
-  export (`continuation_range.cpp:65` throws on `player_count != 2`). The
-  3-seat subgame resolver is blocked until this export lands. This RFC does
-  not commit the 3-seat export as Phase 1 work.
+flop-terminal blueprint, conditioned on the observed flop action line. The
+resolver implements a self-contained `derive_prior_ranges` method that replays
+the flop action line from the blueprint's flop root, accumulating per-seat
+prefix reach by multiplying blueprint action probabilities. The method is
+seat-generic: it iterates `game.def.player_count` and uses `kMaxUnifiedSeats`
+arrays, so it supports 2..3 seats without modification. (Phase 1
+implementation note: the RFC's original plan to generalize
+`continuation_range.cpp` was replaced by a self-contained method, which is
+functionally equivalent and avoids modifying existing code. The offline
+`continuation_range.cpp` export remains 2-seat only; it feeds the offline
+`DeclaredFrontierTable` pipeline, not the subgame resolver.)
 
 The ranges are the counterfactual reach weights: each hand's probability of
 reaching the turn root under the blueprint policy, excluding the opponent's
 action reach (matching the resolver's `CounterfactualReach` contract).
+
+For a river decision, `derive_prior_ranges` is called with flop-only history
+(not flop+turn), so it only looks up blueprint rows at flop nodes — which
+exist. The turn policy comes from the solved subgame tree, not from the
+blueprint. The `blocks_board` check uses the turn root's 4-card board (not
+the river's 5-card board), so hands that block the river card are correctly
+retained — the river card is dealt by the tree's chance node, not known at
+the turn root.
 
 ### Failure behavior
 
@@ -547,10 +582,13 @@ or certifiable.
   be inaccurate if the blueprint's flop policy is weak. Mitigation: the
   ranges are derived from the trained blueprint, not a heuristic. The
   certifier's non-regression bound (Phase 2) guards against a weak blueprint.
-- **3-seat range derivation.** The N-way continuation range export is
-  deferred from RFC 0010 and is a hard prerequisite for 3-seat prior ranges.
-  Mitigation: Phase 1 is scoped to 2-seat only; 3-seat is blocked until the
-  export lands.
+- **3-seat tree size.** A 3-seat River-terminal tree has more action nodes
+  than a 2-seat tree (the action subtree branches over 3 actors per street).
+  With deep stacks the tree can exceed the builder's 1 GiB byte cap.
+  Mitigation: the builder's existing caps apply; an oversized subgame is
+  `Ineligible` and falls back. The 3-seat test fixtures use 5 BB stacks to
+  stay under the cap; production spots with shallow-to-moderate stacks are
+  well within limits.
 - **Trunk value approximation (Phase 2).** The gadget's TERMINATE value is
   approximated by the all-in-at-flop equity or the Phase 1 resolver's turn
   value. A poor approximation could make the gadget too conservative or too
@@ -571,6 +609,13 @@ or certifiable.
     44 river-card edges).
   - Solve the subgame; verify the candidate policy is a valid probability
     distribution.
+  - River solve: a 2-seat river decision (board_size=5) with flop+turn
+    check-through history solves and returns a candidate at the river node.
+  - 3-seat turn solve: a 3-seat turn decision solves with `seat_count == 3`.
+  - 3-seat river solve: a 3-seat river decision solves with `seat_count == 3`.
+  - Folded player: a 3-seat spot where one player folded on the flop returns
+    `Ineligible` (the GameDef has no fold field; a folded seat would be
+    treated as live in the subgame tree).
   - Ineligible: a subgame that exceeds the tree limits returns `Ineligible`.
   - Deadline: a subgame that exceeds the wall-time cap returns
     `SolveDeadline`.
@@ -603,12 +648,17 @@ or certifiable.
 ### Measurements
 
 The NashConv benchmark (`engine/benchmarks/subgame_nash_conv.cpp`,
-`bigshark-subgame-nash-conv`) builds a representative 2-seat turn-rooted
-River-terminal subgame (flop check-through on 2c 3d 7h → turn Js, 10 BB
-behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise abstraction,
-10 hands per seat), solves with CFR, and computes an exact NashConv by
-enumerating every card-compatible joint deal (70) and every legal river
-card (44).
+`bigshark-subgame-nash-conv`) builds four representative subgames — 2-seat
+turn-rooted, 3-seat turn-rooted, 2-seat river-rooted, and 3-seat
+river-rooted — solves each with CFR, and computes an exact NashConv by
+enumerating every card-compatible joint deal and every legal river card.
+The 2-seat turn fixture uses a flop check-through on 2c 3d 7h → turn Js,
+10 BB behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise
+abstraction, 10 hands per seat (70 joint deals, 44 river cards). The 3-seat
+fixtures use the same board with 3 seats (342 joint deals, 42 river cards).
+The river-rooted fixtures have no chance nodes (the river card is fixed).
+
+#### 2-seat turn-rooted
 
 - **Subgame tree size:** 5,739 nodes (depth 10), 2,218 action nodes, 9
   chance nodes, 1,544 fold leaves, 1,968 showdown leaves, 2,925 KiB
@@ -638,6 +688,46 @@ card (44).
   | 10,000 | 266 ms | 1.511 | +23.4% |
   | 100,000 | 2,260 ms | 0.819 | +58.5% |
 
+#### 3-seat turn-rooted
+
+- **Subgame tree size:** 119,266 nodes (depth 16), 48,987 action nodes, 169
+  chance nodes, 21,534 fold leaves, 48,576 showdown leaves, 77,231 KiB
+  accounted memory. The tree is ~21× larger than the 2-seat tree but well
+  within the 1 GiB byte cap.
+- **Solve time:** 101 ms at 1,000 iterations (22,021 info sets). Within the
+  `ResolveLimits::time` budget (default 2 seconds).
+- **Exploitability:** at 1,000 iterations, the CFR policy's exploitability
+  is 3.373 BB, a 20.9% reduction from the uniform baseline (4.264 BB). The
+  3-seat turn tree converges faster than the 2-seat turn tree (which needs
+  ~10K iterations) because the multiway action structure provides more
+  learning signal per iteration.
+- **Coverage:** at 1,000 iterations, 26.2% of action nodes have at least
+  one policy row (12,850 / 48,987). The low coverage is expected at 1,000
+  iterations on a 119K-node tree; the root decision (the only rows the
+  engine serves) has full coverage.
+
+#### 2-seat river-rooted
+
+- **Subgame tree size:** 27 nodes (depth 7), 10 action nodes, 0 chance
+  nodes, 8 fold leaves, 9 showdown leaves, 18.9 KiB accounted memory. The
+  river-rooted tree is tiny because there is no chance subtree (the river
+  card is fixed).
+- **Solve time:** 10 ms at 1,000 iterations (30 info sets).
+- **Exploitability:** at 1,000 iterations, the CFR policy's exploitability
+  is 0.489 BB, a 63.6% reduction from the uniform baseline (1.344 BB). The
+  river-rooted subgame converges very fast because the tree is small and
+  the exact settlement leaves provide direct terminal feedback.
+- **Coverage:** 100% (10 / 10 action nodes).
+
+#### 3-seat river-rooted
+
+- **Subgame tree size:** 418 nodes (depth 12), 171 action nodes, 0 chance
+  nodes, 78 fold leaves, 169 showdown leaves, 185.4 KiB accounted memory.
+- **Solve time:** 28 ms at 1,000 iterations (439 info sets).
+- **Exploitability:** at 1,000 iterations, the CFR policy's exploitability
+  is 0.872 BB, a 72.8% reduction from the uniform baseline (3.209 BB).
+- **Coverage:** 98.8% (169 / 171 action nodes).
+
 ## Rollout Plan
 
 1. **Stage 1 — Subgame tree builder + prior range derivation.** Implement the
@@ -649,10 +739,14 @@ card (44).
    Add unit tests. Measure tree size, solve time, and coverage. Enable
    behind the `BIGSHARK_SUBGAME_RESOLVER` flag.
 3. **Stage 3 — Measurement and documentation (Complete).** Generalized the
-   NashConv tool to turn/river subgames
-   (`engine/benchmarks/subgame_nash_conv.cpp`). Measured tree size, solve
-   time, coverage, and exploitability. Updated `docs/design/gto-engine.md`
-   (subgame resolver section) and this RFC. Doc/RFC checks pass.
+   NashConv tool to 2..3 seats and turn/river subgames
+   (`engine/benchmarks/subgame_nash_conv.cpp`): recursive N-way joint-deal
+   enumeration, four fixtures (2-seat turn, 3-seat turn, 2-seat river,
+   3-seat river). Measured tree size, solve time, coverage, and
+   exploitability. Generalized the subgame resolver to 2..3 seats and added
+   river support via the "always turn-rooted" tree-walk approach. Updated
+   `docs/design/gto-engine.md` (subgame resolver section) and this RFC.
+   Doc/RFC checks pass.
 4. **Stage 4 — Gadget re-solving (Phase 2, optional).** Implement the
    Brown & Sandholm gadget with trunk value approximation. Add certification
    tests. Measure the exploitability reduction vs Phase 1.
@@ -685,11 +779,11 @@ is not changed in any stage.
   value. Which is more accurate, and should the fixed-point computation be
   iterated to convergence? This is a measurement question, deferred to
   Stage 4.
-- **3-seat subgame resolving.** The 3-seat continuation range export is
-  deferred from RFC 0010. Phase 1 is scoped to 2-seat only; the 3-seat
-  subgame resolver is blocked until the N-way range export lands. Whether
-  the 3-seat resolver ships as Phase 2 work or as a separate RFC is deferred
-  to Stage 4.
+- **3-seat subgame resolving.** Resolved: Phase 1 supports 2..3 seats. The
+  self-contained `derive_prior_ranges` method is seat-generic (iterates
+  `game.def.player_count`), so no N-way continuation range export is needed.
+  The 3-seat flop class library provides the blueprint trunk. 4+ seat support
+  requires a 4+ seat flop library, which does not exist.
 - **Live budget.** The live decision budget for a subgame resolve is not yet
   measured. The resolver's `ResolveLimits` default to 2 seconds; the actual
   budget depends on the table clock. This is a measurement question,
@@ -699,7 +793,8 @@ is not changed in any stage.
 
 - The subgame resolver builds a turn-rooted River-terminal subtree, derives
   prior ranges from the flop-terminal blueprint, solves with CFR, and serves
-  the candidate at `approximate`, verified by unit tests.
+  the candidate at `approximate`, verified by unit tests. Supports 2..3 seats
+  and both turn (board_size=4) and river (board_size=5) decisions.
 - River leaves are valued by the existing `settle_showdown` settlement (exact
   equity with correct tie splitting and dead-money handling). No new
   evaluator is required for Phase 1.
@@ -708,9 +803,9 @@ is not changed in any stage.
   the resolver inserts between the terminal-only resolver and the
   operational fallback.
 - The subgame tree size, solve time, and coverage are measured and reported
-  for representative 2-seat spots. The p95 solve time at the configured
-  iteration cap is within the `ResolveLimits::time` budget (default 2
-  seconds).
+  for representative 2-seat and 3-seat spots (turn and river). The p95 solve
+  time at the configured iteration cap is within the `ResolveLimits::time`
+  budget (default 2 seconds).
 - The exploitability of the subgame resolver is measured against a
   uniform-policy baseline (the flop-terminal-only operational fallback is not
   a well-defined strategy for NashConv measurement, so uniform is used as a
