@@ -4,15 +4,18 @@
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/mmap_library.hpp>
 #include <bs/range.hpp>
 #include <bs/resident_policy.hpp>
 #include <bs/unified_game.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <list>
 #include <memory>
 #include <span>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "public_reach.hpp"
@@ -285,6 +288,31 @@ struct ResidentPolicySet::Record {
   // exact-board (v2) artifact; a set id marks a class policy (v3) whose
   // stored board is the canonical class representative.
   std::optional<abstraction::AbstractionId> card_abstraction;
+  // RFC 0012 Phase 2: mmap-backed class library. When non-null, lookups go
+  // through the MmapLibrary instead of the ResidentIndex.
+  MmapLibrary* mmap_library = nullptr;
+  std::uint32_t mmap_class_id = 0;
+  // RFC 0012 Phase 3: lazy loading. When true, the class is loaded on
+  // demand into the LRU cache. The game def is valid at build time; the
+  // ranges and sizes are loaded on demand.
+  bool lazy = false;
+  std::filesystem::path lazy_path;
+  std::optional<artifacts::Sha256Digest> lazy_sha256;
+};
+
+// RFC 0012 Phase 3: one cached lazy class. The ResidentIndex and the full
+// game (with ranges and sizes) are loaded on demand.
+struct ResidentPolicySet::LazyEntry {
+  ResidentIndex index;
+  UnifiedGame game;
+  std::optional<abstraction::AbstractionId> card_abstraction;
+};
+
+// RFC 0012 Phase 3: LRU cache for lazy loading.
+struct ResidentPolicySet::LazyCache {
+  std::unordered_map<std::string, std::unique_ptr<LazyEntry>> entries;
+  std::list<std::string> lru;
+  std::size_t capacity = 0;
 };
 
 ResidentPolicySet::ResidentPolicySet() = default;
@@ -292,12 +320,176 @@ ResidentPolicySet::~ResidentPolicySet() = default;
 ResidentPolicySet::ResidentPolicySet(ResidentPolicySet&&) noexcept = default;
 ResidentPolicySet& ResidentPolicySet::operator=(ResidentPolicySet&&) noexcept = default;
 
+// RFC 0012 Phase 3: load a lazy record's class on demand. The loaded
+// ResidentIndex and game are inserted into the LRU cache. On a cache hit,
+// the entry is moved to the front of the LRU list. Returns nullptr on
+// failure (the error is recorded in the record's result).
+const ResidentPolicySet::LazyEntry* ResidentPolicySet::ensure_lazy_loaded(
+    const Record& record) const {
+  if (!record.lazy)
+    return nullptr;
+  if (!lazy_cache_)
+    return nullptr;
+
+  const std::string key = record.lazy_path.string();
+  auto it = lazy_cache_->entries.find(key);
+  if (it != lazy_cache_->entries.end()) {
+    // Cache hit: move to front of LRU list.
+    lazy_cache_->lru.remove(key);
+    lazy_cache_->lru.push_front(key);
+    return it->second.get();
+  }
+
+  // Cache miss: load the artifact.
+  try {
+    artifacts::LoadOptions load_options;
+    load_options.expected_sha256 = record.lazy_sha256;
+    artifacts::LoadedArtifact loaded = artifacts::load_artifact(record.lazy_path, load_options);
+    if (!loaded.bundle.nseat)
+      return nullptr;
+
+    auto entry = std::make_unique<LazyEntry>();
+    const auto& policy = loaded.bundle.nseat->policy;
+    entry->game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
+    entry->index.build(policy.rows());
+    entry->card_abstraction = loaded.bundle.nseat->card_id;
+
+    // Evict LRU entries if the cache is full.
+    while (lazy_cache_->entries.size() >= lazy_cache_->capacity && !lazy_cache_->lru.empty()) {
+      const std::string& evict_key = lazy_cache_->lru.back();
+      lazy_cache_->entries.erase(evict_key);
+      lazy_cache_->lru.pop_back();
+    }
+
+    lazy_cache_->lru.push_front(key);
+    const LazyEntry* raw = entry.get();
+    lazy_cache_->entries[key] = std::move(entry);
+    return raw;
+  } catch (const std::exception&) {
+    return nullptr;
+  }
+}
+
+// Row lookup dispatcher: mmap → MmapLibrary::find, lazy → LRU cache,
+// eager → ResidentIndex::find.
+bool ResidentPolicySet::find_row(const Record& record, std::span<const std::uint8_t> compact_key,
+                                 CompactRowView& out) const {
+  if (record.mmap_library)
+    return record.mmap_library->find(record.mmap_class_id, compact_key, out);
+  if (record.lazy) {
+    const LazyEntry* entry = ensure_lazy_loaded(record);
+    if (!entry)
+      return false;
+    return entry->index.find(compact_key, out);
+  }
+  return record.index.find(compact_key, out);
+}
+
+// Game accessor: lazy records load on demand; mmap/eager return the
+// record's pre-built game.
+const UnifiedGame& ResidentPolicySet::get_game(const Record& record) const {
+  if (record.lazy) {
+    const LazyEntry* entry = ensure_lazy_loaded(record);
+    if (entry)
+      return entry->game;
+  }
+  return record.game;
+}
+
 ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
                                            const ResidentOptions& options,
                                            std::vector<RootLoadResult>* results) {
   ResidentPolicySet set;
   if (results)
     results->clear();
+
+  // RFC 0012 Phase 2: mmap mode. Open the consolidated binary library and
+  // create one record per class. The MmapLibrary is opened once and shared;
+  // lookups go through binary search with zero heap allocation.
+  if (options.binary_library_path) {
+    auto mmap_lib = std::make_unique<MmapLibrary>();
+    try {
+      mmap_lib->open(*options.binary_library_path, options.verify_binary_library);
+    } catch (const std::exception& e) {
+      RootLoadResult result;
+      result.path = *options.binary_library_path;
+      result.status = RootStatus::LoadFailed;
+      result.detail = e.what();
+      if (results)
+        results->push_back(result);
+      return set;
+    }
+
+    MmapLibrary* lib_ptr = mmap_lib.get();
+    set.mmap_libraries_.push_back(std::move(mmap_lib));
+
+    for (std::size_t i = 0; i < lib_ptr->class_count(); ++i) {
+      const std::uint32_t class_id = lib_ptr->class_id_at(i);
+      Record record;
+      record.result.path = *options.binary_library_path;
+      record.result.sha256_hex = lib_ptr->sha256_hex();
+      record.result.status = RootStatus::Advertised;
+      record.result.information_sets = lib_ptr->info_set_count(class_id);
+      record.result.probability_count = lib_ptr->action_count(class_id);
+      record.result.resident_bytes = 0;  // mmap uses no resident heap
+
+      // Set up the game identity: shared fields from the library header,
+      // board from the class section, ranges from the class's filtered range.
+      record.game = lib_ptr->game();
+      const auto& board = lib_ptr->canonical_board(class_id);
+      record.game.def.board = {board[0], board[1], board[2], 0, 0};
+      record.game.def.board_size = 3;
+      for (std::size_t seat = 0; seat < record.game.def.player_count; ++seat)
+        record.game.ranges[seat] = lib_ptr->class_range(class_id);
+
+      record.mmap_library = lib_ptr;
+      record.mmap_class_id = class_id;
+      record.card_abstraction = abstraction::suit_canonicalization_id();
+      record.advertised = true;
+
+      if (results)
+        results->push_back(record.result);
+      set.records_.push_back(std::move(record));
+    }
+    return set;
+  }
+
+  // RFC 0012 Phase 3: lazy mode. Create lightweight records from the shared
+  // game identity and the spec's canonical board, without opening any SQLite
+  // artifact. Classes are loaded on demand into the LRU cache.
+  if (options.lazy_cache_capacity > 0 && options.shared_game_def) {
+    set.lazy_cache_ = std::make_unique<LazyCache>();
+    set.lazy_cache_->capacity = options.lazy_cache_capacity;
+
+    for (const SupportedRootSpec& spec : specs) {
+      Record record;
+      record.result.path = spec.path;
+
+      // Set up the game identity from the shared game def.
+      record.game.def = *options.shared_game_def;
+      if (spec.canonical_board) {
+        record.game.def.board = {(*spec.canonical_board)[0], (*spec.canonical_board)[1],
+                                 (*spec.canonical_board)[2], 0, 0};
+        record.game.def.board_size = 3;
+      }
+      record.game.sizes = options.shared_sizes;
+      record.card_abstraction = abstraction::suit_canonicalization_id();
+      record.lazy = true;
+      record.lazy_path = spec.path;
+      record.lazy_sha256 = spec.expected_sha256;
+      record.advertised = true;
+      record.result.status = RootStatus::Advertised;
+      record.result.resident_bytes = 0;  // not loaded yet
+
+      if (results)
+        results->push_back(record.result);
+      set.records_.push_back(std::move(record));
+    }
+    return set;
+  }
+
+  // Eager mode (current behavior): probe, load, and build a ResidentIndex
+  // for every spec at startup.
   std::size_t used_bytes = 0;
 
   for (const SupportedRootSpec& spec : specs) {
@@ -421,6 +613,14 @@ std::size_t ResidentPolicySet::total_resident_bytes() const noexcept {
   for (const Record& record : records_)
     if (record.advertised)
       total += record.result.resident_bytes;
+  // RFC 0012 Phase 3: include lazy cache entries in the resident total so
+  // that observability reflects the true heap footprint.
+  if (lazy_cache_) {
+    for (const auto& [key, entry] : lazy_cache_->entries) {
+      total += entry->index.resident_bytes();
+      total += game_resident_bytes(entry->game);
+    }
+  }
   return total;
 }
 
@@ -538,9 +738,10 @@ bool locate_action(const CompactRowView& row, const Action& wanted, std::size_t&
 // raw reach but no positive joint partner after a free card) never receive a
 // row in a complete artifact; their factor is left at zero, which matches
 // their zero joint mass.
-MissReason read_action_probabilities(const ResidentIndex& index, const ReachModel& model,
-                                     ResidentScratch& scratch, const GameState& state,
-                                     const PublicAction& event,
+MissReason read_action_probabilities(const ResidentPolicySet& set,
+                                     const ResidentPolicySet::Record& record,
+                                     const ReachModel& model, ResidentScratch& scratch,
+                                     const GameState& state, const PublicAction& event,
                                      std::span<const PublicAction> prefix) {
   // Prefix board size follows the EVENT's street, not the final state.
   const std::size_t prefix_street = static_cast<std::size_t>(event.street);
@@ -574,7 +775,8 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
     if (!compact_scratch_key(scratch))
       return MissReason::OffTree;
     CompactRowView row;
-    if (!index.find(
+    if (!set.find_row(
+            record,
             std::span<const std::uint8_t>(scratch.compact_key.data(), scratch.compact_key_size),
             row))
       return MissReason::MissingHistory;
@@ -590,11 +792,12 @@ MissReason read_action_probabilities(const ResidentIndex& index, const ReachMode
 // pointers on success. Public belief is defined at every on-tree public point
 // the observed path reaches, including a dealing boundary or a fold terminal;
 // the caller asks for a hero decision row only at an action node.
-MissReason replay_public_path(const ResidentPolicySet::Record& record, const GameState& state,
-                              std::span<const PublicAction> events, ResidentScratch& scratch,
-                              ResidentAnswer& answer) {
+MissReason replay_public_path(const ResidentPolicySet& set, const ResidentPolicySet::Record& record,
+                              const GameState& state, std::span<const PublicAction> events,
+                              ResidentScratch& scratch, ResidentAnswer& answer) {
+  const UnifiedGame& game = set.get_game(record);
   ReachModel model(scratch);
-  if (!model.initialize(record.game))
+  if (!model.initialize(game))
     return MissReason::EmptyJointRange;
 
   std::size_t consumed = 0;
@@ -605,7 +808,7 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
     const std::span<const PublicAction> prefix(events.data(), consumed);
     model.prepare_partner_mass(event.seat);
     const MissReason prob_miss =
-        read_action_probabilities(record.index, model, scratch, state, event, prefix);
+        read_action_probabilities(set, record, model, scratch, state, event, prefix);
     if (prob_miss != MissReason::None)
       return prob_miss;
     if (!model.observe_action(event.seat, scratch.action_probability))
@@ -622,7 +825,7 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
         // conditions on the right card.
         const int dealt = relabel_card(state.board()[board_index], scratch.canonical_relabel);
         const std::size_t slot = street - 1;
-        if (!card_in_chance_support(record.game, slot, dealt))
+        if (!card_in_chance_support(game, slot, dealt))
           return MissReason::OffTree;
         if (!model.observe_card(dealt))
           return MissReason::EmptyJointRange;
@@ -635,7 +838,7 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
       // mass, which must be rebuilt for this actor after the latest mutation.
       model.prepare_partner_mass(event.seat);
       const MissReason prob_miss =
-          read_action_probabilities(record.index, model, scratch, state, event, prefix);
+          read_action_probabilities(set, record, model, scratch, state, event, prefix);
       if (prob_miss != MissReason::None)
         return prob_miss;
       if (!model.observe_action(event.seat, scratch.action_probability))
@@ -648,7 +851,7 @@ MissReason replay_public_path(const ResidentPolicySet::Record& record, const Gam
 
   if (!model.write_marginals())
     return MissReason::EmptyJointRange;
-  const std::size_t seats = record.game.def.player_count;
+  const std::size_t seats = game.def.player_count;
   for (std::size_t seat = 0; seat < seats; ++seat)
     answer.public_reach[seat] = &scratch.marginal[seat];
   answer.public_reach_seats = seats;
@@ -672,36 +875,36 @@ ResidentAnswer ResidentPolicySet::public_belief(const GameState& state,
   if (!resolved.record)
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
+  const UnifiedGame& game = get_game(record);
   // W2c-ii-b: the belief model is exact for two and three seats; a 4..10-seat
   // artifact loads and advertises, but its per-node belief cannot be conditioned
   // exactly, so the query misses declared (a coverage limitation).
-  if (record.game.def.player_count > 3)
+  if (game.def.player_count > 3)
     return miss_answer(MissReason::SeatCountNotSupported);
   // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
   // For v2 the relabel is the identity and the canonical flop equals the query
   // flop, so every downstream function behaves exactly as before.
   // RFC 0007: a preflop record (board_size == 0) has no flop to canonicalize;
   // the identity relabel and a zeroed canonical flop are correct.
-  if (record.card_abstraction && record.game.def.board_size >= 3) {
+  if (record.card_abstraction && game.def.board_size >= 3) {
     const auto canon =
         abstraction::canonicalize({state.board()[0], state.board()[1], state.board()[2]});
     scratch.canonical_relabel = canon.relabel;
   } else {
     scratch.canonical_relabel = {0, 1, 2, 3};
   }
-  if (record.game.def.board_size >= 3) {
-    scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
-                              record.game.def.board[2]};
+  if (game.def.board_size >= 3) {
+    scratch.canonical_flop = {game.def.board[0], game.def.board[1], game.def.board[2]};
   } else {
     scratch.canonical_flop = {0, 0, 0};
   }
-  if (!runout_matches(record.game, state, scratch.canonical_relabel))
+  if (!runout_matches(game, state, scratch.canonical_relabel))
     return miss_answer(MissReason::RunoutDivergence);
 
   ResidentAnswer answer;
   answer.root_index = static_cast<std::size_t>(&record - records_.data());
   answer.artifact_sha256 = record.result.sha256_hex;
-  const MissReason replay_miss = replay_public_path(record, state, history, scratch, answer);
+  const MissReason replay_miss = replay_public_path(*this, record, state, history, scratch, answer);
   if (replay_miss != MissReason::None)
     return miss_answer(replay_miss);
   if (state.actor())
@@ -720,26 +923,26 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   if (!resolved.record)
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
+  const UnifiedGame& game = get_game(record);
   // W2c-ii-b: the belief model behind the hero-private view is exact for two
   // and three seats; a 4..10-seat hero-decision query misses declared.
-  if (record.game.def.player_count > 3)
+  if (game.def.player_count > 3)
     return miss_answer(MissReason::SeatCountNotSupported);
   // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
   // RFC 0007: a preflop record (board_size == 0) has no flop to canonicalize.
-  if (record.card_abstraction && record.game.def.board_size >= 3) {
+  if (record.card_abstraction && game.def.board_size >= 3) {
     const auto canon =
         abstraction::canonicalize({state.board()[0], state.board()[1], state.board()[2]});
     scratch.canonical_relabel = canon.relabel;
   } else {
     scratch.canonical_relabel = {0, 1, 2, 3};
   }
-  if (record.game.def.board_size >= 3) {
-    scratch.canonical_flop = {record.game.def.board[0], record.game.def.board[1],
-                              record.game.def.board[2]};
+  if (game.def.board_size >= 3) {
+    scratch.canonical_flop = {game.def.board[0], game.def.board[1], game.def.board[2]};
   } else {
     scratch.canonical_flop = {0, 0, 0};
   }
-  if (!runout_matches(record.game, state, scratch.canonical_relabel))
+  if (!runout_matches(game, state, scratch.canonical_relabel))
     return miss_answer(MissReason::RunoutDivergence);
 
   std::sort(hero_cards.begin(), hero_cards.end());
@@ -765,7 +968,7 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   answer.artifact_sha256 = record.result.sha256_hex;
   answer.hero_cards = hero_cards;
 
-  const MissReason replay_miss = replay_public_path(record, state, history, scratch, answer);
+  const MissReason replay_miss = replay_public_path(*this, record, state, history, scratch, answer);
   if (replay_miss != MissReason::None)
     return miss_answer(replay_miss);
   answer.actor = *state.actor();
@@ -785,9 +988,9 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   if (!compact_scratch_key(scratch))
     return miss_answer(MissReason::OffTree);
   CompactRowView compact;
-  if (!record.index.find(
-          std::span<const std::uint8_t>(scratch.compact_key.data(), scratch.compact_key_size),
-          compact))
+  if (!find_row(record,
+                std::span<const std::uint8_t>(scratch.compact_key.data(), scratch.compact_key_size),
+                compact))
     return miss_answer(MissReason::UntrainedCombo);
   // Failure-safe private conditioning: even with a trained row, never return a
   // blueprint row for a hero combination whose reach along the OBSERVED public
@@ -815,7 +1018,7 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   // other than the actor. The n-seat resolver gadget (W2c-ii-c) consumes the
   // full joint belief instead of this single-seat view.
   std::size_t opponent = 0;
-  for (std::size_t seat = 0; seat < record.game.def.player_count; ++seat) {
+  for (std::size_t seat = 0; seat < game.def.player_count; ++seat) {
     if (seat != *state.actor()) {
       opponent = seat;
       break;
@@ -846,9 +1049,10 @@ namespace {
 // safe.
 class ResidentBlueprintSource final : public resolver::BlueprintSource {
  public:
-  explicit ResidentBlueprintSource(const ResidentPolicySet::Record& record) : record_(&record) {}
+  ResidentBlueprintSource(const ResidentPolicySet& set, const ResidentPolicySet::Record& record)
+      : set_(&set), record_(&record) {}
 
-  const solver::UnifiedGame& game() const override { return record_->game; }
+  const solver::UnifiedGame& game() const override { return set_->get_game(*record_); }
 
   std::string_view artifact_digest() const override { return record_->result.sha256_hex; }
 
@@ -856,7 +1060,8 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
                                                 std::span<const PublicAction> history,
                                                 std::size_t player,
                                                 std::array<int, 2> cards) const override {
-    if (player >= record_->game.def.player_count || !state.actor() || *state.actor() != player)
+    const solver::UnifiedGame& game = set_->get_game(*record_);
+    if (player >= game.def.player_count || !state.actor() || *state.actor() != player)
       return std::nullopt;
     std::sort(cards.begin(), cards.end());
     if (cards[0] < 0 || cards[1] >= 52 || cards[0] == cards[1])
@@ -881,7 +1086,7 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
     std::array<int, 5> canon_board_buf{};
     std::size_t canon_board_size = 0;
     for (std::size_t i = 0; i < 3 && i < state.board().size(); ++i)
-      canon_board_buf[canon_board_size++] = record_->game.def.board[i];
+      canon_board_buf[canon_board_size++] = game.def.board[i];
     for (std::size_t i = 3; i < state.board().size(); ++i)
       canon_board_buf[canon_board_size++] = relabel_card(state.board()[i], relabel);
     const solver::InformationKey key = solver::make_information_key(
@@ -894,8 +1099,8 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
     if (compact_size == 0)
       return std::nullopt;
     CompactRowView compact;
-    if (!record_->index.find(std::span<const std::uint8_t>(compact_key_.data(), compact_size),
-                             compact))
+    if (!set_->find_row(*record_, std::span<const std::uint8_t>(compact_key_.data(), compact_size),
+                        compact))
       return std::nullopt;
     // Expand compact actions into the mutable scratch so the resolver sees
     // poker::Action. Probabilities are deferred from the codebook (or the
@@ -913,6 +1118,7 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
   }
 
  private:
+  const ResidentPolicySet* set_;
   const ResidentPolicySet::Record* record_;
   // Mutable scratch for compact→poker::Action expansion and codebook
   // deference. The resolver calls row() one at a time on the calling
@@ -930,7 +1136,7 @@ std::unique_ptr<resolver::BlueprintSource> ResidentPolicySet::resolver_source(
   const ResolvedRoot resolved = resolve_root(records_, state, pinned_sha256);
   if (!resolved.record || !resolved.record->advertised)
     return nullptr;
-  return std::make_unique<ResidentBlueprintSource>(*resolved.record);
+  return std::make_unique<ResidentBlueprintSource>(*this, *resolved.record);
 }
 
 }  // namespace bs::resident

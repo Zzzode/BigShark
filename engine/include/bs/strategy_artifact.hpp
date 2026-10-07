@@ -200,6 +200,55 @@ void create_checkpoint(const std::filesystem::path& path, const solver::Training
 void create_checkpoint(const std::filesystem::path& path, const solver::SeatTrainingResult& result,
                        const SeatCheckpointProvenance& provenance = {});
 
+// RFC 0012 Phase 4: one (regret, average_weight) pair per action ordinal,
+// indexed by the ordinal's position in the node's menu. The artifact layer
+// stores training rows under the same (info_id, ordinal) key as the actions
+// table; this is the domain form a caller maps onto the trainer's
+// (bucket, node) rows.
+using TrainingWeights = std::vector<std::pair<double, double>>;
+
+// RFC 0012 Phase 4: the raw training state loaded from a schema-v3 checkpoint
+// written by save_training_checkpoint. `rows` is keyed by the decoded
+// InformationKey (concrete actor, own combo, board, public-action path) and
+// carries one (regret, average_weight) pair per action ordinal. The caller
+// maps these back to the trainer's (bucket, node) table via a tree walk and
+// verifies `abstraction_digest` and `card_abstraction` against the current
+// training parameters before warm-starting.
+struct CheckpointTrainingState {
+  std::uint64_t abstraction_digest = 0;
+  std::optional<abstraction::AbstractionId> card_abstraction;
+  // The checkpoint's completed iteration count, so a caller can resume the
+  // trainer's iteration counter at the right absolute point.
+  std::uint64_t completed_iterations = 0;
+  std::map<solver::InformationKey, TrainingWeights> rows;
+};
+
+// RFC 0012 Phase 4: write (or atomically overwrite) a schema-v3 checkpoint
+// that carries BOTH the sealed policy and the raw training rows, so a later
+// run can warm-start the trainer. Unlike create_checkpoint this overwrites an
+// existing file at `path` atomically: a unique temp file is filled in one
+// transaction, fsynced, and renamed over the destination, followed by a
+// directory fsync. `training` is keyed by the same InformationKey as the
+// policy rows; each vector must have one (regret, average_weight) pair per
+// action ordinal (its length must equal the policy row's action count). Throws
+// ArtifactError; on failure the previous file at `path` (if any) is left
+// intact and no readable artifact is left at the temp path.
+void save_training_checkpoint(const std::filesystem::path& path,
+                              const solver::SeatTrainingResult& result,
+                              const std::map<solver::InformationKey, TrainingWeights>& training,
+                              const SeatCheckpointProvenance& provenance = {});
+
+// RFC 0012 Phase 4: open a schema-v3 checkpoint read-only and load its raw
+// training rows and identity digests. Performs the same physical and schema
+// validation as load_artifact (size, sidecar rejection, immutable open,
+// application/schema version, canonical schema objects, integrity check) and
+// additionally requires the training table to be non-empty (a checkpoint
+// written by save_training_checkpoint always carries training rows; a
+// published policy or a create_checkpoint file has none). The returned rows
+// are decoded from the canonical information key and the player/card columns.
+// Throws ArtifactError on any validation failure.
+CheckpointTrainingState load_checkpoint(const std::filesystem::path& path);
+
 // Replace the mutable training/policy state of an existing checkpoint with the
 // next complete iteration, in one transaction. The full canonical identity
 // (root board and street, button, blinds, stacks, contributions, pot, utility,

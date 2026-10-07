@@ -4,9 +4,12 @@
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/strategy_artifact.hpp>
+#include <cerrno>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <optional>
 #include <set>
@@ -1415,9 +1418,13 @@ void insert_ranges_v2(dt::Db& db, const std::vector<std::vector<WeightedHand>>& 
 }
 
 // Inserts information states and actions. State ids are assigned in ascending
-// InformationKey order. There are no training rows: SeatPolicyRow carries no
-// regret/average-weight state.
-void insert_policy_v2(dt::Db& db, const SeatTrainingResult& result) {
+// InformationKey order. RFC 0012 Phase 4: when `training` is non-null, one
+// (regret, average_weight) row is inserted per (state, ordinal) under the
+// same key as the actions table; the vector for a key must have one entry per
+// action. A null `training` preserves the policy-only behavior (SeatPolicyRow
+// carries no regret/average-weight state).
+void insert_policy_v2(dt::Db& db, const SeatTrainingResult& result,
+                      const std::map<InformationKey, TrainingWeights>* training = nullptr) {
   dt::Stmt state_insert(db.get(),
                         "INSERT INTO information_states (id, player, card0, card1,"
                         " public_key) VALUES (?, ?, ?, ?, ?)",
@@ -1426,6 +1433,10 @@ void insert_policy_v2(dt::Db& db, const SeatTrainingResult& result) {
                          "INSERT INTO actions (info_id, ordinal, kind, target, probability) VALUES"
                          " (?, ?, ?, ?, ?)",
                          "insert action");
+  dt::Stmt training_insert(db.get(),
+                           "INSERT INTO training (info_id, ordinal, regret,"
+                           " average_weight) VALUES (?, ?, ?, ?)",
+                           "insert training");
   std::int64_t state_id = 0;
   for (const auto& [key, row] : result.policy.rows()) {
     state_insert.reset_and_clear();
@@ -1451,6 +1462,30 @@ void insert_policy_v2(dt::Db& db, const SeatTrainingResult& result) {
         action_insert.bind_null(a++);
       action_insert.bind_double(a++, row.probabilities[static_cast<std::size_t>(ordinal)]);
       (void)action_insert.step("insert action");
+    }
+
+    if (training != nullptr) {
+      const auto found = training->find(key);
+      if (found == training->end())
+        fail(ArtifactErrorKind::InvalidArgument, "missing training row for policy state");
+      const TrainingWeights& weights = found->second;
+      if (weights.size() != row.actions.size())
+        fail(ArtifactErrorKind::InvalidArgument,
+             "training row length disagrees with the policy action count");
+      for (std::int64_t ordinal = 0; ordinal < static_cast<std::int64_t>(weights.size());
+           ++ordinal) {
+        dt::require_finite(weights[static_cast<std::size_t>(ordinal)].first, "cumulative regret");
+        dt::require_finite(weights[static_cast<std::size_t>(ordinal)].second, "average weight");
+        check(weights[static_cast<std::size_t>(ordinal)].second >= 0,
+              ArtifactErrorKind::InvalidValue, "negative average training weight");
+        training_insert.reset_and_clear();
+        int t = 1;
+        training_insert.bind_i64(t++, state_id);
+        training_insert.bind_i64(t++, ordinal);
+        training_insert.bind_double(t++, weights[static_cast<std::size_t>(ordinal)].first);
+        training_insert.bind_double(t++, weights[static_cast<std::size_t>(ordinal)].second);
+        (void)training_insert.step("insert training");
+      }
     }
     ++state_id;
   }
@@ -1500,6 +1535,37 @@ void write_all_v3(dt::Db& db, const ArtifactManifest& manifest, const SeatTraini
     insert_sizes_v2(db, result.policy.sizes());
     insert_ranges_v2(db, result.policy.ranges(), result.policy.game().player_count);
     insert_policy_v2(db, result);
+    db.exec("COMMIT;", "commit write");
+    rollback_best_effort = false;
+  } catch (...) {
+    if (rollback_best_effort) {
+      try {
+        db.exec("ROLLBACK;", "rollback failed write");
+      } catch (...) {
+      }
+    }
+    throw;
+  }
+}
+
+// RFC 0012 Phase 4: the v3 write transaction for a warm-start checkpoint.
+// Identical to write_all_v3 except the policy insert also writes the raw
+// training rows (regret/average_weight per state and ordinal).
+void write_all_v3_training(dt::Db& db, const ArtifactManifest& manifest,
+                           const SeatTrainingResult& result,
+                           const std::map<InformationKey, TrainingWeights>& training) {
+  db.exec("BEGIN IMMEDIATE;", "begin write");
+  bool rollback_best_effort = true;
+  try {
+    db.exec("PRAGMA application_id = 1112754004;", "set application id");
+    db.exec("PRAGMA user_version = 3;", "set schema version");
+    write_schema_v3(db);
+    insert_manifest_v3(db, manifest);
+    insert_game_v2(db, result.policy.game());
+    insert_game_seats(db, result.policy.game());
+    insert_sizes_v2(db, result.policy.sizes());
+    insert_ranges_v2(db, result.policy.ranges(), result.policy.game().player_count);
+    insert_policy_v2(db, result, &training);
     db.exec("COMMIT;", "commit write");
     rollback_best_effort = false;
   } catch (...) {
@@ -3101,6 +3167,128 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
       std::filesystem::remove(destination, ec);
     throw;
   }
+}
+
+// RFC 0012 Phase 4: write (or atomically overwrite) a schema-v3 checkpoint
+// carrying the sealed policy AND the raw training rows. The write goes to a
+// unique temp file in the destination directory; rename(2) then atomically
+// replaces any existing file at `path`, so a crash never leaves a torn
+// checkpoint. The previous file is preserved on every failure path.
+void save_training_checkpoint(const std::filesystem::path& path, const SeatTrainingResult& result,
+                              const std::map<InformationKey, TrainingWeights>& training,
+                              const SeatCheckpointProvenance& provenance) {
+  check(result.card_id.has_value(), ArtifactErrorKind::InvalidArgument,
+        "save_training_checkpoint requires a card abstraction (schema v3)");
+  ArtifactManifest manifest =
+      manifest_for_v2(result, provenance, ArtifactKind::Checkpoint, provenance.validation);
+  validate_content_v2(result);
+  // Every policy state must have a training vector of the same length. The
+  // per-ordinal finiteness/non-negativity checks run inside insert_policy_v2.
+  for (const auto& [key, row] : result.policy.rows()) {
+    const auto found = training.find(key);
+    if (found == training.end())
+      fail(ArtifactErrorKind::InvalidArgument,
+           "save_training_checkpoint: missing training row for a policy state");
+    if (found->second.size() != row.actions.size())
+      fail(ArtifactErrorKind::InvalidArgument,
+           "save_training_checkpoint: training row length disagrees with the policy action count");
+  }
+
+  std::error_code ec;
+  const std::filesystem::path parent = path.parent_path();
+  check(!parent.empty() && std::filesystem::is_directory(parent, ec), ArtifactErrorKind::Io,
+        "checkpoint directory does not exist: " + parent.string());
+
+  const std::filesystem::path temp = dt::make_unique_temp(parent);
+  dt::Db db;
+  try {
+    open_writer(db, temp.string(), true);
+    write_all_v3_training(db, manifest, result, training);
+    db.close();
+    dt::fsync_file(temp);
+    // Atomic replace. rename(2) on POSIX atomically swaps the directory entry,
+    // so a reader either sees the old checkpoint or the new one, never a torn
+    // write. The destination is a mutable checkpoint (never made read-only),
+    // so the replacement does not depend on destination permissions.
+    if (::rename(temp.string().c_str(), path.string().c_str()) != 0) {
+      const int err = errno;
+      std::filesystem::remove(temp, ec);
+      fail(ArtifactErrorKind::Io,
+           "rename over checkpoint failed: " + std::string(std::strerror(err)));
+    }
+    dt::fsync_directory(parent);
+  } catch (...) {
+    db.close();
+    std::filesystem::remove(temp, ec);
+    std::filesystem::remove(std::filesystem::path(path.string() + "-journal"), ec);
+    std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), ec);
+    throw;
+  }
+}
+
+// RFC 0012 Phase 4: load the raw training rows and identity digests from a
+// schema-v3 checkpoint. Opens read-only with the same physical and schema
+// validation as load_artifact, then reads the training table (which a
+// save_training_checkpoint file always populates) and decodes each state's
+// canonical key. The caller maps the returned rows onto the trainer's
+// (bucket, node) table and verifies the digests before warm-starting.
+CheckpointTrainingState load_checkpoint(const std::filesystem::path& path) {
+  OpenedArtifact opened = open_validated(path, {});
+  check(opened.schema_version == kArtifactSchemaVersionV3, ArtifactErrorKind::UnsupportedVersion,
+        "load_checkpoint requires a schema-v3 checkpoint");
+  dt::Db& db = opened.db;
+
+  ArtifactManifest manifest = read_manifest_v3(db);
+  GameDef game = read_game_v2(db);
+  read_game_seats(db, game);
+  validate_game_v2(game);
+
+  auto states = read_states_v2(db, game.player_count);
+  auto actions = read_actions(db);
+  auto training = read_training(db);
+  read_auxiliary_tables_v2(db, game.player_count);
+
+  check(!training.empty(), ArtifactErrorKind::InvalidSchema,
+        "load_checkpoint: checkpoint carries no training rows");
+
+  // Referential integrity independent of stripped foreign keys: every training
+  // row must reference an existing (info_id, ordinal) action, and every action
+  // must reference an existing state.
+  for (const auto& [key, stored_action] : actions) {
+    (void)stored_action;
+    check(states.contains(key.first), ArtifactErrorKind::InvalidSchema,
+          "action row references a missing information state");
+  }
+  for (const auto& [key, stored_training] : training) {
+    (void)stored_training;
+    check(actions.contains(key), ArtifactErrorKind::InvalidSchema,
+          "training row references a missing action");
+  }
+
+  CheckpointTrainingState out;
+  out.abstraction_digest = manifest.abstraction_digest;
+  out.card_abstraction = manifest.card_abstraction;
+  out.completed_iterations = manifest.completed_iterations;
+
+  // Assemble one weight vector per information state, indexed by ordinal. The
+  // training rows arrive ordered by (info_id, ordinal); size each vector from
+  // the max ordinal and fill contiguously.
+  for (const auto& [id, state] : states) {
+    InformationKey key = decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player,
+                                           state.card0, state.card1);
+    TrainingWeights weights;
+    for (auto it = training.lower_bound({id, 0}); it != training.end() && it->first.first == id;
+         ++it) {
+      const int ordinal = it->first.second;
+      if (static_cast<std::size_t>(ordinal) >= weights.size())
+        weights.resize(static_cast<std::size_t>(ordinal) + 1, {0.0, 0.0});
+      weights[static_cast<std::size_t>(ordinal)] = {it->second.regret, it->second.average_weight};
+    }
+    check(!weights.empty(), ArtifactErrorKind::InvalidSchema,
+          "load_checkpoint: information state has no training rows");
+    out.rows.emplace(std::move(key), std::move(weights));
+  }
+  return out;
 }
 
 }  // namespace bs::artifacts

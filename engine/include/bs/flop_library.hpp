@@ -15,14 +15,18 @@
 #pragma once
 
 #include <array>
+#include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>         // poker::Chips
 #include <bs/heads_up_solver.hpp>  // WeightedHand
 #include <bs/nseat_trainer.hpp>
+#include <bs/seat_policy.hpp>  // InformationKey
+#include <bs/strategy_artifact.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -84,12 +88,67 @@ std::vector<solver::WeightedHand> declared_library_range();
 // explodes the tree at deeper stacks. The declared-coarse abstraction
 // (RFC 0008 DeclaredOnly) removes those forced seeds, making 10 BB+ training
 // practical at the cost of a coarser menu.
+//
+// RFC 0012 Phase 4: when `resume` is true, each class warm-starts from its
+// `class-NNNN-checkpoint.db` if present (verifying the abstraction digests
+// before continuing), and a checkpoint is written every 256 iterations so a
+// crashed build can resume. The per-iteration PRNG streams depend on the
+// absolute iteration number, so a warm-started run is bitwise-identical to a
+// from-scratch run at the same iteration count.
 LibraryManifest build_library(
     const std::filesystem::path& out_dir, std::size_t class_count,
     std::uint64_t iterations_per_class, std::uint64_t seed, poker::Chips stack,
     poker::Chips contribution, const std::vector<solver::WeightedHand>& range,
     std::size_t player_count = 2,
-    abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity());
+    abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity(),
+    bool resume = false);
+
+// RFC 0012 Phase 1: parameters for a library build, shared by the serial,
+// parallel-worker, and fragment-merge paths.
+struct BuildParams {
+  std::size_t class_count = 0;
+  std::uint64_t iterations_per_class = 0;
+  std::uint64_t seed = 0;
+  poker::Chips stack = 0;
+  poker::Chips contribution = 0;
+  std::vector<solver::WeightedHand> range;
+  std::size_t player_count = 2;
+  abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity();
+  bool resume = false;
+};
+
+// RFC 0012 Phase 1: parallel worker entry point. Trains the classes at indices
+// `worker_id`, `worker_id + parallel`, `worker_id + 2*parallel`, ... below
+// class_count, writing each class artifact directly to `out_dir` and a manifest
+// fragment to `out_dir / "manifest-part-<worker_id>.json"`. Called by a forked
+// child process; the parent detects failure via the exit status. Each worker's
+// SQLite files are independent (one class per file), so concurrent workers
+// never write the same file.
+void build_library_worker(const std::filesystem::path& out_dir, std::size_t worker_id,
+                          std::size_t parallel, const BuildParams& params);
+
+// RFC 0012 Phase 1: merge `manifest-part-*.json` fragments into the final
+// `manifest.json`. Collects every worker's ClassEntry records, sorts them by
+// class index, recomputes covered_flops and storage_bytes from the on-disk
+// artifacts (counted, not trusted from the fragments), and writes
+// `manifest.json`. Throws if a fragment or class artifact is missing.
+LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const BuildParams& params);
+
+// RFC 0012 Phase 4: expand a trainer result's raw (bucket, node) table into
+// concrete per-combo training rows (one (regret, average_weight) pair per
+// action ordinal), ready for save_training_checkpoint. Walks the same tree as
+// export_seat_policy; every concrete combo sharing a (bucket, node) carries
+// identical regrets.
+std::map<solver::InformationKey, artifacts::TrainingWeights> export_seat_training_rows(
+    const solver::NSeatTrainingResult& trained, const tree::AbstractTree& tree);
+
+// RFC 0012 Phase 4: map a loaded checkpoint's concrete training rows back to
+// the trainer's (bucket, node) table for warm-start. Walks the tree to resolve
+// each InformationKey to its (bucket, node); the first concrete combo for a
+// (bucket, node) fills the row (all combos share identical regrets). The
+// returned state's completed_iterations is the checkpoint's.
+solver::NSeatInitialState build_initial_state(const artifacts::CheckpointTrainingState& ckpt,
+                                              const tree::AbstractTree& tree);
 
 // Write the manifest as JSON to `out_dir / "manifest.json"`.
 void write_manifest(const LibraryManifest& manifest, const std::filesystem::path& out_dir);

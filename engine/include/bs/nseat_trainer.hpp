@@ -189,6 +189,7 @@ struct NSeatPolicyRow {
 // generalization of HeadsUpPolicy; the two are deliberately separate types so
 // the two-seat route's artifacts and bytes cannot drift.
 struct NSeatTrainingResult;  // the seeding entry point below
+struct NSeatInitialState;    // RFC 0012 Phase 4: warm-start state, defined below
 
 class NSeatPolicy {
  public:
@@ -218,10 +219,21 @@ class NSeatPolicy {
   friend NSeatTrainingResult train_nseat(const tree::AbstractTree&,
                                          const std::vector<std::vector<WeightedHand>>&,
                                          std::uint64_t, std::uint64_t, const NSeatTrainerLimits&,
-                                         const gto::FrontierEvaluator*);
+                                         const gto::FrontierEvaluator*, const NSeatInitialState*);
   poker::GameDef game_{};
   abstraction::AbstractionId action_id_{};
   std::map<NSeatInformationKey, NSeatPolicyRow> rows_;
+};
+
+// One sweep's RAW accumulators. The trainer's live row store is a map of
+// these keyed by NSeatInformationKey; the sealed NSeatPolicyRow is derived
+// from them at the end of a run. RFC 0012 Phase 4 exposes them on the result
+// so the builder can checkpoint and warm-start the trainer.
+struct NSeatRawRow {
+  std::vector<poker::Action> actions;
+  std::vector<double> regrets;
+  std::vector<double> sums;
+  std::uint64_t visits = 0;
 };
 
 // Result of one n-seat training run. Reports solver status and cost only; it
@@ -241,6 +253,24 @@ struct NSeatTrainingResult {
   std::uint64_t prng_state = 0;
   std::uint32_t algorithm_revision = kNSeatAlgorithmRevision;
   NSeatPolicy policy;
+  // RFC 0012 Phase 4: the trainer's raw regret/average-weight table, moved
+  // out of the trainer on return so the builder can checkpoint it and
+  // warm-start a resumed run. The sealed `policy` above is derived from the
+  // same table; both are populated. A consumer that does not checkpoint can
+  // ignore this field.
+  std::map<NSeatInformationKey, NSeatRawRow> raw_rows;
+};
+
+// RFC 0012 Phase 4: optional initial state for warm-start training. When
+// passed to train_nseat the trainer initializes its regret/average-weight
+// table from `rows` and resumes the iteration counter at
+// `completed_iterations`, so the per-iteration PRNG streams (derived from the
+// master seed and the iteration number) are identical to a from-scratch run
+// that reached the same point. The iteration logic and RM+ update rule are
+// unchanged; only the starting table and iteration counter differ.
+struct NSeatInitialState {
+  std::map<NSeatInformationKey, NSeatRawRow> rows;
+  std::uint64_t completed_iterations = 0;
 };
 
 // Trains the materialized tree for the given per-seat ranges.
@@ -258,21 +288,20 @@ struct NSeatTrainingResult {
 // caps throw
 // `nseat_training_exhausted`; the wall cap instead returns the last completed
 // iteration counts with phase WallClock.
+//
+// RFC 0012 Phase 4: when `initial_state` is non-null and non-empty the trainer
+// warm-starts from that table, running `iterations` ADDITIONAL iterations
+// beyond `initial_state->completed_iterations`. The per-iteration PRNG streams
+// are derived from the master seed and the absolute iteration number, so a
+// warm-started run that reaches iteration N is bitwise-identical to a
+// from-scratch run that reaches iteration N (same seed, same tree, same
+// ranges). A null or empty initial_state preserves the from-scratch behavior.
 NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,
                                 const std::vector<std::vector<WeightedHand>>& ranges,
                                 std::uint64_t iterations, std::uint64_t master_seed,
                                 const NSeatTrainerLimits& limits,
-                                const gto::FrontierEvaluator* frontier = nullptr);
-
-// One sweep's RAW accumulators, exposed only through the test seam below so a
-// gate can compare regrets and kFull sums against an independently coded
-// enumeration of the update rule.
-struct NSeatRawRow {
-  std::vector<poker::Action> actions;
-  std::vector<double> regrets;
-  std::vector<double> sums;
-  std::uint64_t visits = 0;
-};
+                                const gto::FrontierEvaluator* frontier = nullptr,
+                                const NSeatInitialState* initial_state = nullptr);
 
 // Test-only single-sweep seam (the stage-6 `debug_run_one_sweep` /
 // HeadsUpSolverDebug precedent): runs ONE external-sampling traverser sweep

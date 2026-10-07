@@ -37,8 +37,20 @@
 
 namespace bs::resident {
 
+// RFC 0012 Phase 2: forward declaration. The full definition lives in
+// engine/include/bs/mmap_library.hpp.
+class MmapLibrary;
+// Forward declaration; the full definition lives in the resident-internal
+// header src/resident/resident_index.hpp.
+struct CompactRowView;
+
 // RFC 0005 default resident budget: at most 256 MiB of loaded policy rows.
 inline constexpr std::size_t kDefaultResidentBudgetBytes = std::size_t{256} << 20;
+
+// RFC 0012 Phase 3: default LRU cache capacity for lazy loading.
+// Measured at 9.4 MB/class in-memory for the 25 BB library; 16 classes
+// keeps the process RSS under 256 MB (AC4).
+inline constexpr std::size_t kDefaultLazyCacheCapacity = 16;
 
 // Every lookup outcome that is not a covered hit carries exactly one reason.
 // The component never emits a fallback policy; the caller chooses fallback.
@@ -116,11 +128,38 @@ struct SupportedRootSpec {
   // Pinned SHA-256 digest of the artifact bytes. Startup rejects the file
   // unless this digest matches; the pin is mandatory for a supported root.
   std::optional<artifacts::Sha256Digest> expected_sha256;
+  // RFC 0012 Phase 3: when set, the resident set can construct this root's
+  // game identity without loading the artifact (lazy mode). The canonical
+  // board is the class representative stored in the v3 artifact.
+  std::optional<std::array<int, 3>> canonical_board = std::nullopt;
 };
 
 struct ResidentOptions {
   // Total resident budget shared across all advertised roots.
   std::size_t budget_bytes = kDefaultResidentBudgetBytes;
+  // RFC 0012 Phase 2: when set, the resident set loads a consolidated binary
+  // class library (.bin) instead of iterating SupportedRootSpecs. The
+  // MmapLibrary is opened once and shared across all class records.
+  std::optional<std::filesystem::path> binary_library_path;
+  // RFC 0012 Phase 2: when false, the MmapLibrary skips the full-file
+  // SHA-256 verification at open time (header structural checks still run).
+  // The sidecar remains available for offline verification. Defaults to
+  // false so that large libraries meet the AC2 load-time target; set true
+  // for security-sensitive deployments that can afford the I/O cost.
+  bool verify_binary_library = false;
+  // RFC 0012 Phase 3: lazy loading. When > 0, the resident set loads classes
+  // on demand into an LRU cache of this capacity. When 0, all classes are
+  // loaded eagerly at build time. Ignored when binary_library_path is set
+  // (mmap+lazy bypasses the LRU).
+  std::size_t lazy_cache_capacity = 0;
+  // RFC 0012 Phase 3: shared game identity for lazy records. When set with
+  // lazy_cache_capacity > 0, the build function constructs each lazy record's
+  // game def from this shared identity plus the spec's canonical_board,
+  // without opening the SQLite artifact.
+  std::optional<poker::GameDef> shared_game_def;
+  // RFC 0012 Phase 3: shared sizing schedule for lazy records. Loaded from
+  // the first artifact when not set.
+  abstraction::SizeSchedule shared_sizes = abstraction::default_size_schedule();
 };
 
 struct RootLoadResult {
@@ -275,8 +314,31 @@ class ResidentPolicySet {
   // public only so the implementation's file-local helpers can name it.
   struct Record;
 
+  // RFC 0012 Phase 2/3: row lookup dispatcher. mmap records go through
+  // MmapLibrary::find, lazy records load on demand into the LRU cache, and
+  // eager records use the ResidentIndex directly. Public so the TU's
+  // file-local helpers (read_action_probabilities, replay_public_path,
+  // ResidentBlueprintSource) can dispatch through it.
+  bool find_row(const Record& record, std::span<const std::uint8_t> compact_key,
+                CompactRowView& out) const;
+  // RFC 0012 Phase 3: game accessor. Lazy records load on demand; mmap/eager
+  // records return the pre-built game. Public so file-local helpers can
+  // access the game identity for belief computation.
+  const solver::UnifiedGame& get_game(const Record& record) const;
+
  private:
   std::vector<Record> records_;
+  // RFC 0012 Phase 2: owned mmap libraries. Records borrow pointers into
+  // these; the libraries outlive the records.
+  std::vector<std::unique_ptr<MmapLibrary>> mmap_libraries_;
+  // RFC 0012 Phase 3: lazy loading cache (pimpl; defined in the .cpp).
+  struct LazyCache;
+  std::unique_ptr<LazyCache> lazy_cache_;
+
+  // RFC 0012 Phase 3: load a lazy record's class on demand, inserting into
+  // the LRU cache. Returns nullptr on failure. Defined in the .cpp.
+  struct LazyEntry;
+  const LazyEntry* ensure_lazy_loaded(const Record& record) const;
 };
 
 }  // namespace bs::resident

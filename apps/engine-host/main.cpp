@@ -23,6 +23,25 @@
 //                   directory, unparseable manifest, or bad sha256 aborts
 //                   startup with exit code 2; per-root load failures are
 //                   reported individually and never disable another root.
+//   --flop-library <file.bin>
+//                   RFC 0012 Phase 2: loads a consolidated binary class
+//                   library via mmap. The .bin file is produced by
+//                   bigshark-flop-library-pack; its SHA-256 sidecar
+//                   (<file.bin>.sha256) is available for offline
+//                   verification. Open-time full-file verification is
+//                   opt-in via --verify-binary; the default skips it so
+//                   large libraries meet the AC2 load-time target. Mmap
+//                   mode bypasses the resident budget and the LRU cache.
+//   --verify-binary
+//                   RFC 0012 Phase 2: opt-in full-file SHA-256 verification
+//                   for a .bin consolidated library at open time. Reads the
+//                   entire file; unsuitable for large libraries on the
+//                   startup path.
+//   --lazy
+//                   RFC 0012 Phase 3: enables lazy loading for flop class
+//                   libraries. Classes are loaded on demand into an LRU
+//                   cache (default capacity 16) instead of all at startup.
+//                   Ignored when a .bin library is also given (mmap wins).
 //   --resident-budget <MiB>
 //                   Total resident budget shared across all advertised roots.
 //                   Defaults to 256 MiB (bs::resident::kDefaultResidentBudgetBytes).
@@ -367,6 +386,36 @@ std::optional<std::size_t> collectResidentBudget(int argc, char** argv) {
   return budget_bytes;
 }
 
+// RFC 0012 Phase 2: scan --flop-library arguments for a .bin file. Returns
+// the first match; the mmap path in ResidentPolicySet::build handles it.
+std::optional<std::filesystem::path> collectBinaryLibraryPath(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i) {
+    if (std::string_view(argv[i]) != "--flop-library" || i + 1 >= argc)
+      continue;
+    const std::filesystem::path path = argv[++i];
+    if (path.extension() == ".bin")
+      return path;
+  }
+  return std::nullopt;
+}
+
+// RFC 0012 Phase 3: whether --lazy was passed.
+bool hasLazyFlag(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i)
+    if (std::string_view(argv[i]) == "--lazy")
+      return true;
+  return false;
+}
+
+// RFC 0012 Phase 2: whether --verify-binary was passed. When set, the
+// MmapLibrary runs the full-file SHA-256 verification at open time.
+bool hasVerifyBinaryFlag(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i)
+    if (std::string_view(argv[i]) == "--verify-binary")
+      return true;
+  return false;
+}
+
 // Expands --flop-library <dir> flags into resident root specs. Reads
 // <dir>/manifest.json (written by the flop library builder) and appends one
 // SupportedRootSpec per class entry: path = <dir>/<artifact_name>, sha256 =
@@ -374,7 +423,8 @@ std::optional<std::size_t> collectResidentBudget(int argc, char** argv) {
 // (missing directory, unparseable manifest, bad sha256); per-root load
 // failures are handled later by ResidentPolicySet::build and never abort.
 bool collectFlopLibrarySpecs(int argc, char** argv,
-                             std::vector<bs::resident::SupportedRootSpec>& specs) {
+                             std::vector<bs::resident::SupportedRootSpec>& specs,
+                             std::optional<bs::poker::GameDef>* shared_game_def = nullptr) {
   for (int i = 1; i < argc; ++i) {
     const std::string argument = argv[i];
     if (argument != "--flop-library")
@@ -382,6 +432,10 @@ bool collectFlopLibrarySpecs(int argc, char** argv,
     if (i + 1 >= argc)
       return false;
     const std::filesystem::path dir = argv[++i];
+    // RFC 0012 Phase 2: .bin files are handled by the mmap path, not spec
+    // collection.
+    if (dir.extension() == ".bin")
+      continue;
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec) || ec) {
       std::cerr << "flop-library: not a directory: " << dir << '\n';
@@ -412,6 +466,34 @@ bool collectFlopLibrarySpecs(int argc, char** argv,
                 << '\n';
       return false;
     }
+
+    // RFC 0012 Phase 3: extract the shared game identity from the first
+    // manifest so lazy mode can construct game defs without loading artifacts.
+    if (shared_game_def && !*shared_game_def) {
+      yyjson_val* pc_val = yyjson_obj_get(root, "player_count");
+      yyjson_val* bb_val = yyjson_obj_get(root, "big_blind");
+      yyjson_val* stack_val = yyjson_obj_get(root, "stack");
+      yyjson_val* contrib_val = yyjson_obj_get(root, "contribution");
+      if (yyjson_is_uint(pc_val) && yyjson_is_uint(bb_val) && yyjson_is_uint(stack_val) &&
+          yyjson_is_uint(contrib_val)) {
+        const auto player_count = static_cast<std::size_t>(yyjson_get_uint(pc_val));
+        bs::poker::GameDef def{};
+        def.player_count = player_count;
+        def.button = 0;
+        def.big_blind = static_cast<bs::poker::Chips>(yyjson_get_uint(bb_val));
+        const auto stack = static_cast<bs::poker::Chips>(yyjson_get_uint(stack_val));
+        const auto contrib = static_cast<bs::poker::Chips>(yyjson_get_uint(contrib_val));
+        for (std::size_t s = 0; s < player_count; ++s) {
+          def.stacks[s] = stack;
+          def.contributions[s] = contrib;
+        }
+        def.pot = static_cast<bs::poker::Chips>(player_count * contrib);
+        def.board_size = 0;  // set per-class from canonical_board
+        def.terminal = bs::poker::TerminalDepth::Flop;
+        *shared_game_def = def;
+      }
+    }
+
     const std::size_t count = yyjson_arr_size(classes);
     for (std::size_t c = 0; c < count; ++c) {
       yyjson_val* entry = yyjson_arr_get(classes, c);
@@ -439,22 +521,42 @@ bool collectFlopLibrarySpecs(int argc, char** argv,
                   << ") invalid sha256_hex\n";
         return false;
       }
-      specs.push_back({dir / artifact_name, digest});
+      bs::resident::SupportedRootSpec spec;
+      spec.path = dir / artifact_name;
+      spec.expected_sha256 = digest;
+      // RFC 0012 Phase 3: extract the canonical board so lazy mode can
+      // construct the game def without loading the artifact.
+      yyjson_val* board_val =
+          yyjson_is_obj(entry) ? yyjson_obj_get(entry, "canonical_board") : nullptr;
+      if (yyjson_is_arr(board_val) && yyjson_arr_size(board_val) == 3) {
+        std::array<int, 3> board{};
+        bool board_ok = true;
+        for (std::size_t b = 0; b < 3; ++b) {
+          yyjson_val* card_val = yyjson_arr_get(board_val, b);
+          if (!yyjson_is_int(card_val)) {
+            board_ok = false;
+            break;
+          }
+          board[b] = static_cast<int>(yyjson_get_int(card_val));
+        }
+        if (board_ok)
+          spec.canonical_board = board;
+      }
+      specs.push_back(std::move(spec));
     }
   }
   return true;
 }
 
 std::unique_ptr<ResidentHostServices> buildResidentServices(
-    const std::vector<bs::resident::SupportedRootSpec>& specs, std::size_t budget_bytes) {
-  if (specs.empty())
+    const std::vector<bs::resident::SupportedRootSpec>& specs,
+    const bs::resident::ResidentOptions& options) {
+  if (specs.empty() && !options.binary_library_path)
     return nullptr;
   std::vector<bs::resident::RootLoadResult> results;
-  bs::resident::ResidentOptions options;
-  options.budget_bytes = budget_bytes;
   bs::resident::ResidentPolicySet set =
       bs::resident::ResidentPolicySet::build(specs, options, &results);
-  std::cerr << "resident-budget " << (budget_bytes >> 20) << " MiB\n";
+  std::cerr << "resident-budget " << (options.budget_bytes >> 20) << " MiB\n";
   for (const bs::resident::RootLoadResult& result : results) {
     std::cerr << "resident-root " << result.path << " " << bs::resident::to_string(result.status);
     if (!result.sha256_hex.empty())
@@ -540,7 +642,16 @@ int main(int argc, char** argv) {
       std::cerr << "invalid --resident-root spec; expected <path>=<64 lowercase hex sha256>\n";
       return 2;
     }
-    if (!collectFlopLibrarySpecs(argc, argv, resident_specs)) {
+    // RFC 0012 Phase 2: detect a .bin consolidated library for mmap mode.
+    const auto binary_path = collectBinaryLibraryPath(argc, argv);
+    // RFC 0012 Phase 3: detect --lazy for on-demand class loading.
+    const bool lazy = hasLazyFlag(argc, argv);
+    // Collect flop library directory specs. .bin files are skipped here
+    // (handled by the mmap path). When lazy, also extract the shared game
+    // identity from the manifest so lazy records can match roots without
+    // loading any artifact.
+    std::optional<bs::poker::GameDef> shared_game_def;
+    if (!collectFlopLibrarySpecs(argc, argv, resident_specs, lazy ? &shared_game_def : nullptr)) {
       std::cerr << "invalid --flop-library spec; expected <dir> with a valid manifest.json\n";
       return 2;
     }
@@ -556,10 +667,17 @@ int main(int argc, char** argv) {
         }
       }
     }
+    bs::resident::ResidentOptions options;
+    options.budget_bytes = resident_budget.value_or(bs::resident::kDefaultResidentBudgetBytes);
+    options.binary_library_path = binary_path;
+    options.verify_binary_library = hasVerifyBinaryFlag(argc, argv);
+    if (lazy && !binary_path) {
+      options.lazy_cache_capacity = bs::resident::kDefaultLazyCacheCapacity;
+      options.shared_game_def = shared_game_def;
+    }
     std::unique_ptr<ResidentHostServices> services;
     try {
-      services = buildResidentServices(
-          resident_specs, resident_budget.value_or(bs::resident::kDefaultResidentBudgetBytes));
+      services = buildResidentServices(resident_specs, options);
     } catch (const std::exception& error) {
       std::cerr << "resident startup failed: " << error.what() << '\n';
       return 2;

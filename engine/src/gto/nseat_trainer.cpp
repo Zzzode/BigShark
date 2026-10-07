@@ -578,7 +578,8 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
                                 const std::vector<std::vector<WeightedHand>>& ranges,
                                 std::uint64_t iterations, std::uint64_t master_seed,
                                 const NSeatTrainerLimits& limits,
-                                const gto::FrontierEvaluator* frontier) {
+                                const gto::FrontierEvaluator* frontier,
+                                const NSeatInitialState* initial_state) {
   validate_request(tree, ranges);
   if (iterations == 0)
     throw std::invalid_argument("nseat trainer requires a positive iteration count");
@@ -613,6 +614,29 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
       derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, 0x5749544e45535300ULL, 0)
           .next_u64());
 
+  // RFC 0012 Phase 4: warm start. A non-empty initial table seeds the regret
+  // and average-weight rows, and the iteration counter resumes at
+  // `completed_iterations` so the per-iteration PRNG streams (derived from the
+  // master seed and the ABSOLUTE iteration number) are identical to a
+  // from-scratch run that reached the same point. The witness is advanced the
+  // same number of times so prng_state matches too. The RM+ update rule and
+  // iteration logic below are unchanged; only the starting table and counter
+  // differ. A null or empty initial state is the from-scratch path.
+  std::uint64_t start_iter = 0;
+  if (initial_state != nullptr && !initial_state->rows.empty()) {
+    table = initial_state->rows;  // copy: the caller retains its state
+    if (table.size() > limits.max_information_sets)
+      throw nseat_training_exhausted(
+          "nseat trainer warm-start table exceeds the information-set cap");
+    for (const auto& [key, raw] : table)
+      retained_bytes += row_bytes(raw.actions.size());
+    if (retained_bytes > limits.max_bytes)
+      throw nseat_training_exhausted("nseat trainer warm-start table exceeds the byte cap");
+    start_iter = initial_state->completed_iterations;
+    for (std::uint64_t i = 0; i < start_iter; ++i)
+      witness.next_u64();
+  }
+
   // The wall cap is checked at ITERATION boundaries only, exactly like the
   // stage-6 trainer: no iteration is ever interrupted by the wall, so the
   // returned policy always reflects a whole number of completed iterations.
@@ -620,17 +644,18 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
   // the same property for every termination path.
   const auto wall_start = std::chrono::steady_clock::now();
   bool wall_reached = false;
-  std::uint64_t completed = 0;
+  std::uint64_t completed = start_iter;
   for (std::uint64_t iter = 0; iter < iterations; ++iter) {
     if (std::chrono::steady_clock::now() - wall_start > limits.wall) {
       wall_reached = true;
       break;
     }
+    const std::uint64_t abs_iter = start_iter + iter;
     for (std::size_t traverser = 0; traverser < seats; ++traverser) {
       NSeatTraversalStreams streams{
-          derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, iter, traverser),
-          derive_nseat_stream(master_seed, NSeatStreamPurpose::OpponentAction, iter, traverser),
-          derive_nseat_stream(master_seed, NSeatStreamPurpose::ChanceCard, iter, traverser)};
+          derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, abs_iter, traverser),
+          derive_nseat_stream(master_seed, NSeatStreamPurpose::OpponentAction, abs_iter, traverser),
+          derive_nseat_stream(master_seed, NSeatStreamPurpose::ChanceCard, abs_iter, traverser)};
       run_sweep(tree, sampler_ranges, root_board, traverser, streams, table, retained_bytes, visits,
                 limits, frontier);
     }
@@ -656,6 +681,10 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
   result.policy.action_id_ = tree.action_id();
   for (const auto& [key, raw] : table)
     result.policy.rows_.emplace(key, seal_row(raw));
+  // RFC 0012 Phase 4: hand the raw table back to the caller so the builder can
+  // checkpoint it and warm-start the next chunk. The sealed policy above is
+  // derived from the same table before the move.
+  result.raw_rows = std::move(table);
   return result;
 }
 

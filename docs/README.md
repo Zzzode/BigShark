@@ -28,6 +28,9 @@ integration, and development documentation.
 | RFC | [RFC 0007: Preflop profile abstraction](rfcs/0007-preflop-profile-abstraction.md) | Implementing | Bounded preflop training for a declared small profile, policy-derived continuation ranges, and coexistence with existing artifacts |
 | RFC | [RFC 0008: Unified N-player architecture](rfcs/0008-unified-n-player-architecture.md) | Implementing | One game definition for 2..10 seats, a versioned abstraction layer with measured error, one solver interface, explicit guarantee levels, and staged removal of superseded paths |
 | RFC | [RFC 0009: Unified engine delivery](rfcs/0009-unified-engine-delivery.md) | Implementing | Live promotion and wiring, a seat-parameterized solve seam, artifact schema v2 with abstraction identity, generalized resolving, flop coverage, and the heuristic demotion |
+| RFC | [RFC 0010: Multiway frontier evaluation](rfcs/0010-multiway-frontier-evaluation.md) | Accepted | N-way equity frontier evaluator, relaxed player-count gates, and N-way preflop profile training |
+| RFC | [RFC 0011: Turn and river continuation strategy](rfcs/0011-turn-river-strategy.md) | Accepted | On-demand subgame resolving for turn/river decisions, river frontier evaluator, and virtual turn/river deals |
+| RFC | [RFC 0012: Flop library performance optimization](rfcs/0012-flop-library-performance.md) | Implemented | Parallel training, consolidated mmap binary format, lazy class loading, and warm-start training |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [RFC 0009 implementation](plans/0009-implementation.md) | Current | Unified engine delivery stages W1-W5, status, and evidence |

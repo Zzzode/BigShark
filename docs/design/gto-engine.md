@@ -774,7 +774,10 @@ index stores a per-root codebook of the distinct doubles plus one uint8 index
 per action; roots with 257..65536 distinct values use a uint16 index per
 action (Codebook16, serving deeper-stack libraries whose distinct count
 exceeds the uint8 cap); roots with more than 65536 distinct values fall back
-to one exact double per action. The codebook is keyed by the probability's bit
+to one exact double per action. At 25-100 BB the probability blob is the
+largest resident component, so Codebook16's 8-to-2-byte-per-action reduction
+(~4x on the blob) saves 16-18% of total resident bytes versus the doubles
+fallback (commit 099e1d3). The codebook is keyed by the probability's bit
 pattern, so a deferred value is always bitwise identical to the stored one. Lookup compacts the caller's fixed key into a
 byte buffer, hashes that byte span, linear-probes, and verifies every
 candidate with a full length and byte comparison before resolving offsets;
@@ -897,6 +900,38 @@ of the doubles fallback. The n-seat trainer's identity gate was relaxed to
 accept declared-coarse abstractions (commit 7585989); the `solve()` route
 accepts them on both NSeatCfr and Auto (3+ seats) paths.
 
+**Parallel training (RFC 0012 Phase 1).** The builder accepts `--parallel N`
+(default 1, serial). When N > 1, the parent forks N worker processes via
+`fork()`/`execl` of `/proc/self/exe`; each worker trains a strided class range
+(worker_id, worker_id+N, worker_id+2N, ...) and writes `class-NNNN.db` and a
+`manifest-part-N.json` fragment directly to the output directory. The parent
+reaps children, merges fragments (sorted by class index), and writes the final
+`manifest.json`. A memory gate refuses `--parallel N` when N × 2 GiB RSS
+estimate exceeds 75% of physical RAM. The same master seed is passed to every
+class in both serial and parallel modes, so per-class artifacts are
+bitwise-identical regardless of worker count (G5 strategy invariance).
+
+Measured (2026-10-07, Linux 56-core Xeon, 50 BB configuration, 160-class
+subset): `--parallel 16` achieves 8.22× speedup (369 s wall vs 3,038 s CPU,
+842% utilization) with bitwise-identical SHA-256 per class. The 50 BB serial
+time on this machine is 3 h 24 m (from artifact timestamps); extrapolated
+16-worker parallel time is ~25 min. The < 15 min AC1 target was set for a
+16-core machine with a ~2 h serial baseline; on this Xeon the per-class CPU
+time is 19.0 s and the 2 GiB/worker memory budget caps practical parallelism
+at ~40 workers.
+
+**Warm-start training (RFC 0012 Phase 4).** The builder accepts `--resume`.
+When set, each class checks for a `class-NNNN-checkpoint.db` in the output
+directory. If found, the builder loads the regret and average-weight tables
+via `artifacts::load_checkpoint` (which verifies the abstraction and
+card-abstraction digests) and passes them to `train_nseat` as an optional
+`initial_state`. The trainer initializes its tables from the loaded state and
+resumes the iteration counter at `completed_iterations`, so per-iteration PRNG
+streams are bitwise-identical to a from-scratch run. During training, the
+builder writes a checkpoint every 256 iterations (a new periodic mechanism;
+the previous code checkpointed only after completion and then deleted it). The
+manifest records `completed_iterations` honestly.
+
 The declared first-library range is a fixed premium set: AA, KK, QQ, JJ (24
 combos) plus AKs (4) and AKo (12) — 40 combos total, weight 1.0, used for every
 seat. Board-overlapping combos are filtered per class at build time.
@@ -929,10 +964,48 @@ every (seat, combo, action-node) triple across all of them. The trainer itself
 visits only 4,966–5,680 information sets per class; the ~2.6M stored rows are
 the concrete expansion. A flop-terminal profile would eliminate the turn/river
 chance branching and reduce this by orders of magnitude; `TerminalDepth::Flop`
-has since landed in W4b (RFC 0007), though the flop class library itself
-remains River-terminal. The measurements above are the honest cost of the
-River-terminal shape; the class selection and storage budget for a larger
+landed in W4b (RFC 0007), and the production class libraries below are
+flop-terminal (the builder sets `TerminalDepth::Flop`, with the frontier
+evaluator supplying leaf values). The measurements above are the honest cost of
+the River-terminal shape; the class selection and storage budget for a larger
 library are decided by these measured costs, not estimated.
+
+**Flop-terminal full libraries (2026-10-05/06).** The production class
+libraries are flop-terminal, which eliminates the turn/river chance branching
+and reduces per-class storage by orders of magnitude relative to the
+River-terminal sample above. Three full 1,755-class libraries are published
+under `artifacts/`, each covering 22,100 of 22,100 flops (100%) at 1,000
+iterations per class:
+
+| Library | Seats | Stack | Action abs. | Rows/class | Info sets/class | Disk | Resident (full load) |
+| --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| `flop-library/` | 2 | 2 BB | identity | 10,042 | 29 | 3.0 GB | 1.06 GB |
+| `flop-library-3p/` | 3 | 2 BB | identity | 35,110 | 101 | 12 GB | 4.47 GB |
+| `flop-library-25bb/` | 2 | 25 BB | coarse | 70,258 | 204 | 27 GB | 9.42 GB |
+
+Row and info-set counts are summed from the manifest (123.3M total rows /
+357,737 total info sets for the 25 BB library). Resident figures are full-load
+measurements (Apple M5 Pro, 48 GB): the 25 BB library averages 5.49 MB/class
+resident vs ~15.4 MB/class on disk (2.9x disk-to-resident compression). The 25
+BB coarse library has 451 distinct probability values per class — above the
+uint8 codebook cap (256) but well below the uint16 cap (65,536) — so the
+resident index activates the Codebook16 layout (2 bytes/action) for every
+class; the 2 BB libraries stay under 256 distinct values and use Codebook8.
+
+**3-seat coarse deeper-stack samples (2026-10-05).** Four classes, 1,000
+iterations each, declared-coarse abstraction, 3 seats (builder stdout):
+
+| Stack | Nodes/class | Info sets/class | Rows/class | Distinct probs | Artifact MB/class |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 10 BB (stack 20) | 763 | 343K | 842K | 1,036 | 73.8 |
+| 25 BB (stack 50) | 2,923 | 1.07M | 2.72M | 2,256 | 255.8 |
+| 50 BB (stack 100) | 7,765 | 2.20M | 5.80M | 3,489 | 564.6 |
+
+All three activate Codebook16 (distinct counts in 257..65,536). Projected to a
+full 1,755-class library: 10 BB ~130 GB disk / ~45 GB resident, 25 BB ~449 GB,
+50 BB ~991 GB. The 25 BB and 50 BB projections exceed practical disk budgets
+for full coverage; a partial library (high-frequency classes first) is the
+expected deployment shape at those depths.
 
 ### Engine Host `--flop-library` Flag
 
@@ -962,12 +1035,14 @@ and the practice simulator CLI (`--flop-library DIR`) also support it.
 
 The engine's resident budget defaults to 256 MiB
 (`kDefaultResidentBudgetBytes`). Each flop class has a resident footprint of
-~0.6 MiB (2-seat) or ~2.6 MiB (3-seat) with the compact layout and probability
-codebook, so the default budget advertises only a few hundred of 1,755 classes;
-the rest are reported `OverBudget` and silently skipped. A full 2-seat library
-needs ~1.06 GiB of resident memory; a full 3-seat library needs ~4.47 GiB.
-Both libraries together (3,510 classes) need ~5.53 GiB and advertise fully
-under a 6 GiB budget (measured 2026-10-05).
+~0.6 MiB (2-seat 2 BB) or ~2.6 MiB (3-seat 2 BB) with the compact layout and
+probability codebook, so the default budget advertises only a few hundred of
+1,755 classes; the rest are reported `OverBudget` and silently skipped. A full
+2-seat 2 BB library needs ~1.06 GiB of resident memory; a full 3-seat 2 BB
+library needs ~4.47 GiB. Both libraries together (3,510 classes) need ~5.53
+GiB and advertise fully under a 6 GiB budget (measured 2026-10-05). The 25 BB
+coarse library is heavier: ~5.49 MiB/class resident, ~9.42 GiB for the full
+1,755 classes (Codebook16 layout; measured 2026-10-06).
 
 The engine host accepts `--resident-budget <MiB>` to override the default.
 The TypeScript launcher auto-detects every directory under `<repo>/artifacts/`
@@ -982,6 +1057,65 @@ all SQLite DBs before its first frame (~55 s probe alone for one library).
 The C++ engine client gains `resident_budget_mib` and `startup_timeout_ms`
 fields; the practice simulator auto-bumps the startup timeout to 300 s when
 `--flop-library` is passed.
+
+**Consolidated binary format (RFC 0012 Phase 2).** The offline
+`bigshark-flop-library-pack` tool converts a directory of schema-v3 SQLite
+class files into a single mmap-friendly binary file (`library.bin`). The
+binary layout is a 512-byte header (magic `BSFLIB01`, version, class count,
+codebook type, per-class offsets) followed by 4096-byte-aligned class
+sections. Each section stores sorted 64-bit FNV-1a hashes (enabling binary
+search with zero slot overhead), per-row action arrays, and the probability
+codebook (Codebook8, Codebook16, or Doubles — the same compression the
+resident index uses). A `library.bin.sha256` sidecar file records the
+checksum. The `MmapLibrary` class (`include/bs/mmap_library.hpp`) opens the
+file, mmaps it read-only (`PROT_READ, MAP_PRIVATE`), and serves lookups via
+binary search over the sorted hashes. The `CompactRowView`'s existing
+`codebook` pointer is set to the mmap'd codebook address. `MmapLibrary` is
+immutable and thread-safe after `open`; multiple processes can mmap the same
+file and share physical pages.
+
+Full-file SHA-256 verification at open time is opt-in via
+`ResidentOptions::verify_binary_library` (engine-host flag `--verify-binary`).
+The default skips it so large libraries meet the AC2 load-time target; the
+sidecar remains available for offline verification. Header structural checks
+(magic, version, class count, offset bounds) always run.
+
+Measured (2026-10-07): 2 BB library (421 MB `.bin`, 1,755 classes) loads in
+500 ms with full SHA-256 verification. Mmap load time is O(1) (open + mmap +
+header parse) and independent of file size; the 25 BB library (27 GB on disk)
+is expected to load in under 1 second without verification.
+
+The pack tool uses a streaming writer (`pack_binary_library_streaming`) that
+loads one SQLite artifact at a time in two passes — a lightweight survey pass
+that counts distinct probability bit patterns (to choose the file-level
+codebook layout), and a write pass that builds the full class data and
+appends the section to the file. Peak memory is ~200 MB (one class) rather
+than ~98 GB (all classes); the original all-in-memory approach was OOM-killed
+on the 25 BB library. Both variants produce byte-identical output.
+
+The engine host's `--flop-library` flag accepts either a directory (SQLite,
+current behavior) or a `.bin` file (mmap). Auto-detection is by file
+extension. `ResidentPolicySet::build` gains a `binary_library_path` option;
+when set, it loads the `MmapLibrary` instead of iterating `SupportedRootSpec`s.
+The SQLite path remains the fallback and the canonical interchange format.
+
+**Lazy loading (RFC 0012 Phase 3).** The engine host accepts `--lazy` to
+enable on-demand class loading. In lazy mode, `ResidentPolicySet::build` reads
+only `manifest.json` to build a class index (canonical board → file path +
+SHA-256). No SQLite files are opened at startup. On a lookup, the resident
+layer computes the canonical class from the query board, checks an LRU cache
+(default capacity 16 classes), and loads the class on a miss (~50–100 ms
+SQLite parse + index build). Eviction destroys the `ResidentIndex` and frees
+the heap buffers. When both lazy and mmap are enabled, the LRU cache is
+bypassed — the OS page cache provides the same benefit transparently.
+
+Measured (2026-10-07, 25 BB library, 1,755 classes, 27 GB on disk): lazy mode
+with cache capacity 16 uses 230 MB RSS after 96 class queries (108 MB
+`total_resident_bytes()`), with 0 fallbacks and 96/96 hits. The in-memory
+per-class footprint is 9.4 MB (larger than the 5.49 MB design estimate);
+the default cache capacity was reduced from 32 to 16 to stay under the
+256 MB AC4 budget. `total_resident_bytes()` includes lazy cache entries
+so observability reflects the true heap footprint.
 
 The engine's root identity matching (`same_root`) compares `player_count`
 first, so a 2-seat artifact can never serve a 3-seat query and vice versa.
@@ -1276,6 +1410,17 @@ sets, 1,014,536 stored rows, 267 MB file, 118.6s wall, NashConv 11.79 chips
 was relaxed to accept declared-coarse abstractions (commit 7585989), so the
 `coarse` abstraction arg is now available in both the preflop profile builder
 and the flop library builder.
+
+The n-seat MCCFR trainer bounds training with a wall-clock cap probed every
+256 iterations (`mccfr_trainer.cpp`): a run that exceeds the cap stops at the
+next probe and reports `wall_reached`, and a run that completes zero iterations
+before the cap throws `stage6_training_exhausted` rather than sealing an empty
+artifact whose manifest would claim the requested iteration count. The cap is
+a steady-clock deadline, so a zero-duration cap is racy (the first probe can
+read the same tick as the run start, `elapsed == 0` fails `elapsed > cap`, and
+a full 256-iteration batch completes before the next probe); the wall-cap test
+uses a negative cap (`milliseconds(-1)`) so any non-negative elapsed time
+exceeds it deterministically (commit 45d1644).
 
 ## Flop and Turn Policy
 

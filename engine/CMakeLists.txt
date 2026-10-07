@@ -192,6 +192,7 @@ add_library(bigshark_resident STATIC
   src/resident/resident_policy.cpp
   src/resident/public_reach.cpp
   src/resident/resident_index.cpp
+  src/resident/mmap_library.cpp
 )
 target_include_directories(bigshark_resident
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -465,6 +466,17 @@ add_executable(bigshark-flop-library-builder
 )
 target_link_libraries(bigshark-flop-library-builder PRIVATE
   bigshark_flop_library
+)
+
+# RFC 0012 Phase 2: offline pack tool. Converts a directory of schema-v3
+# SQLite class files into a single consolidated binary file for mmap loading.
+# Manual target, NOT a CTest.
+add_executable(bigshark-flop-library-pack
+  benchmarks/flop_library_pack.cpp
+)
+target_link_libraries(bigshark-flop-library-pack PRIVATE
+  bigshark_resident
+  bigshark_artifacts
 )
 
 # RFC 0009 W4b: offline preflop profile builder. Trains a full-range (1,326
@@ -986,6 +998,51 @@ if(BUILD_TESTING)
     bigshark_flop_library
   )
   add_test(NAME flop_library COMMAND test_flop_library)
+
+  # RFC 0012 Phase 1: parallel training. Verifies that N strided workers
+  # (merged by merge_fragments) produce bitwise-identical per-class artifacts
+  # to a serial build, and that a resumed build matches a fresh one.
+  add_executable(test_flop_library_parallel tests/test_flop_library_parallel.cpp)
+  target_link_libraries(test_flop_library_parallel PRIVATE
+    bigshark_flop_library
+  )
+  add_test(NAME flop_library_parallel COMMAND test_flop_library_parallel)
+
+  # RFC 0012 Phase 4: warm-start training. Trains to 256 iterations, saves a
+  # checkpoint, resumes to 512, and compares the raw regret/average-weight
+  # table against a from-scratch 512-iteration run within 1e-9.
+  add_executable(test_warm_start tests/test_warm_start.cpp)
+  target_link_libraries(test_warm_start PRIVATE
+    bigshark_flop_library
+  )
+  add_test(NAME warm_start COMMAND test_warm_start)
+
+  # RFC 0012 Phase 2: consolidated binary format. Packs a small set of class
+  # policies into a .bin file, mmaps it, and verifies round-trip fidelity
+  # (row lookup, game identity, ranges, SHA-256 verification).
+  add_executable(test_mmap_library tests/test_mmap_library.cpp)
+  target_include_directories(test_mmap_library PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_mmap_library PRIVATE
+    bigshark_resident
+    bigshark_artifacts
+  )
+  add_test(NAME mmap_library COMMAND test_mmap_library)
+
+  # RFC 0012 Phase 3: lazy loading. Builds a ResidentPolicySet in lazy mode,
+  # verifies that no artifacts are loaded at build time, and that on-demand
+  # class loading through the LRU cache returns correct rows.
+  add_executable(test_lazy_loading tests/test_lazy_loading.cpp)
+  target_include_directories(test_lazy_loading PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+  )
+  target_link_libraries(test_lazy_loading PRIVATE
+    bigshark_resident
+    bigshark_artifacts
+    bigshark_flop_library
+  )
+  add_test(NAME lazy_loading COMMAND test_lazy_loading)
 
   # RFC 0005 Stage 9 bounded resolver and independent certification. Internal
   # resolver headers are included only to drive the whitebox fixtures; the

@@ -80,6 +80,8 @@ artifacts/flop-library-25bb.bin
 artifacts/flop-library-25bb.bin.sha256
 artifacts/ac1-16w/
 
-# Catch-all: never commit anything under artifacts/ (the specific patterns
-# above document the expected contents; this guards against stray files).
-artifacts/
+# Catch-all: never commit anything under the top-level artifacts/ directory
+# (the specific patterns above document the expected contents; this guards
+# against stray files). Anchored to the repo root so engine/src/artifacts/
+# source files are not affected.
+/artifacts/
