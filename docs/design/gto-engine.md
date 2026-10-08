@@ -1723,6 +1723,79 @@ a full 256-iteration batch completes before the next probe); the wall-cap test
 uses a negative cap (`milliseconds(-1)`) so any non-negative elapsed time
 exceeds it deterministically (commit 45d1644).
 
+### Postflop-aware frontier evaluation (RFC 0013 Stage 1)
+
+RFC 0013 replaces the all-in-at-flop `EquityFrontierEvaluator` with a
+postflop-aware evaluator that returns CFR-solved equilibrium values from a
+declared table. Stage 1 implements the foundation: the N-seat declared
+frontier table, the postflop frontier evaluator, SPR bucketing, and the
+root-value extractor.
+
+**SPR bucketing** (`SprBucketConfig`). Six buckets partition the SPR range:
+`(0,1], (1,2], (2,4], (4,7], (7,12], (12,inf]`. Each bucket is solved at its
+representative SPR (midpoint, last at 15). `bucket_for_spr(spr)` maps an SPR
+to its bucket index, throwing on non-finite or non-positive input. The bucket
+boundaries and representative SPRs are declared identity; changing them is a
+new table.
+
+**N-seat declared frontier table** (`NSeatDeclaredFrontierTable`).
+Generalizes the heads-up-only `DeclaredFrontierTable` to 2..10 seats. Stores
+per-deal root values keyed by (canonical flop class, SPR bucket, per-seat
+sorted hole cards in the canonical suit system). Values are **chip amounts at
+the representative pot**: the oracle stores the per-seat root value from the
+representative solve, and the evaluator scales by
+`pot_actual / pot_representative`. The table is immutable after construction;
+duplicate keys and missing entries throw `std::invalid_argument` (fail
+closed). The internal key uses an FNV-1a hash over the canonical flop, SPR
+bucket, seat count, and per-seat hands, with exact `operator==` so a hash
+collision degrades to a bucket collision, never a wrong value.
+
+**Postflop frontier evaluator** (`PostflopFrontierEvaluator`). Implements
+`FrontierEvaluator`. At `evaluate(flop, hands, ledger)`:
+
+1. Canonicalizes the flop to its suit-isomorphism class representative
+   (`abstraction::canonicalize`).
+2. Relabels each seat's hole cards through the canonical relabel and sorts.
+3. Computes the pot (sum of all seats' `contributed`) and the effective
+   stack (minimum over live seats of `stack`); derives
+   `SPR = eff_stack / pot`.
+4. Maps the SPR to a bucket via `SprBucketConfig::bucket_for_spr`.
+5. Looks up the stored value in the declared table.
+6. Scales by `pot_actual / pot_representative` and returns per-seat values.
+
+A missing entry throws `std::invalid_argument` (fail closed). The evaluator
+never invents a value and never falls back to all-in equity.
+
+**Root-value extraction** (`extract_root_value`). Walks a solved
+`NSeatPolicy`'s abstract tree for one fixed joint deal and computes the
+expected per-seat chip utility at the root:
+
+- Action node: look up the policy row by `(own_card_bucket, node_index)`
+  from `NSeatPolicy::rows()`, enumerate every menu action weighted by its
+  average-policy probability.
+- Chance node: enumerate every legal runout card (board-only list minus
+  all hole cards), average uniformly.
+- `TerminalFold`: return the payload's stored `chip_utility`.
+- `TerminalShowdown`: settle with the live seats' hole cards via
+  `GameState::settle_showdown`.
+
+On a small river-rooted fixture the traversal is cross-checked against
+`stage6::exact_deal_utility` (full recursion over the real L1 tree) within
+`1e-9` times the root pot. The cross-check requires an
+`NSeatPolicy` → `BehaviorPolicy` adapter (in the test) that wraps
+`NSeatPolicy::lookup` and converts `NSeatPolicyRow` to
+`vector<PolicyAction>`.
+
+**Files.**
+
+| File | Component |
+| --- | --- |
+| `engine/include/bs/postflop_frontier.hpp` | `SprBucketConfig`, `NSeatDeclaredFrontierTable`, `PostflopFrontierEvaluator` |
+| `engine/src/gto/postflop_frontier.cpp` | Implementation |
+| `engine/include/bs/root_value_extractor.hpp` | `extract_root_value` declaration |
+| `engine/src/gto/root_value_extractor.cpp` | Policy-following tree walk |
+| `engine/tests/test_postflop_frontier.cpp` | Five unit tests (bucketing, roundtrip, scaling, cross-check, end-to-end) |
+
 ## Flop and Turn Policy
 
 The postflop evaluator combines:

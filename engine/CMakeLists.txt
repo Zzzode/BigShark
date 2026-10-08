@@ -310,6 +310,8 @@ add_library(bigshark_solver STATIC
   src/gto/nseat_trainer.cpp
   src/gto/frontier_table.cpp
   src/gto/equity_frontier.cpp
+  src/gto/postflop_frontier.cpp
+  src/gto/root_value_extractor.cpp
   src/gto/continuation_range.cpp
   src/solver/seat_policy.cpp
   src/gto/river_game.cc
@@ -918,6 +920,14 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_solve_nseat PRIVATE bigshark_solver)
   add_test(NAME solve_nseat COMMAND test_solve_nseat)
+
+  # RFC 0013 Stage 1: N-seat declared frontier table, PostflopFrontierEvaluator,
+  # SPR bucketing, and root-value extraction. Links the solver (trainer, policy,
+  # tree, abstraction) and the stage-6 eval library (exact_deal_utility oracle
+  # for the cross-check).
+  add_executable(test_postflop_frontier tests/test_postflop_frontier.cpp)
+  target_link_libraries(test_postflop_frontier PRIVATE bigshark_solver bigshark_stage6_eval)
+  add_test(NAME postflop_frontier COMMAND test_postflop_frontier)
 
   # RFC 0009 W2b: the bucket->concrete seat-policy export and the unified
   # information-key constructor. Links the solver (which owns seat_policy.cpp)

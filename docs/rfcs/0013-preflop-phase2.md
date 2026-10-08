@@ -4,7 +4,7 @@ subject: "Preflop Phase 2: Postflop-Aware Frontier Evaluation"
 status: "Accepted"
 authors: "BigShark maintainers"
 created: "2026-10-08"
-updated: "2026-10-08"
+updated: "2026-10-09"
 owners: "engine, solver, artifact boundary, benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -584,6 +584,68 @@ additional and dominated by the larger joint-deal storage and solve cost.
   regression tests pass.
 - `node bin/check-rfcs.mjs` and `node bin/check-docs.mjs` pass, and the
   design/reference docs are updated in the same change.
+
+## Implementation Status
+
+### Stage 1 (Current)
+
+Stage 1 is implemented in:
+
+- `engine/include/bs/postflop_frontier.hpp` — `SprBucketConfig`,
+  `NSeatDeclaredFrontierTable`, `PostflopFrontierEvaluator`.
+- `engine/src/gto/postflop_frontier.cpp` — implementation.
+- `engine/include/bs/root_value_extractor.hpp` /
+  `engine/src/gto/root_value_extractor.cpp` — policy-following tree walk
+  that extracts per-deal root values from a solved `NSeatPolicy`.
+- `engine/tests/test_postflop_frontier.cpp` — five unit tests.
+
+**Value scaling convention.** The table stores per-seat **chip values at the
+representative pot** (not dimensionless per-pot-unit values as the "Value
+scaling" section above originally phrased it). The evaluator scales by
+`pot_actual / pot_representative`:
+
+```
+value_actual[seat] = value_stored[seat] * (pot_actual / pot_representative)
+```
+
+This is the formula the "Value scaling" section already specifies; only the
+"dimensionless" label was imprecise. The stored value has chip units (the
+equilibrium value at the representative pot), and the scale-invariance
+argument in that section applies unchanged.
+
+**Root-value extraction.** `extract_root_value(policy, tree, root_state,
+deal)` walks the solved abstract tree for one fixed joint deal:
+
+- Action node: look up the policy row by `(own_card_bucket, node_index)`
+  from `NSeatPolicy::rows()`, enumerate every menu action weighted by its
+  average-policy probability.
+- Chance node: enumerate every legal runout card (board-only list minus
+  all hole cards), average uniformly.
+- `TerminalFold`: return the payload's stored `chip_utility`.
+- `TerminalShowdown`: settle with the live seats' hole cards via
+  `GameState::settle_showdown`.
+
+**Cross-check.** On a small river-rooted fixture (2 seats, 3-chip stacks,
+1-chip contributions, pot 2, board 2c3d7hJs9c, two combos per seat), the
+root-value traversal agrees with `stage6::exact_deal_utility` on all four
+joint deals within `1e-9` times the root pot (tolerance 2.0e-09). The
+fixture is river-rooted (no chance nodes) so that every action node
+receives a policy row under external-sampling MCCFR; the chance-node
+enumeration path in the extractor is exercised by the tree structure but
+not by this fixture's policy rows.
+
+**Unit tests.**
+
+1. `test_spr_bucketing` — boundary values for all six buckets, invalid SPR
+   throws.
+2. `test_table_roundtrip` — store/load/lookup, missing-entry throw,
+   duplicate-key throw.
+3. `test_evaluator_scaling` — stored values scaled by
+   `pot_actual / pot_representative` (unity and 2x scale).
+4. `test_root_value_crosscheck` — extractor vs `exact_deal_utility` on four
+   joint deals.
+5. `test_end_to_end` — build a four-entry table from solved root values,
+   verify the evaluator returns them through canonicalization and scaling.
 
 ## Decision
 
