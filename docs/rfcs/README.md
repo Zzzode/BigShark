@@ -26,6 +26,7 @@ their own RFC.
 | [0010](0010-multiway-frontier-evaluation.md) | Multiway Frontier Evaluation and N-Way Preflop Training | Accepted | Engine, solver, artifact boundary, benchmarks |
 | [0011](0011-turn-river-strategy.md) | Turn and River Continuation Strategy | Implemented | Engine, solver, resolver, artifact boundary, benchmarks |
 | [0012](0012-flop-library-performance.md) | Flop Library Performance Optimization | Implemented | Engine, solver, artifact boundary, resident, benchmarks |
+| [0013](0013-preflop-phase2.md) | Preflop Phase 2: Postflop-Aware Frontier Evaluation | Proposed | Engine, solver, artifact boundary, benchmarks |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.
