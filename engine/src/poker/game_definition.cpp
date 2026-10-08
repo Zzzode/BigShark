@@ -90,6 +90,17 @@ void validate(const GameDef& def) {
   for (std::size_t p = 0; p < def.player_count; ++p)
     require(def.blinds_posted[p] <= def.stacks[p], "blind exceeds stack");
 
+  // Whether the root opens mid-street (some seat has already committed chips
+  // on the current street). Only the subgame resolver builds such a root, and
+  // only at a rooted board. At a street-start root every street_committed is
+  // zero. The flag relaxes the two-seat equal-contributions rule (the two
+  // seats have not matched mid-street) and selects the constructor's
+  // pending/raise-rights seeding.
+  Chips street_high = 0;
+  for (std::size_t p = 0; p < def.player_count; ++p)
+    street_high = std::max(street_high, def.street_committed[p]);
+  const bool mid_street = street_high > 0;
+
   if (heads_up) {
     // The two-seat profile. It is not the three-handed profile turned down:
     // the BUTTON posts the small blind, no ante exists, and both blinds post
@@ -122,9 +133,12 @@ void validate(const GameDef& def) {
       require(def.board_size == 3 || def.board_size == 4 || def.board_size == 5,
               "a rooted board must carry a complete street");
       // A rooted board implies the blinds already completed, so the pot IS the
-      // dead money and the two must reconcile exactly.
-      require(def.contributions[0] == def.contributions[1],
-              "unmatched contributions at closed-street root");
+      // dead money and the two must reconcile exactly. At a street-start root
+      // the two seats have matched, so their contributions are equal; at a
+      // mid-street root the wager has not been matched, so they may differ.
+      if (!mid_street)
+        require(def.contributions[0] == def.contributions[1],
+                "unmatched contributions at closed-street root");
       require(add(def.contributions[0], def.contributions[1]) == def.pot,
               "root pot differs from contributions");
       std::array<bool, 52> used{};
@@ -198,6 +212,38 @@ void validate(const GameDef& def) {
             "root pot must equal the dead money, antes, and posted blinds");
   }
 
+  // Street-commitment guards. At a preflop root the constructor posts the
+  // blinds, which become the street commitments, so the def must not carry
+  // any. At a rooted board the committed chips are part of each seat's
+  // contributions and the pot (the pot reconciliation above already covers
+  // the sum), so each seat's street_committed must fit inside its
+  // contributions. A mid-street root (some street_committed nonzero) opens
+  // with a wager on the table: the last full raise is a real increment (>=
+  // big_blind), and at least one live seat must still face the wager (its
+  // street_committed below the high) so the root has a decision. A
+  // street-start root must leave last_full_raise at its zero sentinel.
+  for (std::size_t p = 0; p < def.player_count; ++p) {
+    if (def.preflop) {
+      require(def.street_committed[p] == 0,
+              "a preflop root posts its blinds as street commitments");
+    } else {
+      require(def.street_committed[p] <= def.contributions[p],
+              "street-committed chips exceed total contributions");
+    }
+  }
+  if (mid_street) {
+    require(def.last_full_raise >= def.big_blind,
+            "a mid-street last full raise must be at least the big blind");
+    std::size_t facing_wager = 0;
+    for (std::size_t p = 0; p < def.player_count; ++p) {
+      if (!def.folded[p] && def.stacks[p] > 0 && def.street_committed[p] < street_high)
+        ++facing_wager;
+    }
+    require(facing_wager >= 1, "a mid-street root needs a seat still facing the wager");
+  } else {
+    require(def.last_full_raise == 0, "a street-start root must not carry a last full raise");
+  }
+
   Chips total = def.pot;
   for (std::size_t p = 0; p < def.player_count; ++p)
     total = add(total, def.stacks[p]);
@@ -230,7 +276,7 @@ bool same_game_def(const GameDef& a, const GameDef& b) {
   // on top of this predicate rather than folding them in here.
   if (a.player_count != b.player_count || a.button != b.button || a.big_blind != b.big_blind ||
       a.ante != b.ante || a.pot != b.pot || a.preflop != b.preflop || a.variant != b.variant ||
-      a.terminal != b.terminal)
+      a.terminal != b.terminal || a.last_full_raise != b.last_full_raise)
     return false;
   if (a.board_size != b.board_size)
     return false;
@@ -239,7 +285,8 @@ bool same_game_def(const GameDef& a, const GameDef& b) {
       return false;
   for (std::size_t p = 0; p < a.player_count; ++p)
     if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p] ||
-        a.blinds_posted[p] != b.blinds_posted[p] || a.folded[p] != b.folded[p])
+        a.blinds_posted[p] != b.blinds_posted[p] || a.folded[p] != b.folded[p] ||
+        a.street_committed[p] != b.street_committed[p] || a.raise_rights[p] != b.raise_rights[p])
       return false;
   return true;
 }
@@ -324,15 +371,39 @@ GameState::GameState(const GameDef& def) : def_(def) {
     board_size_ = def_.board_size;
     std::copy_n(def_.board.begin(), board_size_, board_.begin());
     street_ = board_size_ == 3 ? Street::Flop : (board_size_ == 4 ? Street::Turn : Street::River);
-    last_full_raise_ = def_.big_blind;
+    // A street-start root uses the big blind (matching after_card's reset); a
+    // mid-street root carries the live last-full-raise so the root raise menu
+    // (min-raise = high + last_full_raise) is correct.
+    last_full_raise_ = def_.last_full_raise > 0 ? def_.last_full_raise : def_.big_blind;
     // A rooted board carries chips behind, so an empty stack here marks an
     // all-in seat from an earlier street. A seat may also start folded (the
     // subgame resolver rebuilds a GameDef from a mid-hand state); pending
     // therefore keys off both the stack and the folded flag.
+    //
+    // At a street-start root (street_high == 0) every live seat owes one
+    // action. At a mid-street root (street_high > 0) a seat owes an action
+    // only while it has not matched the highest street commitment: the
+    // resolver rebuilds the def from a live node where the hero faces a
+    // wager, and the wager levels determine who still owes a response. The
+    // high bettor has matched (street_committed == street_high) and is not
+    // pending; a seat below the high still faces the wager. Raise rights
+    // likewise default to the street-start rule (!folded) and are read from
+    // the def only mid-street, where a short all-in may leave a pending seat
+    // without the right to re-raise.
+    Chips street_high = 0;
+    for (std::size_t p = 0; p < def_.player_count; ++p)
+      street_high = std::max(street_high, def_.street_committed[p]);
     for (std::size_t p = 0; p < def_.player_count; ++p) {
       players_[p].all_in = players_[p].stack == 0;
-      players_[p].pending = players_[p].stack > 0 && !players_[p].folded;
-      players_[p].raise_rights = !players_[p].folded;
+      players_[p].street_committed = def_.street_committed[p];
+      if (street_high == 0) {
+        players_[p].pending = players_[p].stack > 0 && !players_[p].folded;
+        players_[p].raise_rights = !players_[p].folded;
+      } else {
+        players_[p].pending = players_[p].stack > 0 && !players_[p].folded &&
+                              players_[p].street_committed < street_high;
+        players_[p].raise_rights = def_.raise_rights[p] && !players_[p].folded;
+      }
     }
     refresh_live();
     if (heads_up_profile_) {

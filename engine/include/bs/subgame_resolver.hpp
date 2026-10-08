@@ -25,10 +25,11 @@
 // (e.g. seat counts without a production flop library), the resolver can
 // build the subgame directly from the live node state with uniform prior
 // ranges (every combo weight 1.0, board blockers removed). This mode roots
-// the subgame at the CURRENT street-start node (no turn-root reconstruction)
-// and supports 2..10 seats. It requires a street-start node
-// (node.legal().check == true) because GameDef cannot represent mid-street
-// committed chips; the CoverageMiss path is unreachable.
+// the subgame at the CURRENT node (no turn-root reconstruction) and supports
+// 2..10 seats. It supports both street-start nodes (the hero can check) and
+// mid-street nodes (the hero faces a bet): the GameDef carries the live
+// street_committed, raise_rights, and last_full_raise so the root opens at
+// the decision point. The CoverageMiss path is unreachable.
 //
 // The resolver is offline (no wire, no credentials) and thread-affine (call
 // from one thread). Folded seats are carried through the GameDef folded
@@ -117,9 +118,12 @@ class SubgameResolver {
                                const BlueprintSource& blueprint, const ResolveLimits& limits) const;
 
   // Blueprint-free resolution: uniform prior ranges, rooted at the current
-  // street-start node. Supports 2..10 seats. Requires node.legal().check
-  // (street-start only; GameDef cannot represent mid-street committed chips).
-  // No blueprint is consulted; the CoverageMiss path is unreachable.
+  // node. Supports 2..10 seats. Supports both street-start nodes
+  // (node.legal().check == true) and mid-street nodes (the hero faces a bet):
+  // the subgame def carries the live street_committed, raise_rights, and
+  // last_full_raise so the root opens at the decision point with the correct
+  // fold/call/raise menu. No blueprint is consulted; the CoverageMiss path is
+  // unreachable.
   SubgameResolveResult resolve_uniform(const poker::GameState& node,
                                        std::span<const poker::PublicAction> history,
                                        const ResolveLimits& limits) const;
@@ -171,7 +175,10 @@ class SubgameResolver {
 
   // Build the River-terminal GameDef for a subgame rooted at the current
   // node. Unlike build_subgame_def (which takes a blueprint-derived turn
-  // root), this builds the def directly from the live node state.
+  // root), this builds the def directly from the live node state. It carries
+  // the node's street_committed, raise_rights, and last_full_raise, so the
+  // subgame root opens at the live decision point for both street-start and
+  // mid-street nodes.
   static poker::GameDef build_subgame_def_from_node(const poker::GameState& node, std::size_t hero);
 
   // Build uniform prior ranges: all C(52,2)=1326 combos with weight 1.0,

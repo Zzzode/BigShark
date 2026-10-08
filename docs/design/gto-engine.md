@@ -1306,6 +1306,39 @@ constructor sets `raise_rights = !folded` so a folded seat cannot raise.
 a subgame) and at a preflop root. Blueprints never set this field
 (flop-terminal libraries have no folded seats).
 
+### Mid-street support
+
+The blueprint-free `resolve_uniform` mode supports both street-start nodes
+(the hero can check) and mid-street nodes (the hero faces a bet). The
+`GameDef` carries three additional rooted-board fields so the subgame root
+opens at the live decision point with the correct fold/call/raise menu:
+
+- `street_committed[]` — per-seat chips committed on the current street.
+  The `GameState` constructor seeds `players_[p].street_committed` from it
+  and derives `pending` from the wager levels (a seat owes an action while
+  its commitment is below the high). At a street-start root (all zero) the
+  constructor keeps the original rule (`pending = stack > 0 && !folded`).
+- `raise_rights[]` — per-seat re-raise flag, defaulting to false and read
+  only at a mid-street root. A seat that already acted this street has
+  `raise_rights == false`; a short all-in that was not a full raise does
+  not restore it, so the flag cannot be derived from the wager levels. At
+  a street-start root the constructor keeps the original rule
+  (`raise_rights = !folded`).
+- `last_full_raise` — the current street's last full-raise increment. Zero
+  is the street-start sentinel (the constructor substitutes `big_blind`,
+  matching `after_card`'s reset). A nonzero value sets the root min-raise
+  (`high + last_full_raise`).
+
+`validate()` relaxes the two-seat equal-contributions rule at a mid-street
+root (the seats have not matched), requires `street_committed[p] <=
+contributions[p]`, a nonzero `last_full_raise >= big_blind`, and at least
+one live seat still facing the wager. A preflop root must not carry
+`street_committed`; a street-start root must not carry `last_full_raise`.
+`build_subgame_def_from_node` copies the node's `street_committed`,
+`raise_rights`, and `last_full_raise` (mapping the GameState street-start
+value `big_blind` back to the GameDef sentinel 0). The candidate is
+extracted at the tree root; no tree walk is needed.
+
 ### Fallback chain
 
 The engine's resolving decision follows this chain:

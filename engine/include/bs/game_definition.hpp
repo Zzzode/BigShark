@@ -124,6 +124,35 @@ struct GameDef {
   // set this field (flop-terminal libraries have no folded seats).
   std::array<bool, kMaxUnifiedSeats> folded{};
 
+  // Per-seat chips committed on the CURRENT street at the root, indexed by
+  // seat. Zero at a street-start root (the default), which is every blueprint
+  // and preflop root. Nonzero only at a rooted board that opens MID-STREET:
+  // the subgame resolver rebuilds a GameDef from a live node where the hero
+  // faces a wager, and the committed chips must be visible to the root action
+  // menu (fold/call/raise instead of check/bet) and to the actor rotation.
+  // The constructor seeds `players_[p].street_committed` from this field. At
+  // a preflop root this MUST stay zero (the constructor posts the blinds,
+  // which become the street commitments).
+  std::array<Chips, kMaxUnifiedSeats> street_committed{};
+
+  // Per-seat raise-rights flag at the root, indexed by seat. Whether the seat
+  // may still re-raise. Defaults to false; the constructor applies the
+  // street-start rule (`raise_rights = !folded`) when every street_committed
+  // is zero, and reads this field only at a mid-street root (some
+  // street_committed nonzero), where the resolver sets it from the live
+  // node. A seat that already acted this street has `raise_rights == false`,
+  // and a short all-in that was not a full raise does NOT restore it, so the
+  // flag cannot be derived from the wager levels alone.
+  std::array<bool, kMaxUnifiedSeats> raise_rights{};
+
+  // The current street's last full-raise increment at the root. Zero means
+  // "street start": the constructor uses `big_blind`, matching `after_card`'s
+  // reset. Nonzero only at a mid-street root, so the root raise menu uses the
+  // live last-full-raise (the min-raise is `high + last_full_raise`) instead
+  // of the street-start default. A full bet or raise is never smaller than
+  // the big blind, so a nonzero value is validated `>= big_blind`.
+  Chips last_full_raise = 0;
+
   // Selects the two-seat preflop shape explicitly: blinds posted, no board,
   // the button acts first, and the big blind keeps its option after a limp.
   // For 3..10 seats the profile is implied by board emptiness instead, matching

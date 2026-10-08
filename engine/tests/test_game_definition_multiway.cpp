@@ -1553,6 +1553,152 @@ int folded_seat_single_live_rejected() {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// RFC 0011 mid-street support: a rooted board may carry street_committed,
+// raise_rights, and last_full_raise so the subgame resolver can root a
+// subgame at a live mid-street node (the hero faces a bet).
+// ---------------------------------------------------------------------------
+
+// A valid mid-street def constructs: the constructor seeds street_committed,
+// derives pending from the wager levels, and the root actor is the first seat
+// clockwise of the button that faces the wager.
+int mid_street_constructs() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  // Seat 0 bets 2 on the turn: contributions and pot include the bet.
+  def.contributions[0] = 3;  // 1 dead + 2 bet
+  def.street_committed[0] = 2;
+  def.raise_rights[0] = false;  // seat 0 acted (the bettor)
+  def.raise_rights[1] = true;   // seat 1 faces the bet and may raise
+  def.raise_rights[2] = true;   // seat 2 faces the bet and may raise
+  def.last_full_raise = 2;
+  def.pot = 5;  // 3 + 1 + 1
+  GameState state(def);
+  CHECK(state.phase() == Phase::Action);
+  // button=2: next_actor starts at seat 0 (the bettor, not pending), then
+  // seat 1 (faces the bet, pending).
+  CHECK(state.actor() == 1);
+  const LegalActions legal = state.legal();
+  CHECK(legal.fold);
+  CHECK(legal.call);
+  CHECK(!legal.check);
+  CHECK(legal.aggressive.has_value());
+  CHECK(legal.aggressive->type == ActionType::Raise);
+  // The min-raise is high + last_full_raise = 2 + 2 = 4.
+  CHECK(legal.aggressive->minimum == 4);
+  return 0;
+}
+
+// A mid-street def whose street_committed exceeds contributions is rejected.
+int mid_street_committed_exceeds_contributions_rejected() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.street_committed[0] = 5;  // exceeds contributions[0] == 1
+  def.last_full_raise = 2;
+  def.pot = 5;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// A mid-street def whose last_full_raise is below the big blind is rejected.
+int mid_street_last_full_raise_too_small_rejected() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.contributions[0] = 3;
+  def.street_committed[0] = 2;
+  def.raise_rights[0] = false;
+  def.raise_rights[1] = true;
+  def.raise_rights[2] = true;
+  def.last_full_raise = 1;  // below big_blind == 2
+  def.pot = 5;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// A mid-street def where every live seat has matched the high (no seat faces
+// the wager) is rejected: the root would have no decision.
+int mid_street_no_seat_facing_wager_rejected() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  // All three seats commit 2: nobody faces the wager.
+  for (std::size_t p = 0; p < 3; ++p) {
+    def.contributions[p] = 3;
+    def.street_committed[p] = 2;
+  }
+  def.last_full_raise = 2;
+  def.pot = 9;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// A preflop def must not carry street_committed: the constructor posts the
+// blinds as the street commitments.
+int preflop_street_committed_rejected() {
+  GameDef def = make_preflop(3, 0, 2, flat(3, 20), 0);
+  def.street_committed[0] = 2;
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// A street-start def must not carry a last_full_raise: the constructor uses
+// the big blind (matching after_card's reset).
+int street_start_last_full_raise_rejected() {
+  GameDef def = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  def.last_full_raise = 2;  // nonzero at a street-start root
+  bool rejected = false;
+  try {
+    validate(def);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+  return 0;
+}
+
+// same_game_def distinguishes the mid-street fields: two defs identical
+// except for street_committed or last_full_raise are different games.
+int mid_street_same_game_def() {
+  GameDef a = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  a.contributions[0] = 3;
+  a.street_committed[0] = 2;
+  a.raise_rights[0] = false;
+  a.raise_rights[1] = true;
+  a.raise_rights[2] = true;
+  a.last_full_raise = 2;
+  a.pot = 5;
+  GameDef b = a;
+  CHECK(same_game_def(a, b));
+  b.street_committed[0] = 0;
+  CHECK(!same_game_def(a, b));
+  b = a;
+  b.last_full_raise = 4;
+  CHECK(!same_game_def(a, b));
+  b = a;
+  b.raise_rights[1] = false;
+  CHECK(!same_game_def(a, b));
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -1560,7 +1706,7 @@ int main() {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 14> cases{{
+  const std::array<Case, 21> cases{{
       {"sweep", sweep},
       {"differentiated_three_way_showdown_matches_shipped",
        differentiated_three_way_showdown_matches_shipped},
@@ -1576,6 +1722,15 @@ int main() {
       {"folded_seat_zero_stack_rejected", folded_seat_zero_stack_rejected},
       {"folded_seat_all_folded_rejected", folded_seat_all_folded_rejected},
       {"folded_seat_single_live_rejected", folded_seat_single_live_rejected},
+      {"mid_street_constructs", mid_street_constructs},
+      {"mid_street_committed_exceeds_contributions_rejected",
+       mid_street_committed_exceeds_contributions_rejected},
+      {"mid_street_last_full_raise_too_small_rejected",
+       mid_street_last_full_raise_too_small_rejected},
+      {"mid_street_no_seat_facing_wager_rejected", mid_street_no_seat_facing_wager_rejected},
+      {"preflop_street_committed_rejected", preflop_street_committed_rejected},
+      {"street_start_last_full_raise_rejected", street_start_last_full_raise_rejected},
+      {"mid_street_same_game_def", mid_street_same_game_def},
   }};
   int failures = 0;
   for (const Case& item : cases) {

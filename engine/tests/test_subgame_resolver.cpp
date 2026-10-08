@@ -603,8 +603,10 @@ int test_solve_deadline() {
 //
 // resolve_uniform builds the subgame directly from the live node state with
 // uniform prior ranges (every combo weight 1.0, board blockers removed). It
-// roots the subgame at the current street-start node and supports 2..10
-// seats. No blueprint is consulted; the CoverageMiss path is unreachable.
+// roots the subgame at the current node and supports 2..10 seats. Both
+// street-start nodes (hero can check) and mid-street nodes (hero faces a bet)
+// are supported. No blueprint is consulted; the CoverageMiss path is
+// unreachable.
 // ---------------------------------------------------------------------------
 
 // Build a street-start GameState on the turn (board_size=4) or river
@@ -716,23 +718,110 @@ int test_uniform_river() {
   return check_valid_candidate(result);
 }
 
-// (xii) Uniform mid-street ineligible: a turn state where the hero faces a
-// bet (legal().check == false) is Ineligible — the uniform resolver roots
-// the subgame at a street-start node, and GameDef cannot represent mid-street
-// committed chips.
-int test_uniform_mid_street_ineligible() {
+// (xii) Uniform mid-street faces bet: a turn state where the hero faces a bet
+// (legal().check == false) is Solved — the subgame def carries the live
+// street_committed, raise_rights, and last_full_raise, so the root opens at
+// the decision point with a fold/call/raise menu (not check/bet).
+int test_uniform_mid_street_faces_bet() {
   GameState state = make_uniform_state(2, /*river=*/false);
-  // The first actor bets, so the next actor faces a bet and cannot check.
+  const std::size_t bettor = *state.actor();
+  state = state.after_action(bettor, {ActionType::Bet, 2});
+  CHECK(state.phase() == Phase::Action);
+  CHECK(!state.legal().check);
+  CHECK(state.legal().call);
+
+  const std::vector<PublicAction> history = {{Street::Turn, bettor, {ActionType::Bet, 2}}};
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  // The root pot includes the bet: 2 (dead) + 2 (bet) = 4.
+  CHECK(result.root_pot == 4.0);
+  // The root menu must reflect the wager: Fold and Call present, Check absent.
+  bool has_fold = false, has_call = false, has_check = false;
+  for (const Action& a : result.node_actions) {
+    if (a.type == ActionType::Fold)
+      has_fold = true;
+    if (a.type == ActionType::Call)
+      has_call = true;
+    if (a.type == ActionType::Check)
+      has_check = true;
+  }
+  CHECK(has_fold);
+  CHECK(has_call);
+  CHECK(!has_check);
+  return check_valid_candidate(result);
+}
+
+// (xii-b) Uniform mid-street 3-seat: a 3-seat turn state where the hero faces
+// a bet is Solved with seat_count == 3. The button is set so the hero is the
+// root actor; the other pending seat (the one after the hero) is reached by
+// the actor rotation after the hero acts.
+int test_uniform_mid_street_3seat() {
+  GameState state = make_uniform_state(3, /*river=*/false);
+  const std::size_t bettor = *state.actor();
+  state = state.after_action(bettor, {ActionType::Bet, 2});
+  CHECK(state.phase() == Phase::Action);
+  CHECK(!state.legal().check);
+  CHECK(state.legal().call);
+
+  const std::vector<PublicAction> history = {{Street::Turn, bettor, {ActionType::Bet, 2}}};
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 3);
+  return check_valid_candidate(result);
+}
+
+// (xii-c) Uniform mid-street river: a river state where the hero faces a bet
+// is Solved. The river-rooted subgame has no chance subtree, so the tree is
+// small; the candidate is extracted at the root.
+int test_uniform_mid_street_river() {
+  GameState state = make_uniform_state(2, /*river=*/true);
   const std::size_t bettor = *state.actor();
   state = state.after_action(bettor, {ActionType::Bet, 2});
   CHECK(state.phase() == Phase::Action);
   CHECK(!state.legal().check);
 
-  const std::vector<PublicAction> history = {{Street::Turn, bettor, {ActionType::Bet, 2}}};
+  const std::vector<PublicAction> history = {{Street::River, bettor, {ActionType::Bet, 2}}};
   SubgameResolver resolver;
   const auto result = resolver.resolve_uniform(state, history, test_limits());
-  CHECK(result.status == SubgameResolveStatus::Ineligible);
-  return 0;
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  return check_valid_candidate(result);
+}
+
+// (xii-d) Uniform mid-street faces raise: a turn state where the hero faces a
+// raise (not just a bet) is Solved. The subgame def carries the live
+// last_full_raise (the raise increment), so the root min-raise is correct.
+int test_uniform_mid_street_faces_raise() {
+  GameState state = make_uniform_state(2, /*river=*/false, /*stack=*/20);
+  // Seat 1 (first actor) bets 4; seat 0 raises to 10; seat 1 (hero) faces
+  // the raise. The raise increment is 6, so the hero's min-raise is
+  // high + last_full_raise = 10 + 6 = 16.
+  const std::size_t bettor = *state.actor();
+  state = state.after_action(bettor, {ActionType::Bet, 4});
+  const std::size_t raiser = *state.actor();
+  state = state.after_action(raiser, {ActionType::Raise, 10});
+  CHECK(state.phase() == Phase::Action);
+  CHECK(!state.legal().check);
+  CHECK(state.legal().call);
+
+  const std::vector<PublicAction> history = {
+      {Street::Turn, bettor, {ActionType::Bet, 4}},
+      {Street::Turn, raiser, {ActionType::Raise, 10}},
+  };
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  // The root pot: seat 0 contributed 1+10=11, seat 1 contributed 1+4=5.
+  CHECK(result.root_pot == 16.0);
+  return check_valid_candidate(result);
 }
 
 // (xiii) Uniform 11-seat ineligible: GameDef validation rejects
@@ -770,7 +859,10 @@ int main() {
   failures += test_uniform_3seat_turn();
   failures += test_uniform_4seat_turn();
   failures += test_uniform_river();
-  failures += test_uniform_mid_street_ineligible();
+  failures += test_uniform_mid_street_faces_bet();
+  failures += test_uniform_mid_street_3seat();
+  failures += test_uniform_mid_street_river();
+  failures += test_uniform_mid_street_faces_raise();
   failures += test_uniform_11seat_ineligible();
   if (failures == 0)
     std::printf("All subgame resolver tests passed.\n");

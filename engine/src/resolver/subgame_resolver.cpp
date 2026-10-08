@@ -315,7 +315,24 @@ poker::GameDef SubgameResolver::build_subgame_def_from_node(const poker::GameSta
     def.stacks[s] = node.players()[s].stack;
     def.contributions[s] = node.players()[s].net_contributed();
     def.folded[s] = node.players()[s].folded;
+    // Carry the current-street wager state so the subgame root opens at the
+    // live decision point: the street_committed levels set the root menu
+    // (fold/call/raise when the hero faces a bet) and the actor rotation,
+    // raise_rights preserves the short-all-in rule (a pending seat may not
+    // re-raise), and last_full_raise sets the min-raise increment.
+    def.street_committed[s] = node.players()[s].street_committed;
+    def.raise_rights[s] = node.players()[s].raise_rights;
   }
+  // GameState carries big_blind as the street-start last_full_raise, while
+  // GameDef uses 0 as the "street start" sentinel (the constructor substitutes
+  // big_blind). Only a mid-street node (some street_committed nonzero) carries
+  // a real last-full-raise increment; at street start leave the sentinel so
+  // validation and the constructor agree.
+  bool mid_street = false;
+  for (std::size_t s = 0; s < def.player_count; ++s)
+    if (def.street_committed[s] > 0)
+      mid_street = true;
+  def.last_full_raise = mid_street ? node.last_full_raise() : 0;
   def.pot = node.pot();
   const auto board = node.board();
   for (std::size_t i = 0; i < board.size() && i < 5; ++i)
@@ -364,11 +381,12 @@ SubgameResolveResult SubgameResolver::resolve_uniform(const poker::GameState& no
     return result;
   }
 
-  // Street-start only: GameDef cannot represent mid-street committed chips.
-  if (!node.legal().check) {
-    result.status = SubgameResolveStatus::Ineligible;
-    return result;
-  }
+  // Street-start AND mid-street nodes are both supported: build_subgame_def_from_node
+  // carries the live street_committed, raise_rights, and last_full_raise, so a
+  // node where the hero faces a bet (legal().check == false) roots the subgame
+  // at the live decision point with the correct fold/call/raise menu. The
+  // GameDef validation rejects an inconsistent mid-street state (no seat
+  // facing the wager, last_full_raise below the big blind, ...).
 
   const std::size_t hero = *node.actor();
 
