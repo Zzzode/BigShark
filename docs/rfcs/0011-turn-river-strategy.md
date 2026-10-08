@@ -55,7 +55,7 @@ decisions root at the river rather than the turn) but is bounded by the
 same CFR convergence guarantees. The tree-build + CFR-solve +
 candidate-extraction logic is shared between both paths through a
 `solve_rooted_subgame` helper. Host activation is behind a
-`BIGSHARK_SUBGAME_UNIFORM` flag (default off): when the resident set has no
+`BIGSHARK_SUBGAME_UNIFORM` flag (default on): when the resident set has no
 blueprint for the node (`resolver_source()` returns `nullopt`) and the flag
 is on, the engine-host calls `resolve_uniform` and serves at `approximate`.
 
@@ -589,13 +589,13 @@ river node, and extracts the whole-range candidate keyed by
 
 The engine-host (`apps/engine-host/main.cpp`) activates the blueprint-free
 mode behind a second runtime flag, `BIGSHARK_SUBGAME_UNIFORM` (default
-off). When the resident set has no blueprint for the node
+on). When the resident set has no blueprint for the node
 (`resolver_source()` returns `nullopt`) and the flag is on, the host calls
 `resolve_uniform` instead of returning `Unsupported`. The flag is
-default-off because the uniform-prior policy is weaker than the
-blueprint-derived path; it is an escape hatch for seat counts without a
-production library, not a replacement for the blueprint trunk. Set
-`BIGSHARK_SUBGAME_UNIFORM=1` to enable. When off, the engine behaves
+default-on because the uniform-prior policy, while weaker than the
+blueprint-derived path, provides GTO-quality decisions where the
+alternative is a heuristic fallback. Set
+`BIGSHARK_SUBGAME_UNIFORM=0` to opt out. When off, the engine behaves
 exactly as before (a node without a blueprint source falls through to
 `Unsupported`, and the operational fallback applies).
 
@@ -674,7 +674,7 @@ fallback). When on, the subgame resolver inserts between the terminal-only
 resolver and the operational fallback.
 
 The blueprint-free mode is behind a second runtime flag,
-`BIGSHARK_SUBGAME_UNIFORM` (default off). It activates only when
+`BIGSHARK_SUBGAME_UNIFORM` (default on). It activates only when
 `resolver_source()` returns `nullopt` (no blueprint for the node). When off,
 a node without a blueprint source falls through to `Unsupported` and the
 operational fallback, exactly as before. When on, the engine-host calls
@@ -682,8 +682,8 @@ operational fallback, exactly as before. When on, the engine-host calls
 independent: `BIGSHARK_SUBGAME_RESOLVER` gates the blueprint-derived path
 (on a blueprint miss after the terminal-only resolver is `Ineligible`), and
 `BIGSHARK_SUBGAME_UNIFORM` gates the blueprint-free path (on a nullopt
-blueprint source). Setting `BIGSHARK_SUBGAME_UNIFORM=1` alone does not
-enable the blueprint-derived path.
+blueprint source). Setting `BIGSHARK_SUBGAME_UNIFORM=0` alone does not
+disable the blueprint-derived path.
 
 ## Security and Operational Impact
 
@@ -710,7 +710,7 @@ enable the blueprint-derived path.
   not a separate service. No deployment change is required beyond the flags.
   The blueprint-derived path is gated by `BIGSHARK_SUBGAME_RESOLVER` (default
   on); the blueprint-free `resolve_uniform` path is gated by
-  `BIGSHARK_SUBGAME_UNIFORM` (default off).
+  `BIGSHARK_SUBGAME_UNIFORM` (default on).
 
 ## Alternatives Considered
 
@@ -766,10 +766,10 @@ or certifiable.
   mode solves against uniform priors, which do not condition on the observed
   action line and (for river decisions) root at the river rather than the
   turn. The resulting policy is weaker than the blueprint-derived path.
-  Mitigation: the mode is opt-in (`BIGSHARK_SUBGAME_UNIFORM`, default off)
-  and serves only seat counts without a production library; the
-  exploitability is bounded by the CFR convergence guarantees and measured
-  against the uniform-policy NashConv baseline.
+  Mitigation: the mode is enabled by default (`BIGSHARK_SUBGAME_UNIFORM`,
+  default on, opt-out with `=0`) and serves seat counts without a production
+  library; the exploitability is bounded by the CFR convergence guarantees
+  and measured against the uniform-policy NashConv baseline.
 - **3-seat tree size.** A 3-seat River-terminal tree has more action nodes
   than a 2-seat tree (the action subtree branches over 3 actors per street).
   With deep stacks the tree can exceed the builder's 1 GiB byte cap.
