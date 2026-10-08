@@ -1,7 +1,7 @@
 ---
 rfc: "0013"
 subject: "Preflop Phase 2: Postflop-Aware Frontier Evaluation"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark maintainers"
 created: "2026-10-08"
 updated: "2026-10-08"
@@ -587,4 +587,9 @@ additional and dominated by the larger joint-deal storage and solve cost.
 
 ## Decision
 
-Pending independent approval-agent review.
+Author agent: preflop-phase2-design (workflow wf_b9342c1b-6d6)
+Approved by: independent approval agent a8b1a7013fc915669
+Decision date: 2026-10-08
+Review outcome: Approved
+Reviewed scope: RFC 0013 full text, re-verified against engine source: frontier.hpp (FrontierEvaluator interface, DeclaredFrontierTable heads-up only), equity_frontier.hpp/cpp (all-in-at-flop equity computation), exact_oracle.hpp (exact_deal_utility), nseat_trainer.hpp/cpp (board_size 3..5, TerminalDepth::River default), continuation_range.hpp/cpp (2-seat export, line 65 gate), abstraction.hpp (pot-fraction bet sizing, scale invariance), preflop_nash_conv.cpp (hard-coded EquityFrontierEvaluator, line 256), preflop_profile_builder.cpp (frontier_evaluator tag, line 199), flop_library.cpp (TerminalDepth::Flop, kTotalClasses=1755), game_definition.hpp (settle_showdown/settle_fold), CMakeLists.txt (solver links, stage6_eval PRIVATE link). Two review cycles: Request Changes (1 blocking + 3 minor + 4 nits), then Approved after all dispositions verified.
+Review summary: All findings from the initial review are resolved. The blocking finding (missing value-scaling specification) is resolved by a dedicated section specifying dimensionless per-pot-unit stored values, the pot_actual/pot_representative scaling formula, and the scale-invariance justification. The approach is GTO (CFR-solved equilibrium values, no heuristics at 100 BB), the infrastructure claims are verified against the codebase, the rejected alternatives are correctly rejected, the effort estimate (~6.5 weeks) is reasonable, and the plan is actionable with measurable acceptance criteria. Implementation may proceed.
