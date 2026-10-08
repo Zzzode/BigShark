@@ -33,10 +33,12 @@ Brown & Sandholm gadget for certified non-regression. This RFC defines the
 design space, the phased rollout, and the measurement plan; it does not
 change the live v1 protocol.
 
-Phase 1 supports 2..3 seats and both turn (board_size=4) and river
+Phase 1 supports 2..10 seats (RFC 0011: the belief model's N-seat path
+uses recursive backtracking with inclusion-exclusion for the last seat)
+and both turn (board_size=4) and river
 (board_size=5) decisions. The resolver generalizes to N seats via the
 multiway state machine; the seat-count gate matches the belief model's
-exact range (2..3). Folded seats are carried through the GameDef folded
+exact range (2..10). Folded seats are carried through the GameDef folded
 bitmap: the GameState constructor seeds `players_[p].folded`, and the
 existing fold-aware machinery (next_actor, refresh_live, settlement,
 trainer) handles them correctly. Folded seats keep their gross
@@ -111,9 +113,9 @@ storage-infeasible at the depths the production libraries target.
 - Value river leaves by exact equity (no Monte Carlo, no interpolation).
   Phase 1 reuses the existing `settle_showdown` settlement; Phase 3 adds a
   `RiverFrontierEvaluator` for virtual-deal leaves.
-- Phase 1 supports 2..3 seats and both turn (board_size=4) and river
+- Phase 1 supports 2..10 seats and both turn (board_size=4) and river
   (board_size=5) decisions. The resolver is seat-count-agnostic internally;
-  the gate matches the belief model's exact range (2..3). The blueprint-free
+  the gate matches the belief model's exact range (2..10). The blueprint-free
   mode (`resolve_uniform`) extends coverage to 2..10 seats without a
   blueprint, and the `resolve` seat gate was relaxed to `kMaxUnifiedSeats`
   (10) so a 4+ seat flop library works when one exists.
@@ -130,11 +132,11 @@ storage-infeasible at the depths the production libraries target.
   equity enumeration, following the existing `EquityFrontierEvaluator`
   design. A learned continuation-value model is a separate research direction.
 - **Multiplayer (4+ seats) turn/river with a blueprint trunk.** The
-  production libraries are 2-seat and 3-seat. The blueprint-free
+  production libraries are 2-seat, 3-seat, and 4-seat. The blueprint-free
   `resolve_uniform` mode covers 2..10 seats without a blueprint (uniform
   priors, street-start and mid-street); the blueprint-derived `resolve` path
   accepts 2..10 seats but still needs a matching flop library, which does not
-  exist for 4+ seats.
+  exist for 5+ seats.
 - **Preflop continuation.** The preflop profile is a separate artifact
   (RFCs 0007/0010). This RFC covers postflop (turn/river) only.
 - **River-terminal library training.** The virtual turn/river deal mechanism
@@ -280,7 +282,7 @@ that dispatches to the terminal-only resolver on a blueprint miss). Minor-1
 AUTOMATIC falls through to the operational fallback without resolving and is
 unchanged.
 
-### Phase 1: Turn-rooted subgame resolving (2..3 seats, turn/river, approximate)
+### Phase 1: Turn-rooted subgame resolving (2..10 seats, turn/river, approximate)
 
 When a turn or river decision arises, the resolver:
 
@@ -467,7 +469,7 @@ resolver implements a self-contained `derive_prior_ranges` method that replays
 the flop action line from the blueprint's flop root, accumulating per-seat
 prefix reach by multiplying blueprint action probabilities. The method is
 seat-generic: it iterates `game.def.player_count` and uses `kMaxUnifiedSeats`
-arrays, so it supports 2..3 seats without modification. (Phase 1
+arrays, so it supports 2..10 seats without modification. (Phase 1
 implementation note: the RFC's original plan to generalize
 `continuation_range.cpp` was replaced by a self-contained method, which is
 functionally equivalent and avoids modifying existing code. The offline
@@ -581,10 +583,10 @@ blueprint-derived path's measured reductions (24–28% at 2 seats, 20.9% at
 The existing `resolve` method's seat gate was relaxed from `> 3` to
 `> kMaxUnifiedSeats` (10). Previously the gate matched the belief model's
 exact range (2..3); now any 2..10-seat blueprint can drive the
-blueprint-derived path. This is forward-looking: 4+ seat flop libraries
-do not exist today, but when one is published, `resolve` works without a
-code change. The `resolve_uniform` path already covers 2..10 seats without
-a blueprint.
+blueprint-derived path. The 4-seat flop library is now trained (1755 classes,
+94 GB); 5+ seat libraries do not exist yet, but when one is published,
+`resolve` works without a code change. The `resolve_uniform` path already
+covers 2..10 seats without a blueprint.
 
 #### Shared `solve_rooted_subgame` helper
 
@@ -995,7 +997,7 @@ The river-rooted fixtures have no chance nodes (the river card is fixed).
    (`engine/benchmarks/subgame_nash_conv.cpp`): recursive N-way joint-deal
    enumeration, eight fixtures (2/3/4-seat turn, 2/3/4-seat river, plus
    folded-seat variants). Measured tree size, solve time, coverage, and
-   exploitability. Generalized the subgame resolver to 2..3 seats and added
+   exploitability. Generalized the subgame resolver to 2..10 seats and added
    river support via the "always turn-rooted" tree-walk approach. Added the
    blueprint-free `resolve_uniform` mode (2..10 seats, uniform priors,
    street-start and mid-street) with the `BIGSHARK_SUBGAME_UNIFORM` host
@@ -1036,14 +1038,15 @@ is not changed in any stage.
   value. Which is more accurate, and should the fixed-point computation be
   iterated to convergence? This is a measurement question, deferred to
   Stage 4.
-- **3-seat subgame resolving.** Resolved: Phase 1 supports 2..3 seats. The
+- **3-seat subgame resolving.** Resolved: Phase 1 supports 2..10 seats. The
   self-contained `derive_prior_ranges` method is seat-generic (iterates
   `game.def.player_count`), so no N-way continuation range export is needed.
-  The 3-seat flop class library provides the blueprint trunk. 4+ seat support
+  The 3-seat flop class library provides the blueprint trunk. The 4-seat
+  flop library is trained (1755 classes, 94 GB). 5+ seat support
   is covered by the blueprint-free `resolve_uniform` mode (2..10 seats,
   uniform priors, street-start and mid-street); the blueprint-derived
   `resolve` path accepts 2..10 seats but still needs a matching flop library,
-  which does not exist for 4+ seats.
+  which does not exist for 5+ seats.
 - **Live budget.** The live decision budget for a subgame resolve is not yet
   measured. The resolver's `ResolveLimits` default to 2 seconds; the actual
   budget depends on the table clock. This is a measurement question,
@@ -1053,7 +1056,7 @@ is not changed in any stage.
 
 - The subgame resolver builds a turn-rooted River-terminal subtree, derives
   prior ranges from the flop-terminal blueprint, solves with CFR, and serves
-  the candidate at `approximate`, verified by unit tests. Supports 2..3 seats
+  the candidate at `approximate`, verified by unit tests. Supports 2..10 seats
   and both turn (board_size=4) and river (board_size=5) decisions.
 - River leaves are valued by the existing `settle_showdown` settlement (exact
   equity with correct tie splitting and dead-money handling). No new

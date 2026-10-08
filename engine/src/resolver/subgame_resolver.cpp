@@ -15,7 +15,7 @@
 //      evaluator).
 //   4. Serves the candidate at `approximate` (no certification in Phase 1).
 //
-// Supports 2..3 seats. For a river decision the resolver still builds a
+// Supports 2..10 seats (RFC 0011). For a river decision the resolver still builds a
 // turn-rooted subgame (the blueprint is flop-terminal and has no turn rows),
 // solves it once, then walks the solved tree — following the observed turn
 // actions and the observed river card — to extract the candidate at the

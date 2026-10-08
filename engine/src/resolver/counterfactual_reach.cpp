@@ -67,13 +67,13 @@ ResolveStatus build_model(const GameState& node, std::span<const PublicAction> h
     return status;
   };
 
-  // W2c-ii-c: the resolver gadget is hero-vs-field. The field is the separable
-  // sum of every non-hero seat, each owning its own -x infoset, so the gadget
-  // and the per-seat certifier support two and three seats. Four-or-more-seat
-  // resolves stay a later stage (the resident belief model is likewise exact
-  // for two and three seats only).
-  if (game.def.player_count < 2 || game.def.player_count > 3)
-    return fail(ResolveStatus::Ineligible, "resolver supports two or three seats only");
+  // RFC 0011: the resolver gadget is hero-vs-field. The field is the separable
+  // sum of every non-hero seat, each owning its own -x infoset. The joint deal
+  // enumeration, gadget CFR, and certifier are all generic over seat_count.
+  // The budget system (iteration_cap_for_budget, max_bytes) naturally caps
+  // the work for higher seat counts.
+  if (game.def.player_count < 2 || game.def.player_count > bs::poker::kMaxUnifiedSeats)
+    return fail(ResolveStatus::Ineligible, "resolver supports 2..10 seats");
   if (node.phase() != Phase::Action || !node.actor())
     return fail(ResolveStatus::Ineligible, "resolve node is not an action node");
   if (!same_root(game.def, node.def()))

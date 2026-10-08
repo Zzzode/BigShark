@@ -98,11 +98,9 @@ enum class MissReason : std::uint8_t {
   // factor for this combination was zero). A blueprint row for a combination
   // the observer knows the hero cannot hold is never returned.
   ZeroProbabilityHeroCombination,
-  // W2c-ii-b: the matched artifact's root serves a seat count the resident
-  // belief model cannot condition exactly. Two and three seats are exact; a
-  // 4..10-seat belief or hero-decision query misses declared (a coverage
-  // limitation, not a protocol failure). The artifact loads and advertises,
-  // and the resolver source still serves it.
+  // RFC 0011: the matched artifact's root serves a seat count outside the
+  // resident belief model's exact range (2..10). The artifact loads and
+  // advertises, and the resolver source still serves it.
   SeatCountNotSupported,
 };
 
@@ -204,7 +202,7 @@ struct ResidentScratch {
   // Per-card summed raw mass, rebuilt while computing joint mass.
   std::array<std::array<double, 52>, poker::kMaxUnifiedSeats> card_mass{};
   // W2c-ii-b: cached per-seat partner mass J_{-seat}(combo) for the
-  // three-seat belief path, filled by ReachModel::prepare_partner_mass. The
+  // 3+ seat belief paths, filled by ReachModel::prepare_partner_mass. The
   // two-seat path answers has_positive_partner in O(1) and leaves this unset.
   std::array<std::array<double, 1326>, poker::kMaxUnifiedSeats> partner_mass{};
   // Per-observed-action probability scratch for actor combos.
@@ -246,7 +244,7 @@ struct ResidentAnswer {
   std::size_t actor = 0;
   // Public belief: per-seat 1326-entry arrays indexed by bs::comboIndex; each
   // seat's marginal sums to one. Identical for every hero combination. The
-  // first `public_reach_seats` entries are valid (W2c-ii-b: two or three).
+  // first `public_reach_seats` entries are valid (RFC 0011: 2..10 seats).
   std::array<const std::array<double, 1326>*, poker::kMaxUnifiedSeats> public_reach{};
   std::size_t public_reach_seats = 0;
   // Hero decision only: the hero's own policy row and the hero-private

@@ -95,10 +95,10 @@ int relabel_card(int card, const std::array<int, 4>& relabel) {
 // information key layout is identical across revisions (make_information_key
 // and information_key(HeadsUpState) emit the same words for the same state),
 // so the v2 game's rows are keyed compatibly and the resident replay serves
-// them unchanged. W2c-ii-a loads every seat count: the two-seat belief and
-// hero-decision queries miss declared (SeatCountNotSupported) until W2c-ii-b,
-// while the resolver source already serves the unified game. Turn/river-rooted
-// v2 sources stay refused until the resident root generalizes (RFC 0009 D4).
+// them unchanged. W2c-ii-a loads every seat count: the belief and hero-decision
+// queries are exact for 2..10 seats (RFC 0011), while the resolver source
+// already serves the unified game. Turn/river-rooted v2 sources stay refused
+// until the resident root generalizes (RFC 0009 D4).
 UnifiedGame build_v2_game(const GameDef& game,
                           const std::vector<std::vector<solver::WeightedHand>>& ranges,
                           const abstraction::SizeSchedule& sizes) {
@@ -513,7 +513,7 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
       // RFC 0009 D4: a schema-v2 probe carries the seat-generic identity;
       // build the unified view of every flop-rooted source. A 3..10-seat
       // source loads and advertises; its belief and hero-decision queries
-      // miss declared until W2c-ii-b. Turn/river-rooted shapes stay refused.
+      // are exact for 2..10 seats (RFC 0011). Turn/river-rooted shapes stay refused.
       if (probe.game_def) {
         record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
         // RFC 0011: reconstruct the action abstraction id from the manifest
@@ -842,7 +842,7 @@ MissReason replay_public_path(const ResidentPolicySet& set, const ResidentPolicy
     while (consumed < events.size() && events[consumed].street == streets[street]) {
       const PublicAction& event = events[consumed];
       const std::span<const PublicAction> prefix(events.data(), consumed);
-      // W2c-ii-b: the three-seat has_positive_partner reads the cached partner
+      // W2c-ii-b: the 3+ seat has_positive_partner reads the cached partner
       // mass, which must be rebuilt for this actor after the latest mutation.
       model.prepare_partner_mass(event.seat);
       const MissReason prob_miss =
@@ -884,10 +884,10 @@ ResidentAnswer ResidentPolicySet::public_belief(const GameState& state,
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
   const UnifiedGame& game = get_game(record);
-  // W2c-ii-b: the belief model is exact for two and three seats; a 4..10-seat
-  // artifact loads and advertises, but its per-node belief cannot be conditioned
-  // exactly, so the query misses declared (a coverage limitation).
-  if (game.def.player_count > 3)
+  // RFC 0011: the belief model is exact for 2..kMaxUnifiedSeats seats.
+  // The N-seat path uses recursive backtracking with inclusion-exclusion
+  // for the last seat.
+  if (game.def.player_count > bs::poker::kMaxUnifiedSeats)
     return miss_answer(MissReason::SeatCountNotSupported);
   // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
   // For v2 the relabel is the identity and the canonical flop equals the query
@@ -932,9 +932,10 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
     return miss_answer(resolved.miss);
   const Record& record = *resolved.record;
   const UnifiedGame& game = get_game(record);
-  // W2c-ii-b: the belief model behind the hero-private view is exact for two
-  // and three seats; a 4..10-seat hero-decision query misses declared.
-  if (game.def.player_count > 3)
+  // RFC 0011: the belief model behind the hero-private view is exact for
+  // 2..kMaxUnifiedSeats seats. The N-seat path uses recursive backtracking
+  // with inclusion-exclusion for the last seat.
+  if (game.def.player_count > bs::poker::kMaxUnifiedSeats)
     return miss_answer(MissReason::SeatCountNotSupported);
   // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
   // RFC 0007: a preflop record (board_size == 0) has no flop to canonicalize.
@@ -1021,10 +1022,10 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   answer.hero_row.probabilities = scratch.probability_scratch.data();
 
   // Hero-private opponent belief: blocker removal only, never renormalized
-  // into a relabeled equilibrium range. W2c-ii-b: with three seats there are
-  // two opponents; the diagnostic opponent view conditions on the first seat
-  // other than the actor. The n-seat resolver gadget (W2c-ii-c) consumes the
-  // full joint belief instead of this single-seat view.
+  // into a relabeled equilibrium range. W2c-ii-b: with 3+ seats there are
+  // multiple opponents; the diagnostic opponent view conditions on the first
+  // seat other than the actor. The n-seat resolver gadget (W2c-ii-c) consumes
+  // the full joint belief instead of this single-seat view.
   std::size_t opponent = 0;
   for (std::size_t seat = 0; seat < game.def.player_count; ++seat) {
     if (seat != *state.actor()) {

@@ -28,10 +28,10 @@ class ReachModel {
   // combinations blocked by the root flop, and normalize the legal joint
   // distribution to mass one. Returns false when no positive
   // card-compatible joint deal exists; the scratch is then fail-closed.
-  // W2c-ii-b: the belief model is exact for two and three seats. A 4..10-seat
-  // game loads and advertises, but its belief cannot be conditioned exactly
-  // (the per-node marginal is a declared coverage limitation), so it returns
-  // false and the caller misses declared.
+  // RFC 0011: the belief model is exact for 2..kMaxUnifiedSeats seats.
+  // The 2-seat path uses inclusion-exclusion; the 3-seat path uses O(N^2)
+  // nested loops; the N-seat path (4+) uses recursive backtracking with
+  // inclusion-exclusion for the last seat.
   bool initialize(const solver::UnifiedGame& game);
 
   // Remove every combination holding the dealt public card and renormalize.
@@ -45,10 +45,10 @@ class ReachModel {
   bool observe_action(std::size_t actor, const std::array<double, bs::N_COMBOS>& probability);
 
   // W2c-ii-b: cache the partner mass J_{-seat}(combo) of every combo of
-  // `seat` so has_positive_partner answers in O(1) on the three-seat path.
+  // `seat` so has_positive_partner answers in O(1) on the 3+ seat path.
   // The two-seat path answers in O(1) per combo directly, so this is a no-op
   // there. Must be called after the latest mutation and before the matching
-  // has_positive_partner calls for a three-seat seat.
+  // has_positive_partner calls for a 3+ seat seat.
   void prepare_partner_mass(std::size_t seat);
 
   // Whether `combo` of `player` currently has at least one opponent
@@ -71,17 +71,24 @@ class ReachModel {
   // Recompute per-card summed mass and the card-compatible joint mass.
   double recompute_joint_mass();
   bool renormalize();
-  // W2c-ii-b three-seat path.
+  // W2c-ii-b 3+ seat path (shared by three-seat and N-seat).
   void rebuild_totals();
   double compatible_mass(std::size_t seat, const std::array<int, 4>& blocked,
                          std::size_t n_blocked) const;
   double recompute_joint_mass_three();
   void prepare_partner_mass_three(std::size_t seat);
   bool write_marginals_three();
+  // RFC 0011: N-seat path (4..kMaxUnifiedSeats). Recursive backtracking
+  // with inclusion-exclusion for the last seat. Exact for any seat count;
+  // cost is O(N_COMBOS^(N-1)) which is practical for 4..6 seats with
+  // typical postflop range widths.
+  double recompute_joint_mass_nseat();
+  void prepare_partner_mass_nseat(std::size_t seat);
+  bool write_marginals_nseat();
 
   ResidentScratch& scratch_;
   std::size_t seat_count_ = 0;
-  // Per-seat summed raw mass, rebuilt by rebuild_totals (three-seat path).
+  // Per-seat summed raw mass, rebuilt by rebuild_totals (3+ seat paths).
   std::array<double, poker::kMaxUnifiedSeats> total_{};
 };
 

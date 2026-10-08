@@ -1,5 +1,5 @@
 // RFC 0005 Stage 9 bounded resolving gadget with independent best-response
-// certification, generalized to two or three seats (RFC 0009 W2c-ii-c). Offline
+// certification, generalized to 2..10 seats (RFC 0009 W2c-ii-c, RFC 0011). Offline
 // solver-domain component; it never opens a database, never touches the wire,
 // and never changes v0/minor-0 behavior.
 //
@@ -108,7 +108,7 @@ inline constexpr std::string_view kSubgameResolveToken = "subgame-resolve:approx
 
 enum class ResolveStatus {
   // Whole-range candidate passed independent bounds. At two seats this is the
-  // RFC 0005 responder bound; at three seats it is a PER-SEAT UNILATERAL
+  // RFC 0005 responder bound; at 3+ seats it is a PER-SEAT UNILATERAL
   // NON-REGRESSION bound (every non-hero seat's BR_s <= b_s + 1e-9*root_pot),
   // NOT a multi-player equilibrium claim. A multiway certification carries a
   // diagnostic token on the wire so it is never read as the two-player meaning.

@@ -2168,8 +2168,8 @@ static bool test_four_seat_declared_miss(const fs::path& dir) {
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
       {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
-  // The 4-seat artifact loads and advertises (root existence is exact for
-  // every seat count); only the per-node belief is a declared coverage miss.
+  // RFC 0011: the 4-seat artifact loads, advertises, and conditions belief
+  // exactly via the N-seat recursive backtracking path.
   CHECK(results.size() == 1);
   CHECK(results[0].status == RootStatus::Advertised);
   CHECK(residents.advertised_roots() == 1);
@@ -2178,13 +2178,38 @@ static bool test_four_seat_declared_miss(const fs::path& dir) {
   const std::vector<PublicAction> history;
   ResidentScratch scratch;
   const ResidentAnswer belief = residents.public_belief(state, history, std::nullopt, scratch);
-  CHECK(!belief.hit);
-  CHECK(belief.reason == MissReason::SeatCountNotSupported);
+  CHECK(belief.hit);
+  CHECK(belief.reason == MissReason::None);
+  CHECK(belief.public_reach_seats == 4);
+
+  // All 8 combos are mutually card-disjoint; 2^4 = 16 joint deals, each
+  // weight one. Every combo appears in 2^3 = 8 deals, so each marginal is
+  // 8/16 = 0.5.
+  const int combos[4][2] = {{card("8h"), card("8c")},
+                            {card("8s"), card("8d")},
+                            {card("Jh"), card("Jc")},
+                            {card("Js"), card("Jd")}};
+  const int combos_b[4][2] = {{card("Ah"), card("Ac")},
+                              {card("As"), card("Ad")},
+                              {card("Qh"), card("Qc")},
+                              {card("Qs"), card("Qd")}};
+  for (std::size_t seat = 0; seat < 4; ++seat) {
+    double sum = 0.0;
+    for (double mass : *belief.public_reach[seat])
+      sum += mass;
+    CHECK(near(sum, 1.0, 1e-9));
+    const int c0 = bs::comboIndex(combos[seat][0], combos[seat][1]);
+    const int c1 = bs::comboIndex(combos_b[seat][0], combos_b[seat][1]);
+    CHECK(near((*belief.public_reach[seat])[c0], 0.5, 1e-9));
+    CHECK(near((*belief.public_reach[seat])[c1], 0.5, 1e-9));
+  }
+
   // Actor is seat 1 (button 0 -> next actor); use a seat-1 combo for the hero.
   const ResidentAnswer hero =
       residents.hero_decision(state, history, {card("8s"), card("8d")}, std::nullopt, scratch);
-  CHECK(!hero.hit);
-  CHECK(hero.reason == MissReason::SeatCountNotSupported);
+  CHECK(hero.hit);
+  CHECK(hero.hero_row.size > 0);
+  CHECK(hero.opponent_blocked_reach != nullptr);
 
   return true;
 }

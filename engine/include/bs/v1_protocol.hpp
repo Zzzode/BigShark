@@ -85,10 +85,10 @@ enum class V1BlueprintMiss : std::uint8_t {
   RunoutDivergence,
   OpponentRangeFullyBlocked,
   ZeroProbabilityHeroCombination,
-  // RFC 0009 W2c-ii-a: the reconstructed root serves a seat count the resident
-  // belief model cannot condition yet (the two-seat ReachModel). The artifact
-  // loads and advertises, but a 3..10-seat belief or hero-decision query
-  // misses declared until the seat-generic belief lands (W2c-ii-b).
+  // RFC 0009 W2c-ii-a: the reconstructed root serves a seat count outside
+  // the resident belief model's exact range (2..10, RFC 0011). The artifact
+  // loads and advertises, but a belief or hero-decision query for an
+  // unsupported seat count misses declared.
   SeatCountNotSupported,
 };
 

@@ -1119,8 +1119,9 @@ so observability reflects the true heap footprint.
 
 The engine's root identity matching (`same_root`) compares `player_count`
 first, so a 2-seat artifact can never serve a 3-seat query and vice versa.
-The belief model and resolver are exact for 2–3 seats; 4+ seats are refused
-(`SeatCountNotSupported`).
+The belief model and resolver are exact for 2–10 seats (RFC 0011: the N-seat
+path uses recursive backtracking with inclusion-exclusion for the last seat);
+seat counts outside 2–10 are refused (`SeatCountNotSupported`).
 
 The runner warms the engine during startup, before the main loop, so the
 full library load does not block the first hand. The engine client is a
@@ -1273,7 +1274,7 @@ component that depends only on the solver layer:
    flop action line in the blueprint policy. For each seat, the per-hand
    reach is the product of blueprint action probabilities along the path.
    The method is seat-generic (iterates `game.def.player_count`), so it
-   supports 2..3 seats without modification. A missing blueprint row at any
+   supports 2..10 seats without modification. A missing blueprint row at any
    step returns `CoverageMiss`. For a river decision, the method is called
    with flop-only history; the `blocks_board` check uses the turn root's
    4-card board so hands that block the river card are correctly retained.
@@ -1365,8 +1366,8 @@ operators to distinguish subgame-sourced decisions from blueprint hits.
 
 ### Phase 1 scope
 
-- 2..3 seats. The gate matches the belief model's exact range (2..3). 4+
-  seat support requires a 4+ seat flop library, which does not exist.
+- 2..10 seats. The gate matches the belief model's exact range (2..10, RFC
+  0011). The 4-seat flop library is trained; 5+ seat libraries are future work.
 - Turn and river. A river decision (board_size=5) builds a turn-rooted
   subgame, solves it, and walks the solved tree to the river node.
 - Folded-seat support. The GameDef folded bitmap carries mid-hand folds to

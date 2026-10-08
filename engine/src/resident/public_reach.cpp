@@ -51,6 +51,76 @@ double joint_mass_recurse(const solver::UnifiedGame& game,
 
 }  // namespace
 
+// RFC 0011: N-seat recursive joint mass for 4+ seats. The first
+// (depth..n-2) seats in `order` are enumerated by backtracking; the last
+// seat uses inclusion-exclusion (O(1) per blocked-card pair). A 2-card
+// combo cannot hold 3+ distinct blocked cards, so triple+ terms vanish.
+// `blocked` holds the cards from all previously assigned combos (2 per
+// seat); `n_blocked` is the current count.
+double joint_mass_nseat_recurse(
+    const std::array<std::array<double, bs::N_COMBOS>, bs::poker::kMaxUnifiedSeats>& raw,
+    const std::array<double, bs::poker::kMaxUnifiedSeats>& total,
+    const std::array<std::array<double, 52>, bs::poker::kMaxUnifiedSeats>& card_mass,
+    const std::vector<std::size_t>& order, const int* blocked, std::size_t n_blocked,
+    std::size_t depth) {
+  const std::size_t seat = order[depth];
+  if (depth + 1 == order.size()) {
+    double mass = total[seat];
+    for (std::size_t i = 0; i < n_blocked; ++i)
+      mass -= card_mass[seat][blocked[i]];
+    for (std::size_t i = 0; i < n_blocked; ++i)
+      for (std::size_t j = i + 1; j < n_blocked; ++j)
+        mass += raw[seat][bs::comboIndex(blocked[i], blocked[j])];
+    return mass;
+  }
+  double sum = 0.0;
+  for (int combo = 0; combo < bs::N_COMBOS; ++combo) {
+    const double m = raw[seat][combo];
+    if (m == 0.0)
+      continue;
+    const auto cards = bs::comboCards(combo);
+    bool disjoint = true;
+    for (std::size_t i = 0; i < n_blocked; ++i) {
+      if (blocked[i] == cards[0] || blocked[i] == cards[1]) {
+        disjoint = false;
+        break;
+      }
+    }
+    if (!disjoint)
+      continue;
+    int extended[20];
+    std::copy(blocked, blocked + n_blocked, extended);
+    extended[n_blocked] = cards[0];
+    extended[n_blocked + 1] = cards[1];
+    sum += m * joint_mass_nseat_recurse(raw, total, card_mass, order, extended, n_blocked + 2,
+                                        depth + 1);
+  }
+  return sum;
+}
+
+// Build a most-constrained-first seat order for the N-seat recursion.
+// Seats with fewer live combos are visited first so the used-card prune
+// cuts earliest.
+std::vector<std::size_t> build_nseat_order(
+    const std::array<std::array<double, bs::N_COMBOS>, bs::poker::kMaxUnifiedSeats>& raw,
+    std::size_t seat_count) {
+  std::vector<std::size_t> order;
+  order.reserve(seat_count);
+  for (std::size_t s = 0; s < seat_count; ++s)
+    order.push_back(s);
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    std::size_t count_a = 0, count_b = 0;
+    for (int c = 0; c < bs::N_COMBOS; ++c) {
+      if (raw[a][c] != 0.0)
+        ++count_a;
+      if (raw[b][c] != 0.0)
+        ++count_b;
+    }
+    return count_a < count_b;
+  });
+  return order;
+}
+
 double root_joint_mass(const solver::UnifiedGame& game) {
   const std::size_t seats = game.def.player_count;
   if (seats < bs::poker::kMinUnifiedSeats || seats > bs::poker::kMaxUnifiedSeats)
@@ -75,10 +145,11 @@ double root_joint_mass(const solver::UnifiedGame& game) {
 
 bool ReachModel::initialize(const solver::UnifiedGame& game) {
   const std::size_t seats = game.def.player_count;
-  // W2c-ii-b: the belief model is exact for two and three seats. A 4..10-seat
-  // game loads and advertises, but its per-node belief cannot be conditioned
-  // exactly (a declared coverage limitation), so the caller misses declared.
-  if (seats < bs::poker::kMinUnifiedSeats || seats > 3)
+  // RFC 0011: the belief model is exact for 2..kMaxUnifiedSeats seats.
+  // The 2-seat path uses inclusion-exclusion (O(N_COMBOS)); the 3-seat path
+  // uses O(N_COMBOS^2) nested loops; the N-seat path (4+) uses recursive
+  // backtracking with inclusion-exclusion for the last seat.
+  if (seats < bs::poker::kMinUnifiedSeats || seats > bs::poker::kMaxUnifiedSeats)
     return false;
   seat_count_ = seats;
   for (std::size_t player = 0; player < seat_count_; ++player) {
@@ -98,7 +169,7 @@ bool ReachModel::initialize(const solver::UnifiedGame& game) {
 
 // W2c-ii-b: rebuild per-seat total and per-card summed mass from the current
 // raw reaches. The two-seat path keeps its own inline rebuild (its arithmetic
-// is golden-pinned); this serves the three-seat path.
+// is golden-pinned); this serves the 3+ seat paths (three-seat and N-seat).
 void ReachModel::rebuild_totals() {
   for (std::size_t player = 0; player < seat_count_; ++player) {
     scratch_.card_mass[player].fill(0.0);
@@ -161,8 +232,10 @@ double ReachModel::recompute_joint_mass_three() {
 }
 
 double ReachModel::recompute_joint_mass() {
-  if (seat_count_ != 2)
+  if (seat_count_ == 3)
     return recompute_joint_mass_three();
+  if (seat_count_ > 3)
+    return recompute_joint_mass_nseat();
   std::array<double, 2> total{};
   for (std::size_t player = 0; player < 2; ++player) {
     scratch_.card_mass[player].fill(0.0);
@@ -199,7 +272,7 @@ bool ReachModel::renormalize() {
   if (!std::isfinite(joint) || joint <= 0.0)
     return false;
   if (seat_count_ != 2)
-    // Three-seat: no fold. The raw reaches keep their absolute scale and every
+    // 3+ seat: no fold. The raw reaches keep their absolute scale and every
     // marginal divides by the same joint mass, so the normalization constant
     // cancels exactly as it does in the two-seat fold.
     return true;
@@ -238,6 +311,8 @@ bool ReachModel::observe_action(std::size_t actor,
 void ReachModel::prepare_partner_mass(std::size_t seat) {
   if (seat_count_ == 3)
     prepare_partner_mass_three(seat);
+  else if (seat_count_ > 3)
+    prepare_partner_mass_nseat(seat);
   // Two-seat: has_positive_partner answers in O(1) per combo, no cache needed.
 }
 
@@ -280,7 +355,7 @@ void ReachModel::prepare_partner_mass_three(std::size_t player) {
 
 bool ReachModel::has_positive_partner(std::size_t player, int combo) const {
   if (seat_count_ != 2) {
-    // Three-seat: the caller prepared the partner mass after the latest
+    // 3+ seat: the caller prepared the partner mass after the latest
     // mutation; an orphan combo has zero partner mass. A seat outside the
     // game (malformed history) has no partner by definition.
     if (player >= seat_count_)
@@ -321,9 +396,75 @@ bool ReachModel::write_marginals_three() {
   return true;
 }
 
+// RFC 0011: N-seat joint mass via recursive backtracking.
+double ReachModel::recompute_joint_mass_nseat() {
+  rebuild_totals();
+  const auto order = build_nseat_order(scratch_.raw, seat_count_);
+  int blocked[20] = {};
+  return joint_mass_nseat_recurse(scratch_.raw, total_, scratch_.card_mass, order, blocked, 0, 0);
+}
+
+// RFC 0011: N-seat partner mass. For each live combo of `seat`, compute the
+// joint mass of all other seats with the combo's cards added to the blocked
+// set. Cost is O(N_COMBOS^(N-1)) per seat; practical for 4..6 seats with
+// typical postflop range widths.
+void ReachModel::prepare_partner_mass_nseat(std::size_t seat) {
+  if (seat >= seat_count_)
+    return;
+  rebuild_totals();
+  // Build the order of other seats (excluding `seat`), most-constrained first.
+  std::vector<std::size_t> order;
+  order.reserve(seat_count_ - 1);
+  for (std::size_t s = 0; s < seat_count_; ++s)
+    if (s != seat)
+      order.push_back(s);
+  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+    std::size_t count_a = 0, count_b = 0;
+    for (int c = 0; c < bs::N_COMBOS; ++c) {
+      if (scratch_.raw[a][c] != 0.0)
+        ++count_a;
+      if (scratch_.raw[b][c] != 0.0)
+        ++count_b;
+    }
+    return count_a < count_b;
+  });
+  for (int combo = 0; combo < bs::N_COMBOS; ++combo) {
+    if (scratch_.raw[seat][combo] == 0.0) {
+      scratch_.partner_mass[seat][combo] = 0.0;
+      continue;
+    }
+    const auto cards = bs::comboCards(combo);
+    int blocked[20] = {cards[0], cards[1]};
+    scratch_.partner_mass[seat][combo] =
+        joint_mass_nseat_recurse(scratch_.raw, total_, scratch_.card_mass, order, blocked, 2, 0);
+  }
+}
+
+// RFC 0011: N-seat marginals. Same structure as write_marginals_three:
+// seat 0's partner mass yields the joint, then each seat's marginal is
+// raw[seat][c] * partner_mass[seat][c] / joint.
+bool ReachModel::write_marginals_nseat() {
+  prepare_partner_mass_nseat(0);
+  double joint = 0.0;
+  for (int combo = 0; combo < bs::N_COMBOS; ++combo)
+    joint += scratch_.raw[0][combo] * scratch_.partner_mass[0][combo];
+  if (!std::isfinite(joint) || joint <= 0.0)
+    return false;
+  for (std::size_t player = 0; player < seat_count_; ++player) {
+    if (player != 0)
+      prepare_partner_mass_nseat(player);
+    for (int combo = 0; combo < bs::N_COMBOS; ++combo)
+      scratch_.marginal[player][combo] =
+          scratch_.raw[player][combo] * scratch_.partner_mass[player][combo] / joint;
+  }
+  return true;
+}
+
 bool ReachModel::write_marginals() {
-  if (seat_count_ != 2)
+  if (seat_count_ == 3)
     return write_marginals_three();
+  if (seat_count_ > 3)
+    return write_marginals_nseat();
   const double joint = recompute_joint_mass();
   if (!std::isfinite(joint) || joint <= 0.0)
     return false;
