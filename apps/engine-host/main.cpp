@@ -120,10 +120,12 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
     // (e.g. seat counts without a production flop library), the subgame
     // resolver can build the subgame directly from the live node state with
     // uniform prior ranges. Uniform priors are a weaker model than
-    // blueprint-derived ranges, so this is opt-in (default off).
-    subgame_uniform_enabled_ = false;
+    // blueprint-derived ranges, but they provide GTO-quality decisions
+    // where the alternative is a heuristic fallback. Enabled by default;
+    // set BIGSHARK_SUBGAME_UNIFORM=0 to opt out.
+    subgame_uniform_enabled_ = true;
     if (const char* env = std::getenv("BIGSHARK_SUBGAME_UNIFORM"))
-      subgame_uniform_enabled_ = (std::string_view(env) == "1");
+      subgame_uniform_enabled_ = (std::string_view(env) != "0");
   }
 
   bool blueprintAdvertised() const noexcept override { return set_.advertised_roots() > 0; }
@@ -415,10 +417,10 @@ class ResidentHostServices final : public bs::v1::V1HostServices {
   // by the BIGSHARK_SUBGAME_RESOLVER environment variable. Same single-threaded
   // scratch contract as the terminal-only resolver above.
   bool subgame_enabled_ = false;
-  // RFC 0011 blueprint-free mode: opt-in via BIGSHARK_SUBGAME_UNIFORM. When
-  // set, a nullopt resolver_source triggers resolve_uniform instead of an
-  // immediate Unsupported.
-  bool subgame_uniform_enabled_ = false;
+  // RFC 0011 blueprint-free mode: enabled by default, opt-out via
+  // BIGSHARK_SUBGAME_UNIFORM=0. When set, a nullopt resolver_source
+  // triggers resolve_uniform instead of an immediate Unsupported.
+  bool subgame_uniform_enabled_ = true;
   mutable bs::resolver::SubgameResolver subgame_resolver_;
   mutable bs::resolver::SubgameResolveResult subgame_scratch_;
 };
