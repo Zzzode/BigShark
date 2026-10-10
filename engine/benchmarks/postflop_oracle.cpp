@@ -349,8 +349,8 @@ int main(int argc, char** argv) {
   const std::size_t remaining = all_classes.size() - class_start;
   const std::size_t num_classes =
       class_limit > 0 ? std::min(static_cast<std::size_t>(class_limit), remaining) : remaining;
-  std::printf("  %zu canonical flop classes total, processing %zu [%zu, %zu)\n",
-              all_classes.size(), num_classes, class_start, class_start + num_classes);
+  std::printf("  %zu canonical flop classes total, processing %zu [%zu, %zu)\n", all_classes.size(),
+              num_classes, class_start, class_start + num_classes);
   std::fflush(stdout);
 
   // Metadata and identity (created before the loop for incremental save).
@@ -508,9 +508,10 @@ int main(int argc, char** argv) {
   const auto solve_elapsed = std::chrono::steady_clock::now() - solve_start;
   const double solve_wall_s = std::chrono::duration<double>(solve_elapsed).count();
 
-  std::printf("\n  solved %zu configs, %zu deals, %zu failed configs, %zu skipped classes, "
-              "%zu skipped configs (resume)\n",
-              total_configs, total_deals, failed_configs, skipped_classes, skipped_configs);
+  std::printf(
+      "\n  solved %zu configs, %zu deals, %zu failed configs, %zu skipped classes, "
+      "%zu skipped configs (resume)\n",
+      total_configs, total_deals, failed_configs, skipped_classes, skipped_configs);
   std::printf("  solve wall time: %.1f s (%.1f min)\n", solve_wall_s, solve_wall_s / 60.0);
 
   // -----------------------------------------------------------------------

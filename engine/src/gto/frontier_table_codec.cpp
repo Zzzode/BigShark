@@ -249,8 +249,7 @@ NSeatDeclaredFrontierTable NSeatDeclaredFrontierTable::load(const std::filesyste
   return NSeatDeclaredFrontierTable(std::move(entries), std::move(metadata));
 }
 
-std::vector<NSeatDeclaredFrontierTable::Entry> NSeatDeclaredFrontierTable::export_entries()
-    const {
+std::vector<NSeatDeclaredFrontierTable::Entry> NSeatDeclaredFrontierTable::export_entries() const {
   std::vector<Entry> entries;
   entries.reserve(table_.size());
   for (const auto& [key, values] : table_) {
