@@ -130,6 +130,10 @@ class NSeatDeclaredFrontierTable {
   std::size_t size() const noexcept { return table_.size(); }
   const Metadata& metadata() const noexcept { return metadata_; }
 
+  // Export all entries as a vector (for resume / incremental save in the
+  // oracle). The returned vector is a copy; the table itself is unchanged.
+  std::vector<Entry> export_entries() const;
+
  private:
   // Internal key: canonical flop + SPR bucket + seat count + per-seat hands.
   // Equality is exact (operator==), so a hash collision degrades to a bucket

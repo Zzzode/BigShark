@@ -249,4 +249,21 @@ NSeatDeclaredFrontierTable NSeatDeclaredFrontierTable::load(const std::filesyste
   return NSeatDeclaredFrontierTable(std::move(entries), std::move(metadata));
 }
 
+std::vector<NSeatDeclaredFrontierTable::Entry> NSeatDeclaredFrontierTable::export_entries()
+    const {
+  std::vector<Entry> entries;
+  entries.reserve(table_.size());
+  for (const auto& [key, values] : table_) {
+    Entry entry;
+    entry.canonical_flop = key.canonical_flop;
+    entry.spr_bucket = key.spr_bucket;
+    entry.hands.resize(key.seat_count);
+    for (std::size_t s = 0; s < key.seat_count; ++s)
+      entry.hands[s] = key.hands[s];
+    entry.values = values;
+    entries.push_back(std::move(entry));
+  }
+  return entries;
+}
+
 }  // namespace bs::gto
