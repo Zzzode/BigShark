@@ -13,12 +13,15 @@
 // root-value traversal of a converged CFR solve.
 //
 // Usage: bigshark-postflop-oracle <output-path> [iterations] [pf-iterations]
-//        [classes] [buckets]
+//        [classes] [buckets] [max-deals] [class-start]
 //   output-path:   path to save the .fdt table
 //   iterations:    CFR iterations per postflop config (default 100000)
 //   pf-iterations: preflop training iterations (default 100000)
-//   classes:       limit canonical classes (0 = all 1755, for testing)
+//   classes:       limit canonical classes (0 = all remaining from class-start)
 //   buckets:       limit SPR buckets (0 = all 6, for testing)
+//   max-deals:     max deals per config (0 = all, for testing)
+//   class-start:   first canonical class index to process (default 0, for
+//                  parallel sharding)
 //
 // This is an offline tool, NOT a CTest. The full build is a long-running
 // background compute task.
@@ -177,13 +180,14 @@ int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr,
                  "usage: %s <output-path> [iterations] [pf-iterations] [classes] [buckets] "
-                 "[max-deals]\n"
+                 "[max-deals] [class-start]\n"
                  "  output-path:   path to save the .fdt table\n"
                  "  iterations:    CFR iterations per postflop config (default 100000)\n"
                  "  pf-iterations: preflop training iterations (default 100000)\n"
-                 "  classes:       limit canonical classes (0 = all 1755)\n"
+                 "  classes:       limit canonical classes (0 = all remaining)\n"
                  "  buckets:       limit SPR buckets (0 = all 6)\n"
-                 "  max-deals:     max deals per config (0 = all, for testing)\n",
+                 "  max-deals:     max deals per config (0 = all, for testing)\n"
+                 "  class-start:   first canonical class index (default 0, for sharding)\n",
                  argv[0]);
     return 1;
   }
@@ -194,6 +198,7 @@ int main(int argc, char** argv) {
   const int class_limit = argc > 4 ? std::atoi(argv[4]) : 0;
   const int bucket_limit = argc > 5 ? std::atoi(argv[5]) : 0;
   const std::uint64_t max_deals = argc > 6 ? std::atoll(argv[6]) : 0;
+  const std::size_t class_start = argc > 7 ? static_cast<std::size_t>(std::atoll(argv[7])) : 0;
 
   const std::size_t num_buckets =
       bucket_limit > 0 ? static_cast<std::size_t>(bucket_limit) : SprBucketConfig::kBucketCount;
@@ -276,11 +281,16 @@ int main(int argc, char** argv) {
   std::printf("\n--- Step 4: Solve postflop games ---\n");
 
   const auto all_classes = enumerate_canonical_flop_classes();
+  if (class_start >= all_classes.size()) {
+    std::fprintf(stderr, "class-start %zu exceeds total classes %zu\n", class_start,
+                 all_classes.size());
+    return 1;
+  }
+  const std::size_t remaining = all_classes.size() - class_start;
   const std::size_t num_classes =
-      class_limit > 0 ? std::min(static_cast<std::size_t>(class_limit), all_classes.size())
-                      : all_classes.size();
-  std::printf("  %zu canonical flop classes total, processing %zu\n", all_classes.size(),
-              num_classes);
+      class_limit > 0 ? std::min(static_cast<std::size_t>(class_limit), remaining) : remaining;
+  std::printf("  %zu canonical flop classes total, processing %zu [%zu, %zu)\n",
+              all_classes.size(), num_classes, class_start, class_start + num_classes);
   std::fflush(stdout);
 
   const ActionAbstraction postflop_abstraction =
@@ -297,7 +307,7 @@ int main(int argc, char** argv) {
 
   const auto solve_start = std::chrono::steady_clock::now();
 
-  for (std::size_t ci = 0; ci < num_classes; ++ci) {
+  for (std::size_t ci = class_start; ci < class_start + num_classes; ++ci) {
     const auto& flop_class = all_classes[ci];
 
     // Look up the reached ranges for this class.
@@ -391,13 +401,13 @@ int main(int argc, char** argv) {
       ++total_configs;
       total_deals += config_deals;
 
-      if ((total_configs % 10) == 0 || ci == 0) {
+      if ((total_configs % 10) == 0 || ci == class_start) {
         const auto elapsed = std::chrono::steady_clock::now() - solve_start;
         const double wall_s = std::chrono::duration<double>(elapsed).count();
         std::printf(
             "  [%zu/%zu configs] class %zu/%zu bucket %zu: %zu deals (%zu failed), "
             "%.0f s elapsed\n",
-            total_configs, num_classes * num_buckets, ci, num_classes, b, config_deals,
+            total_configs, num_classes * num_buckets, ci, all_classes.size(), b, config_deals,
             config_failures, wall_s);
       }
     }
@@ -438,6 +448,7 @@ int main(int argc, char** argv) {
       "  \"stack_bb\": 100,\n" + "  \"player_count\": 2,\n" +
       "  \"iterations_per_config\": " + std::to_string(iterations) + ",\n" +
       "  \"pf_iterations\": " + std::to_string(pf_iterations) + ",\n" +
+      "  \"class_start\": " + std::to_string(class_start) + ",\n" +
       "  \"classes_processed\": " + std::to_string(num_classes) + ",\n" +
       "  \"classes_total\": " + std::to_string(all_classes.size()) + ",\n" +
       "  \"buckets\": " + std::to_string(num_buckets) + ",\n" +
