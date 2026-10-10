@@ -618,7 +618,10 @@ deal)` walks the solved abstract tree for one fixed joint deal:
 
 - Action node: look up the policy row by `(own_card_bucket, node_index)`
   from `NSeatPolicy::rows()`, enumerate every menu action weighted by its
-  average-policy probability.
+  average-policy probability. If the row is missing (external-sampling
+  MCCFR did not seal this info set behind a chance node), fall back to a
+  uniform distribution — the trainer's own `current_strategy` on a fresh
+  row — matching the continuation-range export's fallback.
 - Chance node: enumerate every legal runout card (board-only list minus
   all hole cards), average uniformly.
 - `TerminalFold`: return the payload's stored `chip_utility`.
@@ -632,7 +635,9 @@ joint deals within `1e-9` times the root pot (tolerance 2.0e-09). The
 fixture is river-rooted (no chance nodes) so that every action node
 receives a policy row under external-sampling MCCFR; the chance-node
 enumeration path in the extractor is exercised by the tree structure but
-not by this fixture's policy rows.
+not by this fixture's policy rows. On flop-rooted games (Stage 2 oracle),
+the uniform fallback at unsealed info sets is the trainer's own default
+strategy, not a heuristic substitution.
 
 **Unit tests.**
 
@@ -646,6 +651,41 @@ not by this fixture's policy rows.
    joint deals.
 5. `test_end_to_end` — build a four-entry table from solved root values,
    verify the evaluator returns them through canonicalization and scaling.
+
+### Stage 2 (Current)
+
+Stage 2 is implemented in:
+
+- `engine/src/gto/frontier_table_codec.cpp` — BSF1 binary serialization
+  (save/load) for `NSeatDeclaredFrontierTable`. 128-byte header + fixed-size
+  entries (48 bytes/entry heads-up). Validates magic, version, seat count,
+  entry count vs file size, card ids, SPR bucket, and value finiteness.
+- `engine/benchmarks/postflop_oracle.cpp` — `bigshark-postflop-oracle` driver.
+  Trains a round-0 preflop blueprint with the equity frontier, exports
+  continuation ranges, aggregates to 1,755 canonical flop classes, solves
+  flop-rooted river-terminal games per class x 6 SPR buckets with CFR,
+  extracts per-deal root values, populates and saves the declared table.
+- `engine/benchmarks/preflop_profile_builder.cpp` — frontier selector:
+  defaults to equity; switches to `PostflopFrontierEvaluator` when a `.fdt`
+  table is supplied at > 15 BB. Manifest gains `frontier_table_path`,
+  `frontier_table_sha256`, `frontier_table_identity` when postflop.
+- `engine/benchmarks/preflop_nash_conv.cpp` — walker generalized to
+  `const FrontierEvaluator&` (base class); accepts an optional
+  `[frontier-table-path]` argument to measure NashConv with the postflop
+  frontier.
+- `engine/include/bs/abstraction.hpp` / `engine/src/abstraction/abstraction.cpp`
+  — `enumerate_canonical_flop_classes()`: iterates C(52,3) concrete flops,
+  canonicalizes, deduplicates to 1,755 class representatives.
+
+**Representative GameDef.** Each postflop solve uses pot = 100 chips (fixed,
+scale-invariant), equal contributions {50, 50} (required by 2-seat
+rooted-board validation), stack = round(100 x representative SPR), board =
+canonical flop, `TerminalDepth::River`, `DeclaredOnly` action abstraction.
+
+**Build identity.** The table header stores a 56-byte null-terminated ASCII
+build identity string (e.g. `rfc0013-stage2-hu-100bb-r0`). A JSON manifest
+alongside the `.fdt` file records iterations, class/bucket counts, wall time,
+and convergence data.
 
 ## Decision
 

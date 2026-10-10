@@ -33,6 +33,7 @@
 #include <bs/heads_up.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -304,6 +305,11 @@ struct OwnCardToken {
 // Fold a concrete flop onto its class. Card ids must be 0..51 and distinct;
 // anything else fails closed.
 CanonicalBoard canonicalize(const std::array<int, 3>& board);
+
+// Enumerate every canonical flop isomorphism class. Iterates all C(52,3)
+// concrete flops, canonicalizes each, and deduplicates to the 1,755 class
+// representatives. The returned vector is sorted (std::set ordering).
+std::vector<std::array<int, 3>> enumerate_canonical_flop_classes();
 
 // Re-express a concrete holding under a class relabel: ranks unchanged, suits
 // mapped through `relabel`, then the multiplicity vector over canonical

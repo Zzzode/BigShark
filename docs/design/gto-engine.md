@@ -1378,11 +1378,12 @@ operators to distinguish subgame-sourced decisions from blueprint hits.
 ### Measurements
 
 The NashConv benchmark (`engine/benchmarks/subgame_nash_conv.cpp`,
-`bigshark-subgame-nash-conv`) builds six representative subgames — 2-seat
-turn-rooted, 3-seat turn-rooted, 2-seat river-rooted, 3-seat river-rooted,
-3-seat turn-rooted with one folded seat, and 3-seat river-rooted with one
-folded seat — solves each with CFR, and computes an exact NashConv by
-enumerating every card-compatible joint deal and every legal river card.
+`bigshark-subgame-nash-conv`) builds eight representative subgames — 2-seat
+turn-rooted, 3-seat turn-rooted, 4-seat turn-rooted, 2-seat river-rooted,
+3-seat river-rooted, 4-seat river-rooted, 3-seat turn-rooted with one folded
+seat, and 3-seat river-rooted with one folded seat — solves each with CFR, and
+computes an exact NashConv by enumerating every card-compatible joint deal and
+every legal river card.
 The 2-seat turn fixture uses a flop check-through on 2c 3d 7h → turn Js,
 10 BB behind, 1 BB pot, declared-only 1/2-pot bet + 1/2-pot raise
 abstraction, 10 hands per seat (70 joint deals, 44 river cards). The 3-seat

@@ -56,6 +56,11 @@ struct PolicyReachRangePair {
 // duplicated. Card removal is exact: a combo that blocks the flop receives
 // zero reach at that flop.
 //
+// Performance: the tree walk is memoized by (hero_bucket, opp_bucket) pair
+// (at most 169*169 = 28,561 unique walks instead of one per joint deal). The
+// per-flop accumulation uses a subtraction trick — total weight minus the
+// ~150 combos that block the flop — instead of iterating all joint entries.
+//
 // Returns one entry per flop with positive total reach, sorted by flop cards
 // (ascending). Each entry's ranges are normalized to sum to one per seat.
 //

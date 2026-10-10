@@ -45,16 +45,29 @@ std::vector<double> walk(const solver::NSeatPolicy& policy, const tree::Abstract
     const solver::NSeatInformationKey key{bucket, node_idx};
     const auto& rows = policy.rows();
     const auto it = rows.find(key);
-    if (it == rows.end())
-      throw std::runtime_error("root_value_extractor: missing policy row for action node");
 
-    const solver::NSeatPolicyRow& row = it->second;
-    if (row.actions.size() != node.actions.size())
-      throw std::runtime_error("root_value_extractor: policy row action count mismatch");
+    // External-sampling MCCFR seals only info sets on sampled paths. A
+    // flop-rooted river-terminal game has turn/river chance nodes, so many
+    // action nodes behind them are never visited. The trainer's own
+    // current_strategy on a fresh row is uniform; use the same default here
+    // (matching the continuation-range export's fallback) so the traversal
+    // can proceed through unsealed nodes. This is the trainer's default
+    // strategy, not a heuristic substitution.
+    const std::vector<double>* probs = nullptr;
+    std::vector<double> uniform;
+    if (it != rows.end()) {
+      const solver::NSeatPolicyRow& row = it->second;
+      if (row.actions.size() != node.actions.size())
+        throw std::runtime_error("root_value_extractor: policy row action count mismatch");
+      probs = &row.probabilities;
+    } else {
+      uniform.assign(node.actions.size(), 1.0 / static_cast<double>(node.actions.size()));
+      probs = &uniform;
+    }
 
     std::vector<double> expected(n, 0.0);
     for (std::size_t a = 0; a < node.actions.size(); ++a) {
-      const double prob = row.probabilities[a];
+      const double prob = (*probs)[a];
       if (prob == 0.0)
         continue;
       const poker::GameState next = state.after_action(actor, node.actions[a]);

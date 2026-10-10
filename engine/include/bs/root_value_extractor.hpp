@@ -4,6 +4,10 @@
 // expected per-seat chip utility at the root:
 //   - Action node: look up the policy row by (own_card_bucket, node_index),
 //     enumerate every menu action weighted by its average-policy probability.
+//     If the row is missing (external-sampling MCCFR did not seal this info
+//     set), fall back to a uniform distribution — the trainer's own
+//     current_strategy on a fresh row — matching the continuation-range
+//     export's fallback.
 //   - Chance node: enumerate every legal runout card (board-only list minus
 //     all hole cards), average uniformly.
 //   - TerminalFold: return the payload's stored chip_utility.
@@ -27,8 +31,9 @@ namespace bs::gto {
 // Extract the expected per-seat chip utility for one fixed joint deal at the
 // root of the solved tree. `deal` has one sorted hole-card pair per seat.
 // The walk is exact (no sampling): every action and every legal runout card
-// is enumerated. Throws std::invalid_argument on a missing policy row or an
-// unexpected node kind (fail closed).
+// is enumerated. Missing policy rows fall back to uniform (the trainer's
+// default strategy on an unsealed info set). Throws std::invalid_argument on
+// a deal-size mismatch or std::runtime_error on an unexpected node kind.
 std::vector<double> extract_root_value(const solver::NSeatPolicy& policy,
                                        const tree::AbstractTree& tree,
                                        const poker::GameState& root_state,

@@ -1,10 +1,15 @@
-// RFC 0009 W4b (extended by RFC 0010): offline NashConv measurement for a
-// published preflop blueprint. Loads the schema-v2 preflop artifact, rebuilds
-// the game tree, and computes a Monte Carlo NashConv by walking the tree with
-// best-response and policy-following traversals over sampled joint deals.
-// Heads-up and multiway (2..10 seats) artifacts are both supported: the joint
-// deal draws 2N cards and the NashConv is the sum of per-seat BR gaps divided
-// by N for exploitability.
+// RFC 0009 W4b (extended by RFC 0010, RFC 0013): offline NashConv measurement
+// for a published preflop blueprint. Loads the schema-v2 preflop artifact,
+// rebuilds the game tree, and computes a Monte Carlo NashConv by walking the
+// tree with best-response and policy-following traversals over sampled joint
+// deals. Heads-up and multiway (2..10 seats) artifacts are both supported: the
+// joint deal draws 2N cards and the NashConv is the sum of per-seat BR gaps
+// divided by N for exploitability.
+//
+// The frontier evaluator is selectable: by default the EquityFrontierEvaluator
+// (exact all-in-at-flop equity) is used. When a declared postflop table (.fdt,
+// RFC 0013) is supplied, the PostflopFrontierEvaluator replaces it, so the
+// measured NashConv reflects the same postflop values used during training.
 //
 // Walker design (standard MC NashConv):
 // - Strategy walk: sample one action at each node (following the policy),
@@ -16,6 +21,7 @@
 //   a check>call>fold fallback.
 //
 // Usage: bigshark-preflop-nash-conv [artifact-path] [deals] [flops] [seed]
+// [frontier-table-path]
 //
 // This is a manual offline measurement tool, NOT a CTest.
 #include <algorithm>
@@ -24,6 +30,7 @@
 #include <bs/equity_frontier.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>
+#include <bs/postflop_frontier.hpp>
 #include <bs/prng.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
@@ -32,13 +39,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
 
-using bs::gto::EquityFrontierEvaluator;
+using bs::gto::FrontierEvaluator;
 using bs::poker::Action;
 using bs::poker::ActionType;
 using bs::poker::GameDef;
@@ -101,7 +109,7 @@ std::size_t sample_action(const std::vector<double>& probs, bs::SplitMix64& rng)
 struct NashConvWalker {
   const AbstractTree& tree;
   const bs::solver::SeatPolicy& policy;
-  const EquityFrontierEvaluator& frontier;
+  const FrontierEvaluator& frontier;
   std::size_t traverser = 0;
   bool best_response = false;
   std::size_t flop_samples = 1;
@@ -224,6 +232,7 @@ int main(int argc, char** argv) {
   const std::size_t num_deals = argc > 2 ? std::stoul(argv[2]) : 1000;
   const std::size_t flop_samples = argc > 3 ? std::stoul(argv[3]) : 1;
   const std::uint64_t seed = argc > 4 ? std::stoull(argv[4]) : 42;
+  const std::string frontier_table_path = argc > 5 ? argv[5] : "";
 
   std::printf("Preflop NashConv measurement\n");
   std::printf("  artifact:     %s\n", artifact_path.c_str());
@@ -253,7 +262,28 @@ int main(int argc, char** argv) {
   std::printf("  tree nodes:   %zu\n", tree.size());
   std::printf("  seats:        %zu\n", seats);
 
-  const EquityFrontierEvaluator frontier;
+  // Frontier selector: equity by default, postflop-declared when a table is
+  // supplied. The walker holds a const reference to the base-class interface.
+  bs::gto::EquityFrontierEvaluator equity_frontier;
+  std::unique_ptr<bs::gto::NSeatDeclaredFrontierTable> declared_table;
+  std::unique_ptr<bs::gto::PostflopFrontierEvaluator> postflop_evaluator;
+  std::string table_identity;
+  const FrontierEvaluator* frontier = &equity_frontier;
+  const char* frontier_tag = "exact-equity-all-in-flop";
+  if (!frontier_table_path.empty()) {
+    declared_table = std::make_unique<bs::gto::NSeatDeclaredFrontierTable>(
+        bs::gto::NSeatDeclaredFrontierTable::load(frontier_table_path, &table_identity));
+    postflop_evaluator = std::make_unique<bs::gto::PostflopFrontierEvaluator>(*declared_table);
+    frontier = postflop_evaluator.get();
+    frontier_tag = "postflop-declared-table-v1";
+  }
+  std::printf("  frontier:     %s\n", frontier_tag);
+  if (!frontier_table_path.empty()) {
+    std::printf("  table:        %s (%zu entries, identity: %s)\n", frontier_table_path.c_str(),
+                declared_table->size(), table_identity.c_str());
+    std::printf("  table sha256: %s\n",
+                bs::artifacts::sha256_file_hex(frontier_table_path).c_str());
+  }
 
   bs::SplitMix64 rng(seed);
   std::vector<double> strategy_value(seats, 0.0);
@@ -267,10 +297,10 @@ int main(int argc, char** argv) {
     const GameState root(def);
     for (std::size_t p = 0; p < seats; ++p) {
       try {
-        NashConvWalker walker{tree,         policy, frontier, p, /*best_response=*/false,
+        NashConvWalker walker{tree,         policy, *frontier, p, /*best_response=*/false,
                               flop_samples, &rng};
         const double sv = walker.walk(root, tree.root_index(), holes, {});
-        NashConvWalker br_walker{tree,         policy, frontier, p, /*best_response=*/true,
+        NashConvWalker br_walker{tree,         policy, *frontier, p, /*best_response=*/true,
                                  flop_samples, &rng};
         const double bv = br_walker.walk(root, tree.root_index(), holes, {});
         // Commit both accumulators only after both walks succeed, so a failed

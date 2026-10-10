@@ -23,8 +23,11 @@
 #include <bs/frontier.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -79,6 +82,43 @@ class NSeatDeclaredFrontierTable {
   // Construct from a list of entries and metadata. Duplicate keys throw
   // std::invalid_argument. The table is immutable after construction.
   NSeatDeclaredFrontierTable(std::vector<Entry> entries, Metadata metadata);
+
+  // The table is movable (needed for load() to return by value) but not
+  // copyable (a table can hold millions of entries).
+  NSeatDeclaredFrontierTable(NSeatDeclaredFrontierTable&&) = default;
+  NSeatDeclaredFrontierTable& operator=(NSeatDeclaredFrontierTable&&) = default;
+
+  // Binary serialization (BSF1 format). The file layout is:
+  //   128-byte header:
+  //     char     magic[4]          = "BSF1"
+  //     uint32   version           = 1
+  //     uint8    seat_count        (2..10, uniform across all entries)
+  //     uint8    flags             = 0 (reserved)
+  //     uint16   reserved          = 0
+  //     uint32   entry_count
+  //     double   representative_pot[6]
+  //     char     build_identity[56]  (null-terminated ASCII)
+  //     uint8    padding[8]        (zero)
+  //   followed by entry_count fixed-size records:
+  //     int32    canonical_flop[3]  (12 bytes)
+  //     uint8    spr_bucket         (1 byte)
+  //     uint8    pad[3]             (3 bytes, zero)
+  //     int32    hands[seat_count][2]  (8 * seat_count bytes)
+  //     double   values[seat_count]     (8 * seat_count bytes)
+  //   Each record is 16 + 16 * seat_count bytes (48 bytes heads-up).
+  //   Native little-endian byte order (x86_64 Linux).
+  //
+  // save() throws std::invalid_argument if the table is empty, has mixed
+  // seat counts, or build_identity exceeds 55 chars. Throws std::runtime_error
+  // on I/O failure.
+  //
+  // load() validates magic, version, seat_count, flags, entry_count vs file
+  // size, card ids (0..51), SPR bucket (< 6), and value finiteness. Throws
+  // std::runtime_error on any mismatch or I/O failure. SHA-256 is NOT
+  // computed inside the codec; callers use bs::artifacts::sha256_file_hex.
+  void save(const std::filesystem::path& path, std::string_view build_identity) const;
+  static NSeatDeclaredFrontierTable load(const std::filesystem::path& path,
+                                         std::string* build_identity_out = nullptr);
 
   // Look up the per-seat chip values for a (canonical flop, SPR bucket,
   // hands) key. Throws std::invalid_argument on a missing entry (fail

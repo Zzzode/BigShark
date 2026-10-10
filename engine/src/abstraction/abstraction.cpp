@@ -344,6 +344,17 @@ CanonicalBoard canonicalize(const std::array<int, 3>& board) {
   return result;
 }
 
+std::vector<std::array<int, 3>> enumerate_canonical_flop_classes() {
+  std::set<std::array<int, 3>> classes;
+  for (int a = 0; a < 52; ++a)
+    for (int b = a + 1; b < 52; ++b)
+      for (int c = b + 1; c < 52; ++c) {
+        const std::array<int, 3> board{a, b, c};
+        classes.insert(canonicalize(board).board);
+      }
+  return {classes.begin(), classes.end()};
+}
+
 OwnCardToken own_card_token(const std::array<int, 2>& holding, const std::array<int, 4>& relabel) {
   for (int card : holding) {
     if (card < 0 || card >= 52)

@@ -1,16 +1,23 @@
-// RFC 0009 W4b (extended by RFC 0010): offline preflop profile builder.
+// RFC 0009 W4b (extended by RFC 0010, RFC 0013): offline preflop profile builder.
 //
 // Trains a preflop flop-terminal profile at a declared stack depth with the
-// full 1,326-combo range per seat, using the EquityFrontierEvaluator (exact
-// all-in-at-flop equity) as the frontier value, then exports and publishes a
-// schema-v2 artifact. Heads-up (the default) keeps rules_id
-// "rfc0009-unified-preflop-v1"; three-or-more-way profiles (RFC 0010) use
-// "rfc0010-multiway-preflop-v1".
+// full 1,326-combo range per seat. By default the EquityFrontierEvaluator
+// (exact all-in-at-flop equity) is the frontier value. When a declared
+// postflop table (.fdt, RFC 0013) is supplied and the stack is deeper than
+// 15 BB, the PostflopFrontierEvaluator replaces it, using CFR-solved
+// flop-rooted river-terminal values from the table. At <= 15 BB the equity
+// frontier is retained (jam/fold is near-optimal at short stacks).
 //
-// Usage: bigshark-preflop-profile-builder <output-dir> [iterations] [stack-bb] [seats]
-// [abstraction] Default: 100,000 iterations, 100 BB stack, 2 seats (heads-up), identity
-// abstraction. "coarse" selects the RFC 0008 DeclaredOnly menu (no forced min-bet/jam), which keeps
-// the 3+ way tree buildable at deeper stacks.
+// Heads-up (the default) keeps rules_id "rfc0009-unified-preflop-v1";
+// three-or-more-way profiles (RFC 0010) use "rfc0010-multiway-preflop-v1".
+//
+// Usage: bigshark-preflop-profile-builder <output-dir> [iterations] [stack-bb]
+// [seats] [abstraction] [frontier-table-path]
+// Default: 100,000 iterations, 100 BB stack, 2 seats (heads-up), identity
+// abstraction, equity frontier. "coarse" selects the RFC 0008 DeclaredOnly
+// menu (no forced min-bet/jam), which keeps the 3+ way tree buildable at
+// deeper stacks. frontier-table-path: path to a .fdt declared postflop
+// table (RFC 0013); default is the equity frontier.
 //
 // This is an offline tool, NOT a CTest. The artifact is written to
 // <output-dir>/preflop-profile.db with a manifest.json alongside.
@@ -20,6 +27,7 @@
 #include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>  // WeightedHand
 #include <bs/nseat_trainer.hpp>
+#include <bs/postflop_frontier.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <chrono>
@@ -27,6 +35,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -80,9 +89,12 @@ int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr,
                  "usage: %s <output-dir> [iterations] [stack-bb] [seats] [abstraction]\n"
+                 "       [frontier-table-path]\n"
                  "  defaults: 100000 iterations, 100 BB stack, 2 seats (heads-up), identity\n"
                  "  seats 3..10 trains an RFC 0010 multiway profile\n"
-                 "  abstraction: 'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)",
+                 "  abstraction: 'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)\n"
+                 "  frontier-table-path: .fdt declared postflop table (RFC 0013);\n"
+                 "    default is the equity frontier (all-in-at-flop)",
                  argv[0]);
     return 1;
   }
@@ -100,6 +112,10 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "abstraction must be 'identity' or 'coarse' (got '%s')\n", argv[5]);
     return 1;
   }
+  const std::string frontier_table_path = argc > 6 ? argv[6] : "";
+  // The equity frontier is retained for <= 15 BB (jam/fold is near-optimal at
+  // short stacks) and when no table is supplied (backward-compatible default).
+  const bool use_postflop = !frontier_table_path.empty() && stack_bb > 15;
 
   std::filesystem::create_directories(out_dir);
 
@@ -113,7 +129,23 @@ int main(int argc, char** argv) {
       coarse ? ActionAbstraction::declared(default_size_schedule(), CoverSeeds::DeclaredOnly)
              : ActionAbstraction::identity();
   const AbstractTree tree(def, action_abstraction);
-  const EquityFrontierEvaluator frontier;
+
+  // Frontier selector: equity by default, postflop-declared when a table is
+  // supplied at > 15 BB. The table and evaluator are heap-owned (large,
+  // non-copyable); the pointer selects which evaluator the trainer uses.
+  EquityFrontierEvaluator equity_frontier;
+  std::unique_ptr<NSeatDeclaredFrontierTable> declared_table;
+  std::unique_ptr<PostflopFrontierEvaluator> postflop_evaluator;
+  std::string table_identity;
+  const FrontierEvaluator* frontier = &equity_frontier;
+  const char* frontier_tag = "exact-equity-all-in-flop";
+  if (use_postflop) {
+    declared_table = std::make_unique<NSeatDeclaredFrontierTable>(
+        NSeatDeclaredFrontierTable::load(frontier_table_path, &table_identity));
+    postflop_evaluator = std::make_unique<PostflopFrontierEvaluator>(*declared_table);
+    frontier = postflop_evaluator.get();
+    frontier_tag = "postflop-declared-table-v1";
+  }
 
   std::size_t action_nodes = 0;
   for (const auto& n : tree.nodes())
@@ -124,13 +156,19 @@ int main(int argc, char** argv) {
               player_count, ranges[0].size(), static_cast<unsigned long long>(iterations));
   std::printf("Tree: %zu nodes (%zu action), %zu bytes\n", tree.size(), action_nodes,
               tree.accounted_bytes());
+  if (use_postflop) {
+    std::printf("Frontier: %s (%zu entries, identity: %s)\n", frontier_tag, declared_table->size(),
+                table_identity.c_str());
+  } else {
+    std::printf("Frontier: %s\n", frontier_tag);
+  }
 
   NSeatTrainerLimits limits;
   limits.wall = std::chrono::minutes(30);
 
   const auto start = std::chrono::steady_clock::now();
   const NSeatTrainingResult trained =
-      train_nseat(tree, ranges, iterations, 20261003, limits, &frontier);
+      train_nseat(tree, ranges, iterations, 20261003, limits, frontier);
   const auto elapsed = std::chrono::steady_clock::now() - start;
   const double wall_s = std::chrono::duration<double>(elapsed).count();
 
@@ -196,7 +234,12 @@ int main(int argc, char** argv) {
   mf << "  \"wall_seconds\": " << wall_s << ",\n";
   mf << "  \"card_abstraction\": \"preflop-169\",\n";
   mf << "  \"action_abstraction\": \"" << action_abstraction.id().to_string() << "\",\n";
-  mf << "  \"frontier_evaluator\": \"exact-equity-all-in-flop\",\n";
+  mf << "  \"frontier_evaluator\": \"" << frontier_tag << "\",\n";
+  if (use_postflop) {
+    mf << "  \"frontier_table_path\": \"" << frontier_table_path << "\",\n";
+    mf << "  \"frontier_table_sha256\": \"" << sha256_file_hex(frontier_table_path) << "\",\n";
+    mf << "  \"frontier_table_identity\": \"" << table_identity << "\",\n";
+  }
   mf << "  \"rules_id\": \"" << rules_id << "\",\n";
   mf << "  \"schema_version\": 2\n";
   mf << "}\n";

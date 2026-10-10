@@ -312,6 +312,7 @@ add_library(bigshark_solver STATIC
   src/gto/equity_frontier.cpp
   src/gto/postflop_frontier.cpp
   src/gto/root_value_extractor.cpp
+  src/gto/frontier_table_codec.cpp
   src/gto/continuation_range.cpp
   src/solver/seat_policy.cpp
   src/gto/river_game.cc
@@ -511,10 +512,23 @@ target_link_libraries(bigshark-preflop-nash-conv PRIVATE
   bigshark_artifacts
 )
 
+# RFC 0013 Stage 2: PostflopValueOracle driver. Builds the declared postflop
+# frontier table (.fdt) by training a round-0 preflop blueprint, exporting
+# continuation ranges, aggregating to canonical flop classes, and solving
+# flop-rooted river-terminal games with CFR. Manual target, NOT a CTest.
+add_executable(bigshark-postflop-oracle
+  benchmarks/postflop_oracle.cpp
+)
+target_link_libraries(bigshark-postflop-oracle PRIVATE
+  bigshark_solver
+  bigshark_artifacts
+)
+
 # RFC 0011 Stage 3: offline NashConv measurement for the turn-rooted subgame
-# resolver. Builds a representative 2-seat River-terminal subgame, solves with
-# CFR, and computes an exact NashConv by enumerating every card-compatible
-# joint deal and every legal river card. Manual target, NOT a CTest.
+# resolver. Builds eight representative subgames (2/3/4-seat turn, 2/3/4-seat
+# river, plus 3-seat folded turn/river), solves each with CFR, and computes an
+# exact NashConv by enumerating every card-compatible joint deal and every
+# legal river card. Manual target, NOT a CTest.
 add_executable(bigshark-subgame-nash-conv
   benchmarks/subgame_nash_conv.cpp
 )
