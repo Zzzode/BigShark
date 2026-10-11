@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -263,11 +264,11 @@ class ActionAbstraction {
 // `board` is 0/3/4/5 card ids; the result is the evaluator score, whose order
 // is hand strength. An empty board (preflop, RFC 0007) scores the two hole
 // cards alone (pair or high-card category).
-std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<int>& board);
+std::uint32_t strength_bucket(const std::array<int, 2>& hole, std::span<const int> board);
 
 // The declared bucket for a holding under a card abstraction family.
 std::uint32_t card_bucket(CardBucketKind kind, const std::array<int, 2>& hole,
-                          const std::vector<int>& board);
+                          std::span<const int> board);
 
 // Suit-isomorphic flop canonicalization (RFC 0009 D5.1). A concrete 3-card
 // flop folds onto its isomorphism class: the canonical representative is the

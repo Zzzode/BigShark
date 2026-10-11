@@ -255,7 +255,7 @@ std::vector<Action> build_multiway_action_menu(const poker::LegalActions& legal,
                                context.actor_committed, context.cover, seeds);
 }
 
-std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<int>& board) {
+std::uint32_t strength_bucket(const std::array<int, 2>& hole, std::span<const int> board) {
   // Card bucketing is defined on a flop/turn/river board (3/4/5 public cards)
   // or an empty board (preflop, RFC 0007), where the evaluator scores the two
   // hole cards alone (pair or high-card category). An over-long board would
@@ -274,7 +274,7 @@ std::uint32_t strength_bucket(const std::array<int, 2>& hole, const std::vector<
 }
 
 std::uint32_t card_bucket(CardBucketKind kind, const std::array<int, 2>& hole,
-                          const std::vector<int>& board) {
+                          std::span<const int> board) {
   switch (kind) {
     case CardBucketKind::Identity:
       return strength_bucket(hole, board);

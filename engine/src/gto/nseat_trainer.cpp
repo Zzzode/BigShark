@@ -28,6 +28,7 @@
 #include <limits>
 #include <map>
 #include <numeric>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -83,7 +84,7 @@ double unit_draw(SplitMix64& rng) {
 
 // Cumulative positive-weight scan in fixed ascending order; never iterate a
 // map to consume randomness.
-std::size_t weighted_index(SplitMix64& rng, const std::vector<double>& weights) {
+std::size_t weighted_index(SplitMix64& rng, std::span<const double> weights) {
   const double point = unit_draw(rng);
   double cumulative = 0.0;
   std::size_t last = 0;
@@ -135,27 +136,27 @@ std::vector<std::vector<MultiwayWeightedHand>> to_sampler_ranges(
   return out;
 }
 
-std::vector<int> board_vector(const GameState& state) {
-  return std::vector<int>(state.board().begin(), state.board().end());
-}
-
 // Legal runout cards for the sampled world: the board-only set minus EVERY
 // seat's two hole cards (folded seats' cards stay removed for the whole
 // sweep). Chance must draw from this list -- a card a player holds cannot come
 // -- while the tree child is addressed by the card's BOARD-ONLY ordinal,
 // exactly the alignment the stage-6 trainer pins.
-std::vector<int> legal_runout_cards(const GameState& state,
-                                    const std::vector<std::array<int, 2>>& holes) {
+// Fills `out` with the legal runout cards (board + every player's holes
+// removed) and returns the count.  At most 52 cards are ever legal, so a
+// `std::array<int, 52>` caller buffer always suffices; this avoids a heap
+// allocation on every chance-node visit.
+std::size_t legal_runout_cards(const GameState& state, std::span<const std::array<int, 2>> holes,
+                               std::span<int> out) {
   std::array<bool, 52> used{};
   for (int card : state.board())
     used[card] = true;
   for (const std::array<int, 2>& hole : holes)
     used[hole[0]] = used[hole[1]] = true;
-  std::vector<int> cards;
+  std::size_t count = 0;
   for (int card = 0; card < 52; ++card)
     if (!used[card])
-      cards.push_back(card);
-  return cards;
+      out[count++] = card;
+  return count;
 }
 
 // The card's index in the ascending board-only list {0..51}\state.board().
@@ -183,8 +184,9 @@ std::size_t row_bytes(std::size_t actions) {
 }
 
 // Regret matching with clipped (RM+) regrets, frozen before recursion.
-std::vector<double> current_strategy(const NSeatRawRow& row) {
-  std::vector<double> sigma(row.actions.size(), 0.0);
+// Writes into the caller-provided span (must have row.actions.size() elements)
+// to avoid a heap allocation on every action-node visit.
+void current_strategy(const NSeatRawRow& row, std::span<double> sigma) {
   double positive_sum = 0.0;
   for (double r : row.regrets) {
     if (!std::isfinite(r))
@@ -195,10 +197,9 @@ std::vector<double> current_strategy(const NSeatRawRow& row) {
     for (std::size_t i = 0; i < row.actions.size(); ++i)
       sigma[i] = std::max(0.0, row.regrets[i]) / positive_sum;
   } else {
-    for (double& p : sigma)
-      p = 1.0 / static_cast<double>(row.actions.size());
+    for (std::size_t i = 0; i < row.actions.size(); ++i)
+      sigma[i] = 1.0 / static_cast<double>(row.actions.size());
   }
-  return sigma;
 }
 
 // --- one traverser sweep -----------------------------------------------------
@@ -206,7 +207,7 @@ std::vector<double> current_strategy(const NSeatRawRow& row) {
 struct SweepContext {
   std::size_t traverser = 0;
   const AbstractTree* tree = nullptr;
-  const std::vector<std::array<int, 2>>* holes = nullptr;
+  std::span<const std::array<int, 2>> holes;
   std::map<NSeatInformationKey, NSeatRawRow>* rows = nullptr;
   std::size_t* retained_bytes = nullptr;
   std::size_t* visits = nullptr;
@@ -290,11 +291,8 @@ double terminal_utility(SweepContext& ctx, const GameState& state, std::size_t n
           "nseat trainer reached a frontier leaf without a frontier evaluator");
     if (payload.folded)
       throw std::runtime_error("nseat trainer frontier terminal does not match the tree leaf");
-    const std::vector<int> flop(state.board().begin(), state.board().end());
-    std::vector<std::array<int, 2>> hands(state.player_count());
-    for (std::size_t seat = 0; seat < state.player_count(); ++seat)
-      hands[seat] = (*ctx.holes)[seat];
-    const std::vector<double> values = ctx.frontier->evaluate(flop, hands, payload);
+    // evaluate() accepts spans; pass the board and holes directly.
+    const std::vector<double> values = ctx.frontier->evaluate(state.board(), ctx.holes, payload);
     if (values.size() != state.player_count())
       throw std::runtime_error("nseat trainer frontier evaluator returned the wrong seat count");
     return values[ctx.traverser];
@@ -305,14 +303,16 @@ double terminal_utility(SweepContext& ctx, const GameState& state, std::size_t n
     throw std::runtime_error("nseat trainer showdown terminal does not match the tree leaf");
   if (payload.live_count != state.live_players().size())
     throw std::runtime_error("nseat trainer showdown ledger has the wrong live count");
-  std::vector<std::array<int, 2>> live_holes(payload.live_count);
+  // Stack buffer: at most 10 live players at any table.
+  std::array<std::array<int, 2>, 10> live_holes{};
   for (std::size_t i = 0; i < payload.live_count; ++i) {
     const std::size_t seat = payload.live_order[i];
     if (seat >= state.player_count() || state.live_players()[i] != seat)
       throw std::runtime_error("nseat trainer showdown live order desynced from the walk");
-    live_holes[i] = (*ctx.holes)[seat];
+    live_holes[i] = ctx.holes[seat];
   }
-  const poker::ContributionSettlement settlement = state.settle_showdown(live_holes);
+  const poker::ContributionSettlement settlement = state.settle_showdown(
+      std::span<const std::array<int, 2>>(live_holes.data(), payload.live_count));
   std::int64_t sum = 0;
   for (std::size_t seat = 0; seat < state.player_count(); ++seat)
     sum += settlement.chip_utility[seat];
@@ -343,10 +343,14 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
 
   NSeatInformationKey key;
   key.own_card_bucket = static_cast<std::uint32_t>(
-      abstraction::card_bucket(kNSeatCardKind, (*ctx.holes)[actor], board_vector(state)));
+      abstraction::card_bucket(kNSeatCardKind, ctx.holes[actor], state.board()));
   key.node_index = node_index;
   NSeatRawRow& row = touch_row(ctx, key, menu);
-  const std::vector<double> sigma = current_strategy(row);
+  // Stack-allocated strategy buffer: menus are small (≤ 32 actions), avoids a
+  // heap allocation on every action-node visit.
+  std::array<double, 32> sigma_buf{};
+  current_strategy(row, std::span<double>(sigma_buf.data(), menu.size()));
+  const double* sigma = sigma_buf.data();
 
   if (actor == ctx.traverser) {
     // kFull own-reach-weighted average AT THE TRAVERSER'S OWN NODE, once per
@@ -359,7 +363,7 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
     // Enumerate every action over its sampled external continuation, then the
     // unweighted RM+ regret update on return. Node insertion during recursion
     // cannot invalidate the `row` reference (std::map reference stability).
-    std::vector<double> children(menu.size(), 0.0);
+    std::array<double, 32> children{};
     for (std::size_t a = 0; a < menu.size(); ++a) {
       GameState next = state.after_action(actor, menu[a]);
       children[a] = walk(ctx, next, node.children[a], own_reach * sigma[a]);
@@ -377,7 +381,8 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
   // Opponent node: external sampling takes exactly one sampled action; the
   // opponent's reach is integrated out, so own_reach is unchanged and there is
   // no average contribution (the traverser never owns this node).
-  const std::size_t sampled = weighted_index(*ctx.action_rng, sigma);
+  const std::size_t sampled =
+      weighted_index(*ctx.action_rng, std::span<const double>(sigma, menu.size()));
   GameState next = state.after_action(actor, menu[sampled]);
   return walk(ctx, next, node.children[sampled], own_reach);
 }
@@ -392,14 +397,15 @@ double walk_chance(SweepContext& ctx, const GameState& state, std::size_t node_i
   // the board-only ordinal: the tree's chance children enumerate exactly the
   // ascending {0..51}\board list, so the child's edge label asserts the
   // alignment this walk depends on.
-  const std::vector<int> cards = legal_runout_cards(state, *ctx.holes);
-  const std::size_t index = bounded_index(*ctx.chance_rng, cards.size());
-  const std::size_t ordinal = board_only_ordinal(state, cards[index]);
+  std::array<int, 52> cards_buf{};
+  const std::size_t cards_count = legal_runout_cards(state, ctx.holes, cards_buf);
+  const std::size_t index = bounded_index(*ctx.chance_rng, cards_count);
+  const std::size_t ordinal = board_only_ordinal(state, cards_buf[index]);
   if (ordinal >= node.children.size())
     throw std::runtime_error("nseat trainer chance ordinal outside the tree's chance degree");
-  if (ctx.tree->node(node.children[ordinal]).incoming_card != cards[index])
+  if (ctx.tree->node(node.children[ordinal]).incoming_card != cards_buf[index])
     throw std::runtime_error("nseat trainer chance child is not at its board ordinal");
-  GameState next = state.after_card(cards[index]);
+  GameState next = state.after_card(cards_buf[index]);
   // Chance is externally sampled; own reach is unchanged.
   return walk(ctx, next, node.children[ordinal], own_reach);
 }
@@ -419,25 +425,28 @@ double walk_flop_deal(SweepContext& ctx, const GameState& state, std::size_t nod
 
   const std::size_t board_size = state.board().size();
   GameState frontier_state = state;  // overwritten below
+  // Reused across the three sequential flop-deal draws; each call overwrites
+  // from index 0 so no stale cards survive.
+  std::array<int, 52> cards_buf{};
 
   if (board_size == 0) {
     // Preflop game: sample 3 cards sequentially to deal the flop.
     GameState s1 = state;
     {
-      const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
-      const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
-      s1 = s1.after_card(cards[idx]);
+      const std::size_t n = legal_runout_cards(s1, ctx.holes, cards_buf);
+      const std::size_t idx = bounded_index(*ctx.chance_rng, n);
+      s1 = s1.after_card(cards_buf[idx]);
     }
     GameState s2 = s1;
     {
-      const std::vector<int> cards = legal_runout_cards(s1, *ctx.holes);
-      const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
-      s2 = s1.after_card(cards[idx]);
+      const std::size_t n = legal_runout_cards(s1, ctx.holes, cards_buf);
+      const std::size_t idx = bounded_index(*ctx.chance_rng, n);
+      s2 = s1.after_card(cards_buf[idx]);
     }
     {
-      const std::vector<int> cards = legal_runout_cards(s2, *ctx.holes);
-      const std::size_t idx = bounded_index(*ctx.chance_rng, cards.size());
-      frontier_state = s2.after_card(cards[idx]);
+      const std::size_t n = legal_runout_cards(s2, ctx.holes, cards_buf);
+      const std::size_t idx = bounded_index(*ctx.chance_rng, n);
+      frontier_state = s2.after_card(cards_buf[idx]);
     }
     if (frontier_state.phase() != Phase::Frontier)
       throw std::runtime_error("nseat trainer flop-deal leaf did not reach the frontier");
@@ -450,11 +459,10 @@ double walk_flop_deal(SweepContext& ctx, const GameState& state, std::size_t nod
   }
 
   const tree::TerminalPayload payload = make_frontier_payload(frontier_state);
-  const std::vector<int> flop(frontier_state.board().begin(), frontier_state.board().end());
-  std::vector<std::array<int, 2>> hands(frontier_state.player_count());
-  for (std::size_t seat = 0; seat < frontier_state.player_count(); ++seat)
-    hands[seat] = (*ctx.holes)[seat];
-  const std::vector<double> values = ctx.frontier->evaluate(flop, hands, payload);
+  // evaluate() accepts spans, so pass the board and holes directly — no
+  // intermediate heap copies.
+  const std::vector<double> values =
+      ctx.frontier->evaluate(frontier_state.board(), ctx.holes, payload);
   if (values.size() != frontier_state.player_count())
     throw std::runtime_error("nseat trainer frontier evaluator returned the wrong seat count");
   // Chance is externally sampled; own reach is unchanged.
@@ -491,15 +499,16 @@ void run_sweep(const AbstractTree& tree,
   const MultiwayDeal deal = sample_scalable_joint_deal(ranges, root_board, streams.joint_deal);
   if (deal.hands.size() != ranges.size())
     throw std::runtime_error("nseat trainer joint deal has the wrong seat count");
-  std::vector<std::array<int, 2>> holes;
-  holes.reserve(deal.hands.size());
-  for (const std::array<int, 2>& hand : deal.hands)
-    holes.push_back(hand);
+  // Stack buffer: at most 10 seats.
+  std::array<std::array<int, 2>, 10> holes_buf{};
+  for (std::size_t i = 0; i < deal.hands.size(); ++i)
+    holes_buf[i] = deal.hands[i];
+  const std::span<const std::array<int, 2>> holes(holes_buf.data(), deal.hands.size());
 
   SweepContext ctx;
   ctx.traverser = traverser;
   ctx.tree = &tree;
-  ctx.holes = &holes;
+  ctx.holes = holes;
   ctx.rows = &table;
   ctx.retained_bytes = &retained_bytes;
   ctx.visits = &visits;
@@ -725,7 +734,7 @@ const NSeatPolicyRow* NSeatPolicy::lookup(const tree::AbstractTree& tree,
   std::uint32_t bucket = 0;
   try {
     bucket = static_cast<std::uint32_t>(
-        abstraction::card_bucket(kNSeatCardKind, own_cards, board_vector(state)));
+        abstraction::card_bucket(kNSeatCardKind, own_cards, state.board()));
   } catch (const std::invalid_argument&) {
     // A partial board has no defined bucket: an exact miss, never a guess.
     return nullptr;
