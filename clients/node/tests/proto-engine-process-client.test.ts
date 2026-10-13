@@ -488,12 +488,19 @@ test('an out-of-band negotiation probe failure settles at 0 and respawns', async
     command: process.execPath,
     args: [fakeEngine],
     warmupEnvelope: warmup,
-    warmupTimeoutMs: 200,
+    warmupTimeoutMs: 5_000,
     negotiateMinor2: true,
     spawnProcess: spawnOverride,
   });
   t.after(() => client.stop());
-  await client.start();
+  // Trigger the intentional silent-probe timeout without wall-clock delay.
+  // Real respawn startup is independent of that failure deadline.
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const starting = client.start();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  t.mock.timers.tick(5_000);
+  await starting;
+  t.mock.timers.reset();
   assert.equal(client.negotiatedProtocolMinor, 0,
     'a timed-out probe settles at minor 0 rather than rejecting start()');
   assert.equal(launches, 1, 'only the warmup child spawned before settle');
