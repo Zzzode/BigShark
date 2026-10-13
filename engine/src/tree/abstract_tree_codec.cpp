@@ -1,14 +1,16 @@
-// RFC 0014: ATF binary serialization for AbstractTree.
+// ATF binary serialization for AbstractTree.
 //
 // Saves the tree structure (nodes, children, actions) and terminal payloads
-// in a compact binary format.
-//
-// Version history:
-//   v1: tree structure only; terminals recomputed on load by DFS replay.
-//   v2: tree structure + serialized terminal payloads (no DFS replay needed).
+// in a compact binary format, compressed with zstd.
 //
 // File layout (little-endian x86_64 Linux):
-//   ATF1 (raw):
+//   ATFZ (zstd-compressed):
+//     char     magic[4]        = "ATFZ"
+//     uint32   version         = 2
+//     uint64   uncompressed_size
+//     <zstd compressed payload>
+//
+//   Payload (decompressed):
 //     Header (32 bytes):
 //       char     magic[4]        = "ATF1"
 //       uint32   version         = 2
@@ -33,7 +35,7 @@
 //       For each action:
 //         uint8    type
 //         uint32   target_total
-//     For each terminal (v2+ only):
+//     For each terminal:
 //       uint8    player_count
 //       uint8    live_count
 //       uint8    folded          (0 or 1)
@@ -49,16 +51,6 @@
 //       int32    board[5]
 //       uint32   chip_utility_count
 //       int64    chip_utility[chip_utility_count]
-//
-//   ATFZ (zstd-compressed):
-//     char     magic[4]        = "ATFZ"
-//     uint32   version         = 2
-//     uint64   uncompressed_size
-//     <zstd compressed ATF1 payload>
-//
-// The ATFZ format wraps the raw ATF1 payload in zstd compression (level 3).
-// load() auto-detects the format from the magic bytes and accepts both v1
-// and v2 payloads (v1 falls back to DFS terminal recompute).
 
 #include <zstd.h>
 
@@ -100,12 +92,6 @@ void write_i32(std::ostream& out, std::int32_t v) {
 
 void write_i64(std::ostream& out, std::int64_t v) {
   out.write(reinterpret_cast<const char*>(&v), sizeof(v));
-}
-
-std::uint8_t read_u8(std::istream& in) {
-  char c;
-  in.get(c);
-  return static_cast<std::uint8_t>(c);
 }
 
 std::uint32_t read_u32(std::istream& in) {
@@ -240,7 +226,7 @@ class Cursor {
   std::string context_;
 };
 
-// Serialize one terminal payload to the output stream (v2+ format).
+// Serialize one terminal payload to the output stream.
 void serialize_terminal(const TerminalPayload& term, std::ostream& out) {
   write_u8(out, static_cast<std::uint8_t>(term.player_count));
   write_u8(out, static_cast<std::uint8_t>(term.live_count));
@@ -271,7 +257,7 @@ void serialize_terminal(const TerminalPayload& term, std::ostream& out) {
     write_i64(out, v);
 }
 
-// Deserialize one terminal payload from a cursor (v2+ format).
+// Deserialize one terminal payload from a cursor.
 TerminalPayload deserialize_terminal(Cursor& cursor) {
   TerminalPayload term;
   term.player_count = cursor.read<std::uint8_t>();
@@ -305,7 +291,7 @@ TerminalPayload deserialize_terminal(Cursor& cursor) {
   return term;
 }
 
-// Serialize the tree structure (ATF1 payload) to a stream.
+// Serialize the tree structure to a stream.
 void serialize_payload(const AbstractTree& tree, std::ostream& out) {
   // Header (32 bytes)
   out.write(kMagic, 4);
@@ -345,7 +331,7 @@ void serialize_payload(const AbstractTree& tree, std::ostream& out) {
     }
   }
 
-  // Terminal payloads (v2+)
+  // Terminal payloads
   for (const TerminalPayload& term : tree.terminals())
     serialize_terminal(term, out);
 
@@ -361,7 +347,7 @@ AbstractTree::AbstractTree(GameDef def, abstraction::ActionAbstraction action, T
     : def_(std::move(def)), action_(std::move(action)), limits_(limits) {}
 
 void AbstractTree::save(const std::filesystem::path& path) const {
-  // Serialize the ATF1 payload to an in-memory buffer.
+  // Serialize the payload to an in-memory buffer.
   std::ostringstream oss(std::ios::binary);
   serialize_payload(*this, oss);
   const std::string raw = oss.str();
@@ -427,7 +413,7 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
   } else if (std::memcmp(magic, kMagicCompressed, 4) == 0) {
     // ATFZ compressed format: read header, decompress.
     const std::uint32_t version = read_u32(in);
-    if (version != 1 && version != kVersion)
+    if (version != kVersion)
       throw std::runtime_error("abstract_tree_codec: unsupported ATFZ version " +
                                std::to_string(version) + " in " + path.string());
 
@@ -453,7 +439,7 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
     throw std::runtime_error("abstract_tree_codec: bad magic in " + path.string());
   }
 
-  // Parse the ATF1 payload with a fast cursor (memcpy reads).
+  // Parse the payload with a fast cursor (memcpy reads).
   const std::string ctx = path.string();
   Cursor cursor(payload.data(), payload.size(), ctx);
 
@@ -464,7 +450,7 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
     throw std::runtime_error("abstract_tree_codec: bad payload magic in " + path.string());
 
   const std::uint32_t payload_version = cursor.read<std::uint32_t>();
-  if (payload_version != 1 && payload_version != kVersion)
+  if (payload_version != kVersion)
     throw std::runtime_error("abstract_tree_codec: unsupported version " +
                              std::to_string(payload_version) + " in " + path.string());
 
@@ -529,50 +515,9 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
     }
   }
 
-  // Terminal payloads: v2+ deserializes directly; v1 falls back to DFS replay.
-  if (payload_version >= 2) {
-    for (std::uint32_t t = 0; t < terminal_count; ++t)
-      tree.terminals_[t] = deserialize_terminal(cursor);
-  } else {
-    // v1: recompute terminal payloads by replaying the GameState through the
-    // tree. This is much cheaper than rebuilding from scratch: no legal-action
-    // or chance-card computation, just state transitions.
-    struct Frame {
-      std::size_t node_index;
-      GameState state;
-    };
-    std::vector<Frame> stack;
-    stack.push_back({0, GameState(tree.def_)});
-
-    while (!stack.empty()) {
-      Frame frame = std::move(stack.back());
-      stack.pop_back();
-
-      const TreeNode& node = tree.nodes_[frame.node_index];
-
-      if (node.is_terminal()) {
-        const bool folded = (node.kind == NodeKind::TerminalFold);
-        tree.terminals_[node.terminal] = make_terminal_payload(frame.state, folded);
-      }
-
-      // Enqueue children in reverse order (LIFO → ascending order, matching
-      // the builder's traversal).
-      if (node.is_action()) {
-        for (std::size_t i = node.children.size(); i-- > 0;) {
-          const std::size_t child = node.children[i];
-          GameState new_state = frame.state.after_action(node.actor, node.actions[i]);
-          stack.push_back({child, std::move(new_state)});
-        }
-      } else if (node.is_chance()) {
-        for (std::size_t i = node.children.size(); i-- > 0;) {
-          const std::size_t child = node.children[i];
-          const int card = tree.nodes_[child].incoming_card;
-          GameState new_state = frame.state.after_card(card);
-          stack.push_back({child, std::move(new_state)});
-        }
-      }
-    }
-  }
+  // Terminal payloads
+  for (std::uint32_t t = 0; t < terminal_count; ++t)
+    tree.terminals_[t] = deserialize_terminal(cursor);
 
   return tree;
 }

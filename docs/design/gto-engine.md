@@ -1812,33 +1812,26 @@ in place (atomic `.tmp` + rename).
 
 **ATF tree codec** (`AbstractTree::save` / `AbstractTree::load`, RFC 0014).
 Serializes the tree structure (nodes, children, actions) and terminal payloads
-to a compact binary file. Two versions:
-
-- **v1**: tree structure only; terminals recomputed on load by DFS replay.
-- **v2** (current): tree structure + serialized terminal payloads. Eliminates
-  the DFS terminal recompute (~300-400 ms on large trees), reducing load time
-  by ~1.65x. File size increases ~1.2x.
-
-`load()` accepts both v1 and v2 (v1 falls back to DFS recompute). The load
-path uses a cursor (memcpy reads, >10 GB/s) instead of `std::istringstream`
-(~82 MB/s), and error messages are constructed only on the failure path.
+to a compact binary file. Terminal payloads are serialized directly — no DFS
+replay on load. The load path uses a cursor (memcpy reads, >10 GB/s) instead
+of `std::istringstream` (~82 MB/s), and error messages are constructed only on
+the failure path.
 
 The file layout is a 32-byte header (magic, version, node count, terminal
-count, depth, accounted bytes) followed by variable-length nodes and (v2+)
-terminal records. Tree files are named `tree_{c0}_{c1}_{c2}_b{b}.atf`. The
-on-the-fly evaluator loads a serialized tree when available (~60-400 ms)
-instead of building from scratch (~5 s).
+count, depth, accounted bytes) followed by variable-length nodes and terminal
+records. Tree files are named `tree_{c0}_{c1}_{c2}_b{b}.atf`. The on-the-fly
+evaluator loads a serialized tree when available (~60-400 ms) instead of
+building from scratch (~5 s).
 
 **ATFZ compressed tree codec** (RFC 0014 optimization). `AbstractTree::save`
-writes zstd-compressed files by default: the ATF payload is serialized to a
+writes zstd-compressed files by default: the payload is serialized to a
 buffer, compressed with zstd level 3, and wrapped in an ATFZ container
 (magic `"ATFZ"`, version, uncompressed size, compressed data). `load()`
 auto-detects the format from the magic bytes — `"ATF1"` reads raw, `"ATFZ"`
 decompresses. Compression ratios of 7-8x are typical for tree files
 (~30 MB → ~4 MB), reducing the on-the-fly evaluator's cache-miss I/O cost
 proportionally. The `bigshark-tree-recompress` tool migrates existing raw ATF1
-files to ATFZ in place. The `bigshark-tree-migrate-v2` tool migrates ATFZ v1
-files to v2 (serialized terminals) in place.
+files to ATFZ in place.
 
 **Shared postflop config** (`make_postflop_def` /
 `make_postflop_abstraction`). Produces the `GameDef` and

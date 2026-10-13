@@ -560,16 +560,6 @@ target_link_libraries(bigshark-tree-recompress PRIVATE
   bigshark_tree
 )
 
-# RFC 0014 Phase 0: migrate .atf tree files from v1 (DFS terminal recompute)
-# to v2 (serialized terminal payloads). Manual target, NOT a CTest.
-add_executable(bigshark-tree-migrate-v2
-  benchmarks/tree_migrate_v2.cpp
-)
-target_link_libraries(bigshark-tree-migrate-v2 PRIVATE
-  bigshark_solver
-  bigshark_tree
-)
-
 # RFC 0011 Stage 3: offline NashConv measurement for the turn-rooted subgame
 # resolver. Builds eight representative subgames (2/3/4-seat turn, 2/3/4-seat
 # river, plus 3-seat folded turn/river), solves each with CFR, and computes an
