@@ -8,6 +8,7 @@
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/prng.hpp>
+#include <bs/river_gto.hpp>
 #include <bs/v1_protocol.hpp>
 #include <cmath>
 #include <cstdint>
@@ -273,7 +274,18 @@ int main() {
         "16626967736861726b2d656e67696e652d76312e302e301a01012201012802300a3a04"
         "01020304420501020304054801520201025a037461675a036c61675a0e7374617469"
         "6f6e2d68756e746572600368037002780180010188010190018080409801c0a907";
-    const std::vector<unsigned char> expected = decodeHex(kStage7Hex);
+    // The Linux fallback build reports the absent exact LP as experimental.
+    // Both frozen wire vectors differ only in that documented feature bit.
+    static const char* kStage7CfrHex =
+        "121b6361706162696c69746965732d726571756573742d766563746f725a6a0a010012"
+        "16626967736861726b2d656e67696e652d76312e302e301a01012201012802300a3a04"
+        "01020304420501020304054801520201025a037461675a036c61675a0e7374617469"
+        "6f6e2d68756e746572600268037002780180010188010190018080409801c0a907";
+    const bool exactLp = bs::gto::hasExactRiverLp();
+    check(caps.exact_lp() ==
+              (exactLp ? pv::FEATURE_SUPPORT_SUPPORTED : pv::FEATURE_SUPPORT_EXPERIMENTAL),
+          "minor-0 exact-LP capability matches the compiled backend");
+    const std::vector<unsigned char> expected = decodeHex(exactLp ? kStage7Hex : kStage7CfrHex);
     const std::string actual = response.SerializeAsString();
     // Compare as unsigned bytes: std::string's char is signed on this target,
     // so a plain std::equal against an unsigned vector miscompares bytes >= 0x80.
