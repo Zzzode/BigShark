@@ -2191,7 +2191,7 @@ static int test_immutable(const fs::path& dir) {
     CHECK(entry.path().filename().string().rfind(".bs-policy-", 0) != 0);
 
   // File mode is read-only (0444).
-  struct stat st{};
+  struct stat st = {};
   CHECK(::stat(gen.string().c_str(), &st) == 0);
   CHECK((st.st_mode & 0777) == (S_IRUSR | S_IRGRP | S_IROTH));
   if (geteuid() != 0) {

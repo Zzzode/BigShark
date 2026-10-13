@@ -259,7 +259,7 @@ Measurement measure(const HeadsUpGame& game, bool sampled, std::uint64_t seed,
 // -1 when getrusage is unavailable.
 std::int64_t peak_rss_bytes() {
 #if defined(BS_MATRIX_POSIX)
-  struct rusage usage{};
+  struct rusage usage = {};
   if (getrusage(RUSAGE_SELF, &usage) != 0)
     return -1;
   const auto value = static_cast<std::int64_t>(usage.ru_maxrss);

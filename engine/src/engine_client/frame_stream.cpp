@@ -27,7 +27,7 @@ enum class ReadReady {
 // hangup (POLLHUP with no data) from a timeout so the caller can map them to
 // EndOfStream vs Timeout.
 ReadReady wait_readable(int fd, int timeout_ms) {
-  struct pollfd pfd{};
+  struct pollfd pfd = {};
   pfd.fd = fd;
   pfd.events = POLLIN;
   for (;;) {

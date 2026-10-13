@@ -30,10 +30,16 @@ namespace {
 // Floating-point inputs, including NaN and infinity, are not domain amounts.
 // Check list initialization rather than invoking an undefined float-to-int cast.
 template <typename T>
-concept StackAmount = requires(T value) { IcmPlayer{"player", value}; };
+concept StackAmount = requires(T value) {
+  // List initialization rejects narrowing domain amounts.
+  (IcmPlayer{"player", value});
+};
 
 template <typename T>
-concept PayoutAmount = requires(T value) { std::vector<std::uint64_t>{value}; };
+concept PayoutAmount = requires(T value) {
+  // Initializer-list construction rejects narrowing payouts.
+  (std::vector<std::uint64_t>{value});
+};
 
 static_assert(StackAmount<std::uint64_t>);
 static_assert(PayoutAmount<std::uint64_t>);

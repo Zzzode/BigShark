@@ -490,8 +490,10 @@ int test_roots_and_large_amounts() {
   state = state.after_action(0, {ActionType::Bet, kMaxHeadsUpChips - 7});
   CHECK(state.pot() == kMaxHeadsUpChips - 1);
   const auto saved = snapshot(state);
-  CHECK(rejects_amount(
-      [&] { state.after_action(1, {ActionType::Raise, std::numeric_limits<Chips>::max()}); }));
+  const auto overflowing_raise = [&] {
+    state.after_action(1, {ActionType::Raise, std::numeric_limits<Chips>::max()});
+  };
+  CHECK(rejects_amount(overflowing_raise));
   CHECK(snapshot(state) == saved);
   state = checked_down(state.after_action(1, {ActionType::Call}));
   result = state.settle_showdown(winning_holes());

@@ -235,13 +235,13 @@ int test_allocator() {
   allocation::Window window;
   void* scalar = ::operator new(7);
   void* array = ::operator new[](13);
-  void* aligned = ::operator new(17, std::align_val_t{64});
+  void* aligned = ::operator new(17, static_cast<std::align_val_t>(64));
   void* aligned_array = ::operator new[](19, std::align_val_t{128});
   const bool alignment_ok = reinterpret_cast<std::uintptr_t>(aligned) % 64 == 0 &&
                             reinterpret_cast<std::uintptr_t>(aligned_array) % 128 == 0;
   ::operator delete(scalar);
   ::operator delete[](array);
-  ::operator delete(aligned, std::align_val_t{64});
+  ::operator delete(aligned, static_cast<std::align_val_t>(64));
   ::operator delete[](aligned_array, std::align_val_t{128});
   const auto measured = window.stop();
   CHECK(alignment_ok);
@@ -249,10 +249,10 @@ int test_allocator() {
   CHECK(measured.peak == 56);
   CHECK(measured.live == 0);
   allocation::Window failure(0);
-  void* failed = ::operator new[](1, std::align_val_t{64}, std::nothrow);
+  void* failed = ::operator new[](1, static_cast<std::align_val_t>(64), std::nothrow);
   void* recovered = ::operator new(0, std::nothrow);
   const bool recovered_ok = recovered != nullptr;
-  ::operator delete[](failed, std::align_val_t{64});
+  ::operator delete[](failed, static_cast<std::align_val_t>(64));
   ::operator delete(recovered);
   const auto injected = failure.stop();
   CHECK(failed == nullptr);

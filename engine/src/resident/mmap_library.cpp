@@ -877,7 +877,7 @@ void MmapLibrary::open(const std::filesystem::path& path, bool verify_sha256) {
     throw std::runtime_error("mmap library: cannot open " + path.string() + " (errno " +
                              std::to_string(errno) + ")");
 
-  struct stat st{};
+  struct stat st = {};
   if (::fstat(fd, &st) != 0) {
     ::close(fd);
     throw std::runtime_error("mmap library: fstat failed for " + path.string());

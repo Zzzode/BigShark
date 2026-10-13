@@ -62,7 +62,7 @@ double seconds_since(Clock::time_point started) {
 // Process peak RSS, not the trainer's portable accounted-byte budget.
 std::int64_t peak_rss_bytes() {
 #if defined(__APPLE__) || defined(__linux__)
-  struct rusage usage{};
+  struct rusage usage = {};
   if (getrusage(RUSAGE_SELF, &usage) != 0)
     return -1;
 #if defined(__APPLE__)
