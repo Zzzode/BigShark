@@ -343,7 +343,9 @@ if(BUILD_TESTING)
   target_compile_features(bs_resident_fixture PRIVATE cxx_std_23)
   target_compile_options(bs_resident_fixture PRIVATE -Wall -Wextra)
   target_include_directories(bs_resident_fixture PRIVATE "${BIGSHARK_ENGINE_DIR}/src")
-  target_link_libraries(bs_resident_fixture PRIVATE bigshark_v1_protocol bigshark_protocol)
+  target_link_libraries(bs_resident_fixture PRIVATE
+    bigshark_v1_protocol bigshark_protocol bigshark_sqlite
+  )
   if(BIGSHARK_ENABLE_SANITIZERS)
     target_compile_options(bs_resident_fixture PRIVATE
       -fsanitize=address,undefined
