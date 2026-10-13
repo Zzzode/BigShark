@@ -17,6 +17,8 @@
 #include <bs/game_definition.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -89,6 +91,16 @@ struct TerminalPayload {
 // (the frontier evaluator supplies expectation values).
 TerminalPayload make_frontier_payload(const GameState& state);
 
+// Constructs a TerminalPayload from a GameState at a showdown or fold leaf.
+// Unlike the builder's internal make_terminal, this does not charge a byte
+// budget — it is used by the tree codec when recomputing terminals on load.
+TerminalPayload make_terminal_payload(const GameState& state, bool folded);
+
+// Compute the tree cache file name for a (flop_class, spr_bucket) config.
+// Files are named tree_{c0}_{c1}_{c2}_b{b}.atf, matching the policy file
+// naming convention in nseat_policy_codec.hpp.
+std::string tree_file_name(std::span<const int> flop_class, std::uint8_t spr_bucket);
+
 // A deterministic construction bound (no time cap: building is deterministic,
 // so a wall clock would bind a non-property). Each cap is checked BEFORE the
 // allocation that would exceed it. Distinct from an unsupported tree shape.
@@ -156,6 +168,22 @@ class AbstractTree {
   // failed build yields no tree (strong exception safety).
   AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits = {});
 
+  // RFC 0014: serialize/deserialize the tree structure for on-disk caching.
+  // save() writes only the tree structure (nodes, children, actions) in a
+  // compact binary format (ATF1). Terminal payloads are NOT serialized — they
+  // are recomputed on load by replaying the GameState through the tree, which
+  // is much cheaper than rebuilding from scratch (no legal-action or
+  // chance-card computation).
+  //
+  // save() throws std::runtime_error on I/O failure.
+  // load() validates magic, version, and node count; throws std::runtime_error
+  // on any mismatch or I/O failure. The GameDef and ActionAbstraction must
+  // match the ones used to build the tree (the caller ensures this by
+  // constructing them from the same config).
+  void save(const std::filesystem::path& path) const;
+  static AbstractTree load(const std::filesystem::path& path, GameDef def,
+                           abstraction::ActionAbstraction action, TreeLimits limits = {});
+
   const GameDef& def() const noexcept { return def_; }
   const abstraction::ActionAbstraction& action_abstraction() const noexcept { return action_; }
   const abstraction::AbstractionId& action_id() const noexcept { return action_.id(); }
@@ -174,6 +202,9 @@ class AbstractTree {
   }
 
  private:
+  struct no_build_tag {};
+  AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits, no_build_tag);
+
   GameDef def_;
   abstraction::ActionAbstraction action_;
   TreeLimits limits_;

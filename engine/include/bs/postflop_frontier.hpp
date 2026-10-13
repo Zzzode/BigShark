@@ -20,10 +20,15 @@
 #pragma once
 
 #include <array>
+#include <atomic>
+#include <bs/equity_frontier.hpp>
 #include <bs/frontier.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <memory>
+#include <shared_mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -167,7 +172,9 @@ class NSeatDeclaredFrontierTable {
 //   6. Scale by pot_actual / pot_representative and return per-seat values.
 //
 // A missing entry throws std::invalid_argument (fail closed). The evaluator
-// never invents a value and never falls back to all-in equity.
+// never invents a value. At zero SPR (all-in, no postflop decisions remain)
+// the evaluator delegates to EquityFrontierEvaluator: exact all-in equity is
+// the equilibrium value of an all-in-at-flop game, not a heuristic.
 class PostflopFrontierEvaluator : public FrontierEvaluator {
  public:
   explicit PostflopFrontierEvaluator(const NSeatDeclaredFrontierTable& table);
@@ -177,6 +184,62 @@ class PostflopFrontierEvaluator : public FrontierEvaluator {
 
  private:
   const NSeatDeclaredFrontierTable& table_;
+  mutable EquityFrontierEvaluator equity_fallback_;
+};
+
+// RFC 0013 Stage 2: on-the-fly postflop frontier evaluator.
+//
+// Extends the declared-table evaluator with policy-based computation for
+// missing entries. When a (flop, spr_bucket, hands) tuple is not in the
+// table, the evaluator loads the saved CFR policy for that config from
+// `policy_dir`, rebuilds the tree, and calls extract_root_value to compute
+// the exact equilibrium value. This is GTO-compliant: the value comes from
+// the converged CFR policy, not a heuristic.
+//
+// At zero SPR (all-in, no postflop decisions remain) the evaluator delegates
+// to EquityFrontierEvaluator: exact all-in equity is the equilibrium value
+// of an all-in-at-flop game, not a heuristic.
+//
+// The evaluator caches (policy, tree) pairs in an LRU cache to avoid
+// reloading and rebuilding on repeated calls for the same config (default
+// capacity 128).
+class OnTheFlyPostflopEvaluator : public FrontierEvaluator {
+ public:
+  OnTheFlyPostflopEvaluator(const NSeatDeclaredFrontierTable& table,
+                            std::filesystem::path policy_dir, std::size_t cache_capacity = 128);
+  ~OnTheFlyPostflopEvaluator() override;
+
+  std::vector<double> evaluate(std::span<const int> flop, std::span<const std::array<int, 2>> hands,
+                               const bs::tree::TerminalPayload& ledger) const override;
+
+  // Cache statistics (for logging / profiling).
+  std::size_t cache_hits() const noexcept { return cache_hits_.load(std::memory_order_relaxed); }
+  std::size_t cache_misses() const noexcept {
+    return cache_misses_.load(std::memory_order_relaxed);
+  }
+  std::size_t table_hits() const noexcept { return table_hits_.load(std::memory_order_relaxed); }
+  std::size_t computed() const noexcept { return computed_.load(std::memory_order_relaxed); }
+  std::size_t equity_fallbacks() const noexcept {
+    return equity_fallbacks_.load(std::memory_order_relaxed);
+  }
+
+ private:
+  struct CachedConfig;
+  struct Cache;
+  std::shared_ptr<const CachedConfig> get_config(const std::array<int, 3>& flop_class,
+                                                 std::uint8_t spr_bucket) const;
+
+  const NSeatDeclaredFrontierTable& table_;
+  std::filesystem::path policy_dir_;
+  std::size_t cache_capacity_;
+  mutable std::shared_mutex cache_mutex_;
+  mutable std::unique_ptr<Cache> cache_;
+  mutable EquityFrontierEvaluator equity_fallback_;
+  mutable std::atomic<std::size_t> cache_hits_{0};
+  mutable std::atomic<std::size_t> cache_misses_{0};
+  mutable std::atomic<std::size_t> table_hits_{0};
+  mutable std::atomic<std::size_t> computed_{0};
+  mutable std::atomic<std::size_t> equity_fallbacks_{0};
 };
 
 }  // namespace bs::gto

@@ -1765,7 +1765,90 @@ collision degrades to a bucket collision, never a wrong value.
 6. Scales by `pot_actual / pot_representative` and returns per-seat values.
 
 A missing entry throws `std::invalid_argument` (fail closed). The evaluator
-never invents a value and never falls back to all-in equity.
+never invents a value. At zero SPR (all-in, no postflop decisions remain) the
+evaluator delegates to `EquityFrontierEvaluator`: exact all-in equity is the
+equilibrium value of an all-in-at-flop game, not a heuristic.
+
+**On-the-fly postflop frontier evaluator** (`OnTheFlyPostflopEvaluator`,
+RFC 0013 Stage 2). Extends the declared-table evaluator with policy-based
+computation for missing entries. When a `(flop, spr_bucket, hands)` tuple is
+not in the declared table, the evaluator loads the saved CFR policy for that
+config from a policy directory, loads the serialized tree (`.atf`) if
+available or builds it from scratch, and calls
+`extract_root_value` to compute the exact equilibrium value. This is
+GTO-compliant: the value comes from the converged CFR policy, not a
+heuristic. The evaluator caches `(policy, tree)` pairs in an LRU cache
+(default capacity 128) to avoid reloading and rebuilding on repeated calls
+for the same config. Cache statistics are exposed via `cache_hits()`,
+`cache_misses()`, `table_hits()`, `computed()`, and `equity_fallbacks()`.
+
+The cache is thread-safe (RFC 0014 optimization): entries are held as
+`shared_ptr<const CachedConfig>` so a config stays alive even if evicted
+while another thread is using it. A `shared_mutex` guards the map —
+readers take a shared lock for lookup, writers take a unique lock for
+insert/evict. Disk I/O (policy/tree loading) happens outside any lock.
+All counters and the LRU access counter are `std::atomic`. The
+`EquityFrontierEvaluator` fallback cache is also mutex-protected.
+The cache capacity is configurable via the constructor parameter
+`cache_capacity` (default 128).
+
+**NSP1 policy codec** (`save_nseat_policy` / `load_nseat_policy`).
+Serializes an `NSeatPolicy` to a compact binary file (NSP1 format) and loads
+it back. The file layout is a 32-byte header (magic, version, seat count,
+SPR bucket, row count, flop class) followed by variable-length rows. Each
+row stores the card bucket, node index, action list (type + target total),
+and probability vector. Policy files are named
+`policy_{c0}_{c1}_{c2}_b{b}.nsp` where `{c0,c1,c2}` is the canonical flop
+class and `{b}` is the SPR bucket.
+
+**NSPZ compressed policy codec** (RFC 0014 optimization). `save_nseat_policy`
+now writes zstd-compressed files by default: the NSP1 payload is serialized
+to a buffer, compressed with zstd level 3, and wrapped in an NSPZ container
+(magic `"NSPZ"`, version, uncompressed size, compressed data). `load_nseat_policy`
+auto-detects the format from the magic bytes — `"NSP1"` reads raw, `"NSPZ"`
+decompresses. Compression ratios of 6-8x are typical for policy files.
+The `bigshark-tree-recompress` tool migrates existing NSP1 files to NSPZ
+in place (atomic `.tmp` + rename).
+
+**ATF tree codec** (`AbstractTree::save` / `AbstractTree::load`, RFC 0014).
+Serializes the tree structure (nodes, children, actions) and terminal payloads
+to a compact binary file. Two versions:
+
+- **v1**: tree structure only; terminals recomputed on load by DFS replay.
+- **v2** (current): tree structure + serialized terminal payloads. Eliminates
+  the DFS terminal recompute (~300-400 ms on large trees), reducing load time
+  by ~1.65x. File size increases ~1.2x.
+
+`load()` accepts both v1 and v2 (v1 falls back to DFS recompute). The load
+path uses a cursor (memcpy reads, >10 GB/s) instead of `std::istringstream`
+(~82 MB/s), and error messages are constructed only on the failure path.
+
+The file layout is a 32-byte header (magic, version, node count, terminal
+count, depth, accounted bytes) followed by variable-length nodes and (v2+)
+terminal records. Tree files are named `tree_{c0}_{c1}_{c2}_b{b}.atf`. The
+on-the-fly evaluator loads a serialized tree when available (~60-400 ms)
+instead of building from scratch (~5 s).
+
+**ATFZ compressed tree codec** (RFC 0014 optimization). `AbstractTree::save`
+writes zstd-compressed files by default: the ATF payload is serialized to a
+buffer, compressed with zstd level 3, and wrapped in an ATFZ container
+(magic `"ATFZ"`, version, uncompressed size, compressed data). `load()`
+auto-detects the format from the magic bytes — `"ATF1"` reads raw, `"ATFZ"`
+decompresses. Compression ratios of 7-8x are typical for tree files
+(~30 MB → ~4 MB), reducing the on-the-fly evaluator's cache-miss I/O cost
+proportionally. The `bigshark-tree-recompress` tool migrates existing raw ATF1
+files to ATFZ in place. The `bigshark-tree-migrate-v2` tool migrates ATFZ v1
+files to v2 (serialized terminals) in place.
+
+**Shared postflop config** (`make_postflop_def` /
+`make_postflop_abstraction`). Produces the `GameDef` and
+`ActionAbstraction` for a flop-rooted river-terminal subgame at a given
+SPR bucket. The pot is fixed at 100 chips (each seat contributed 50); the
+stack is `round(100 * representative_spr)`. Buckets 0–1 use the default
+size schedule; buckets 2–3 use a reduced schedule (½-pot and 1-pot bets);
+buckets 4–5 use a minimal schedule (1-pot bets only). Both the oracle and
+the on-the-fly evaluator use these functions so the tree structure is
+identical.
 
 **Root-value extraction** (`extract_root_value`). Walks a solved
 `NSeatPolicy`'s abstract tree for one fixed joint deal and computes the
@@ -1791,11 +1874,51 @@ On a small river-rooted fixture the traversal is cross-checked against
 
 | File | Component |
 | --- | --- |
-| `engine/include/bs/postflop_frontier.hpp` | `SprBucketConfig`, `NSeatDeclaredFrontierTable`, `PostflopFrontierEvaluator` |
+| `engine/include/bs/postflop_frontier.hpp` | `SprBucketConfig`, `NSeatDeclaredFrontierTable`, `PostflopFrontierEvaluator`, `OnTheFlyPostflopEvaluator` |
 | `engine/src/gto/postflop_frontier.cpp` | Implementation |
 | `engine/include/bs/root_value_extractor.hpp` | `extract_root_value` declaration |
 | `engine/src/gto/root_value_extractor.cpp` | Policy-following tree walk |
+| `engine/include/bs/nseat_policy_codec.hpp` | NSP1/NSPZ policy serialization declarations |
+| `engine/src/gto/nseat_policy_codec.cpp` | NSP1/NSPZ save/load implementation |
+| `engine/src/tree/abstract_tree_codec.cpp` | ATF1/ATFZ tree structure save/load implementation |
+| `engine/benchmarks/postflop_tree_cache.cpp` | Pre-build tool for serialized tree cache |
+| `engine/benchmarks/tree_recompress.cpp` | Parallel NSP1→NSPZ / ATF1→ATFZ migration tool |
+| `engine/tests/test_abstract_tree_codec.cpp` | ATF1/ATFZ roundtrip test |
+| `engine/include/bs/postflop_config.hpp` | `make_postflop_def`, `make_postflop_abstraction` declarations |
+| `engine/src/gto/postflop_config.cpp` | Shared postflop game/abstraction config |
 | `engine/tests/test_postflop_frontier.cpp` | Five unit tests (bucketing, roundtrip, scaling, cross-check, end-to-end) |
+
+### Parallel N-seat CFR trainer (RFC 0014 optimization)
+
+`train_nseat_parallel()` (declared in `nseat_trainer.hpp`, implemented in
+`nseat_trainer.cpp`) runs external-sampling MCCFR with RM+ across multiple
+threads. Each worker has its own local regret/average table — no shared
+mutable state during training. Iterations are assigned deterministically:
+thread `t` runs iterations `{t, t+K, t+2K, ...}` where `K` is the thread
+count. The PRNG stream is derived from
+`derive_nseat_stream(master_seed, purpose, abs_iter, traverser)` with no
+thread ID, so the same iteration always produces the same sampled trajectory
+regardless of which thread runs it.
+
+All workers share ONE regret/average-weight table protected by a
+`shared_mutex`. Workers use synchronized regret updates: each worker reads
+the current strategy under a shared lock, applies its average-weight and
+regret updates under a unique lock, and releases the lock during recursion.
+This eliminates the convergence cost of the merge-at-end approach — every
+worker sees the latest regrets immediately, so the effective iteration count
+matches single-threaded training. The witness PRNG is advanced once per total
+completed iteration, then one more for the final state, matching the
+single-threaded trainer's PRNG semantics.
+
+Resource caps (`max_bytes`, `max_information_sets`, `max_visits`) are NOT
+divided by the thread count: the shared table uses the full requested limits.
+Lock hold time is very short (read/write a few doubles), and the recursive
+walk holds no locks, so contention is minimal even with 8 threads.
+
+The preflop profile builder accepts `--threads N` (default 1) and
+`--cache-capacity N` (default 128). When `--threads > 1`, it calls
+`train_nseat_parallel`; otherwise `train_nseat`. The manifest records
+`parallel_threads` when greater than 1.
 
 ## Flop and Turn Policy
 

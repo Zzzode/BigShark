@@ -18,6 +18,7 @@
 //     std::map never invalidates references to other elements.
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bs/frontier.hpp>
 #include <bs/multiway_sampler.hpp>
 #include <bs/nseat_trainer.hpp>
@@ -25,12 +26,16 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <numeric>
+#include <shared_mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -209,8 +214,10 @@ struct SweepContext {
   const AbstractTree* tree = nullptr;
   std::span<const std::array<int, 2>> holes;
   std::map<NSeatInformationKey, NSeatRawRow>* rows = nullptr;
+  // Null in single-threaded mode; non-null in the synchronized parallel path.
+  std::shared_mutex* table_mutex = nullptr;
   std::size_t* retained_bytes = nullptr;
-  std::size_t* visits = nullptr;
+  std::atomic<std::size_t>* visits = nullptr;
   const NSeatTrainerLimits* limits = nullptr;
   SplitMix64* action_rng = nullptr;
   SplitMix64* chance_rng = nullptr;
@@ -220,6 +227,39 @@ struct SweepContext {
 
 NSeatRawRow& touch_row(SweepContext& ctx, const NSeatInformationKey& key,
                        const std::vector<Action>& menu) {
+  if (ctx.table_mutex == nullptr) {
+    // Single-threaded path: no locking overhead.
+    auto it = ctx.rows->find(key);
+    if (it != ctx.rows->end()) {
+      if (it->second.actions != menu)
+        throw std::runtime_error("nseat trainer row address merged nodes with different menus");
+      return it->second;
+    }
+    if (ctx.rows->size() >= ctx.limits->max_information_sets)
+      throw nseat_training_exhausted("nseat trainer exceeded the information-set cap");
+    const std::size_t charge = row_bytes(menu.size());
+    if (charge > ctx.limits->max_bytes - *ctx.retained_bytes)
+      throw nseat_training_exhausted("nseat trainer exceeded the byte cap");
+    *ctx.retained_bytes += charge;
+    NSeatRawRow row;
+    row.actions = menu;
+    row.regrets.assign(menu.size(), 0.0);
+    row.sums.assign(menu.size(), 0.0);
+    return ctx.rows->emplace(key, std::move(row)).first->second;
+  }
+  // Multi-threaded path: double-checked locking. The fast path (row already
+  // exists) takes only a shared lock; the slow path (new row) upgrades to a
+  // unique lock and re-checks to avoid duplicate inserts.
+  {
+    std::shared_lock<std::shared_mutex> lock(*ctx.table_mutex);
+    auto it = ctx.rows->find(key);
+    if (it != ctx.rows->end()) {
+      if (it->second.actions != menu)
+        throw std::runtime_error("nseat trainer row address merged nodes with different menus");
+      return it->second;
+    }
+  }
+  std::unique_lock<std::shared_mutex> lock(*ctx.table_mutex);
   auto it = ctx.rows->find(key);
   if (it != ctx.rows->end()) {
     if (it->second.actions != menu)
@@ -249,9 +289,9 @@ struct DepthGuard {
     ++ctx.depth;
     if (ctx.depth > ctx.limits->max_depth)
       throw nseat_training_exhausted("nseat trainer exceeded the depth cap");
-    if (*ctx.visits == ctx.limits->max_visits)
+    if (ctx.visits->load(std::memory_order_relaxed) == ctx.limits->max_visits)
       throw nseat_training_exhausted("nseat trainer exceeded the visit cap");
-    ++*ctx.visits;
+    ctx.visits->fetch_add(1, std::memory_order_relaxed);
   }
   ~DepthGuard() { --ctx.depth; }
   DepthGuard(const DepthGuard&) = delete;
@@ -349,20 +389,37 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
   // Stack-allocated strategy buffer: menus are small (≤ 32 actions), avoids a
   // heap allocation on every action-node visit.
   std::array<double, 32> sigma_buf{};
-  current_strategy(row, std::span<double>(sigma_buf.data(), menu.size()));
+  if (ctx.table_mutex != nullptr) {
+    // Read the strategy under a shared lock so a concurrent regret update on
+    // another thread cannot tear the read. The strategy is copied to the local
+    // buffer; the lock is released before recursion.
+    std::shared_lock<std::shared_mutex> lock(*ctx.table_mutex);
+    current_strategy(row, std::span<double>(sigma_buf.data(), menu.size()));
+  } else {
+    current_strategy(row, std::span<double>(sigma_buf.data(), menu.size()));
+  }
   const double* sigma = sigma_buf.data();
 
   if (actor == ctx.traverser) {
     // kFull own-reach-weighted average AT THE TRAVERSER'S OWN NODE, once per
     // sweep (the full derivation is in the header). visits counts own-node
     // touches separately for maturity instrumentation; it is not the weight.
-    for (std::size_t a = 0; a < menu.size(); ++a)
-      row.sums[a] += own_reach * sigma[a];
-    ++row.visits;
+    if (ctx.table_mutex != nullptr) {
+      std::unique_lock<std::shared_mutex> lock(*ctx.table_mutex);
+      for (std::size_t a = 0; a < menu.size(); ++a)
+        row.sums[a] += own_reach * sigma[a];
+      ++row.visits;
+    } else {
+      for (std::size_t a = 0; a < menu.size(); ++a)
+        row.sums[a] += own_reach * sigma[a];
+      ++row.visits;
+    }
 
     // Enumerate every action over its sampled external continuation, then the
     // unweighted RM+ regret update on return. Node insertion during recursion
     // cannot invalidate the `row` reference (std::map reference stability).
+    // No lock is held during recursion: the recursive walk only touches rows
+    // through its own touch_row/current_strategy calls.
     std::array<double, 32> children{};
     for (std::size_t a = 0; a < menu.size(); ++a) {
       GameState next = state.after_action(actor, menu[a]);
@@ -371,9 +428,17 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
     double value = 0.0;
     for (std::size_t a = 0; a < menu.size(); ++a)
       value += sigma[a] * children[a];
-    for (std::size_t a = 0; a < menu.size(); ++a) {
-      const double updated = row.regrets[a] + (children[a] - value);
-      row.regrets[a] = updated > 0.0 ? updated : 0.0;
+    if (ctx.table_mutex != nullptr) {
+      std::unique_lock<std::shared_mutex> lock(*ctx.table_mutex);
+      for (std::size_t a = 0; a < menu.size(); ++a) {
+        const double updated = row.regrets[a] + (children[a] - value);
+        row.regrets[a] = updated > 0.0 ? updated : 0.0;
+      }
+    } else {
+      for (std::size_t a = 0; a < menu.size(); ++a) {
+        const double updated = row.regrets[a] + (children[a] - value);
+        row.regrets[a] = updated > 0.0 ? updated : 0.0;
+      }
     }
     return value;
   }
@@ -494,7 +559,8 @@ void run_sweep(const AbstractTree& tree,
                const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
                const std::vector<int>& root_board, std::size_t traverser,
                NSeatTraversalStreams& streams, std::map<NSeatInformationKey, NSeatRawRow>& table,
-               std::size_t& retained_bytes, std::size_t& visits, const NSeatTrainerLimits& limits,
+               std::shared_mutex* table_mutex, std::size_t& retained_bytes,
+               std::atomic<std::size_t>& visits, const NSeatTrainerLimits& limits,
                const gto::FrontierEvaluator* frontier) {
   const MultiwayDeal deal = sample_scalable_joint_deal(ranges, root_board, streams.joint_deal);
   if (deal.hands.size() != ranges.size())
@@ -510,6 +576,7 @@ void run_sweep(const AbstractTree& tree,
   ctx.tree = &tree;
   ctx.holes = holes;
   ctx.rows = &table;
+  ctx.table_mutex = table_mutex;
   ctx.retained_bytes = &retained_bytes;
   ctx.visits = &visits;
   ctx.limits = &limits;
@@ -615,7 +682,7 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
 
   std::map<NSeatInformationKey, NSeatRawRow> table;
   std::size_t retained_bytes = 0;
-  std::size_t visits = 0;
+  std::atomic<std::size_t> visits{0};
   // Witness RNG advanced exactly once per COMPLETED iteration. The derived
   // iteration key 0x5749544e45535300 ("WITNESS\0") cannot collide with a real
   // iteration's stream, and its first draw seeds the witness.
@@ -665,8 +732,8 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
           derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, abs_iter, traverser),
           derive_nseat_stream(master_seed, NSeatStreamPurpose::OpponentAction, abs_iter, traverser),
           derive_nseat_stream(master_seed, NSeatStreamPurpose::ChanceCard, abs_iter, traverser)};
-      run_sweep(tree, sampler_ranges, root_board, traverser, streams, table, retained_bytes, visits,
-                limits, frontier);
+      run_sweep(tree, sampler_ranges, root_board, traverser, streams, table,
+                /*table_mutex=*/nullptr, retained_bytes, visits, limits, frontier);
     }
     ++completed;
     witness.next_u64();
@@ -680,7 +747,7 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
       wall_reached ? NSeatTerminationPhase::WallClock : NSeatTerminationPhase::Complete;
   result.completed_iterations = completed;
   result.nodes = tree.size();
-  result.visits = visits;
+  result.visits = visits.load(std::memory_order_relaxed);
   result.information_sets = table.size();
   result.accounted_bytes = retained_bytes;
   result.seed = master_seed;
@@ -693,6 +760,145 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
   // RFC 0012 Phase 4: hand the raw table back to the caller so the builder can
   // checkpoint it and warm-start the next chunk. The sealed policy above is
   // derived from the same table before the move.
+  result.raw_rows = std::move(table);
+  return result;
+}
+
+NSeatTrainingResult train_nseat_parallel(const tree::AbstractTree& tree,
+                                         const std::vector<std::vector<WeightedHand>>& ranges,
+                                         std::uint64_t iterations, std::uint64_t master_seed,
+                                         const NSeatTrainerLimits& limits,
+                                         const gto::FrontierEvaluator* frontier,
+                                         std::size_t num_threads) {
+  validate_request(tree, ranges);
+  if (iterations == 0)
+    throw std::invalid_argument("nseat trainer requires a positive iteration count");
+  if (limits.max_nodes == 0 || limits.max_information_sets == 0 || limits.max_depth == 0 ||
+      limits.max_bytes == 0 || limits.max_visits == 0 || limits.wall.count() <= 0)
+    throw std::invalid_argument("nseat trainer requires positive resource limits");
+  if (tree.def().terminal == poker::TerminalDepth::Flop && frontier == nullptr)
+    throw std::invalid_argument(
+        "nseat trainer: a flop-terminal game requires a frontier evaluator");
+  const std::size_t seats = tree.def().player_count;
+  if (tree.size() > limits.max_nodes)
+    throw nseat_training_exhausted("nseat trainer tree exceeds the node cap");
+  if (tree.depth() > limits.max_depth)
+    throw nseat_training_exhausted("nseat trainer tree exceeds the depth cap");
+  if (tree.accounted_bytes() > limits.max_bytes)
+    throw nseat_training_exhausted("nseat trainer tree exceeds the byte cap");
+
+  // Clamp thread count: at least 1, at most iterations (each thread needs
+  // at least one iteration).
+  if (num_threads == 0)
+    num_threads = 1;
+  if (static_cast<std::uint64_t>(num_threads) > iterations)
+    num_threads = static_cast<std::size_t>(iterations);
+
+  // Synchronized regret updates: all workers share one regret/average-weight
+  // table protected by a shared_mutex. This eliminates the √K convergence
+  // cost of the merge-at-end approach — every worker sees the latest regrets
+  // immediately, so the effective iteration count is the same as
+  // single-threaded. Resource caps are NOT divided: the shared table uses the
+  // full requested limits.
+  const auto sampler_ranges = to_sampler_ranges(ranges, seats);
+  const std::vector<int> root_board(tree.def().board.begin(),
+                                    tree.def().board.begin() + tree.def().board_size);
+
+  // Shared state: one table, one mutex, one atomic visit counter.
+  std::map<NSeatInformationKey, NSeatRawRow> table;
+  std::shared_mutex table_mutex;
+  std::size_t retained_bytes = 0;
+  std::atomic<std::size_t> visits{0};
+  std::atomic<bool> stop{false};
+  std::atomic<bool> error_flag{false};
+  std::exception_ptr error_exception;  // written once by the first failing thread
+  const auto wall_start = std::chrono::steady_clock::now();
+
+  // Per-thread completed counter (for deterministic iteration assignment).
+  std::vector<std::atomic<std::uint64_t>> thread_completed(num_threads);
+  for (auto& c : thread_completed)
+    c.store(0, std::memory_order_relaxed);
+
+  // Worker: thread t runs iterations {t, t+K, t+2K, ...}. This deterministic
+  // assignment makes the result reproducible given a fixed thread count.
+  auto worker = [&](std::size_t thread_id) {
+    try {
+      for (std::uint64_t iter = thread_id; iter < iterations; iter += num_threads) {
+        if (stop.load(std::memory_order_relaxed) || error_flag.load(std::memory_order_relaxed))
+          break;
+        if (std::chrono::steady_clock::now() - wall_start > limits.wall) {
+          stop.store(true, std::memory_order_relaxed);
+          break;
+        }
+        for (std::size_t traverser = 0; traverser < seats; ++traverser) {
+          NSeatTraversalStreams streams{
+              derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, iter, traverser),
+              derive_nseat_stream(master_seed, NSeatStreamPurpose::OpponentAction, iter, traverser),
+              derive_nseat_stream(master_seed, NSeatStreamPurpose::ChanceCard, iter, traverser)};
+          run_sweep(tree, sampler_ranges, root_board, traverser, streams, table, &table_mutex,
+                    retained_bytes, visits, limits, frontier);
+        }
+        thread_completed[thread_id].fetch_add(1, std::memory_order_relaxed);
+      }
+    } catch (...) {
+      // First thread to fail captures the exception; others see error_flag
+      // and stop at their next iteration boundary.
+      if (!error_flag.exchange(true, std::memory_order_relaxed))
+        error_exception = std::current_exception();
+    }
+  };
+
+  // Launch and join.
+  std::vector<std::thread> threads;
+  threads.reserve(num_threads);
+  for (std::size_t t = 0; t < num_threads; ++t)
+    threads.emplace_back(worker, t);
+  for (auto& t : threads)
+    t.join();
+
+  // Re-throw the first exception if any thread failed.
+  if (error_exception)
+    std::rethrow_exception(error_exception);
+
+  // Count total completed iterations.
+  std::uint64_t total_completed = 0;
+  for (const auto& c : thread_completed)
+    total_completed += c.load(std::memory_order_relaxed);
+
+  if (total_completed == 0)
+    throw nseat_training_exhausted(
+        "nseat trainer completed zero iterations before the wall cap; no policy to publish");
+
+  // No merge step: the shared table already contains all regret and
+  // average-weight updates from every worker.
+
+  const bool wall_reached = stop.load(std::memory_order_relaxed);
+
+  // Build result.
+  NSeatTrainingResult result;
+  result.termination =
+      wall_reached ? NSeatTerminationPhase::WallClock : NSeatTerminationPhase::Complete;
+  result.completed_iterations = total_completed;
+  result.nodes = tree.size();
+  result.visits = visits.load(std::memory_order_relaxed);
+  result.information_sets = table.size();
+  result.accounted_bytes = retained_bytes;
+  result.seed = master_seed;
+
+  // Witness PRNG: advance once per completed iteration, then one more for the
+  // final state. This matches the single-threaded trainer's witness semantics.
+  SplitMix64 witness(
+      derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, 0x5749544e45535300ULL, 0)
+          .next_u64());
+  for (std::uint64_t i = 0; i < total_completed; ++i)
+    witness.next_u64();
+  result.prng_state = witness.next_u64();
+
+  result.algorithm_revision = kNSeatAlgorithmRevision;
+  result.policy.game_ = tree.def();
+  result.policy.action_id_ = tree.action_id();
+  for (const auto& [key, raw] : table)
+    result.policy.rows_.emplace(key, seal_row(raw));
   result.raw_rows = std::move(table);
   return result;
 }
@@ -713,9 +919,9 @@ void debug_run_one_nseat_sweep(const AbstractTree& tree,
                                     tree.def().board.begin() + tree.def().board_size);
   const NSeatTrainerLimits limits;  // the seam runs under the default caps
   std::size_t retained_bytes = 0;
-  std::size_t visits = 0;
-  run_sweep(tree, sampler_ranges, root_board, traverser, streams, rows, retained_bytes, visits,
-            limits, frontier);
+  std::atomic<std::size_t> visits{0};
+  run_sweep(tree, sampler_ranges, root_board, traverser, streams, rows,
+            /*table_mutex=*/nullptr, retained_bytes, visits, limits, frontier);
 }
 
 const NSeatPolicyRow* NSeatPolicy::lookup(const tree::AbstractTree& tree,

@@ -86,33 +86,58 @@ std::vector<std::vector<WeightedHand>> all_combos(std::size_t player_count) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc < 2) {
+  // Parse optional flags first, then positional arguments.
+  std::size_t num_threads = 1;
+  std::size_t cache_capacity = 128;
+  std::vector<char*> positional;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--threads" && i + 1 < argc) {
+      num_threads = static_cast<std::size_t>(std::atoll(argv[++i]));
+    } else if (arg == "--cache-capacity" && i + 1 < argc) {
+      cache_capacity = static_cast<std::size_t>(std::atoll(argv[++i]));
+    } else {
+      positional.push_back(argv[i]);
+    }
+  }
+  const int pargc = static_cast<int>(positional.size()) + 1;
+  std::vector<char*> pargv;
+  pargv.push_back(argv[0]);
+  for (char* p : positional)
+    pargv.push_back(p);
+
+  if (pargc < 2) {
     std::fprintf(stderr,
                  "usage: %s <output-dir> [iterations] [stack-bb] [seats] [abstraction]\n"
-                 "       [frontier-table-path]\n"
+                 "       [frontier-table-path] [policy-dir] [--threads N] [--cache-capacity N]\n"
                  "  defaults: 100000 iterations, 100 BB stack, 2 seats (heads-up), identity\n"
                  "  seats 3..10 trains an RFC 0010 multiway profile\n"
                  "  abstraction: 'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)\n"
                  "  frontier-table-path: .fdt declared postflop table (RFC 0013);\n"
-                 "    default is the equity frontier (all-in-at-flop)",
+                 "    default is the equity frontier (all-in-at-flop)\n"
+                 "  policy-dir: directory with .nsp policy files for on-the-fly\n"
+                 "    evaluation of missing table entries (RFC 0013 Stage 2)\n"
+                 "  --threads N: parallel CFR with N threads (default 1)\n"
+                 "  --cache-capacity N: LRU cache size (default 128)",
                  argv[0]);
     return 1;
   }
-  const std::filesystem::path out_dir = argv[1];
-  const std::uint64_t iterations = argc > 2 ? std::atoll(argv[2]) : 100000;
-  const int stack_bb = argc > 3 ? std::atoi(argv[3]) : 100;
-  const int seats = argc > 4 ? std::atoi(argv[4]) : 2;
+  const std::filesystem::path out_dir = pargv[1];
+  const std::uint64_t iterations = pargc > 2 ? std::atoll(pargv[2]) : 100000;
+  const int stack_bb = pargc > 3 ? std::atoi(pargv[3]) : 100;
+  const int seats = pargc > 4 ? std::atoi(pargv[4]) : 2;
   if (seats < 2 || seats > 10) {
     std::fprintf(stderr, "seats must be in 2..10 (got %d)\n", seats);
     return 1;
   }
   const std::size_t player_count = static_cast<std::size_t>(seats);
-  const bool coarse = argc > 5 && std::string(argv[5]) == "coarse";
-  if (argc > 5 && !coarse && std::string(argv[5]) != "identity") {
-    std::fprintf(stderr, "abstraction must be 'identity' or 'coarse' (got '%s')\n", argv[5]);
+  const bool coarse = pargc > 5 && std::string(pargv[5]) == "coarse";
+  if (pargc > 5 && !coarse && std::string(pargv[5]) != "identity") {
+    std::fprintf(stderr, "abstraction must be 'identity' or 'coarse' (got '%s')\n", pargv[5]);
     return 1;
   }
-  const std::string frontier_table_path = argc > 6 ? argv[6] : "";
+  const std::string frontier_table_path = pargc > 6 ? pargv[6] : "";
+  const std::string policy_dir = pargc > 7 ? pargv[7] : "";
   // The equity frontier is retained for <= 15 BB (jam/fold is near-optimal at
   // short stacks) and when no table is supplied (backward-compatible default).
   const bool use_postflop = !frontier_table_path.empty() && stack_bb > 15;
@@ -136,15 +161,23 @@ int main(int argc, char** argv) {
   EquityFrontierEvaluator equity_frontier;
   std::unique_ptr<NSeatDeclaredFrontierTable> declared_table;
   std::unique_ptr<PostflopFrontierEvaluator> postflop_evaluator;
+  std::unique_ptr<OnTheFlyPostflopEvaluator> onthefly_evaluator;
   std::string table_identity;
   const FrontierEvaluator* frontier = &equity_frontier;
   const char* frontier_tag = "exact-equity-all-in-flop";
   if (use_postflop) {
     declared_table = std::make_unique<NSeatDeclaredFrontierTable>(
         NSeatDeclaredFrontierTable::load(frontier_table_path, &table_identity));
-    postflop_evaluator = std::make_unique<PostflopFrontierEvaluator>(*declared_table);
-    frontier = postflop_evaluator.get();
-    frontier_tag = "postflop-declared-table-v1";
+    if (!policy_dir.empty()) {
+      onthefly_evaluator = std::make_unique<OnTheFlyPostflopEvaluator>(
+          *declared_table, std::filesystem::path(policy_dir), cache_capacity);
+      frontier = onthefly_evaluator.get();
+      frontier_tag = "postflop-onthefly-v1";
+    } else {
+      postflop_evaluator = std::make_unique<PostflopFrontierEvaluator>(*declared_table);
+      frontier = postflop_evaluator.get();
+      frontier_tag = "postflop-declared-table-v1";
+    }
   }
 
   std::size_t action_nodes = 0;
@@ -156,6 +189,8 @@ int main(int argc, char** argv) {
               player_count, ranges[0].size(), static_cast<unsigned long long>(iterations));
   std::printf("Tree: %zu nodes (%zu action), %zu bytes\n", tree.size(), action_nodes,
               tree.accounted_bytes());
+  if (num_threads > 1)
+    std::printf("Parallel: %zu threads\n", num_threads);
   if (use_postflop) {
     std::printf("Frontier: %s (%zu entries, identity: %s)\n", frontier_tag, declared_table->size(),
                 table_identity.c_str());
@@ -164,11 +199,18 @@ int main(int argc, char** argv) {
   }
 
   NSeatTrainerLimits limits;
-  limits.wall = std::chrono::minutes(30);
+  // RFC 0014: raised from 30 minutes to 12 hours. With the serialized tree
+  // cache, the on-the-fly evaluator loads trees from disk (~100 ms) instead
+  // of building from scratch (~5 s), so 100K iterations completes in hours
+  // rather than days. The wall clock is a safety net, not the primary
+  // termination condition — Complete (all iterations) is the expected path.
+  limits.wall = std::chrono::hours(12);
 
   const auto start = std::chrono::steady_clock::now();
   const NSeatTrainingResult trained =
-      train_nseat(tree, ranges, iterations, 20261003, limits, frontier);
+      num_threads > 1
+          ? train_nseat_parallel(tree, ranges, iterations, 20261003, limits, frontier, num_threads)
+          : train_nseat(tree, ranges, iterations, 20261003, limits, frontier);
   const auto elapsed = std::chrono::steady_clock::now() - start;
   const double wall_s = std::chrono::duration<double>(elapsed).count();
 
@@ -235,6 +277,8 @@ int main(int argc, char** argv) {
   mf << "  \"card_abstraction\": \"preflop-169\",\n";
   mf << "  \"action_abstraction\": \"" << action_abstraction.id().to_string() << "\",\n";
   mf << "  \"frontier_evaluator\": \"" << frontier_tag << "\",\n";
+  if (num_threads > 1)
+    mf << "  \"parallel_threads\": " << num_threads << ",\n";
   if (use_postflop) {
     mf << "  \"frontier_table_path\": \"" << frontier_table_path << "\",\n";
     mf << "  \"frontier_table_sha256\": \"" << sha256_file_hex(frontier_table_path) << "\",\n";

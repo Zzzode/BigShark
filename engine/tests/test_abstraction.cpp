@@ -284,7 +284,8 @@ int test_identity_and_typed_refusal() {
     CHECK(preflop_score != 0);
     bool rejected_long = false;
     try {
-      (void)strength_bucket(hole, {1, 2, 3, 4, 5, 6});
+      constexpr std::array<int, 6> long_board{1, 2, 3, 4, 5, 6};
+      (void)strength_bucket(hole, long_board);
     } catch (const std::invalid_argument&) {
       rejected_long = true;
     }

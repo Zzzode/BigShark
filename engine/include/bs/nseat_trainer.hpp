@@ -81,7 +81,6 @@
 #include <map>
 #include <stdexcept>
 #include <vector>
-
 namespace bs::gto {
 class FrontierEvaluator;  // RFC 0007: flop-terminal frontier evaluation
 }
@@ -193,9 +192,21 @@ struct NSeatInitialState;    // RFC 0012 Phase 4: warm-start state, defined belo
 
 class NSeatPolicy {
  public:
+  // Default constructor: an empty policy (no rows). Needed by NSeatTrainingResult;
+  // the intended construction path is from_parts (codec) or train_nseat.
+  NSeatPolicy() = default;
+
   const poker::GameDef& game() const noexcept { return game_; }
   const abstraction::AbstractionId& action_id() const noexcept { return action_id_; }
   const std::map<NSeatInformationKey, NSeatPolicyRow>& rows() const noexcept { return rows_; }
+
+  // RFC 0013 Stage 2: reconstruct a policy from saved rows (policy codec).
+  // The game def and action id must match the tree the rows were trained on;
+  // they are not stored in the policy file (reconstructed from the config).
+  static NSeatPolicy from_parts(poker::GameDef game, abstraction::AbstractionId action_id,
+                                std::map<NSeatInformationKey, NSeatPolicyRow> rows) {
+    return NSeatPolicy(std::move(game), std::move(action_id), std::move(rows));
+  }
 
   // Exact lookup. MISSES ARE EXACT: a null return means no sealed row covers
   // the request (an unvisited node, an off-tree state, a different tree, or a
@@ -220,6 +231,15 @@ class NSeatPolicy {
                                          const std::vector<std::vector<WeightedHand>>&,
                                          std::uint64_t, std::uint64_t, const NSeatTrainerLimits&,
                                          const gto::FrontierEvaluator*, const NSeatInitialState*);
+  friend NSeatTrainingResult train_nseat_parallel(const tree::AbstractTree&,
+                                                  const std::vector<std::vector<WeightedHand>>&,
+                                                  std::uint64_t, std::uint64_t,
+                                                  const NSeatTrainerLimits&,
+                                                  const gto::FrontierEvaluator*, std::size_t);
+  // Private constructor used by from_parts (policy codec) and train_nseat.
+  NSeatPolicy(poker::GameDef game, abstraction::AbstractionId action_id,
+              std::map<NSeatInformationKey, NSeatPolicyRow> rows)
+      : game_(std::move(game)), action_id_(std::move(action_id)), rows_(std::move(rows)) {}
   poker::GameDef game_{};
   abstraction::AbstractionId action_id_{};
   std::map<NSeatInformationKey, NSeatPolicyRow> rows_;
@@ -302,6 +322,33 @@ NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,
                                 const NSeatTrainerLimits& limits,
                                 const gto::FrontierEvaluator* frontier = nullptr,
                                 const NSeatInitialState* initial_state = nullptr);
+
+// Parallel version of train_nseat (RFC 0014 optimization). Runs `num_threads`
+// workers that share ONE regret/average-weight table protected by a
+// shared_mutex. Workers use synchronized regret updates: each worker reads the
+// current strategy under a shared lock, applies its average-weight and regret
+// updates under a unique lock, and releases the lock during recursion. This
+// eliminates the sqrt(K) convergence cost of the merge-at-end approach — every
+// worker sees the latest regrets immediately, so the effective iteration count
+// matches single-threaded training.
+//
+// Iteration assignment is deterministic: thread t runs iterations
+// {t, t+K, t+2K, ...}, so the result is reproducible given a fixed thread
+// count (but NOT identical to a single-threaded run or a run with a different
+// thread count, because the order of concurrent updates is nondeterministic).
+//
+// Resource caps (max_bytes, max_information_sets, max_visits) are NOT divided:
+// the shared table uses the full requested limits. The wall cap is checked at
+// iteration boundaries by each thread; when reached, all threads stop after
+// their current iteration.
+//
+// No warm-start in the parallel version (the builder always starts fresh).
+NSeatTrainingResult train_nseat_parallel(const tree::AbstractTree& tree,
+                                         const std::vector<std::vector<WeightedHand>>& ranges,
+                                         std::uint64_t iterations, std::uint64_t master_seed,
+                                         const NSeatTrainerLimits& limits,
+                                         const gto::FrontierEvaluator* frontier,
+                                         std::size_t num_threads);
 
 // Test-only single-sweep seam (the stage-6 `debug_run_one_sweep` /
 // HeadsUpSolverDebug precedent): runs ONE external-sampling traverser sweep

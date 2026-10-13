@@ -199,6 +199,30 @@ TerminalPayload make_frontier_payload(const GameState& state) {
   return payload;
 }
 
+TerminalPayload make_terminal_payload(const GameState& state, bool folded) {
+  TerminalPayload payload;
+  payload.player_count = state.player_count();
+  payload.folded = folded;
+  payload.board_size = static_cast<std::uint8_t>(state.board().size());
+  for (std::size_t i = 0; i < state.board().size() && i < payload.board.size(); ++i)
+    payload.board[i] = state.board()[i];
+  const auto& players = state.players();
+  for (std::size_t seat = 0; seat < state.player_count(); ++seat) {
+    payload.seats[seat].contributed = players[seat].contributed;
+    payload.seats[seat].refunded = players[seat].refunded;
+    payload.seats[seat].stack = players[seat].stack;
+    payload.seats[seat].folded = players[seat].folded;
+  }
+  payload.live_count = state.live_players().size();
+  for (std::size_t i = 0; i < state.live_players().size(); ++i)
+    payload.live_order[i] = state.live_players()[i];
+  if (folded) {
+    ContributionSettlement settled = state.settle_fold();
+    payload.chip_utility = std::move(settled.chip_utility);
+  }
+  return payload;
+}
+
 // In bs::tree (not the anonymous namespace) so its name matches the
 // `friend class TreeBuilder` declaration on AbstractTree.
 class TreeBuilder {

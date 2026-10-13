@@ -27,6 +27,7 @@ their own RFC.
 | [0011](0011-turn-river-strategy.md) | Turn and River Continuation Strategy | Implemented | Engine, solver, resolver, artifact boundary, benchmarks |
 | [0012](0012-flop-library-performance.md) | Flop Library Performance Optimization | Implemented | Engine, solver, artifact boundary, resident, benchmarks |
 | [0013](0013-preflop-phase2.md) | Preflop Phase 2: Postflop-Aware Frontier Evaluation | Accepted | Engine, solver, artifact boundary, benchmarks |
+| [0014](0014-postflop-policy-persistence.md) | Postflop Policy Persistence and On-Demand Evaluation | Accepted | Engine, solver, benchmarks |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.

@@ -83,10 +83,20 @@ std::vector<double> EquityFrontierEvaluator::evaluate(
   const std::vector<int> key = make_key(flop, hands, ledger);
 
   // Check the cache. The value is a vector of N equity fractions.
+  // Thread safety: the cache is protected by mutex_. The equity computation
+  // (the expensive part) runs outside the lock; only the cache lookup and
+  // insert are serialized.
   std::vector<double> equity(n, 0.0);
-  if (auto it = equity_cache_.find(key); it != equity_cache_.end()) {
-    equity = it->second;
-  } else {
+  bool found = false;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (auto it = equity_cache_.find(key); it != equity_cache_.end()) {
+      equity = it->second;
+      found = true;
+    }
+  }
+
+  if (!found) {
     // Build the remaining card pool: 52 - 3 flop - 2N hole cards. All dealt
     // cards are blocked (including folded seats' cards), matching the
     // physical-deck interpretation of the sampler.
@@ -139,8 +149,11 @@ std::vector<double> EquityFrontierEvaluator::evaluate(
 
     // Insert into the cache if under the cap. Existing entries remain valid;
     // the cap only prevents unbounded growth for N-way preflop training.
-    if (equity_cache_.size() < cache_cap_)
-      equity_cache_.emplace(key, equity);
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (equity_cache_.size() < cache_cap_)
+        equity_cache_.emplace(key, equity);
+    }
   }
 
   // The pot is the sum of all seats' contributed amounts (including folded

@@ -15,6 +15,7 @@
 #include <array>
 #include <bs/frontier.hpp>
 #include <cstddef>
+#include <mutex>
 #include <span>
 #include <unordered_map>
 #include <vector>
@@ -53,6 +54,7 @@ class EquityFrontierEvaluator : public FrontierEvaluator {
   };
 
   std::size_t cache_cap_ = kDefaultCacheCap;
+  mutable std::mutex mutex_;
   mutable std::unordered_map<std::vector<int>, std::vector<double>, KeyHash> equity_cache_;
 };
 

@@ -43,7 +43,9 @@
 #include <bs/equity_frontier.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>  // WeightedHand
+#include <bs/nseat_policy_codec.hpp>
 #include <bs/nseat_trainer.hpp>
+#include <bs/postflop_config.hpp>
 #include <bs/postflop_frontier.hpp>
 #include <bs/range.hpp>  // comboIndex, comboCards
 #include <bs/root_value_extractor.hpp>
@@ -99,64 +101,6 @@ std::vector<std::vector<WeightedHand>> all_combos(std::size_t player_count) {
     }
   }
   return ranges;
-}
-
-// Build the representative postflop GameDef for a canonical flop class and SPR
-// bucket. The pot is fixed at 100 chips (scale-invariant); each seat contributed
-// 50 (equal, required by 2-seat rooted-board validation). The stack is set from
-// the representative SPR so that SPR = stack / pot.
-GameDef make_postflop_def(const std::array<int, 3>& canonical_flop, std::size_t spr_bucket) {
-  constexpr Chips kPot = 100;
-  const double rep_spr = SprBucketConfig::kRepresentativeSpr[spr_bucket];
-  const Chips stack = static_cast<Chips>(std::round(kPot * rep_spr));
-
-  GameDef def{};
-  def.player_count = 2;
-  def.button = 0;  // heads-up: button = SB, acts first postflop
-  def.big_blind = 2;
-  def.ante = 0;
-  def.stacks = {stack, stack, 0, 0, 0, 0, 0, 0, 0, 0};
-  def.contributions = {kPot / 2, kPot / 2, 0, 0, 0, 0, 0, 0, 0, 0};
-  def.pot = kPot;
-  def.board = {canonical_flop[0], canonical_flop[1], canonical_flop[2], 0, 0};
-  def.board_size = 3;
-  def.preflop = false;
-  def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-  def.terminal = TerminalDepth::River;
-  return def;
-}
-
-// SPR-dependent postflop action abstraction.
-//
-// Tree size grows exponentially with SPR because deeper stacks allow more
-// bets/raises per street. Using the full menu at high SPR produces trees that
-// exceed the byte/node caps. This function reduces the menu at higher SPR to
-// keep trees tractable while preserving the most important bet sizes.
-//
-//   Buckets 0-1 (SPR 0.5-1.5):  default  (1/3, 3/4, 3/2 bets; 1/2, 1/1 raises)
-//   Buckets 2-3 (SPR 3.0-5.5):  reduced  (1/2, 1/1 bets; 1/1 raises)
-//   Buckets 4-5 (SPR 9.5-15):   minimal  (1/1 bets; 1/1 raises)
-ActionAbstraction make_postflop_abstraction(std::size_t spr_bucket) {
-  SizeSchedule schedule = default_size_schedule();
-
-  if (spr_bucket >= 4) {
-    StreetSizes sizes;
-    sizes.bets = {{1, 1}};
-    sizes.raises = {{1, 1}};
-    schedule[static_cast<std::size_t>(Street::Flop)] = sizes;
-    schedule[static_cast<std::size_t>(Street::Turn)] = sizes;
-    schedule[static_cast<std::size_t>(Street::River)] = sizes;
-  } else if (spr_bucket >= 2) {
-    StreetSizes sizes;
-    sizes.bets = {{1, 2}, {1, 1}};
-    sizes.raises = {{1, 1}};
-    schedule[static_cast<std::size_t>(Street::Flop)] = sizes;
-    schedule[static_cast<std::size_t>(Street::Turn)] = sizes;
-    schedule[static_cast<std::size_t>(Street::River)] = sizes;
-  }
-  // Buckets 0-1 keep the default schedule.
-
-  return ActionAbstraction::declared(std::move(schedule), CoverSeeds::DeclaredOnly);
 }
 
 // Check if two two-card hands share a card.
@@ -219,14 +163,16 @@ int main(int argc, char** argv) {
   if (argc < 2) {
     std::fprintf(stderr,
                  "usage: %s <output-path> [iterations] [pf-iterations] [classes] [buckets] "
-                 "[max-deals] [class-start]\n"
+                 "[max-deals] [class-start] [policy-dir]\n"
                  "  output-path:   path to save the .fdt table\n"
                  "  iterations:    CFR iterations per postflop config (default 100000)\n"
                  "  pf-iterations: preflop training iterations (default 100000)\n"
                  "  classes:       limit canonical classes (0 = all remaining)\n"
                  "  buckets:       limit SPR buckets (0 = all 6)\n"
                  "  max-deals:     max deals per config (default 100, 0 = all)\n"
-                 "  class-start:   first canonical class index (default 0, for sharding)\n",
+                 "  class-start:   first canonical class index (default 0, for sharding)\n"
+                 "  policy-dir:    directory to save .nsp policy files (optional, for\n"
+                 "                 on-the-fly evaluation)\n",
                  argv[0]);
     return 1;
   }
@@ -238,6 +184,8 @@ int main(int argc, char** argv) {
   const int bucket_limit = argc > 5 ? std::atoi(argv[5]) : 0;
   const std::uint64_t max_deals = argc > 6 ? std::atoll(argv[6]) : 100;
   const std::size_t class_start = argc > 7 ? static_cast<std::size_t>(std::atoll(argv[7])) : 0;
+  const std::filesystem::path policy_dir =
+      argc > 8 ? std::filesystem::path(argv[8]) : std::filesystem::path();
 
   const std::size_t num_buckets =
       bucket_limit > 0 ? static_cast<std::size_t>(bucket_limit) : SprBucketConfig::kBucketCount;
@@ -249,6 +197,8 @@ int main(int argc, char** argv) {
   std::printf("  buckets:      %zu\n", num_buckets);
   if (max_deals > 0)
     std::printf("  max deals:    %llu per config\n", static_cast<unsigned long long>(max_deals));
+  if (!policy_dir.empty())
+    std::printf("  policy dir:   %s\n", policy_dir.string().c_str());
 
   // -----------------------------------------------------------------------
   // Step 1: Train round-0 preflop blueprint with the equity frontier.
@@ -353,6 +303,15 @@ int main(int argc, char** argv) {
               num_classes, class_start, class_start + num_classes);
   std::fflush(stdout);
 
+  // Create the policy directory if requested.
+  if (!policy_dir.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(policy_dir, ec);
+    if (ec)
+      std::fprintf(stderr, "warning: cannot create policy dir %s: %s\n",
+                   policy_dir.string().c_str(), ec.message().c_str());
+  }
+
   // Metadata and identity (created before the loop for incremental save).
   NSeatDeclaredFrontierTable::Metadata metadata{};
   for (std::size_t b = 0; b < SprBucketConfig::kBucketCount; ++b)
@@ -390,8 +349,18 @@ int main(int argc, char** argv) {
     const auto& seat_ranges = range_it->second;
 
     for (std::size_t b = 0; b < num_buckets; ++b) {
-      // Skip already-completed configs (resume support).
-      if (completed_configs.count({flop_class, static_cast<std::uint8_t>(b)})) {
+      // Resume logic: skip only when BOTH the FDT table has entries for this
+      // config AND the policy file exists (on-the-fly evaluation support).
+      // If the policy file is missing, re-train to save it, even if the FDT
+      // table already has entries.
+      const bool in_table =
+          max_deals > 0 && completed_configs.count({flop_class, static_cast<std::uint8_t>(b)});
+      const std::string policy_fname =
+          bs::solver::policy_file_name(flop_class, static_cast<std::uint8_t>(b));
+      const bool policy_exists =
+          !policy_dir.empty() && std::filesystem::exists(policy_dir / policy_fname);
+
+      if (in_table && policy_exists) {
         ++skipped_configs;
         continue;
       }
@@ -400,33 +369,69 @@ int main(int argc, char** argv) {
       const ActionAbstraction abstraction = make_postflop_abstraction(b);
       const std::uint64_t seed = 20261003ULL + ci * 1000ULL + b;
 
-      // Build tree and train. The tree is owned by a unique_ptr so it
-      // survives the try block for the extraction phase.
+      // Build tree and obtain policy (train or load from disk).
       std::unique_ptr<AbstractTree> tree;
-      NSeatTrainingResult trained;
-      try {
-        tree = std::make_unique<AbstractTree>(def, abstraction, oracle_tree_limits);
-        trained = train_nseat(*tree, seat_ranges, iterations, seed, pf_postflop_limits, nullptr);
-      } catch (const tree_resource_exhausted& e) {
-        std::fprintf(stderr, "  class %zu bucket %zu: tree too large: %s\n", ci, b, e.what());
-        ++failed_configs;
-        continue;
-      } catch (const std::exception& e) {
-        std::fprintf(stderr, "  class %zu bucket %zu: solve failed: %s\n", ci, b, e.what());
-        ++failed_configs;
-        continue;
-      }
+      NSeatPolicy policy;
 
-      if (trained.termination == NSeatTerminationPhase::ResourceLimit) {
-        std::fprintf(stderr, "  class %zu bucket %zu: resource limit\n", ci, b);
-        ++failed_configs;
-        continue;
-      }
+      if (policy_exists) {
+        // Policy already saved — load it and rebuild the tree for extraction.
+        try {
+          policy = bs::solver::load_nseat_policy(policy_dir / policy_fname, def, abstraction.id(),
+                                                 static_cast<std::uint8_t>(b));
+          tree = std::make_unique<AbstractTree>(def, abstraction, oracle_tree_limits);
+        } catch (const std::exception& e) {
+          std::fprintf(stderr, "  class %zu bucket %zu: policy load failed: %s\n", ci, b, e.what());
+          ++failed_configs;
+          continue;
+        }
+        std::fprintf(stderr, "  class %zu bucket %zu: loaded policy from disk\n", ci, b);
+      } else {
+        // Train the policy.
+        NSeatTrainingResult trained;
+        try {
+          tree = std::make_unique<AbstractTree>(def, abstraction, oracle_tree_limits);
+          trained = train_nseat(*tree, seat_ranges, iterations, seed, pf_postflop_limits, nullptr);
+        } catch (const tree_resource_exhausted& e) {
+          std::fprintf(stderr, "  class %zu bucket %zu: tree too large: %s\n", ci, b, e.what());
+          ++failed_configs;
+          continue;
+        } catch (const std::exception& e) {
+          std::fprintf(stderr, "  class %zu bucket %zu: solve failed: %s\n", ci, b, e.what());
+          ++failed_configs;
+          continue;
+        }
 
-      std::fprintf(stderr, "  class %zu bucket %zu: %zu info sets, tree %zu nodes\n", ci, b,
-                   trained.information_sets, tree->size());
+        if (trained.termination == NSeatTerminationPhase::ResourceLimit) {
+          std::fprintf(stderr, "  class %zu bucket %zu: resource limit\n", ci, b);
+          ++failed_configs;
+          continue;
+        }
+
+        std::fprintf(stderr, "  class %zu bucket %zu: %zu info sets, tree %zu nodes\n", ci, b,
+                     trained.information_sets, tree->size());
+
+        policy = std::move(trained.policy);
+
+        // Save the policy for on-the-fly evaluation (RFC 0013 Stage 2).
+        if (!policy_dir.empty()) {
+          try {
+            bs::solver::save_nseat_policy(policy, static_cast<std::uint8_t>(b),
+                                          policy_dir / policy_fname);
+          } catch (const std::exception& e) {
+            std::fprintf(stderr, "  class %zu bucket %zu: policy save failed: %s\n", ci, b,
+                         e.what());
+          }
+        }
+      }
 
       // Extract root values for every card-compatible joint deal.
+      // Skip extraction if the config is already in the FDT table (resume).
+      if (in_table) {
+        ++total_configs;
+        completed_configs.insert({flop_class, static_cast<std::uint8_t>(b)});
+        continue;
+      }
+
       const GameState root_state(def);
       std::size_t config_deals = 0;
       std::size_t config_failures = 0;
@@ -444,7 +449,7 @@ int main(int argc, char** argv) {
           const std::array<std::array<int, 2>, 2> deal_arr = {hero_hand.cards, opp_hand.cards};
           std::vector<double> values;
           try {
-            values = extract_root_value(trained.policy, *tree, root_state,
+            values = extract_root_value(policy, *tree, root_state,
                                         std::span<const std::array<int, 2>>(deal_arr.data(), 2));
           } catch (const std::exception& e) {
             if (config_failures < 5) {

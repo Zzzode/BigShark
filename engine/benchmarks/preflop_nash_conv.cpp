@@ -233,6 +233,7 @@ int main(int argc, char** argv) {
   const std::size_t flop_samples = argc > 3 ? std::stoul(argv[3]) : 1;
   const std::uint64_t seed = argc > 4 ? std::stoull(argv[4]) : 42;
   const std::string frontier_table_path = argc > 5 ? argv[5] : "";
+  const std::string policy_dir = argc > 6 ? argv[6] : "";
 
   std::printf("Preflop NashConv measurement\n");
   std::printf("  artifact:     %s\n", artifact_path.c_str());
@@ -267,15 +268,23 @@ int main(int argc, char** argv) {
   bs::gto::EquityFrontierEvaluator equity_frontier;
   std::unique_ptr<bs::gto::NSeatDeclaredFrontierTable> declared_table;
   std::unique_ptr<bs::gto::PostflopFrontierEvaluator> postflop_evaluator;
+  std::unique_ptr<bs::gto::OnTheFlyPostflopEvaluator> onthefly_evaluator;
   std::string table_identity;
   const FrontierEvaluator* frontier = &equity_frontier;
   const char* frontier_tag = "exact-equity-all-in-flop";
   if (!frontier_table_path.empty()) {
     declared_table = std::make_unique<bs::gto::NSeatDeclaredFrontierTable>(
         bs::gto::NSeatDeclaredFrontierTable::load(frontier_table_path, &table_identity));
-    postflop_evaluator = std::make_unique<bs::gto::PostflopFrontierEvaluator>(*declared_table);
-    frontier = postflop_evaluator.get();
-    frontier_tag = "postflop-declared-table-v1";
+    if (!policy_dir.empty()) {
+      onthefly_evaluator = std::make_unique<bs::gto::OnTheFlyPostflopEvaluator>(
+          *declared_table, std::filesystem::path(policy_dir));
+      frontier = onthefly_evaluator.get();
+      frontier_tag = "postflop-onthefly-v1";
+    } else {
+      postflop_evaluator = std::make_unique<bs::gto::PostflopFrontierEvaluator>(*declared_table);
+      frontier = postflop_evaluator.get();
+      frontier_tag = "postflop-declared-table-v1";
+    }
   }
   std::printf("  frontier:     %s\n", frontier_tag);
   if (!frontier_table_path.empty()) {

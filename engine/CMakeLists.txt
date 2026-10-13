@@ -149,6 +149,13 @@ if(NOT DEFINED BS_OPENSSL_CRYPTO_TARGET)
   message(STATUS "OpenSSL 3 Crypto for bigshark_artifacts: ${BS_OPENSSL_CRYPTO_TARGET} ${BS_OPENSSL_FOUND_VERSION}")
 endif()
 
+# zstd compression for ATFZ/NSPZ file formats (RFC 0014 optimization).
+find_library(ZSTD_LIBRARY NAMES zstd libzstd)
+if(NOT ZSTD_LIBRARY)
+  message(FATAL_ERROR "zstd library not found. Install libzstd-dev.")
+endif()
+message(STATUS "zstd for tree/policy compression: ${ZSTD_LIBRARY}")
+
 # RFC 0005 offline strategy artifacts. SQLite and Crypto stay PRIVATE; the
 # public surface exchanges only solver domain records.
 add_library(bigshark_artifacts STATIC
@@ -257,12 +264,14 @@ target_link_libraries(bigshark_abstraction
 # HeadsUpRoot adapters or evaluate private holdings (RFC 0008 Dependency Rules).
 add_library(bigshark_tree STATIC
   src/tree/abstract_tree.cpp
+  src/tree/abstract_tree_codec.cpp
 )
 target_include_directories(bigshark_tree
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(bigshark_tree
   PUBLIC bigshark_poker bigshark_abstraction
+  PRIVATE ${ZSTD_LIBRARY}
 )
 
 # RFC 0008 stage 4 L3 boundary guard (build time, NOT gated on BUILD_TESTING).
@@ -277,7 +286,8 @@ target_link_libraries(bigshark_tree
 # stamp is fresh.
 set(_l3_sources
   "${CMAKE_CURRENT_SOURCE_DIR}/include/bs/abstract_tree.hpp"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/tree/abstract_tree.cpp")
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/tree/abstract_tree.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/tree/abstract_tree_codec.cpp")
 set(_l3_guard_stamp "${CMAKE_CURRENT_BINARY_DIR}/l3_boundary_guard.stamp")
 # Clang 14-16 accepts -std=c++2b for C++23; GCC 12+ and Clang 17+ use -std=c++23.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
@@ -311,8 +321,10 @@ add_library(bigshark_solver STATIC
   src/gto/frontier_table.cpp
   src/gto/equity_frontier.cpp
   src/gto/postflop_frontier.cpp
+  src/gto/postflop_config.cpp
   src/gto/root_value_extractor.cpp
   src/gto/frontier_table_codec.cpp
+  src/gto/nseat_policy_codec.cpp
   src/gto/continuation_range.cpp
   src/solver/seat_policy.cpp
   src/gto/river_game.cc
@@ -327,6 +339,7 @@ target_link_libraries(bigshark_solver
   PUBLIC  bigshark_abstraction
   PUBLIC  bigshark_tree
   PRIVATE open_spiel_min
+  PRIVATE ${ZSTD_LIBRARY}
 )
 
 find_package(highs CONFIG QUIET)
@@ -522,6 +535,39 @@ add_executable(bigshark-postflop-oracle
 target_link_libraries(bigshark-postflop-oracle PRIVATE
   bigshark_solver
   bigshark_artifacts
+)
+
+# RFC 0014: pre-build tool for the postflop tree cache. Builds and serializes
+# AbstractTree instances for every canonical flop class x SPR bucket config,
+# so the on-the-fly evaluator can load them from disk instead of building from
+# scratch. Manual target, NOT a CTest.
+add_executable(bigshark-postflop-tree-cache
+  benchmarks/postflop_tree_cache.cpp
+)
+target_link_libraries(bigshark-postflop-tree-cache PRIVATE
+  bigshark_solver
+  bigshark_tree
+)
+
+# RFC 0014 optimization: one-shot migration tool that recompresses .atf and
+# .nsp files in a directory from raw ATF1/NSP1 to zstd-compressed ATFZ/NSPZ.
+# Parallelized with std::thread. Manual target, NOT a CTest.
+add_executable(bigshark-tree-recompress
+  benchmarks/tree_recompress.cpp
+)
+target_link_libraries(bigshark-tree-recompress PRIVATE
+  bigshark_solver
+  bigshark_tree
+)
+
+# RFC 0014 Phase 0: migrate .atf tree files from v1 (DFS terminal recompute)
+# to v2 (serialized terminal payloads). Manual target, NOT a CTest.
+add_executable(bigshark-tree-migrate-v2
+  benchmarks/tree_migrate_v2.cpp
+)
+target_link_libraries(bigshark-tree-migrate-v2 PRIVATE
+  bigshark_solver
+  bigshark_tree
 )
 
 # RFC 0011 Stage 3: offline NashConv measurement for the turn-rooted subgame
@@ -894,6 +940,12 @@ if(BUILD_TESTING)
   add_executable(test_abstract_tree_fidelity tests/test_abstract_tree_fidelity.cpp)
   target_link_libraries(test_abstract_tree_fidelity PRIVATE bigshark_solver)
   add_test(NAME abstract_tree_fidelity COMMAND test_abstract_tree_fidelity)
+
+  # RFC 0014: ATF1 tree codec roundtrip — save/load a postflop tree and verify
+  # the loaded tree matches the original in structure and terminal payloads.
+  add_executable(test_abstract_tree_codec tests/test_abstract_tree_codec.cpp)
+  target_link_libraries(test_abstract_tree_codec PRIVATE bigshark_solver)
+  add_test(NAME abstract_tree_codec COMMAND test_abstract_tree_codec)
 
   # RFC 0007: the declared frontier table (option A) — canonical keying,
   # lookup, fail-closed missing entries, construction validation.

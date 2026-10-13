@@ -17,12 +17,16 @@
 #include <bs/behavior_policy.hpp>
 #include <bs/eval.hpp>
 #include <bs/game_definition.hpp>
+#include <bs/nseat_policy_codec.hpp>
 #include <bs/nseat_trainer.hpp>
+#include <bs/postflop_config.hpp>
 #include <bs/postflop_frontier.hpp>
 #include <bs/root_value_extractor.hpp>
 #include <bs/stage6/exact_oracle.hpp>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <vector>
 
@@ -468,6 +472,193 @@ int test_end_to_end() {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// 6. NSP1 codec roundtrip
+// ---------------------------------------------------------------------------
+
+int test_nsp1_codec_roundtrip() {
+  namespace fs = std::filesystem;
+  const fs::path tmp_dir = fs::temp_directory_path() / "bs_nsp1_test";
+  fs::create_directories(tmp_dir);
+  const fs::path path = tmp_dir / "test_policy.nsp";
+
+  // Build a small policy with two rows.
+  const GameDef def = make_postflop_def({0, 1, 10}, 0);
+  const abstraction::ActionAbstraction action_abs = make_postflop_abstraction(0);
+
+  std::map<NSeatInformationKey, NSeatPolicyRow> rows;
+  {
+    NSeatPolicyRow row;
+    row.actions = {poker::Action{poker::ActionType::Check, 0},
+                   poker::Action{poker::ActionType::Bet, 50}};
+    row.probabilities = {0.7, 0.3};
+    rows.emplace(NSeatInformationKey{1, 100}, std::move(row));
+  }
+  {
+    NSeatPolicyRow row;
+    row.actions = {poker::Action{poker::ActionType::Fold, 0},
+                   poker::Action{poker::ActionType::Call, 50}};
+    row.probabilities = {0.4, 0.6};
+    rows.emplace(NSeatInformationKey{2, 200}, std::move(row));
+  }
+
+  NSeatPolicy policy = NSeatPolicy::from_parts(def, action_abs.id(), std::move(rows));
+
+  // Save and load.
+  save_nseat_policy(policy, 0, path);
+  CHECK(fs::exists(path));
+  CHECK(!fs::exists(path.string() + ".tmp"));  // temp file renamed away
+
+  NSeatPolicy loaded = load_nseat_policy(path, def, action_abs.id(), 0);
+
+  // Verify rows match.
+  const auto& orig_rows = policy.rows();
+  const auto& loaded_rows = loaded.rows();
+  CHECK(loaded_rows.size() == orig_rows.size());
+
+  for (const auto& [key, orig_row] : orig_rows) {
+    auto it = loaded_rows.find(key);
+    CHECK(it != loaded_rows.end());
+    const auto& loaded_row = it->second;
+    CHECK(loaded_row.actions.size() == orig_row.actions.size());
+    for (std::size_t i = 0; i < orig_row.actions.size(); ++i) {
+      CHECK(loaded_row.actions[i].type == orig_row.actions[i].type);
+      CHECK(loaded_row.actions[i].target_total == orig_row.actions[i].target_total);
+      CHECK(std::abs(loaded_row.probabilities[i] - orig_row.probabilities[i]) < 1e-12);
+    }
+  }
+
+  // Verify game def matches.
+  CHECK(loaded.game().player_count == def.player_count);
+  CHECK(loaded.game().board[0] == def.board[0]);
+  CHECK(loaded.game().board[1] == def.board[1]);
+  CHECK(loaded.game().board[2] == def.board[2]);
+
+  fs::remove_all(tmp_dir);
+  std::printf("  nsp1_codec_roundtrip PASS\n");
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 7. NSP1 corrupt file rejection
+// ---------------------------------------------------------------------------
+
+int test_nsp1_corrupt_rejection() {
+  namespace fs = std::filesystem;
+  const fs::path tmp_dir = fs::temp_directory_path() / "bs_nsp1_corrupt";
+  fs::create_directories(tmp_dir);
+
+  const GameDef def = make_postflop_def({0, 1, 10}, 0);
+  const abstraction::ActionAbstraction action_abs = make_postflop_abstraction(0);
+
+  // Bad magic.
+  {
+    const fs::path p = tmp_dir / "bad_magic.nsp";
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    f << "XXXX";
+    f.close();
+    bool threw = false;
+    try {
+      load_nseat_policy(p, def, action_abs.id(), 0);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+
+  // SPR bucket mismatch.
+  {
+    // Save with bucket 2, load expecting bucket 3. Bucket 0 is accepted as
+    // "not stored" (backward compatibility), so use non-zero buckets.
+    std::map<NSeatInformationKey, NSeatPolicyRow> rows;
+    NSeatPolicy policy = NSeatPolicy::from_parts(def, action_abs.id(), std::move(rows));
+    const fs::path p = tmp_dir / "bucket_mismatch.nsp";
+    save_nseat_policy(policy, 2, p);
+    bool threw = false;
+    try {
+      load_nseat_policy(p, def, action_abs.id(), 3);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+
+  // Truncated file.
+  {
+    const fs::path p = tmp_dir / "truncated.nsp";
+    std::ofstream f(p, std::ios::binary | std::ios::trunc);
+    f.write("NSP1", 4);
+    std::uint32_t ver = 1;
+    f.write(reinterpret_cast<const char*>(&ver), 4);
+    f.close();
+    bool threw = false;
+    try {
+      load_nseat_policy(p, def, action_abs.id(), 0);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+
+  fs::remove_all(tmp_dir);
+  std::printf("  nsp1_corrupt_rejection PASS\n");
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// 8. Zero-SPR equity fallback
+// ---------------------------------------------------------------------------
+
+int test_zero_spr_equity_fallback() {
+  // Build a minimal declared table with one entry so the evaluator can be
+  // constructed. The zero-SPR path should bypass the table entirely.
+  NSeatDeclaredFrontierTable::Entry entry;
+  entry.canonical_flop = {0, 1, 10};
+  entry.spr_bucket = 0;
+  entry.hands = {sorted_hand("2c", "3c"), sorted_hand("2d", "3d")};
+  entry.values = {10.0, -10.0};
+
+  NSeatDeclaredFrontierTable::Metadata metadata{};
+  metadata.representative_pot[0] = 100.0;
+
+  std::vector<NSeatDeclaredFrontierTable::Entry> entries;
+  entries.push_back(std::move(entry));
+  NSeatDeclaredFrontierTable table(std::move(entries), metadata);
+
+  PostflopFrontierEvaluator evaluator(table);
+
+  // All-in ledger: both seats have zero stack (all-in preflop).
+  TerminalPayload ledger{};
+  ledger.player_count = 2;
+  ledger.seats[0].contributed = 50;
+  ledger.seats[0].stack = 0;
+  ledger.seats[0].folded = false;
+  ledger.seats[1].contributed = 50;
+  ledger.seats[1].stack = 0;
+  ledger.seats[1].folded = false;
+
+  // This must NOT throw. At zero SPR the evaluator delegates to equity.
+  std::vector<double> values;
+  try {
+    values = evaluator.evaluate(
+        std::array<int, 3>{0, 1, 10},
+        std::array<std::array<int, 2>, 2>{sorted_hand("2c", "3c"), sorted_hand("2d", "3d")},
+        ledger);
+  } catch (const std::exception& e) {
+    std::printf("  zero-SPR threw unexpectedly: %s\n", e.what());
+    return 1;
+  }
+
+  CHECK(values.size() == 2);
+  // Equity values should be finite and sum to ~0 (net chip delta, zero-sum).
+  CHECK(std::isfinite(values[0]));
+  CHECK(std::isfinite(values[1]));
+  CHECK(std::abs(values[0] + values[1]) < 1e-9);
+
+  std::printf("  zero_spr_equity_fallback PASS (v0=%.4f v1=%.4f)\n", values[0], values[1]);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -481,6 +672,12 @@ int main() {
     if (test_root_value_crosscheck() != 0)
       return 1;
     if (test_end_to_end() != 0)
+      return 1;
+    if (test_nsp1_codec_roundtrip() != 0)
+      return 1;
+    if (test_nsp1_corrupt_rejection() != 0)
+      return 1;
+    if (test_zero_spr_equity_fallback() != 0)
       return 1;
   } catch (const std::exception& e) {
     std::printf("UNCAUGHT EXCEPTION: %s\n", e.what());
