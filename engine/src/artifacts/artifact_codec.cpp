@@ -449,7 +449,7 @@ void SeatPolicyAssembler::set_identity(solver::SeatPolicy& policy, poker::GameDe
 
 void SeatPolicyAssembler::add_row(solver::SeatPolicy& policy, solver::InformationKey key,
                                   solver::SeatPolicyRow row) {
-  policy.rows_.emplace(std::move(key), std::move(row));
+  policy.rows_.emplace_hint(policy.rows_.end(), std::move(key), std::move(row));
 }
 
 }  // namespace detail

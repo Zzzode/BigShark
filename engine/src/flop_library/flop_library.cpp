@@ -292,6 +292,21 @@ solver::NSeatTrainerLimits trainer_limits() {
 // after every chunk of this many iterations so a crashed build can resume.
 constexpr std::uint64_t kCheckpointInterval = 256;
 
+// Refuse incompatible resume files before entering any failure-cleanup scope.
+void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_count, bool resume) {
+  if (!resume)
+    return;
+  for (std::size_t index = 0; index < class_count; ++index) {
+    const auto path = out_dir / (class_stem(index) + "-checkpoint.db");
+    if (!std::filesystem::exists(path))
+      continue;
+    const auto checkpoint = artifacts::load_checkpoint(path);
+    if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2)
+      throw std::runtime_error(
+          "incompatible checkpoint algorithm; refusing resume without modifying " + path.string());
+  }
+}
+
 // Train one class and publish its artifact. Shared by the serial builder and
 // the parallel workers. When `params.resume` is set, warm-starts from an
 // existing `class-NNNN-checkpoint.db` (after verifying the abstraction
@@ -367,6 +382,8 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
       throw std::runtime_error("class " + std::to_string(class_index) +
                                " training did not complete within the wall budget");
     state.completed_iterations = trained.completed_iterations;
+    state.algorithm_revision = trained.algorithm_revision;
+    state.batch_size = trained.batch_size;
 
     // Save a warm-start checkpoint for this chunk.
     const solver::SeatTrainingResult exported =
@@ -645,7 +662,11 @@ std::map<solver::InformationKey, artifacts::TrainingWeights> export_seat_trainin
 
 solver::NSeatInitialState build_initial_state(const artifacts::CheckpointTrainingState& ckpt,
                                               const tree::AbstractTree& tree) {
+  if (ckpt.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2)
+    throw std::invalid_argument("checkpoint requires revision-two batch-one identity for resume");
   solver::NSeatInitialState state;
+  state.algorithm_revision = solver::kNSeatAlgorithmRevision;
+  state.batch_size = 1;
   state.completed_iterations = ckpt.completed_iterations;
   poker::GameState cursor{tree.def()};
   std::vector<poker::PublicAction> path;
@@ -743,6 +764,8 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
     throw std::invalid_argument("class_count exceeds total classes (" +
                                 std::to_string(classes.size()) + ")");
 
+  preflight_resume(out_dir, class_count, resume);
+
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
 
   LibraryManifest manifest;
@@ -819,6 +842,7 @@ void build_library_worker(const std::filesystem::path& out_dir, std::size_t work
   const std::vector<std::array<int, 3>> classes = enumerate_classes();
   if (params.class_count > classes.size())
     throw std::invalid_argument("class_count exceeds total classes");
+  preflight_resume(out_dir, params.class_count, params.resume);
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
 
   std::vector<FragmentClass> fragment;

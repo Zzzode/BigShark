@@ -1,8 +1,8 @@
 // RFC 0013 Stage 1: postflop-aware frontier evaluation.
 //
 // Replaces the all-in-at-flop EquityFrontierEvaluator with a postflop-aware
-// evaluator that returns CFR-solved postflop equilibrium values from a
-// declared table. The table is keyed by (canonical flop class, SPR bucket,
+// evaluator that returns declared saved-policy postflop values, not certified
+// equilibrium values. The table is keyed by (canonical flop class, SPR bucket,
 // per-seat sorted hole cards) and stores chip values at the representative
 // pot. The evaluator canonicalizes the flop, computes the SPR from the
 // ledger, maps it to a bucket, looks up the value, and scales it to the
@@ -37,6 +37,28 @@
 #include <vector>
 
 namespace bs::gto {
+
+class PostflopEvaluationTemplate;
+
+// Accounted policy memory includes in-use evicted objects and load reservations.
+// Templates have a separate aggregate bound. These are not process RSS limits.
+struct PostflopCacheLimits {
+  std::size_t max_policy_bytes = std::size_t{1} << 30;
+  std::size_t max_load_bytes = std::size_t{64} << 20;
+  std::size_t max_concurrent_loads = 2;
+  std::size_t max_template_bytes = std::size_t{4} << 30;
+};
+
+struct PostflopCacheStatistics {
+  std::size_t policy_loads = 0;
+  std::size_t template_loads = 0;
+  std::size_t policy_bytes = 0;
+  std::size_t peak_policy_bytes = 0;
+  std::size_t template_bytes = 0;
+  double policy_load_ms = 0.0;
+  double template_load_ms = 0.0;
+  double extract_ms = 0.0;
+};
 
 // SPR bucketing configuration (RFC 0013). The postflop strategy is primarily
 // a function of the SPR, so the declared table is keyed by SPR bucket.
@@ -200,13 +222,14 @@ class PostflopFrontierEvaluator : public FrontierEvaluator {
 // to EquityFrontierEvaluator: exact all-in equity is the equilibrium value
 // of an all-in-at-flop game, not a heuristic.
 //
-// The evaluator caches (policy, tree) pairs in an LRU cache to avoid
-// reloading and rebuilding on repeated calls for the same config (default
-// capacity 128).
+// The evaluator caches board-specific policies and reuses one private
+// structural evaluation template per SPR bucket. Policy lifetime accounting,
+// single-flight loading, and bounded load concurrency enforce explicit limits.
 class OnTheFlyPostflopEvaluator : public FrontierEvaluator {
  public:
   OnTheFlyPostflopEvaluator(const NSeatDeclaredFrontierTable& table,
-                            std::filesystem::path policy_dir, std::size_t cache_capacity = 128);
+                            std::filesystem::path policy_dir, std::size_t cache_capacity = 128,
+                            PostflopCacheLimits limits = {});
   ~OnTheFlyPostflopEvaluator() override;
 
   std::vector<double> evaluate(std::span<const int> flop, std::span<const std::array<int, 2>> hands,
@@ -222,16 +245,19 @@ class OnTheFlyPostflopEvaluator : public FrontierEvaluator {
   std::size_t equity_fallbacks() const noexcept {
     return equity_fallbacks_.load(std::memory_order_relaxed);
   }
+  PostflopCacheStatistics statistics() const;
 
  private:
   struct CachedConfig;
   struct Cache;
   std::shared_ptr<const CachedConfig> get_config(const std::array<int, 3>& flop_class,
                                                  std::uint8_t spr_bucket) const;
+  std::shared_ptr<const PostflopEvaluationTemplate> get_template(std::uint8_t spr_bucket) const;
 
   const NSeatDeclaredFrontierTable& table_;
   std::filesystem::path policy_dir_;
   std::size_t cache_capacity_;
+  PostflopCacheLimits limits_;
   mutable std::shared_mutex cache_mutex_;
   mutable std::unique_ptr<Cache> cache_;
   mutable EquityFrontierEvaluator equity_fallback_;

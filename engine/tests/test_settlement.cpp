@@ -218,6 +218,146 @@ int test_refunds_and_score_scope() {
   return 0;
 }
 
+int check_same_settlement(const ContributionSettlement& actual,
+                          const ContributionSettlement& expected) {
+  CHECK(actual.net_contributions == expected.net_contributions);
+  CHECK(actual.awards == expected.awards);
+  CHECK(actual.refunds == expected.refunds);
+  CHECK(actual.final_stacks == expected.final_stacks);
+  CHECK(actual.chip_utility == expected.chip_utility);
+  CHECK(actual.gross_contributions == expected.gross_contributions);
+  CHECK(actual.total_refunds == expected.total_refunds);
+  CHECK(actual.pot == expected.pot);
+  CHECK(actual.rake == expected.rake);
+  CHECK(actual.layers.size() == expected.layers.size());
+  for (std::size_t i = 0; i < actual.layers.size(); ++i) {
+    const auto& layer = actual.layers[i];
+    const auto& reference = expected.layers[i];
+    CHECK(layer.contribution_level == reference.contribution_level);
+    CHECK(layer.amount == reference.amount);
+    CHECK(layer.rake == reference.rake);
+    CHECK(layer.contributors == reference.contributors);
+    CHECK(layer.eligible == reference.eligible);
+    CHECK(layer.winners == reference.winners);
+  }
+  return 0;
+}
+
+int test_zero_rake_full_results() {
+  for (int fixture = 0; fixture < 3; ++fixture) {
+    SettlementInput input;
+    ContributionSettlement expected;
+    if (fixture == 0) {
+      // Independent literal payout: a folded contributor creates an odd
+      // three-chip main pot; clockwise seat 1 receives its extra tied chip.
+      input = input_for({4, 4, 1});
+      input.seat_count = 6;
+      input.button = 5;
+      input.players[0].seat = 5;
+      input.players[1].seat = 1;
+      input.players[2].seat = 3;
+      input.players[0].chips.refunded = 1;
+      input.players[1].chips.refunded = 1;
+      input.players[0].chips.stack = 2;
+      input.players[1].chips.stack = 5;
+      input.players[0].showdown_score = 9;
+      input.players[1].showdown_score = 9;
+      input.players[2].chips.folded = true;
+      input.players[2].showdown_score.reset();
+      expected.net_contributions = {3, 3, 1};
+      expected.awards = {3, 4, 0};
+      expected.refunds = {1, 1, 0};
+      expected.final_stacks = {5, 9, 0};
+      expected.chip_utility = {0, 1, -1};
+      expected.layers = {{1, 3, 0, {0, 1, 2}, {0, 1}, {1, 0}}, {3, 4, 0, {0, 1}, {0, 1}, {1, 0}}};
+      expected.gross_contributions = 9;
+      expected.total_refunds = 2;
+      expected.pot = 7;
+    } else if (fixture == 1) {
+      // Fold settlement still requires no score for a sole eligible winner;
+      // the fourth, non-folded seat contributes nothing to either layer.
+      input = input_for({5, 3, 1, 0});
+      input.players[0].chips.refunded = 2;
+      input.players[0].chips.stack = 2;
+      input.players[1].chips.stack = 1;
+      input.players[2].chips.stack = 4;
+      input.players[3].chips.stack = 3;
+      input.players[1].chips.folded = true;
+      input.players[2].chips.folded = true;
+      for (auto& player : input.players)
+        player.showdown_score.reset();
+      expected.net_contributions = {3, 3, 1, 0};
+      expected.awards = {7, 0, 0, 0};
+      expected.refunds = {2, 0, 0, 0};
+      expected.final_stacks = {9, 1, 4, 3};
+      expected.chip_utility = {4, -3, -1, 0};
+      expected.layers = {{1, 3, 0, {0, 1, 2}, {0}, {0}}, {3, 4, 0, {0, 1}, {0}, {0}}};
+      expected.gross_contributions = 9;
+      expected.total_refunds = 2;
+      expected.pot = 7;
+    } else {
+      // The exact numeric profile ends at 2^53 - 1, with distinct main and
+      // side-pot winners. Literal integer formulas avoid floating-point math.
+      const Chips half = kMaxHeadsUpChips / 2;
+      input = input_for({1, half, half});
+      expected.net_contributions = {1, half, half};
+      expected.awards = {3, kMaxHeadsUpChips - 3, 0};
+      expected.refunds = {0, 0, 0};
+      expected.final_stacks = expected.awards;
+      expected.chip_utility = {2, static_cast<std::int64_t>(half) - 2,
+                               -static_cast<std::int64_t>(half)};
+      expected.layers = {{1, 3, 0, {0, 1, 2}, {0, 1, 2}, {0}},
+                         {half, kMaxHeadsUpChips - 3, 0, {1, 2}, {1, 2}, {1}}};
+      expected.gross_contributions = kMaxHeadsUpChips;
+      expected.pot = kMaxHeadsUpChips;
+    }
+    const auto baseline = settle_contributions(input);
+    CHECK(check_same_settlement(baseline, expected) == 0);
+    for (bool no_drop : {false, true})
+      for (bool flop : {false, true})
+        for (const auto policy : {RakePolicy{RakeRule::PotPercentageFloor, 0, 100, no_drop},
+                                  RakePolicy{RakeRule::PotPercentageFloor, 10000, 0, no_drop},
+                                  RakePolicy{RakeRule::PotPercentageFloor, 0, 0, no_drop}}) {
+          input.rake = policy;
+          input.flop_dealt = flop;
+          const auto actual = settle_contributions(input);
+          CHECK(check_same_settlement(actual, baseline) == 0);
+          CHECK(check_accounting(input, actual) == 0);
+        }
+  }
+  return 0;
+}
+
+int test_zero_rake_rejections() {
+  // Each independent zero condition must retain the normal validation path.
+  for (const auto policy : {RakePolicy{RakeRule::PotPercentageFloor, 0, 100, false},
+                            RakePolicy{RakeRule::PotPercentageFloor, 500, 0, false}}) {
+    auto input = input_for({2, 2});
+    input.rake = policy;
+    input.rake.rule = static_cast<RakeRule>(99);
+    CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
+    input.rake = policy;
+    input.players[0].showdown_score.reset();
+    CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
+    input = input_for({3, 2});
+    input.rake = policy;
+    CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
+    input = input_for({2, 2});
+    input.rake = policy;
+    input.players[0].chips.refunded = 3;
+    CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
+    input.players[0].chips.refunded = 0;
+    input.players[0].chips.stack = kMaxHeadsUpChips + 1;
+    CHECK(throws_as<std::overflow_error>([&] { settle_contributions(input); }));
+  }
+  auto input = input_for({2, 2});
+  input.rake = {RakeRule::PotPercentageFloor, 10001, 0, false};
+  CHECK(throws_as<std::invalid_argument>([&] { settle_contributions(input); }));
+  input.rake = {RakeRule::PotPercentageFloor, 0, kMaxHeadsUpChips + 1, false};
+  CHECK(throws_as<std::overflow_error>([&] { settle_contributions(input); }));
+  return 0;
+}
+
 int test_rake() {
   auto input = input_for({2, 5, 5});
   input.rake = {RakeRule::PotPercentageFloor, 1000, 100, false};
@@ -662,6 +802,8 @@ int main() {
   try {
     CHECK(test_fixed_payouts() == 0);
     CHECK(test_refunds_and_score_scope() == 0);
+    CHECK(test_zero_rake_full_results() == 0);
+    CHECK(test_zero_rake_rejections() == 0);
     CHECK(test_rake() == 0);
     CHECK(test_rejections_and_limits() == 0);
     CHECK(test_exhaustive_small_contributions() == 0);

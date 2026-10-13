@@ -5,6 +5,7 @@
 #include <bs/heads_up_solver.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -51,6 +52,69 @@ namespace dt = detail;
 void check(bool ok, ArtifactErrorKind kind, const std::string& message) {
   if (!ok)
     fail(kind, message);
+}
+
+constexpr std::string_view kNSeatRevisionTwoPrefix = "rfc0016-nseat-rev2-frozen-batch-";
+constexpr std::string_view kNSeatRevisionTwoSuffix = "-sampled-splitmix64";
+
+struct NSeatAlgorithmIdentity {
+  std::uint32_t revision = 0;
+  std::size_t batch_size = 0;
+};
+
+NSeatAlgorithmIdentity decode_nseat_algorithm(std::string_view text) {
+  if (text == kLegacyAlgorithmRevisionV2)
+    return {1, 0};
+  if (!text.starts_with(kNSeatRevisionTwoPrefix) || !text.ends_with(kNSeatRevisionTwoSuffix) ||
+      text.size() <= kNSeatRevisionTwoPrefix.size() + kNSeatRevisionTwoSuffix.size())
+    return {};
+  const auto digits =
+      text.substr(kNSeatRevisionTwoPrefix.size(),
+                  text.size() - kNSeatRevisionTwoPrefix.size() - kNSeatRevisionTwoSuffix.size());
+  if (digits.front() < '1' || digits.front() > '9')
+    return {};
+  std::size_t batch = 0;
+  const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), batch);
+  if (parsed.ec != std::errc{} || parsed.ptr != digits.data() + digits.size() || batch == 0)
+    return {};
+  return {2, batch};
+}
+
+std::uint64_t epochs_from_samples(std::uint64_t samples, std::size_t batch) {
+  return samples / batch + (samples % batch != 0);
+}
+
+std::string nseat_write_identity(const SeatTrainingResult& result,
+                                 const SeatCheckpointProvenance& provenance) {
+  if (result.algorithm_revision == 2) {
+    check(result.batch_size > 0, ArtifactErrorKind::InvalidArgument,
+          "revision-two result requires a positive batch size");
+    check(result.completed_epochs ==
+              epochs_from_samples(result.completed_iterations, result.batch_size),
+          ArtifactErrorKind::InvalidArgument, "result samples, epochs, and batch size disagree");
+  }
+  std::string identity = provenance.algorithm_revision;
+  if (identity.empty()) {
+    if (result.algorithm_revision == 2)
+      identity = std::string(kNSeatRevisionTwoPrefix) + std::to_string(result.batch_size) +
+                 std::string(kNSeatRevisionTwoSuffix);
+    else if (result.algorithm_revision == 1)
+      identity = kLegacyAlgorithmRevisionV2;
+    else
+      fail(ArtifactErrorKind::InvalidArgument,
+           "unknown result requires explicit algorithm provenance");
+  }
+  const auto decoded = decode_nseat_algorithm(identity);
+  if (decoded.revision != 0) {
+    check(decoded.revision == result.algorithm_revision, ArtifactErrorKind::InvalidArgument,
+          "algorithm provenance disagrees with result revision");
+    check(decoded.batch_size == result.batch_size, ArtifactErrorKind::InvalidArgument,
+          "algorithm provenance disagrees with result batch size");
+    if (decoded.revision == 1)
+      check(result.completed_epochs == 0, ArtifactErrorKind::InvalidArgument,
+            "legacy result cannot claim revision-two update epochs");
+  }
+  return identity;
 }
 
 // Normalized positive regret-matching probabilities, the same convention the
@@ -1224,14 +1288,14 @@ void validate_content_v2(const SeatTrainingResult& result) {
 ArtifactManifest manifest_for_v2(const SeatTrainingResult& result,
                                  const SeatCheckpointProvenance& provenance, ArtifactKind kind,
                                  ValidationState validation) {
-  check(!provenance.algorithm_revision.empty() && !provenance.engine_revision.empty(),
-        ArtifactErrorKind::InvalidArgument, "manifest provenance strings must be non-empty");
+  check(!provenance.engine_revision.empty(), ArtifactErrorKind::InvalidArgument,
+        "manifest engine provenance must be non-empty");
   check(provenance.prng_identifier == kSampledPrngIdentifier ||
             provenance.prng_identifier == kFullTraversalPrngIdentifier,
         ArtifactErrorKind::InvalidArgument, "unsupported PRNG identifier");
   ArtifactManifest manifest;
   manifest.kind = kind;
-  manifest.algorithm_revision = provenance.algorithm_revision;
+  manifest.algorithm_revision = nseat_write_identity(result, provenance);
   manifest.information_key_revision = kArtifactSchemaVersionV2;
   manifest.numeric_profile = kNumericProfileV2;
   manifest.engine_revision = provenance.engine_revision;
@@ -1783,33 +1847,69 @@ ArtifactManifest read_manifest(dt::Db& db) {
   return manifest;
 }
 
-std::map<std::int64_t, StoredState> read_states(dt::Db& db) {
+StoredState read_state_fields(dt::Stmt& query, std::uint64_t expected, std::size_t player_count,
+                              bool legacy_domain = false) {
+  StoredState state;
+  state.id = query.column_i64(0);
+  check(state.id >= 0, ArtifactErrorKind::InvalidSchema, "negative information state id");
+  check(static_cast<std::uint64_t>(state.id) == expected, ArtifactErrorKind::InvalidSchema,
+        "information state ids must be contiguous from zero");
+  // Check full-width values before narrowing: 2^32 must not wrap to seat/card zero.
+  const std::int64_t player_raw = query.column_i64(1);
+  const std::int64_t card0_raw = query.column_i64(2);
+  const std::int64_t card1_raw = query.column_i64(3);
+  if (legacy_domain) {
+    check(player_raw == 0 || player_raw == 1, ArtifactErrorKind::InvalidSchema,
+          "information state player outside {0,1}");
+  } else {
+    check(player_raw >= 0 && player_raw <= 9, ArtifactErrorKind::InvalidSchema,
+          "information state player outside 0..9");
+    check(player_raw < static_cast<std::int64_t>(player_count), ArtifactErrorKind::InvalidSchema,
+          "information state player outside player_count");
+  }
+  check(card0_raw >= 0 && card0_raw < card1_raw && card1_raw <= 51, ArtifactErrorKind::InvalidValue,
+        "information state own cards out of range");
+  state.player = static_cast<int>(player_raw);
+  state.card0 = static_cast<int>(card0_raw);
+  state.card1 = static_cast<int>(card1_raw);
+  state.public_key = std::string(query.column_text(4));
+  return state;
+}
+
+StoredAction read_action_fields(dt::Stmt& query) {
+  StoredAction action;
+  action.info_id = query.column_i64(0);
+  const std::int64_t ordinal_raw = query.column_i64(1);
+  const std::int64_t kind_raw = query.column_i64(2);
+  check(action.info_id >= 0, ArtifactErrorKind::InvalidSchema, "negative actions.info_id");
+  check(ordinal_raw >= 0 && ordinal_raw < 32, ArtifactErrorKind::InvalidSchema,
+        "actions.ordinal outside 0..31");
+  check(kind_raw >= 0 && kind_raw <= 4, ArtifactErrorKind::InvalidValue,
+        "action kind out of range");
+  action.ordinal = static_cast<int>(ordinal_raw);
+  action.kind = static_cast<int>(kind_raw);
+  if (!query.column_null(3))
+    action.target = static_cast<Chips>(read_bounded_i64(query, 3, "action target"));
+  const bool aggressive = action.kind == 3 || action.kind == 4;
+  check(action.target.has_value() == aggressive, ArtifactErrorKind::InvalidSchema,
+        "aggressive actions require a target and others must not carry one");
+  action.probability = query.column_double(4);
+  dt::require_finite(action.probability, "action probability");
+  check(action.probability >= 0 && action.probability <= 1, ArtifactErrorKind::InvalidValue,
+        "action probability outside [0,1]");
+  return action;
+}
+
+std::map<std::int64_t, StoredState> read_states(dt::Db& db, std::size_t player_count = 2,
+                                                bool legacy_domain = true) {
   std::map<std::int64_t, StoredState> states;
   dt::Stmt query(db.get(),
                  "SELECT id, player, card0, card1, public_key FROM information_states"
                  " ORDER BY id",
                  "read information states");
-  std::int64_t expected = 0;
+  std::uint64_t expected = 0;
   while (query.step("read information states")) {
-    StoredState state;
-    state.id = query.column_i64(0);
-    check(state.id >= 0, ArtifactErrorKind::InvalidSchema, "negative information state id");
-    check(state.id == expected, ArtifactErrorKind::InvalidSchema,
-          "information state ids must be contiguous from zero");
-    ++expected;
-    // Validate the raw int64 values BEFORE narrowing to int; otherwise a value
-    // such as 2^32 would wrap to 0 and pass the small-domain check.
-    const std::int64_t player_raw = query.column_i64(1);
-    const std::int64_t card0_raw = query.column_i64(2);
-    const std::int64_t card1_raw = query.column_i64(3);
-    state.public_key = std::string(query.column_text(4));
-    check(player_raw == 0 || player_raw == 1, ArtifactErrorKind::InvalidSchema,
-          "information state player outside {0,1}");
-    check(card0_raw >= 0 && card0_raw < card1_raw && card1_raw <= 51,
-          ArtifactErrorKind::InvalidValue, "information state own cards out of range");
-    state.player = static_cast<int>(player_raw);
-    state.card0 = static_cast<int>(card0_raw);
-    state.card1 = static_cast<int>(card1_raw);
+    StoredState state = read_state_fields(query, expected++, player_count, legacy_domain);
     states.emplace(state.id, std::move(state));
   }
   return states;
@@ -1824,37 +1924,15 @@ std::map<std::pair<std::int64_t, int>, StoredAction> read_actions(dt::Db& db) {
   std::int64_t last_info = -1;
   int expected_ordinal = 0;
   while (query.step("read actions")) {
-    StoredAction action;
-    action.info_id = query.column_i64(0);
-    const std::int64_t ordinal_raw = query.column_i64(1);
-    // Validate kind against the raw int64 before narrowing, so a congruent
-    // value such as 2^32+1 cannot wrap to a valid small kind.
-    const std::int64_t kind_raw = query.column_i64(2);
-    check(action.info_id >= 0, ArtifactErrorKind::InvalidSchema, "negative actions.info_id");
-    check(ordinal_raw >= 0 && ordinal_raw < 32, ArtifactErrorKind::InvalidSchema,
-          "actions.ordinal outside 0..31");
-    check(kind_raw >= 0 && kind_raw <= 4, ArtifactErrorKind::InvalidValue,
-          "action kind out of range");
-    action.ordinal = static_cast<int>(ordinal_raw);
-    action.kind = static_cast<int>(kind_raw);
+    StoredAction action = read_action_fields(query);
     if (action.info_id != last_info) {
       check(action.info_id > last_info, ArtifactErrorKind::InvalidSchema,
             "actions info_id ordering");
       last_info = action.info_id;
       expected_ordinal = 0;
     }
-    check(action.ordinal == expected_ordinal, ArtifactErrorKind::InvalidSchema,
+    check(action.ordinal == expected_ordinal++, ArtifactErrorKind::InvalidSchema,
           "action ordinals must be contiguous from zero");
-    ++expected_ordinal;
-    if (!query.column_null(3))
-      action.target = static_cast<Chips>(read_bounded_i64(query, 3, "action target"));
-    const bool aggressive = action.kind == 3 || action.kind == 4;
-    check(action.target.has_value() == aggressive, ArtifactErrorKind::InvalidSchema,
-          "aggressive actions require a target and others must not carry one");
-    action.probability = query.column_double(4);
-    dt::require_finite(action.probability, "action probability");
-    check(action.probability >= 0 && action.probability <= 1, ArtifactErrorKind::InvalidValue,
-          "action probability outside [0,1]");
     actions.emplace(std::make_pair(action.info_id, action.ordinal), std::move(action));
   }
   return actions;
@@ -2294,40 +2372,9 @@ std::vector<std::vector<WeightedHand>> read_ranges_v2(dt::Db& db, std::size_t pl
   return ranges;
 }
 
-// Like read_states but admits the seat-generic player domain 0..9, bounded by
-// the game's actual player_count (RFC 0009 D3: the reader validates
-// player < player_count in C++, since a SQL CHECK is write-time-only and can be
-// stripped from a tampered file).
+// Warm-start checkpoint reconstruction still needs the complete state map.
 std::map<std::int64_t, StoredState> read_states_v2(dt::Db& db, std::size_t player_count) {
-  std::map<std::int64_t, StoredState> states;
-  dt::Stmt query(db.get(),
-                 "SELECT id, player, card0, card1, public_key FROM information_states"
-                 " ORDER BY id",
-                 "read information states");
-  std::int64_t expected = 0;
-  while (query.step("read information states")) {
-    StoredState state;
-    state.id = query.column_i64(0);
-    check(state.id >= 0, ArtifactErrorKind::InvalidSchema, "negative information state id");
-    check(state.id == expected, ArtifactErrorKind::InvalidSchema,
-          "information state ids must be contiguous from zero");
-    ++expected;
-    const std::int64_t player_raw = query.column_i64(1);
-    const std::int64_t card0_raw = query.column_i64(2);
-    const std::int64_t card1_raw = query.column_i64(3);
-    state.public_key = std::string(query.column_text(4));
-    check(player_raw >= 0 && player_raw <= 9, ArtifactErrorKind::InvalidSchema,
-          "information state player outside 0..9");
-    check(player_raw < static_cast<std::int64_t>(player_count), ArtifactErrorKind::InvalidSchema,
-          "information state player outside player_count");
-    check(card0_raw >= 0 && card0_raw < card1_raw && card1_raw <= 51,
-          ArtifactErrorKind::InvalidValue, "information state own cards out of range");
-    state.player = static_cast<int>(player_raw);
-    state.card0 = static_cast<int>(card0_raw);
-    state.card1 = static_cast<int>(card1_raw);
-    states.emplace(state.id, std::move(state));
-  }
-  return states;
+  return read_states(db, player_count, false);
 }
 
 // Validates the v2 bounds table, whose dimension is (public_root, seat, combo)
@@ -2512,143 +2559,74 @@ OpenedArtifact open_validated(const std::filesystem::path& path, const LoadOptio
   return opened;
 }
 
-// Reconstructs a seat-generic SeatTrainingResult from a validated schema-v2
-// file. The actions and training readers are shared with v1 (their columns are
-// byte-identical); the states reader admits seats 0..9 and the training table
-// is required empty because SeatPolicyRow carries no regret/average-weight
-// state.
-LoadedArtifact load_path_v2(OpenedArtifact& opened) {
-  dt::Db& db = opened.db;
-  const Sha256Digest digest = opened.digest;
-  const std::uint64_t file_bytes = opened.file_bytes;
-
-  ArtifactManifest manifest = read_manifest_v2(db);
-  GameDef game = read_game_v2(db);
-  read_game_seats(db, game);
-  SizeSchedule sizes = read_sizes_v2(db);
-  auto ranges = read_ranges_v2(db, game.player_count);
-  validate_game_v2(game);
-
-  auto states = read_states_v2(db, game.player_count);
-  auto actions = read_actions(db);
-  auto training = read_training(db);
-  read_auxiliary_tables_v2(db, game.player_count);
-
-  // Referential integrity independent of stripped foreign keys.
-  for (const auto& [key, stored_action] : actions)
-    check(states.contains(key.first), ArtifactErrorKind::InvalidSchema,
+// Merge both ordered cursors directly into the final policy. All raw fields
+// retain the legacy reader checks; only one state/action row is transient.
+std::size_t read_seat_policy_rows(dt::Db& db, solver::SeatPolicy& policy,
+                                  std::size_t player_count) {
+  dt::Stmt states(db.get(),
+                  "SELECT id, player, card0, card1, public_key FROM information_states"
+                  " ORDER BY id",
+                  "read information states");
+  dt::Stmt actions(db.get(),
+                   "SELECT info_id, ordinal, kind, target, probability FROM actions"
+                   " ORDER BY info_id, ordinal",
+                   "read actions");
+  auto next_action = [&]() -> std::optional<StoredAction> {
+    if (!actions.step("read actions"))
+      return std::nullopt;
+    return read_action_fields(actions);
+  };
+  std::optional<StoredAction> action = next_action();
+  std::size_t state_count = 0;
+  while (states.step("read information states")) {
+    const StoredState state = read_state_fields(states, state_count++, player_count);
+    check(!action || action->info_id >= state.id, ArtifactErrorKind::InvalidSchema,
           "action row references a missing information state");
-  for (const auto& [id, state] : states) {
-    (void)state;
-    check(actions.lower_bound({id, 0}) != actions.end() &&
-              actions.lower_bound({id, 0})->first.first == id,
-          ArtifactErrorKind::InvalidSchema,
+    check(action && action->info_id == state.id, ArtifactErrorKind::InvalidSchema,
           "information state has no actions after referential validation");
-  }
 
-  // Reconstruct information keys from the canonical text and player column.
-  for (const auto& [id, state] : states) {
-    (void)decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player, state.card0,
-                            state.card1);
-  }
-
-  SeatTrainingResult result;
-  result.completed_iterations = manifest.completed_iterations;
-  result.seed = manifest.seed;
-  result.prng_state = manifest.prng_state;
-  result.termination = manifest.run_status == RunStatus::Complete
-                           ? NSeatTerminationPhase::Complete
-                           : NSeatTerminationPhase::ResourceLimit;
-  result.nodes = manifest.nodes;
-  result.information_sets = manifest.information_sets;
-  result.accounted_bytes = manifest.accounted_bytes;
-  result.action_id = {manifest.abstraction_name, manifest.abstraction_version,
-                      manifest.abstraction_parameters, manifest.abstraction_digest};
-  result.terminal_depth = manifest.terminal_depth;
-  // The uint32 algorithm_revision is the trainer's revision; the manifest
-  // carries the string identifier. Reconstruct the current revision; the
-  // string is the authoritative record.
-  result.algorithm_revision = solver::kNSeatAlgorithmRevision;
-
-  dt::SeatPolicyAssembler::set_identity(result.policy, game, sizes, ranges, result.action_id,
-                                        std::nullopt);
-
-  for (const auto& [id, state] : states) {
     InformationKey key = decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player,
                                            state.card0, state.card1);
     solver::SeatPolicyRow row;
-    for (auto it = actions.lower_bound({id, 0}); it != actions.end() && it->first.first == id;
-         ++it) {
-      const StoredAction& stored = it->second;
-      Action action{dt::action_kind_from_id(stored.kind), stored.target.value_or(0)};
-      row.actions.push_back(action);
-      row.probabilities.push_back(stored.probability);
+    int expected_ordinal = 0;
+    while (action && action->info_id == state.id) {
+      check(action->ordinal == expected_ordinal++, ArtifactErrorKind::InvalidSchema,
+            "action ordinals must be contiguous from zero");
+      row.actions.push_back(
+          Action{dt::action_kind_from_id(action->kind), action->target.value_or(0)});
+      row.probabilities.push_back(action->probability);
+      action = next_action();
     }
-    check(!row.actions.empty(), ArtifactErrorKind::InvalidSchema,
-          "information state has no actions");
-    validate_probabilities_local(row.probabilities, "information state " + std::to_string(id));
-    dt::SeatPolicyAssembler::add_row(result.policy, key, std::move(row));
+    validate_probabilities_local(row.probabilities,
+                                 "information state " + std::to_string(state.id));
+    const std::size_t previous_size = policy.rows().size();
+    // Copy the decoded words into a compact key: moving its growth capacity
+    // would retain decoder slack in every long-lived final policy row.
+    dt::SeatPolicyAssembler::add_row(policy, key, std::move(row));
+    check(policy.rows().size() == previous_size + 1, ArtifactErrorKind::InvalidSchema,
+          "duplicate decoded information key");
   }
-
-  // The v2 writer never writes training rows; a v2 file carrying them is
-  // malformed regardless of kind.
-  check(training.empty(), ArtifactErrorKind::InvalidSchema,
-        "schema-v2 artifact must not carry training rows");
-  if (manifest.kind == ArtifactKind::Policy) {
-    check(manifest.validation == ValidationState::Validated, ArtifactErrorKind::InvalidSchema,
-          "published policy must be validated");
-  }
-  check(result.information_sets == states.size(), ArtifactErrorKind::InvalidSchema,
-        "manifest information_sets disagrees with stored state count");
-
-  ArtifactBundle bundle;
-  bundle.manifest = std::move(manifest);
-  bundle.nseat = std::move(result);
-
-  LoadedArtifact loaded;
-  loaded.bundle = std::move(bundle);
-  loaded.sha256 = digest;
-  loaded.sha256_hex = dt::to_hex(digest);
-  loaded.file_bytes = file_bytes;
-  return loaded;
+  // Exhaustion is mandatory even for an empty state table or an orphan tail.
+  check(!action, ArtifactErrorKind::InvalidSchema,
+        "action row references a missing information state");
+  return state_count;
 }
 
-// Schema v3 is schema v2 plus the card-abstraction declaration on the
-// manifest; every other table and every reconstruction step is identical.
-LoadedArtifact load_path_v3(OpenedArtifact& opened) {
+// Schema v3 adds only manifest/card identity to the schema-v2 seat domain.
+LoadedArtifact load_path_seat(OpenedArtifact& opened) {
   dt::Db& db = opened.db;
-  const Sha256Digest digest = opened.digest;
-  const std::uint64_t file_bytes = opened.file_bytes;
-
-  ArtifactManifest manifest = read_manifest_v3(db);
+  const bool schema_v3 = opened.schema_version == kArtifactSchemaVersionV3;
+  ArtifactManifest manifest = schema_v3 ? read_manifest_v3(db) : read_manifest_v2(db);
   GameDef game = read_game_v2(db);
   read_game_seats(db, game);
   SizeSchedule sizes = read_sizes_v2(db);
   auto ranges = read_ranges_v2(db, game.player_count);
   validate_game_v2(game);
 
-  auto states = read_states_v2(db, game.player_count);
-  auto actions = read_actions(db);
+  // Parse every raw training field before requiring the generic policy reader's
+  // empty table. Raw warm-start reconstruction remains in load_checkpoint.
   auto training = read_training(db);
   read_auxiliary_tables_v2(db, game.player_count);
-
-  // Referential integrity independent of stripped foreign keys.
-  for (const auto& [key, stored_action] : actions)
-    check(states.contains(key.first), ArtifactErrorKind::InvalidSchema,
-          "action row references a missing information state");
-  for (const auto& [id, state] : states) {
-    (void)state;
-    check(actions.lower_bound({id, 0}) != actions.end() &&
-              actions.lower_bound({id, 0})->first.first == id,
-          ArtifactErrorKind::InvalidSchema,
-          "information state has no actions after referential validation");
-  }
-
-  // Reconstruct information keys from the canonical text and player column.
-  for (const auto& [id, state] : states) {
-    (void)decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player, state.card0,
-                            state.card1);
-  }
 
   SeatTrainingResult result;
   result.completed_iterations = manifest.completed_iterations;
@@ -2662,42 +2640,27 @@ LoadedArtifact load_path_v3(OpenedArtifact& opened) {
   result.accounted_bytes = manifest.accounted_bytes;
   result.action_id = {manifest.abstraction_name, manifest.abstraction_version,
                       manifest.abstraction_parameters, manifest.abstraction_digest};
-  result.card_id = manifest.card_abstraction;
+  result.card_id = schema_v3 ? manifest.card_abstraction : std::nullopt;
   result.terminal_depth = manifest.terminal_depth;
-  // The uint32 algorithm_revision is the trainer's revision; the manifest
-  // carries the string identifier. Reconstruct the current revision; the
-  // string is the authoritative record.
-  result.algorithm_revision = solver::kNSeatAlgorithmRevision;
+  const auto algorithm = decode_nseat_algorithm(manifest.algorithm_revision);
+  result.algorithm_revision = algorithm.revision;
+  result.batch_size = algorithm.batch_size;
+  result.completed_epochs =
+      algorithm.revision == 2
+          ? epochs_from_samples(result.completed_iterations, algorithm.batch_size)
+          : 0;
 
   dt::SeatPolicyAssembler::set_identity(result.policy, game, sizes, ranges, result.action_id,
                                         result.card_id);
-
-  for (const auto& [id, state] : states) {
-    InformationKey key = decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player,
-                                           state.card0, state.card1);
-    solver::SeatPolicyRow row;
-    for (auto it = actions.lower_bound({id, 0}); it != actions.end() && it->first.first == id;
-         ++it) {
-      const StoredAction& stored = it->second;
-      Action action{dt::action_kind_from_id(stored.kind), stored.target.value_or(0)};
-      row.actions.push_back(action);
-      row.probabilities.push_back(stored.probability);
-    }
-    check(!row.actions.empty(), ArtifactErrorKind::InvalidSchema,
-          "information state has no actions");
-    validate_probabilities_local(row.probabilities, "information state " + std::to_string(id));
-    dt::SeatPolicyAssembler::add_row(result.policy, key, std::move(row));
-  }
-
-  // The v3 writer never writes training rows; a v3 file carrying them is
-  // malformed regardless of kind.
+  const std::size_t state_count = read_seat_policy_rows(db, result.policy, game.player_count);
   check(training.empty(), ArtifactErrorKind::InvalidSchema,
-        "schema-v3 artifact must not carry training rows");
+        schema_v3 ? "schema-v3 artifact must not carry training rows"
+                  : "schema-v2 artifact must not carry training rows");
   if (manifest.kind == ArtifactKind::Policy) {
     check(manifest.validation == ValidationState::Validated, ArtifactErrorKind::InvalidSchema,
           "published policy must be validated");
   }
-  check(result.information_sets == states.size(), ArtifactErrorKind::InvalidSchema,
+  check(result.information_sets == state_count, ArtifactErrorKind::InvalidSchema,
         "manifest information_sets disagrees with stored state count");
 
   ArtifactBundle bundle;
@@ -2706,18 +2669,17 @@ LoadedArtifact load_path_v3(OpenedArtifact& opened) {
 
   LoadedArtifact loaded;
   loaded.bundle = std::move(bundle);
-  loaded.sha256 = digest;
-  loaded.sha256_hex = dt::to_hex(digest);
-  loaded.file_bytes = file_bytes;
+  loaded.sha256 = opened.digest;
+  loaded.sha256_hex = dt::to_hex(opened.digest);
+  loaded.file_bytes = opened.file_bytes;
   return loaded;
 }
 
 LoadedArtifact load_path(const std::filesystem::path& path, const LoadOptions& options) {
   OpenedArtifact opened = open_validated(path, options);
-  if (opened.schema_version == kArtifactSchemaVersionV2)
-    return load_path_v2(opened);
-  if (opened.schema_version == kArtifactSchemaVersionV3)
-    return load_path_v3(opened);
+  if (opened.schema_version == kArtifactSchemaVersionV2 ||
+      opened.schema_version == kArtifactSchemaVersionV3)
+    return load_path_seat(opened);
   dt::Db& db = opened.db;
   const Sha256Digest digest = opened.digest;
   const std::uint64_t file_bytes = opened.file_bytes;
@@ -3266,6 +3228,7 @@ CheckpointTrainingState load_checkpoint(const std::filesystem::path& path) {
   }
 
   CheckpointTrainingState out;
+  out.algorithm_revision = manifest.algorithm_revision;
   out.abstraction_digest = manifest.abstraction_digest;
   out.card_abstraction = manifest.card_abstraction;
   out.completed_iterations = manifest.completed_iterations;

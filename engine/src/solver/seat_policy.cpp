@@ -36,8 +36,15 @@ InformationKey make_information_key(std::size_t actor, std::array<int, 2> cards,
   if (board_count != 0 && board_count != 3 && board_count != 4 && board_count != 5)
     throw std::invalid_argument("information-key board count must be 0, 3, 4, or 5");
 
-  InformationKey key{actor, static_cast<std::uint64_t>(cards[0]),
-                     static_cast<std::uint64_t>(cards[1]), board_count};
+  InformationKey key;
+  const std::size_t header_words = 4 + board_count;
+  if (path.size() > (key.max_size() - header_words) / 4)
+    throw std::length_error("information-key history is too large");
+  key.reserve(header_words + 4 * path.size());
+  key.push_back(actor);
+  key.push_back(static_cast<std::uint64_t>(cards[0]));
+  key.push_back(static_cast<std::uint64_t>(cards[1]));
+  key.push_back(board_count);
   for (int card : board)
     key.push_back(static_cast<std::uint64_t>(card));
   for (const auto& event : path) {
@@ -80,12 +87,55 @@ UnifiedGame to_unified_game(const HeadsUpGame& game) {
 
 namespace {
 
+// Per-export scratch: one node-coverage bit and at most 1,326 classified
+// holdings. A missing parent row never suppresses traversal of its children.
+struct ExportScratch {
+  struct Holding {
+    std::array<int, 2> cards;
+    std::uint32_t bucket;
+  };
+  std::vector<bool> covered;
+  std::vector<int> cached_board;
+  std::vector<Holding> holdings;
+  bool valid_board = false;
+
+  ExportScratch(const tree::AbstractTree& tree, const NSeatPolicy& policy)
+      : covered(tree.size(), false) {
+    for (const auto& [key, row] : policy.rows())
+      if (key.node_index < covered.size())
+        covered[static_cast<std::size_t>(key.node_index)] = true;
+    holdings.reserve(1326);
+  }
+
+  void classify(std::span<const int> board) {
+    if (valid_board &&
+        std::equal(board.begin(), board.end(), cached_board.begin(), cached_board.end()))
+      return;
+    cached_board.assign(board.begin(), board.end());
+    holdings.clear();
+    std::array<bool, 52> on_board{};
+    for (int card : board)
+      on_board[static_cast<std::size_t>(card)] = true;
+    for (int c0 = 0; c0 < 52; ++c0) {
+      if (on_board[static_cast<std::size_t>(c0)])
+        continue;
+      for (int c1 = c0 + 1; c1 < 52; ++c1) {
+        if (on_board[static_cast<std::size_t>(c1)])
+          continue;
+        const std::array<int, 2> cards{c0, c1};
+        holdings.push_back({cards, abstraction::card_bucket(kNSeatCardKind, cards, board)});
+      }
+    }
+    valid_board = true;
+  }
+};
+
 // Recursive DFS over the tree, carrying a GameState cursor (internal nodes
 // store no board or ledger, only leaves do) and the observed public-action
 // path. At each Action node emits concrete rows for the acting seat.
 void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
                 std::map<InformationKey, SeatPolicyRow>& rows, std::size_t node_index,
-                GameState& cursor, std::vector<PublicAction>& path) {
+                GameState& cursor, std::vector<PublicAction>& path, ExportScratch& scratch) {
   const tree::TreeNode& node = tree.node(node_index);
 
   if (node.is_terminal())
@@ -98,7 +148,7 @@ void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
     for (std::size_t ci = 0; ci < node.children.size(); ++ci) {
       const tree::TreeNode& child = tree.node(node.children[ci]);
       GameState next = cursor.after_card(child.incoming_card);
-      export_dfs(tree, nseat_policy, rows, node.children[ci], next, path);
+      export_dfs(tree, nseat_policy, rows, node.children[ci], next, path, scratch);
     }
     return;
   }
@@ -107,20 +157,10 @@ void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
   // seat, looking up the sealed (bucket, node_index) row.
   const std::size_t seat = node.actor;
   const std::span<const int> board = cursor.board();
-  const std::vector<int> board_vec(board.begin(), board.end());
-  std::array<bool, 52> on_board{};
-  for (int card : board)
-    on_board[static_cast<std::size_t>(card)] = true;
-
-  for (int c0 = 0; c0 < 52; ++c0) {
-    if (on_board[static_cast<std::size_t>(c0)])
-      continue;
-    for (int c1 = c0 + 1; c1 < 52; ++c1) {
-      if (on_board[static_cast<std::size_t>(c1)])
-        continue;
-      const std::array<int, 2> cards{c0, c1};
-      const std::uint32_t bucket = abstraction::card_bucket(kNSeatCardKind, cards, board_vec);
-      const NSeatInformationKey nk{bucket, node_index};
+  if (scratch.covered[node_index]) {
+    scratch.classify(board);
+    for (const auto& holding : scratch.holdings) {
+      const NSeatInformationKey nk{holding.bucket, node_index};
       const auto it = nseat_policy.rows().find(nk);
       if (it == nseat_policy.rows().end())
         continue;  // exact miss: no sealed row
@@ -129,7 +169,7 @@ void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
       srow.actions = nrow.actions;
       srow.probabilities = nrow.probabilities;
       srow.visits = nrow.visits;
-      rows.emplace(make_information_key(seat, cards, board, path), std::move(srow));
+      rows.emplace(make_information_key(seat, holding.cards, board, path), std::move(srow));
     }
   }
 
@@ -138,7 +178,7 @@ void export_dfs(const tree::AbstractTree& tree, const NSeatPolicy& nseat_policy,
     const Action& action = node.actions[ai];
     GameState next = cursor.after_action(seat, action);
     path.push_back(PublicAction{node.street, seat, action});
-    export_dfs(tree, nseat_policy, rows, node.children[ai], next, path);
+    export_dfs(tree, nseat_policy, rows, node.children[ai], next, path, scratch);
     path.pop_back();
   }
 }
@@ -167,6 +207,8 @@ SeatTrainingResult export_seat_policy(const NSeatTrainingResult& result,
   out.seed = result.seed;
   out.prng_state = result.prng_state;
   out.algorithm_revision = result.algorithm_revision;
+  out.batch_size = result.batch_size;
+  out.completed_epochs = result.completed_epochs;
   out.action_id = result.policy.action_id();
   out.card_id = card_id;
   out.terminal_depth = result.policy.game().terminal;
@@ -179,7 +221,8 @@ SeatTrainingResult export_seat_policy(const NSeatTrainingResult& result,
 
   GameState cursor{tree.def()};
   std::vector<PublicAction> path;
-  export_dfs(tree, result.policy, out.policy.rows_, tree.root_index(), cursor, path);
+  ExportScratch scratch(tree, result.policy);
+  export_dfs(tree, result.policy, out.policy.rows_, tree.root_index(), cursor, path, scratch);
 
   return out;
 }

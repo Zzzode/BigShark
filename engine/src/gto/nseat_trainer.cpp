@@ -24,14 +24,16 @@
 #include <bs/nseat_trainer.hpp>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <numeric>
-#include <shared_mutex>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -192,12 +194,16 @@ std::size_t row_bytes(std::size_t actions) {
 // Writes into the caller-provided span (must have row.actions.size() elements)
 // to avoid a heap allocation on every action-node visit.
 void current_strategy(const NSeatRawRow& row, std::span<double> sigma) {
+  if (row.regrets.size() != sigma.size())
+    throw std::invalid_argument("nseat trainer invalid frozen regret count");
   double positive_sum = 0.0;
   for (double r : row.regrets) {
     if (!std::isfinite(r))
       throw std::runtime_error("nseat trainer row carries a non-finite regret");
     positive_sum += std::max(0.0, r);
   }
+  if (!std::isfinite(positive_sum))
+    throw std::runtime_error("nseat trainer regret total overflowed");
   if (positive_sum > 0.0) {
     for (std::size_t i = 0; i < row.actions.size(); ++i)
       sigma[i] = std::max(0.0, row.regrets[i]) / positive_sum;
@@ -209,74 +215,146 @@ void current_strategy(const NSeatRawRow& row, std::span<double> sigma) {
 
 // --- one traverser sweep -----------------------------------------------------
 
+// Deltas may be signed; they are not published NSeatRawRow accumulators.
+struct SampleDelta {
+  // The tree owns immutable menus for the complete training call. All three
+  // slices share one allocation; sigma is frozen for this sample's epoch,
+  // never recomputed from the signed local regret deltas.
+  const std::vector<Action>* actions = nullptr;
+  std::vector<double> values;
+  std::uint64_t visits = 0;
+
+  std::span<double> regrets() { return {values.data(), actions->size()}; }
+  std::span<double> sums() { return {values.data() + actions->size(), actions->size()}; }
+  std::span<double> sigma() { return {values.data() + 2 * actions->size(), actions->size()}; }
+  std::span<const double> regrets() const { return {values.data(), actions->size()}; }
+  std::span<const double> sums() const {
+    return {values.data() + actions->size(), actions->size()};
+  }
+};
+// Keep the existing conservative row charge, including its grown-capacity
+// allowance, rather than using smaller physical allocations to raise caps.
+static_assert(sizeof(SampleDelta) + sizeof(NSeatInformationKey) + 4 * sizeof(void*) <= 512);
+static_assert(3 * sizeof(double) <= 4 * (sizeof(Action) + 2 * sizeof(double)));
+using RawTable = std::map<NSeatInformationKey, NSeatRawRow>;
+using DeltaTable = std::map<NSeatInformationKey, SampleDelta>;
+
+// Master rows, duplicate worker rows, and the central discovery registry all
+// reserve bytes before allocation. The master is immutable during computation.
+class TrainingBudget {
+ public:
+  TrainingBudget(const RawTable& master, const NSeatTrainerLimits& limits)
+      : master_(master), limits_(limits) {}
+
+  void reserve(std::size_t charge) {
+    std::lock_guard lock(mutex_);
+    reserve_locked(charge);
+  }
+  void release(std::size_t charge) {
+    std::lock_guard lock(mutex_);
+    bytes_ -= charge;
+  }
+  void reserve_delta(const NSeatInformationKey& key, std::size_t charge) {
+    std::lock_guard lock(mutex_);
+    const bool discover = !master_.contains(key) && !discovered_.contains(key);
+    if (discover && master_.size() + discovered_.size() >= limits_.max_information_sets)
+      throw nseat_training_exhausted("nseat trainer exceeded the information-set cap");
+    reserve_locked(charge);
+    if (discover) {
+      try {
+        reserve_locked(kRegistryBytes);
+        try {
+          discovered_.emplace(key, true);
+        } catch (...) {
+          bytes_ -= kRegistryBytes;
+          throw;
+        }
+      } catch (...) {
+        bytes_ -= charge;
+        throw;
+      }
+    }
+  }
+  void reserve_master(std::size_t charge) {
+    std::lock_guard lock(mutex_);
+    reserve_locked(charge);
+    master_bytes_ += charge;
+  }
+  void published(const NSeatInformationKey& key) {
+    std::lock_guard lock(mutex_);
+    if (discovered_.erase(key))
+      bytes_ -= kRegistryBytes;
+  }
+  std::size_t master_bytes() const { return master_bytes_; }
+
+ private:
+  void reserve_locked(std::size_t charge) {
+    if (charge > limits_.max_bytes - bytes_)
+      throw nseat_training_exhausted("nseat trainer exceeded the byte cap");
+    bytes_ += charge;
+  }
+  static constexpr std::size_t kRegistryBytes = 256;
+  const RawTable& master_;
+  const NSeatTrainerLimits& limits_;
+  std::mutex mutex_;
+  std::size_t bytes_ = 0;
+  std::size_t master_bytes_ = 0;
+  std::map<NSeatInformationKey, bool> discovered_;
+};
+
+struct DeltaStorage {
+  explicit DeltaStorage(TrainingBudget& budget) : budget(budget) {}
+  ~DeltaStorage() { clear(); }
+  void clear() {
+    rows.clear();
+    budget.release(bytes);
+    bytes = 0;
+  }
+  TrainingBudget& budget;
+  DeltaTable rows;
+  std::size_t bytes = 0;
+};
+
 struct SweepContext {
   std::size_t traverser = 0;
   const AbstractTree* tree = nullptr;
   std::span<const std::array<int, 2>> holes;
-  std::map<NSeatInformationKey, NSeatRawRow>* rows = nullptr;
-  // Null in single-threaded mode; non-null in the synchronized parallel path.
-  std::shared_mutex* table_mutex = nullptr;
-  std::size_t* retained_bytes = nullptr;
+  const RawTable* profile = nullptr;
+  DeltaStorage* storage = nullptr;
   std::atomic<std::size_t>* visits = nullptr;
   const NSeatTrainerLimits* limits = nullptr;
   SplitMix64* action_rng = nullptr;
   SplitMix64* chance_rng = nullptr;
-  const gto::FrontierEvaluator* frontier = nullptr;  // RFC 0007: flop-terminal
+  const gto::FrontierEvaluator* frontier = nullptr;
   std::size_t depth = 0;
 };
 
-NSeatRawRow& touch_row(SweepContext& ctx, const NSeatInformationKey& key,
+SampleDelta& touch_row(SweepContext& ctx, const NSeatInformationKey& key,
                        const std::vector<Action>& menu) {
-  if (ctx.table_mutex == nullptr) {
-    // Single-threaded path: no locking overhead.
-    auto it = ctx.rows->find(key);
-    if (it != ctx.rows->end()) {
-      if (it->second.actions != menu)
-        throw std::runtime_error("nseat trainer row address merged nodes with different menus");
-      return it->second;
-    }
-    if (ctx.rows->size() >= ctx.limits->max_information_sets)
-      throw nseat_training_exhausted("nseat trainer exceeded the information-set cap");
-    const std::size_t charge = row_bytes(menu.size());
-    if (charge > ctx.limits->max_bytes - *ctx.retained_bytes)
-      throw nseat_training_exhausted("nseat trainer exceeded the byte cap");
-    *ctx.retained_bytes += charge;
-    NSeatRawRow row;
-    row.actions = menu;
-    row.regrets.assign(menu.size(), 0.0);
-    row.sums.assign(menu.size(), 0.0);
-    return ctx.rows->emplace(key, std::move(row)).first->second;
+  if (menu.empty() || menu.size() > 32)
+    throw std::runtime_error("nseat trainer invalid menu size");
+  const auto existing = ctx.storage->rows.lower_bound(key);
+  if (existing != ctx.storage->rows.end() && existing->first == key) {
+    if (*existing->second.actions != menu)
+      throw std::runtime_error("nseat trainer delta menu mismatch");
+    return existing->second;
   }
-  // Multi-threaded path: double-checked locking. The fast path (row already
-  // exists) takes only a shared lock; the slow path (new row) upgrades to a
-  // unique lock and re-checks to avoid duplicate inserts.
-  {
-    std::shared_lock<std::shared_mutex> lock(*ctx.table_mutex);
-    auto it = ctx.rows->find(key);
-    if (it != ctx.rows->end()) {
-      if (it->second.actions != menu)
-        throw std::runtime_error("nseat trainer row address merged nodes with different menus");
-      return it->second;
-    }
+  const auto base = ctx.profile->find(key);
+  if (base != ctx.profile->end() && base->second.actions != menu)
+    throw std::runtime_error("nseat trainer frozen profile menu mismatch");
+  const auto charge = row_bytes(menu.size());
+  ctx.storage->budget.reserve_delta(key, charge);
+  ctx.storage->bytes += charge;
+  SampleDelta row;
+  row.actions = &menu;
+  row.values.assign(3 * menu.size(), 0.0);
+  const auto probabilities = row.sigma();
+  if (base == ctx.profile->end()) {
+    std::fill(probabilities.begin(), probabilities.end(), 1.0 / probabilities.size());
+  } else {
+    current_strategy(base->second, probabilities);
   }
-  std::unique_lock<std::shared_mutex> lock(*ctx.table_mutex);
-  auto it = ctx.rows->find(key);
-  if (it != ctx.rows->end()) {
-    if (it->second.actions != menu)
-      throw std::runtime_error("nseat trainer row address merged nodes with different menus");
-    return it->second;
-  }
-  if (ctx.rows->size() >= ctx.limits->max_information_sets)
-    throw nseat_training_exhausted("nseat trainer exceeded the information-set cap");
-  const std::size_t charge = row_bytes(menu.size());
-  if (charge > ctx.limits->max_bytes - *ctx.retained_bytes)
-    throw nseat_training_exhausted("nseat trainer exceeded the byte cap");
-  *ctx.retained_bytes += charge;
-  NSeatRawRow row;
-  row.actions = menu;
-  row.regrets.assign(menu.size(), 0.0);
-  row.sums.assign(menu.size(), 0.0);
-  return ctx.rows->emplace(key, std::move(row)).first->second;
+  return ctx.storage->rows.emplace_hint(existing, key, std::move(row))->second;
 }
 
 // Visit/depth accounting, checked BEFORE the crossing work. The visit cap
@@ -289,9 +367,13 @@ struct DepthGuard {
     ++ctx.depth;
     if (ctx.depth > ctx.limits->max_depth)
       throw nseat_training_exhausted("nseat trainer exceeded the depth cap");
-    if (ctx.visits->load(std::memory_order_relaxed) == ctx.limits->max_visits)
-      throw nseat_training_exhausted("nseat trainer exceeded the visit cap");
-    ctx.visits->fetch_add(1, std::memory_order_relaxed);
+    auto visits = ctx.visits->load(std::memory_order_relaxed);
+    for (;;) {
+      if (visits >= ctx.limits->max_visits)
+        throw nseat_training_exhausted("nseat trainer exceeded the visit cap");
+      if (ctx.visits->compare_exchange_weak(visits, visits + 1, std::memory_order_relaxed))
+        break;
+    }
   }
   ~DepthGuard() { --ctx.depth; }
   DepthGuard(const DepthGuard&) = delete;
@@ -385,35 +467,11 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
   key.own_card_bucket = static_cast<std::uint32_t>(
       abstraction::card_bucket(kNSeatCardKind, ctx.holes[actor], state.board()));
   key.node_index = node_index;
-  NSeatRawRow& row = touch_row(ctx, key, menu);
-  // Stack-allocated strategy buffer: menus are small (≤ 32 actions), avoids a
-  // heap allocation on every action-node visit.
-  std::array<double, 32> sigma_buf{};
-  if (ctx.table_mutex != nullptr) {
-    // Read the strategy under a shared lock so a concurrent regret update on
-    // another thread cannot tear the read. The strategy is copied to the local
-    // buffer; the lock is released before recursion.
-    std::shared_lock<std::shared_mutex> lock(*ctx.table_mutex);
-    current_strategy(row, std::span<double>(sigma_buf.data(), menu.size()));
-  } else {
-    current_strategy(row, std::span<double>(sigma_buf.data(), menu.size()));
-  }
-  const double* sigma = sigma_buf.data();
+  SampleDelta& row = touch_row(ctx, key, menu);
+  const double* sigma = row.sigma().data();
 
   if (actor == ctx.traverser) {
-    // kFull own-reach-weighted average AT THE TRAVERSER'S OWN NODE, once per
-    // sweep (the full derivation is in the header). visits counts own-node
-    // touches separately for maturity instrumentation; it is not the weight.
-    if (ctx.table_mutex != nullptr) {
-      std::unique_lock<std::shared_mutex> lock(*ctx.table_mutex);
-      for (std::size_t a = 0; a < menu.size(); ++a)
-        row.sums[a] += own_reach * sigma[a];
-      ++row.visits;
-    } else {
-      for (std::size_t a = 0; a < menu.size(); ++a)
-        row.sums[a] += own_reach * sigma[a];
-      ++row.visits;
-    }
+    ++row.visits;
 
     // Enumerate every action over its sampled external continuation, then the
     // unweighted RM+ regret update on return. Node insertion during recursion
@@ -428,18 +486,8 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
     double value = 0.0;
     for (std::size_t a = 0; a < menu.size(); ++a)
       value += sigma[a] * children[a];
-    if (ctx.table_mutex != nullptr) {
-      std::unique_lock<std::shared_mutex> lock(*ctx.table_mutex);
-      for (std::size_t a = 0; a < menu.size(); ++a) {
-        const double updated = row.regrets[a] + (children[a] - value);
-        row.regrets[a] = updated > 0.0 ? updated : 0.0;
-      }
-    } else {
-      for (std::size_t a = 0; a < menu.size(); ++a) {
-        const double updated = row.regrets[a] + (children[a] - value);
-        row.regrets[a] = updated > 0.0 ? updated : 0.0;
-      }
-    }
+    for (std::size_t a = 0; a < menu.size(); ++a)
+      row.regrets()[a] += children[a] - value;
     return value;
   }
 
@@ -558,8 +606,7 @@ double walk(SweepContext& ctx, const GameState& state, std::size_t node_index, d
 void run_sweep(const AbstractTree& tree,
                const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
                const std::vector<int>& root_board, std::size_t traverser,
-               NSeatTraversalStreams& streams, std::map<NSeatInformationKey, NSeatRawRow>& table,
-               std::shared_mutex* table_mutex, std::size_t& retained_bytes,
+               NSeatTraversalStreams& streams, const RawTable& profile, DeltaStorage& storage,
                std::atomic<std::size_t>& visits, const NSeatTrainerLimits& limits,
                const gto::FrontierEvaluator* frontier) {
   const MultiwayDeal deal = sample_scalable_joint_deal(ranges, root_board, streams.joint_deal);
@@ -575,9 +622,8 @@ void run_sweep(const AbstractTree& tree,
   ctx.traverser = traverser;
   ctx.tree = &tree;
   ctx.holes = holes;
-  ctx.rows = &table;
-  ctx.table_mutex = table_mutex;
-  ctx.retained_bytes = &retained_bytes;
+  ctx.profile = &profile;
+  ctx.storage = &storage;
   ctx.visits = &visits;
   ctx.limits = &limits;
   ctx.action_rng = &streams.opponent_action;
@@ -589,12 +635,206 @@ void run_sweep(const AbstractTree& tree,
   walk(ctx, root, tree.root_index(), 1.0);
 }
 
+// No utility evaluation occurs here. Opponent reach never gates averaging.
+void walk_average(SweepContext& ctx, const GameState& state, std::size_t index,
+                  const std::array<double, poker::kMaxUnifiedSeats>& reach) {
+  const auto& node = ctx.tree->node(index);
+  if (node.is_terminal() || node.is_flop_deal())
+    return;
+  DepthGuard guard(ctx);
+  if (node.is_chance()) {
+    std::array<int, 52> cards{};
+    const auto count = legal_runout_cards(state, ctx.holes, cards);
+    const int card = cards[bounded_index(*ctx.chance_rng, count)];
+    const auto ordinal = board_only_ordinal(state, card);
+    if (ordinal >= node.children.size() ||
+        ctx.tree->node(node.children[ordinal]).incoming_card != card)
+      throw std::runtime_error("nseat average chance ordinal mismatch");
+    walk_average(ctx, state.after_card(card), node.children[ordinal], reach);
+    return;
+  }
+  if (!node.is_action() || !state.actor() || node.actor != *state.actor() ||
+      node.children.size() != node.actions.size() ||
+      node.actions !=
+          tree::abstract_node_menu(state, ctx.tree->action_abstraction(), state.legal()))
+    throw std::runtime_error("nseat average action projection mismatch");
+  const auto actor = *state.actor();
+  const NSeatInformationKey key{static_cast<std::uint32_t>(abstraction::card_bucket(
+                                    kNSeatCardKind, ctx.holes[actor], state.board())),
+                                static_cast<std::uint64_t>(index)};
+  auto& delta = touch_row(ctx, key, node.actions);
+  const auto sigma = delta.sigma();
+  for (std::size_t a = 0; a < node.actions.size(); ++a) {
+    delta.sums()[a] += reach[actor] * sigma[a];
+    auto child_reach = reach;
+    child_reach[actor] *= sigma[a];
+    walk_average(ctx, state.after_action(actor, node.actions[a]), node.children[a], child_reach);
+  }
+}
+
+void run_average(const AbstractTree& tree,
+                 const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
+                 const std::vector<int>& board, const RawTable& profile, DeltaStorage& storage,
+                 std::uint64_t seed, std::uint64_t sample, std::atomic<std::size_t>& visits,
+                 const NSeatTrainerLimits& limits) {
+  auto deal_rng = derive_nseat_stream(seed, NSeatStreamPurpose::AverageJointDeal, sample, 0);
+  auto card_rng = derive_nseat_stream(seed, NSeatStreamPurpose::AverageChanceCard, sample, 0);
+  const auto deal = sample_scalable_joint_deal(ranges, board, deal_rng);
+  SweepContext ctx;
+  ctx.tree = &tree;
+  ctx.holes = deal.hands;
+  ctx.profile = &profile;
+  ctx.storage = &storage;
+  ctx.visits = &visits;
+  ctx.limits = &limits;
+  ctx.chance_rng = &card_rng;
+  std::array<double, poker::kMaxUnifiedSeats> reach{};
+  std::fill_n(reach.begin(), tree.def().player_count, 1.0);
+  walk_average(ctx, GameState(tree.def()), tree.root_index(), reach);
+}
+
+// A generation starts only after the whole cohort has been constructed.
+// Partial thread creation and worker exceptions therefore cannot strand a
+// fixed-count barrier. Every generation rendezvous completes before reduction.
+class EpochWorkers {
+ public:
+  EpochWorkers(std::size_t count, std::function<void(std::size_t)> work)
+      : work_(std::move(work)), errors_(count) {
+    threads_.reserve(count);
+    try {
+      for (std::size_t i = 0; i < count; ++i)
+        threads_.emplace_back([this, i] { worker(i); });
+    } catch (...) {
+      stop();
+      throw;
+    }
+  }
+  ~EpochWorkers() { stop(); }
+  void run() {
+    std::unique_lock lock(mutex_);
+    std::fill(errors_.begin(), errors_.end(), nullptr);
+    remaining_ = threads_.size();
+    ++generation_;
+    ready_.notify_all();
+    finished_.wait(lock, [this] { return remaining_ == 0; });
+    for (const auto& error : errors_)
+      if (error)
+        std::rethrow_exception(error);
+  }
+
+ private:
+  void stop() {
+    {
+      std::lock_guard lock(mutex_);
+      stop_ = true;
+    }
+    ready_.notify_all();
+    for (auto& thread : threads_)
+      if (thread.joinable())
+        thread.join();
+  }
+  void worker(std::size_t index) {
+    std::uint64_t seen = 0;
+    for (;;) {
+      {
+        std::unique_lock lock(mutex_);
+        ready_.wait(lock, [&] { return stop_ || generation_ != seen; });
+        if (stop_)
+          return;
+        seen = generation_;
+      }
+      try {
+        work_(index);
+      } catch (...) {
+        errors_[index] = std::current_exception();
+      }
+      {
+        std::lock_guard lock(mutex_);
+        if (--remaining_ == 0)
+          finished_.notify_one();
+      }
+    }
+  }
+  std::function<void(std::size_t)> work_;
+  std::vector<std::exception_ptr> errors_;
+  std::vector<std::thread> threads_;
+  std::mutex mutex_;
+  std::condition_variable ready_;
+  std::condition_variable finished_;
+  std::uint64_t generation_ = 0;
+  std::size_t remaining_ = 0;
+  bool stop_ = false;
+};
+
+// Merge sparse maps with only O(batch width) cursor storage. Each public key
+// sums contributions in ascending sample order and is clipped exactly once.
+void reduce_batch(RawTable& table, std::span<const std::unique_ptr<DeltaStorage>> stores,
+                  std::size_t samples, TrainingBudget& budget) {
+  std::vector<DeltaTable::const_iterator> cursors;
+  cursors.reserve(samples);
+  for (std::size_t i = 0; i < samples; ++i)
+    cursors.push_back(stores[i]->rows.begin());
+  for (;;) {
+    const NSeatInformationKey* next = nullptr;
+    for (std::size_t i = 0; i < samples; ++i)
+      if (cursors[i] != stores[i]->rows.end() && (!next || cursors[i]->first < *next))
+        next = &cursors[i]->first;
+    if (!next)
+      break;
+    const auto key = *next;
+    std::array<double, 32> regrets{};
+    std::array<double, 32> sums{};
+    std::uint64_t own_visits = 0;
+    const std::vector<Action>* menu = nullptr;
+    for (std::size_t i = 0; i < samples; ++i) {
+      if (cursors[i] == stores[i]->rows.end() || cursors[i]->first != key)
+        continue;
+      const auto& delta = cursors[i]->second;
+      if (menu && *menu != *delta.actions)
+        throw std::runtime_error("nseat reduction menu mismatch");
+      menu = delta.actions;
+      if (delta.visits > std::numeric_limits<std::uint64_t>::max() - own_visits)
+        throw nseat_training_exhausted("nseat own visit counter overflow");
+      own_visits += delta.visits;
+      for (std::size_t a = 0; a < menu->size(); ++a) {
+        regrets[a] += delta.regrets()[a];
+        sums[a] += delta.sums()[a];
+      }
+      ++cursors[i];
+    }
+    auto found = table.lower_bound(key);
+    if (found == table.end() || found->first != key) {
+      budget.reserve_master(row_bytes(menu->size()));
+      NSeatRawRow raw;
+      raw.actions = *menu;
+      raw.regrets.assign(menu->size(), 0.0);
+      raw.sums.assign(menu->size(), 0.0);
+      found = table.emplace_hint(found, key, std::move(raw));
+      budget.published(key);
+    }
+    auto& raw = found->second;
+    if (own_visits > std::numeric_limits<std::uint64_t>::max() - raw.visits)
+      throw nseat_training_exhausted("nseat own visit counter overflow");
+    raw.visits += own_visits;
+    for (std::size_t a = 0; a < menu->size(); ++a) {
+      const double regret = raw.regrets[a] + regrets[a] / static_cast<double>(samples);
+      const double sum = raw.sums[a] + sums[a] / static_cast<double>(samples);
+      if (!std::isfinite(regret) || !std::isfinite(sum) || sum < 0.0)
+        throw std::runtime_error("nseat reduction produced invalid accumulators");
+      raw.regrets[a] = std::max(0.0, regret);
+      raw.sums[a] = sum;
+    }
+  }
+}
+
 NSeatPolicyRow seal_row(const NSeatRawRow& raw) {
   NSeatPolicyRow out;
   out.actions = raw.actions;
   out.visits = raw.visits;
   out.probabilities.resize(raw.actions.size());
   const double total = std::accumulate(raw.sums.begin(), raw.sums.end(), 0.0);
+  if (!std::isfinite(total))
+    throw std::runtime_error("nseat sealed average total overflowed");
   if (total > 0.0) {
     for (std::size_t i = 0; i < raw.actions.size(); ++i)
       out.probabilities[i] = raw.sums[i] / total;
@@ -650,278 +890,217 @@ SplitMix64 derive_nseat_stream(std::uint64_t master_seed, NSeatStreamPurpose pur
   return SplitMix64(fnv1a(role) ^ kNSeatStreamMixer);
 }
 
-NSeatTrainingResult train_nseat(const AbstractTree& tree,
-                                const std::vector<std::vector<WeightedHand>>& ranges,
-                                std::uint64_t iterations, std::uint64_t master_seed,
-                                const NSeatTrainerLimits& limits,
-                                const gto::FrontierEvaluator* frontier,
-                                const NSeatInitialState* initial_state) {
+namespace {
+
+void validate_initial(const AbstractTree& tree, const NSeatInitialState* initial) {
+  if (!initial)
+    return;
+  if (initial->algorithm_revision != kNSeatAlgorithmRevision || initial->batch_size != 1)
+    throw std::invalid_argument("nseat warm start requires revision two and batch one");
+  for (const auto& [key, raw] : initial->rows) {
+    if (key.node_index >= tree.size() || !tree.node(key.node_index).is_action() ||
+        raw.actions != tree.node(key.node_index).actions || raw.actions.empty() ||
+        raw.actions.size() > 32 || raw.regrets.size() != raw.actions.size() ||
+        raw.sums.size() != raw.actions.size())
+      throw std::invalid_argument("nseat warm start has invalid row projection");
+    for (std::size_t a = 0; a < raw.actions.size(); ++a)
+      if (!std::isfinite(raw.regrets[a]) || raw.regrets[a] < 0.0 || !std::isfinite(raw.sums[a]) ||
+          raw.sums[a] < 0.0)
+        throw std::invalid_argument("nseat warm start has invalid accumulators");
+  }
+}
+
+NSeatTrainingResult train_impl(const AbstractTree& tree,
+                               const std::vector<std::vector<WeightedHand>>& ranges,
+                               std::uint64_t iterations, std::uint64_t seed,
+                               const NSeatTrainerLimits& limits,
+                               const gto::FrontierEvaluator* frontier, std::size_t workers,
+                               const NSeatInitialState* initial) {
   validate_request(tree, ranges);
-  if (iterations == 0)
-    throw std::invalid_argument("nseat trainer requires a positive iteration count");
-  if (limits.max_nodes == 0 || limits.max_information_sets == 0 || limits.max_depth == 0 ||
-      limits.max_bytes == 0 || limits.max_visits == 0 || limits.wall.count() <= 0)
-    throw std::invalid_argument("nseat trainer requires positive resource limits");
-  // RFC 0007: a flop-terminal game requires a frontier evaluator.
-  if (tree.def().terminal == poker::TerminalDepth::Flop && frontier == nullptr)
+  validate_initial(tree, initial);
+  if (iterations == 0 || limits.max_nodes == 0 || limits.max_information_sets == 0 ||
+      limits.max_depth == 0 || limits.max_bytes == 0 || limits.max_visits == 0 ||
+      limits.wall.count() <= 0)
+    throw std::invalid_argument("nseat trainer requires positive samples and resource limits");
+  if (tree.def().terminal == poker::TerminalDepth::Flop && !frontier)
     throw std::invalid_argument(
         "nseat trainer: a flop-terminal game requires a frontier evaluator");
-  const std::size_t seats = tree.def().player_count;
-  // The materialized tree the caller supplied must already fit the request's
-  // structural caps; checking here means every entry point enforces them, and
-  // the check precedes any retained training allocation.
-  if (tree.size() > limits.max_nodes)
-    throw nseat_training_exhausted("nseat trainer tree exceeds the node cap");
-  if (tree.depth() > limits.max_depth)
-    throw nseat_training_exhausted("nseat trainer tree exceeds the depth cap");
-  if (tree.accounted_bytes() > limits.max_bytes)
-    throw nseat_training_exhausted("nseat trainer tree exceeds the byte cap");
-  const auto sampler_ranges = to_sampler_ranges(ranges, seats);
-  const std::vector<int> root_board(tree.def().board.begin(),
-                                    tree.def().board.begin() + tree.def().board_size);
-
-  std::map<NSeatInformationKey, NSeatRawRow> table;
-  std::size_t retained_bytes = 0;
-  std::atomic<std::size_t> visits{0};
-  // Witness RNG advanced exactly once per COMPLETED iteration. The derived
-  // iteration key 0x5749544e45535300 ("WITNESS\0") cannot collide with a real
-  // iteration's stream, and its first draw seeds the witness.
-  SplitMix64 witness(
-      derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, 0x5749544e45535300ULL, 0)
-          .next_u64());
-
-  // RFC 0012 Phase 4: warm start. A non-empty initial table seeds the regret
-  // and average-weight rows, and the iteration counter resumes at
-  // `completed_iterations` so the per-iteration PRNG streams (derived from the
-  // master seed and the ABSOLUTE iteration number) are identical to a
-  // from-scratch run that reached the same point. The witness is advanced the
-  // same number of times so prng_state matches too. The RM+ update rule and
-  // iteration logic below are unchanged; only the starting table and counter
-  // differ. A null or empty initial state is the from-scratch path.
-  std::uint64_t start_iter = 0;
-  if (initial_state != nullptr && !initial_state->rows.empty()) {
-    table = initial_state->rows;  // copy: the caller retains its state
-    if (table.size() > limits.max_information_sets)
-      throw nseat_training_exhausted(
-          "nseat trainer warm-start table exceeds the information-set cap");
-    for (const auto& [key, raw] : table)
-      retained_bytes += row_bytes(raw.actions.size());
-    if (retained_bytes > limits.max_bytes)
-      throw nseat_training_exhausted("nseat trainer warm-start table exceeds the byte cap");
-    start_iter = initial_state->completed_iterations;
-    for (std::uint64_t i = 0; i < start_iter; ++i)
-      witness.next_u64();
+  if (tree.size() > limits.max_nodes || tree.depth() > limits.max_depth ||
+      tree.accounted_bytes() > limits.max_bytes)
+    throw nseat_training_exhausted("nseat trainer tree exceeds structural resource limits");
+  workers = std::max(std::size_t{1}, workers);
+  if (static_cast<std::uint64_t>(workers) > iterations)
+    workers = static_cast<std::size_t>(iterations);
+  const std::uint64_t start_sample = initial ? initial->completed_iterations : 0;
+  if (iterations > std::numeric_limits<std::uint64_t>::max() - start_sample)
+    throw std::invalid_argument("nseat sample index overflow");
+  RawTable table;
+  TrainingBudget budget(table, limits);
+  // Caller-owned inputs are excluded; their copied/converted representations
+  // are included. The fixed sampler reservation covers marginal combo,
+  // weight/cumulative vectors (including geometric-growth overlap), proposals
+  // and stream-string buffers for one simultaneous sample per worker.
+  std::size_t combos = 0;
+  for (const auto& range : ranges) {
+    if (range.size() > limits.max_bytes / 64 ||
+        range.size() > std::numeric_limits<std::size_t>::max() - combos)
+      throw nseat_training_exhausted("nseat input conversion exceeds the byte cap");
+    combos += range.size();
   }
-
-  // The wall cap is checked at ITERATION boundaries only, exactly like the
-  // stage-6 trainer: no iteration is ever interrupted by the wall, so the
-  // returned policy always reflects a whole number of completed iterations.
-  // Every other cap throws out of this call (nothing is returned), which keeps
-  // the same property for every termination path.
+  const auto seats = tree.def().player_count;
+  const auto sampler_overhead = seats * 256 + 512;
+  if (limits.max_bytes < sampler_overhead || combos > (limits.max_bytes - sampler_overhead) / 64)
+    throw nseat_training_exhausted("nseat sampler buffers exceed the byte cap");
+  const std::size_t conversion_charge = seats * 256 + combos * 32;
+  const std::size_t sampler_charge = sampler_overhead + combos * 64;
+  budget.reserve(conversion_charge);
+  if (sampler_charge > limits.max_bytes || workers > limits.max_bytes / sampler_charge)
+    throw nseat_training_exhausted("nseat concurrent samplers exceed the byte cap");
+  budget.reserve(workers * sampler_charge);
+  const auto sampler_ranges = to_sampler_ranges(ranges, seats);
+  const std::vector<int> board(tree.def().board.begin(),
+                               tree.def().board.begin() + tree.def().board_size);
+  if (initial) {
+    if (initial->rows.size() > limits.max_information_sets)
+      throw nseat_training_exhausted("nseat warm start exceeds the information-set cap");
+    for (const auto& [key, raw] : initial->rows) {
+      budget.reserve_master(row_bytes(raw.actions.size()));
+      table.emplace(key, raw);
+    }
+  }
+  constexpr std::size_t kWorkerControlBytes = 512;
+  static_assert(sizeof(DeltaStorage) + sizeof(std::unique_ptr<DeltaStorage>) +
+                    sizeof(DeltaTable::const_iterator) + sizeof(std::exception_ptr) +
+                    sizeof(std::thread) + 64 <=
+                kWorkerControlBytes);
+  if (workers > (limits.max_bytes / kWorkerControlBytes))
+    throw nseat_training_exhausted("nseat worker controls exceed the byte cap");
+  budget.reserve(workers * kWorkerControlBytes);
+  std::vector<std::unique_ptr<DeltaStorage>> stores;
+  stores.reserve(workers);
+  for (std::size_t i = 0; i < workers; ++i)
+    stores.push_back(std::make_unique<DeltaStorage>(budget));
+  std::atomic<std::size_t> visits{0};
+  std::uint64_t base_sample = start_sample;
+  std::size_t active = 0;
+  const auto evaluate = [&](std::size_t slot) {
+    if (slot >= active)
+      return;
+    const auto sample = base_sample + slot;
+    for (std::size_t seat = 0; seat < tree.def().player_count; ++seat) {
+      NSeatTraversalStreams streams{
+          derive_nseat_stream(seed, NSeatStreamPurpose::JointDeal, sample, seat),
+          derive_nseat_stream(seed, NSeatStreamPurpose::OpponentAction, sample, seat),
+          derive_nseat_stream(seed, NSeatStreamPurpose::ChanceCard, sample, seat)};
+      run_sweep(tree, sampler_ranges, board, seat, streams, table, *stores[slot], visits, limits,
+                frontier);
+    }
+    run_average(tree, sampler_ranges, board, table, *stores[slot], seed, sample, visits, limits);
+  };
   const auto wall_start = std::chrono::steady_clock::now();
+  std::unique_ptr<EpochWorkers> cohort;
+  if (workers > 1) {
+    budget.reserve(sizeof(EpochWorkers) + sizeof(evaluate) + 128);
+    cohort = std::make_unique<EpochWorkers>(workers, evaluate);
+  }
+  std::uint64_t completed = 0;
+  std::uint64_t epochs = initial ? initial->completed_iterations : 0;
   bool wall_reached = false;
-  std::uint64_t completed = start_iter;
-  for (std::uint64_t iter = 0; iter < iterations; ++iter) {
+  while (completed < iterations) {
     if (std::chrono::steady_clock::now() - wall_start > limits.wall) {
       wall_reached = true;
       break;
     }
-    const std::uint64_t abs_iter = start_iter + iter;
-    for (std::size_t traverser = 0; traverser < seats; ++traverser) {
-      NSeatTraversalStreams streams{
-          derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, abs_iter, traverser),
-          derive_nseat_stream(master_seed, NSeatStreamPurpose::OpponentAction, abs_iter, traverser),
-          derive_nseat_stream(master_seed, NSeatStreamPurpose::ChanceCard, abs_iter, traverser)};
-      run_sweep(tree, sampler_ranges, root_board, traverser, streams, table,
-                /*table_mutex=*/nullptr, retained_bytes, visits, limits, frontier);
-    }
-    ++completed;
-    witness.next_u64();
+    active = static_cast<std::size_t>(std::min<std::uint64_t>(workers, iterations - completed));
+    base_sample = start_sample + completed;
+    if (cohort)
+      cohort->run();
+    else
+      evaluate(0);
+    reduce_batch(table, stores, active, budget);
+    for (auto& storage : stores)
+      storage->clear();
+    completed += active;
+    ++epochs;
   }
-  if (wall_reached && completed == 0)
-    throw nseat_training_exhausted(
-        "nseat trainer completed zero iterations before the wall cap; no policy to publish");
-
+  // Join even on the success path before publication, not only in RAII cleanup.
+  cohort.reset();
+  if (completed == 0)
+    throw nseat_training_exhausted("nseat trainer completed zero iterations before the wall cap");
   NSeatTrainingResult result;
   result.termination =
       wall_reached ? NSeatTerminationPhase::WallClock : NSeatTerminationPhase::Complete;
-  result.completed_iterations = completed;
+  result.completed_iterations = start_sample + completed;
+  result.completed_epochs = epochs;
+  result.batch_size = workers;
   result.nodes = tree.size();
   result.visits = visits.load(std::memory_order_relaxed);
   result.information_sets = table.size();
-  result.accounted_bytes = retained_bytes;
-  result.seed = master_seed;
+  result.seed = seed;
+  SplitMix64 witness(
+      derive_nseat_stream(seed, NSeatStreamPurpose::JointDeal, 0x5749544e45535300ULL, 0)
+          .next_u64());
+  for (std::uint64_t i = 0; i < result.completed_iterations; ++i)
+    witness.next_u64();
   result.prng_state = witness.next_u64();
   result.algorithm_revision = kNSeatAlgorithmRevision;
-  result.policy.game_ = tree.def();
-  result.policy.action_id_ = tree.action_id();
-  for (const auto& [key, raw] : table)
-    result.policy.rows_.emplace(key, seal_row(raw));
-  // RFC 0012 Phase 4: hand the raw table back to the caller so the builder can
-  // checkpoint it and warm-start the next chunk. The sealed policy above is
-  // derived from the same table before the move.
+  std::map<NSeatInformationKey, NSeatPolicyRow> sealed;
+  std::size_t sealed_bytes = 0;
+  for (const auto& [key, raw] : table) {
+    const auto charge = row_bytes(raw.actions.size());
+    budget.reserve(charge);
+    sealed_bytes += charge;
+    sealed.emplace(key, seal_row(raw));
+  }
+  result.accounted_bytes = budget.master_bytes() + sealed_bytes;
+  result.policy = NSeatPolicy::from_parts(tree.def(), tree.action_id(), std::move(sealed));
   result.raw_rows = std::move(table);
   return result;
 }
 
-NSeatTrainingResult train_nseat_parallel(const tree::AbstractTree& tree,
+}  // namespace
+
+NSeatTrainingResult train_nseat(const AbstractTree& tree,
+                                const std::vector<std::vector<WeightedHand>>& ranges,
+                                std::uint64_t iterations, std::uint64_t seed,
+                                const NSeatTrainerLimits& limits,
+                                const gto::FrontierEvaluator* frontier,
+                                const NSeatInitialState* initial) {
+  return train_impl(tree, ranges, iterations, seed, limits, frontier, 1, initial);
+}
+
+NSeatTrainingResult train_nseat_parallel(const AbstractTree& tree,
                                          const std::vector<std::vector<WeightedHand>>& ranges,
-                                         std::uint64_t iterations, std::uint64_t master_seed,
+                                         std::uint64_t iterations, std::uint64_t seed,
                                          const NSeatTrainerLimits& limits,
                                          const gto::FrontierEvaluator* frontier,
-                                         std::size_t num_threads) {
-  validate_request(tree, ranges);
-  if (iterations == 0)
-    throw std::invalid_argument("nseat trainer requires a positive iteration count");
-  if (limits.max_nodes == 0 || limits.max_information_sets == 0 || limits.max_depth == 0 ||
-      limits.max_bytes == 0 || limits.max_visits == 0 || limits.wall.count() <= 0)
-    throw std::invalid_argument("nseat trainer requires positive resource limits");
-  if (tree.def().terminal == poker::TerminalDepth::Flop && frontier == nullptr)
-    throw std::invalid_argument(
-        "nseat trainer: a flop-terminal game requires a frontier evaluator");
-  const std::size_t seats = tree.def().player_count;
-  if (tree.size() > limits.max_nodes)
-    throw nseat_training_exhausted("nseat trainer tree exceeds the node cap");
-  if (tree.depth() > limits.max_depth)
-    throw nseat_training_exhausted("nseat trainer tree exceeds the depth cap");
-  if (tree.accounted_bytes() > limits.max_bytes)
-    throw nseat_training_exhausted("nseat trainer tree exceeds the byte cap");
-
-  // Clamp thread count: at least 1, at most iterations (each thread needs
-  // at least one iteration).
-  if (num_threads == 0)
-    num_threads = 1;
-  if (static_cast<std::uint64_t>(num_threads) > iterations)
-    num_threads = static_cast<std::size_t>(iterations);
-
-  // Synchronized regret updates: all workers share one regret/average-weight
-  // table protected by a shared_mutex. This eliminates the √K convergence
-  // cost of the merge-at-end approach — every worker sees the latest regrets
-  // immediately, so the effective iteration count is the same as
-  // single-threaded. Resource caps are NOT divided: the shared table uses the
-  // full requested limits.
-  const auto sampler_ranges = to_sampler_ranges(ranges, seats);
-  const std::vector<int> root_board(tree.def().board.begin(),
-                                    tree.def().board.begin() + tree.def().board_size);
-
-  // Shared state: one table, one mutex, one atomic visit counter.
-  std::map<NSeatInformationKey, NSeatRawRow> table;
-  std::shared_mutex table_mutex;
-  std::size_t retained_bytes = 0;
-  std::atomic<std::size_t> visits{0};
-  std::atomic<bool> stop{false};
-  std::atomic<bool> error_flag{false};
-  std::exception_ptr error_exception;  // written once by the first failing thread
-  const auto wall_start = std::chrono::steady_clock::now();
-
-  // Per-thread completed counter (for deterministic iteration assignment).
-  std::vector<std::atomic<std::uint64_t>> thread_completed(num_threads);
-  for (auto& c : thread_completed)
-    c.store(0, std::memory_order_relaxed);
-
-  // Worker: thread t runs iterations {t, t+K, t+2K, ...}. This deterministic
-  // assignment makes the result reproducible given a fixed thread count.
-  auto worker = [&](std::size_t thread_id) {
-    try {
-      for (std::uint64_t iter = thread_id; iter < iterations; iter += num_threads) {
-        if (stop.load(std::memory_order_relaxed) || error_flag.load(std::memory_order_relaxed))
-          break;
-        if (std::chrono::steady_clock::now() - wall_start > limits.wall) {
-          stop.store(true, std::memory_order_relaxed);
-          break;
-        }
-        for (std::size_t traverser = 0; traverser < seats; ++traverser) {
-          NSeatTraversalStreams streams{
-              derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, iter, traverser),
-              derive_nseat_stream(master_seed, NSeatStreamPurpose::OpponentAction, iter, traverser),
-              derive_nseat_stream(master_seed, NSeatStreamPurpose::ChanceCard, iter, traverser)};
-          run_sweep(tree, sampler_ranges, root_board, traverser, streams, table, &table_mutex,
-                    retained_bytes, visits, limits, frontier);
-        }
-        thread_completed[thread_id].fetch_add(1, std::memory_order_relaxed);
-      }
-    } catch (...) {
-      // First thread to fail captures the exception; others see error_flag
-      // and stop at their next iteration boundary.
-      if (!error_flag.exchange(true, std::memory_order_relaxed))
-        error_exception = std::current_exception();
-    }
-  };
-
-  // Launch and join.
-  std::vector<std::thread> threads;
-  threads.reserve(num_threads);
-  for (std::size_t t = 0; t < num_threads; ++t)
-    threads.emplace_back(worker, t);
-  for (auto& t : threads)
-    t.join();
-
-  // Re-throw the first exception if any thread failed.
-  if (error_exception)
-    std::rethrow_exception(error_exception);
-
-  // Count total completed iterations.
-  std::uint64_t total_completed = 0;
-  for (const auto& c : thread_completed)
-    total_completed += c.load(std::memory_order_relaxed);
-
-  if (total_completed == 0)
-    throw nseat_training_exhausted(
-        "nseat trainer completed zero iterations before the wall cap; no policy to publish");
-
-  // No merge step: the shared table already contains all regret and
-  // average-weight updates from every worker.
-
-  const bool wall_reached = stop.load(std::memory_order_relaxed);
-
-  // Build result.
-  NSeatTrainingResult result;
-  result.termination =
-      wall_reached ? NSeatTerminationPhase::WallClock : NSeatTerminationPhase::Complete;
-  result.completed_iterations = total_completed;
-  result.nodes = tree.size();
-  result.visits = visits.load(std::memory_order_relaxed);
-  result.information_sets = table.size();
-  result.accounted_bytes = retained_bytes;
-  result.seed = master_seed;
-
-  // Witness PRNG: advance once per completed iteration, then one more for the
-  // final state. This matches the single-threaded trainer's witness semantics.
-  SplitMix64 witness(
-      derive_nseat_stream(master_seed, NSeatStreamPurpose::JointDeal, 0x5749544e45535300ULL, 0)
-          .next_u64());
-  for (std::uint64_t i = 0; i < total_completed; ++i)
-    witness.next_u64();
-  result.prng_state = witness.next_u64();
-
-  result.algorithm_revision = kNSeatAlgorithmRevision;
-  result.policy.game_ = tree.def();
-  result.policy.action_id_ = tree.action_id();
-  for (const auto& [key, raw] : table)
-    result.policy.rows_.emplace(key, seal_row(raw));
-  result.raw_rows = std::move(table);
-  return result;
+                                         std::size_t workers) {
+  return train_impl(tree, ranges, iterations, seed, limits, frontier, workers, nullptr);
 }
 
 void debug_run_one_nseat_sweep(const AbstractTree& tree,
                                const std::vector<std::vector<WeightedHand>>& ranges,
                                std::size_t traverser, NSeatTraversalStreams& streams,
-                               std::map<NSeatInformationKey, NSeatRawRow>& rows,
-                               const gto::FrontierEvaluator* frontier) {
+                               RawTable& rows, const gto::FrontierEvaluator* frontier) {
   validate_request(tree, ranges);
-  if (traverser >= tree.def().player_count)
-    throw std::invalid_argument("debug sweep traverser is not a live seat");
-  if (tree.def().terminal == poker::TerminalDepth::Flop && frontier == nullptr)
-    throw std::invalid_argument(
-        "nseat trainer: a flop-terminal game requires a frontier evaluator");
+  if (traverser >= tree.def().player_count ||
+      (tree.def().terminal == poker::TerminalDepth::Flop && !frontier))
+    throw std::invalid_argument("nseat debug sweep invalid traverser or missing frontier");
   const auto sampler_ranges = to_sampler_ranges(ranges, tree.def().player_count);
-  const std::vector<int> root_board(tree.def().board.begin(),
-                                    tree.def().board.begin() + tree.def().board_size);
-  const NSeatTrainerLimits limits;  // the seam runs under the default caps
-  std::size_t retained_bytes = 0;
+  const std::vector<int> board(tree.def().board.begin(),
+                               tree.def().board.begin() + tree.def().board_size);
+  NSeatTrainerLimits limits;
+  TrainingBudget budget(rows, limits);
+  for (const auto& [key, raw] : rows) {
+    (void)key;
+    budget.reserve_master(row_bytes(raw.actions.size()));
+  }
+  auto delta = std::make_unique<DeltaStorage>(budget);
   std::atomic<std::size_t> visits{0};
-  run_sweep(tree, sampler_ranges, root_board, traverser, streams, rows,
-            /*table_mutex=*/nullptr, retained_bytes, visits, limits, frontier);
+  run_sweep(tree, sampler_ranges, board, traverser, streams, rows, *delta, visits, limits,
+            frontier);
+  std::array<std::unique_ptr<DeltaStorage>, 1> stores{std::move(delta)};
+  reduce_batch(rows, stores, 1, budget);
 }
 
 const NSeatPolicyRow* NSeatPolicy::lookup(const tree::AbstractTree& tree,

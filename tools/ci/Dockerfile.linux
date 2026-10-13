@@ -13,6 +13,8 @@ RUN apt-get update \
     curl \
     file \
     g++ \
+    libssl-dev \
+    libzstd-dev \
     ninja-build \
     unzip \
   && rm -rf /var/lib/apt/lists/*

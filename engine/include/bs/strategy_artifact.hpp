@@ -70,9 +70,11 @@ inline constexpr const char* kRulesIdentifierV2 = "rfc0009-unified-flop-v1";
 // RFC 0007: the preflop flop-terminal profile. Distinct from kRulesIdentifierV2
 // so a reader can dispatch on the rules identifier without inspecting columns.
 inline constexpr const char* kRulesIdentifierPreflop = "rfc0009-unified-preflop-v1";
-// The seat-generic trainer's declared algorithm: sampled external-sampling
-// MCCFR with the kFull own-reach-weighted average and splitmix64.
-inline constexpr const char* kDefaultAlgorithmRevisionV2 = "rfc0009-nseat-rev1-sampled-splitmix64";
+// Exact persisted identities: the legacy policy remains readable; new seat
+// writers derive the revision-two identity from the result's actual batch size.
+inline constexpr const char* kLegacyAlgorithmRevisionV2 = "rfc0009-nseat-rev1-sampled-splitmix64";
+inline constexpr const char* kDefaultAlgorithmRevisionV2 =
+    "rfc0016-nseat-rev2-frozen-batch-1-sampled-splitmix64";
 
 enum class ArtifactKind { Checkpoint, Policy };
 enum class ValidationState { Unvalidated, Validated, Rejected };
@@ -177,9 +179,9 @@ struct CheckpointProvenance {
 };
 
 // RFC 0009 D3: provenance for a seat-generic (schema v2) checkpoint. Mirrors
-// CheckpointProvenance with the v2 algorithm default.
+// CheckpointProvenance; an empty algorithm string derives result identity.
 struct SeatCheckpointProvenance {
-  std::string algorithm_revision = kDefaultAlgorithmRevisionV2;
+  std::string algorithm_revision;
   std::string prng_identifier = kSampledPrngIdentifier;
   std::string engine_revision = kDefaultEngineRevision;
   ValidationState validation = ValidationState::Unvalidated;
@@ -215,6 +217,7 @@ using TrainingWeights = std::vector<std::pair<double, double>>;
 // verifies `abstraction_digest` and `card_abstraction` against the current
 // training parameters before warm-starting.
 struct CheckpointTrainingState {
+  std::string algorithm_revision;
   std::uint64_t abstraction_digest = 0;
   std::optional<abstraction::AbstractionId> card_abstraction;
   // The checkpoint's completed iteration count, so a caller can resume the

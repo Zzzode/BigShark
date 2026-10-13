@@ -184,6 +184,11 @@ the existing evaluator. Fold settlement requires no private cards.
 Gross contributions and refunds are retained separately. An unmatched wager
 is refunded at fold or street closure, including a short all-in call.
 Stacks already include refunds; final settlement credits awards only.
+Contribution settlement skips percentage-rake arithmetic for zero basis points
+or zero cap, after validating all policy/chip fields and constructing valid pot
+layers with required scores. It still computes every award, refund, stack,
+utility, and conservation check. Nonzero-rake integer arithmetic and rounding
+are unchanged (RFC 0018); this does not enable a new production rake capability.
 `Settlement` reports awards, refunds, final stacks, and signed integer net
 utility relative to hand-start chips. Zero-sum chip conservation applies
 throughout this supported profile. After an all-in call the remaining public
@@ -663,6 +668,16 @@ after removing the temporary name. The generation is identified by SHA-256
 never stored inside the hashed file. Publication independently reopens the
 linked file read-only with the computed digest before returning.
 
+Schema-v2/v3 seat-policy loading merges ordered state and action SQL cursors
+directly into one validated row at a time. It does not retain complete
+intermediate state/action maps or decode canonical keys twice. Both streams
+must be completely consumed; contiguous IDs/ordinals, raw-width/card/seat
+bounds, kind/target agreement, finite normalized probabilities, canonical
+keys, referential integrity, training/auxiliary tables, and manifest/card
+identity remain checked. The final map owns compact keys and its row vectors.
+Schema-v1 and raw warm-start reconstruction keep their legacy map paths;
+publication still performs the complete independently pinned reopen above.
+
 Readers treat the file as untrusted: reject above an 8 GiB default bound
 (overridable), validate the physical header and committed in-header database
 size before opening, and require legacy (non-WAL) file-format version bytes;
@@ -931,6 +946,14 @@ streams are bitwise-identical to a from-scratch run. During training, the
 builder writes a checkpoint every 256 iterations (a new periodic mechanism;
 the previous code checkpointed only after completion and then deleted it). The
 manifest records `completed_iterations` honestly.
+
+RFC 0016 additionally requires the exact revision-two, batch-one algorithm
+identity before raw-state mapping or training. Revision-one and unknown
+checkpoints remain readable but cannot resume into the changed average/update
+algorithm. Read-only resume preflight occurs before worker launch and failure
+cleanup, so refusal preserves the source checkpoint. Compatible split runs
+preserve regrets, average sums, and policy probabilities; runtime counters
+that checkpoints do not store are not claimed to be identical.
 
 The declared first-library range is a fixed premium set: AA, KK, QQ, JJ (24
 combos) plus AKs (4) and AKo (12) — 40 combos total, weight 1.0, used for every
@@ -1713,22 +1736,19 @@ was relaxed to accept declared-coarse abstractions (commit 7585989), so the
 `coarse` abstraction arg is now available in both the preflop profile builder
 and the flop library builder.
 
-The n-seat MCCFR trainer bounds training with a wall-clock cap probed every
-256 iterations (`mccfr_trainer.cpp`): a run that exceeds the cap stops at the
-next probe and reports `wall_reached`, and a run that completes zero iterations
-before the cap throws `stage6_training_exhausted` rather than sealing an empty
-artifact whose manifest would claim the requested iteration count. The cap is
-a steady-clock deadline, so a zero-duration cap is racy (the first probe can
-read the same tick as the run start, `elapsed == 0` fails `elapsed > cap`, and
-a full 256-iteration batch completes before the next probe); the wall-cap test
-uses a negative cap (`milliseconds(-1)`) so any non-negative elapsed time
-exceeds it deterministically (commit 45d1644).
+The production n-seat trainer (`nseat_trainer.cpp`) checks its positive
+wall-clock envelope between complete update epochs. It returns `WallClock`
+only after a nonempty complete sample prefix; zero completed samples raise
+`nseat_training_exhausted`. Other resource violations throw without publishing
+partial training results. The 256-iteration probe belongs to the separate
+stage6 measurement trainer, not this production contract.
 
 ### Postflop-aware frontier evaluation (RFC 0013 Stage 1)
 
 RFC 0013 replaces the all-in-at-flop `EquityFrontierEvaluator` with a
-postflop-aware evaluator that returns CFR-solved equilibrium values from a
-declared table. Stage 1 implements the foundation: the N-seat declared
+postflop-aware evaluator that returns saved-policy values from a declared
+table. Exact policy integration is not an equilibrium certificate; convergence
+and abstraction quality require separate evidence. Stage 1 implements the foundation: the N-seat declared
 frontier table, the postflop frontier evaluator, SPR bucketing, and the
 root-value extractor.
 
@@ -1773,28 +1793,40 @@ equilibrium value of an all-in-at-flop game, not a heuristic.
 RFC 0013 Stage 2). Extends the declared-table evaluator with policy-based
 computation for missing entries. When a `(flop, spr_bucket, hands)` tuple is
 not in the declared table, the evaluator loads the saved CFR policy for that
-config from a policy directory, loads the serialized tree (`.atf`) if
-available or builds it from scratch, and calls
-`extract_root_value` to compute the exact equilibrium value. This is
-GTO-compliant: the value comes from the converged CFR policy, not a
-heuristic. The evaluator caches `(policy, tree)` pairs in an LRU cache
-(default capacity 128) to avoid reloading and rebuilding on repeated calls
-for the same config. Cache statistics are exposed via `cache_hits()`,
+config from a policy directory and calls the exact policy-following
+`extract_root_value` kernel. This preserves the saved policy's values; it does
+not certify that its training converged. RFC 0015 reuses one private
+`PostflopEvaluationTemplate` per structural configuration (six current SPR
+buckets), built or loaded for representative flop `{0,1,2}`. Only stable
+indices, action menus, chance ordinals, fold utilities, and live-seat order are
+exposed; the request supplies its actual board and state. The generic
+`AbstractTree` retains its concrete-board contract.
+
+The evaluator caches board-specific policies with an entry cap (default 128)
+and an accounted-byte budget (default 1 GiB). Template initialization is
+serialized with a separate aggregate 4 GiB cap. Cache statistics include
+policy/template loads, retained/peak policy accounting, template accounting,
+and cumulative load/extraction elapsed times, alongside `cache_hits()`,
 `cache_misses()`, `table_hits()`, `computed()`, and `equity_fallbacks()`.
 
 The cache is thread-safe (RFC 0014 optimization): entries are held as
 `shared_ptr<const CachedConfig>` so a config stays alive even if evicted
 while another thread is using it. A `shared_mutex` guards the map —
-readers take a shared lock for lookup, writers take a unique lock for
-insert/evict. Disk I/O (policy/tree loading) happens outside any lock.
-All counters and the LRU access counter are `std::atomic`. The
+entry/flight metadata uses a short exclusive critical section. Per-key
+single-flight loading shares successful results or exceptions. Policy I/O,
+decoding, and extraction run outside the cache lock. A failed flight is removed
+and can retry. At most two policy loads run concurrently. Each reserves up to
+64 MiB before loading; its reservation becomes an object-lifetime policy charge
+after decoding. Evicted policies remain charged while callers hold them. A
+budget generation and publication notifications make waiting loaders retry
+eviction when a load becomes a cached object. These limits bound accounted
+allocations, not total process RSS. The policy directory must remain fixed for
+the run; replacing its contents requires a new evaluator instance. The
 `EquityFrontierEvaluator` fallback cache is also mutex-protected.
-The cache capacity is configurable via the constructor parameter
-`cache_capacity` (default 128).
 
 **NSP1 policy codec** (`save_nseat_policy` / `load_nseat_policy`).
 Serializes an `NSeatPolicy` to a compact binary file (NSP1 format) and loads
-it back. The file layout is a 32-byte header (magic, version, seat count,
+it back. The file layout is a 36-byte header (magic, version, seat count,
 SPR bucket, row count, flop class) followed by variable-length rows. Each
 row stores the card bucket, node index, action list (type + target total),
 and probability vector. Policy files are named
@@ -1810,18 +1842,30 @@ decompresses. Compression ratios of 6-8x are typical for policy files.
 The `bigshark-tree-recompress` tool migrates existing NSP1 files to NSPZ
 in place (atomic `.tmp` + rename).
 
+Policy decoding uses bounded cursor reads. Its optional byte limit covers
+simultaneously live input/decompression buffers and decoded rows. It checks
+headers, row/action counts, card-bucket domains, duplicate keys/actions, finite
+nonnegative normalized probabilities, and trailing/truncated data before
+publication. `nseat_policy_accounted_bytes` conservatively counts retained map
+nodes, strings, and vector capacities for cache lifetime accounting.
+
 **ATF tree codec** (`AbstractTree::save` / `AbstractTree::load`, RFC 0014).
 Serializes the tree structure (nodes, children, actions) and terminal payloads
-to a compact binary file. Terminal payloads are serialized directly — no DFS
-replay on load. The load path uses a cursor (memcpy reads, >10 GB/s) instead
-of `std::istringstream` (~82 MB/s), and error messages are constructed only on
-the failure path.
+to a compact binary file. Terminal values are deserialized directly. Cursor
+reads avoid string-stream parsing and construct error messages on failure.
+Loading enforces node/depth/byte bounds before allocation, validates array and
+index domains, and checks the serialized tree and terminals against reachable
+native game states. This validation does not regenerate terminals or restore
+an obsolete format. Retained accounting is recomputed instead of trusting the
+file's recorded value. Input buffers have individual transient byte limits;
+the retained-byte cap is not a total process RSS bound.
 
 The file layout is a 32-byte header (magic, version, node count, terminal
 count, depth, accounted bytes) followed by variable-length nodes and terminal
 records. Tree files are named `tree_{c0}_{c1}_{c2}_b{b}.atf`. The on-the-fly
-evaluator loads a serialized tree when available (~60-400 ms) instead of
-building from scratch (~5 s).
+evaluator loads only one representative tree per active bucket when available,
+and otherwise uses the existing builder. Load/build cost is paid at template
+initialization rather than on every board-policy cache miss.
 
 **ATFZ compressed tree codec** (RFC 0014 optimization). `AbstractTree::save`
 writes zstd-compressed files by default: the payload is serialized to a
@@ -1863,6 +1907,15 @@ On a small river-rooted fixture the traversal is cross-checked against
 `NSeatPolicy::lookup` and converts `NSeatPolicyRow` to
 `vector<PolicyAction>`.
 
+RFC 0015 adds independent L1 flop/turn chance checks, including all dealt
+private-card blockers and folded seats. Template tests compare every projected
+node/action/child/terminal field across all six production buckets and alternate
+board families, then compare uniform and sparse nonuniform root values.
+Concrete trees and templates use one extraction kernel. It accumulates utility
+in fixed seat-capacity arrays, passes board spans without copying, and constructs
+the private-card blocker mask once per request. Native settlement remains the
+only payout implementation.
+
 **Files.**
 
 | File | Component |
@@ -1881,37 +1934,112 @@ On a small river-rooted fixture the traversal is cross-checked against
 | `engine/src/gto/postflop_config.cpp` | Shared postflop game/abstraction config |
 | `engine/tests/test_postflop_frontier.cpp` | Five unit tests (bucketing, roundtrip, scaling, cross-check, end-to-end) |
 
-### Parallel N-seat CFR trainer (RFC 0014 optimization)
+### Synchronous N-seat CFR trainer (RFC 0016)
 
-`train_nseat_parallel()` (declared in `nseat_trainer.hpp`, implemented in
-`nseat_trainer.cpp`) runs external-sampling MCCFR with RM+ across multiple
-threads. Each worker has its own local regret/average table — no shared
-mutable state during training. Iterations are assigned deterministically:
-thread `t` runs iterations `{t, t+K, t+2K, ...}` where `K` is the thread
-count. The PRNG stream is derived from
-`derive_nseat_stream(master_seed, purpose, abs_iter, traverser)` with no
-thread ID, so the same iteration always produces the same sampled trajectory
-regardless of which thread runs it.
+`train_nseat` and `train_nseat_parallel` share algorithm revision two. A
+persistent bounded worker cohort evaluates one immutable master profile per
+epoch, recording only private signed regret deltas and average contributions.
+Absolute sample indices retain pinned per-seat joint-deal, opponent-action,
+and chance streams, without thread identity. Workers never read their own
+deltas as a new policy. The coordinator reduces in sample order, divides by
+the entire batch size including samples that did not touch a row, and applies
+one RM+ clipping step. The final smaller batch uses its actual size.
 
-All workers share ONE regret/average-weight table protected by a
-`shared_mutex`. Workers use synchronized regret updates: each worker reads
-the current strategy under a shared lock, applies its average-weight and
-regret updates under a unique lock, and releases the lock during recursion.
-This eliminates the convergence cost of the merge-at-end approach — every
-worker sees the latest regrets immediately, so the effective iteration count
-matches single-threaded training. The witness PRNG is advanced once per total
-completed iteration, then one more for the final state, matching the
-single-threaded trainer's PRNG semantics.
+Each sample also draws independent joint cards and performs a full-action,
+chance-sampled average traversal of the same frozen profile. At a node owned
+by seat `i`, its contribution is only `reach[i] * sigma[a]`; recursion changes
+only that seat's reach. No opponent reach multiplier or zero-opponent-reach
+pruning is allowed. Terminal/virtual flop-deal leaves stop without evaluating
+the frontier. This corrects revision one's time-varying opponent sampling bias
+and stale off-path averages. It is not full private/chance enumeration or a
+multi-player equilibrium proof.
 
-Resource caps (`max_bytes`, `max_information_sets`, `max_visits`) are NOT
-divided by the thread count: the shared table uses the full requested limits.
-Lock hold time is very short (read/write a few doubles), and the recursive
-walk holds no locks, so contention is minimal even with 8 threads.
+`completed_iterations` remains the completed sample count. `completed_epochs`
+reports actual update rounds; `batch_size` is the effective worker width,
+clamped to at least one and at most the requested samples. Both regret and
+average deltas are batch means, so epochs, including the last smaller batch,
+have equal weight. Fixed seed, width, samples, and immutable inputs are
+reproducible; different widths are different training identities, not promised
+to produce equal policies. Serial training is the width-one case. The witness
+PRNG advances once per completed sample and once for the final witness state.
+
+The byte budget covers the master table, simultaneously live worker maps,
+new-key registry and reduction storage; information sets are counted by unique
+keys. Strict atomic visit reservations include regret and average traversals.
+Row `visits` still counts only regret-own-node touches. Worker exceptions
+complete the epoch rendezvous and join the cohort before propagating; startup
+failure can stop and join a partially created cohort. Wall stops occur only
+between epochs and publish no scattered sample identifiers.
+
+RFC 0017 keeps that mathematics and conservative accounting unchanged. Each
+sample-local delta borrows its immutable tree menu and owns one variable-length
+double buffer for signed regrets, average contributions, and the once-computed
+frozen sigma. No cached strategy survives into another epoch. Concrete export
+reserves exact information-key storage, skips combo classification at uncovered
+nodes while still visiting their children, and reuses one complete ordered
+board's combo buckets at a time. The final concrete policy map remains owned
+and can still dominate memory; no row or zero-reach path is removed.
+
+The existing SQLite `algorithm_revision` string carries
+`rfc0016-nseat-rev2-frozen-batch-<B>-sampled-splitmix64`. Export preserves the
+actual width and epochs; writers derive or validate that identity. Old exact
+revision-one identities decode as revision one with unknown batch/epochs;
+unknown identities retain their original string with numeric revision zero.
+No existing immutable policy is relabeled or rewritten, and raw revision-one
+checkpoints are refused for revision-two resumes.
 
 The preflop profile builder accepts `--threads N` (default 1) and
-`--cache-capacity N` (default 128). When `--threads > 1`, it calls
+`--cache-capacity N` (default 128), and `--cache-bytes N` (bytes, default 1 GiB,
+at least one 64 MiB load reservation). When `--threads > 1`, it calls
 `train_nseat_parallel`; otherwise `train_nseat`. The manifest records
-`parallel_threads` when greater than 1.
+`parallel_threads` when greater than 1, actual sample/epoch counts, batch width,
+and the algorithm identity read back from the published artifact. Oracle
+manifests distinguish new training from reused NSP policies/frontier entries,
+whose training revision is unknown; reuse does not certify old values.
+
+The builder records training/cache statistics after training has returned and
+all parallel workers have joined. It then retires the optional postflop
+evaluators and their referenced declared table before export, checkpoint, and
+publication allocate additional policy representations. This changes only
+process-local object lifetime; training cache behavior, budgets, solver values,
+and artifact identity remain unchanged.
+
+Its additive pipeline diagnostics separate export, checkpoint, publication,
+and probe seconds from training seconds. `pipeline_seconds` ends before the
+diagnostic JSON manifest and process teardown; a shell timing covers the whole
+process. `peak_rss_bytes` is the process high-water resident set through that
+measurement point, normalized to bytes on Linux/macOS (`-1` if unavailable),
+not the portable accounted-byte budget. These values do not enter SQLite
+content, sampled strategy identity, or publication admission.
+
+Native parallel tests cover one-worker serial parity, clamp behavior, exact
+root-only visit accounting, propagated frontier errors, and resource limits.
+Repeated singleton-range fixtures compare legal deviation gains across seeds
+and worker counts; they do not establish general multiway convergence.
+
+### Offline preflop deviation measurement (RFC 0015)
+
+`bigshark-preflop-nash-conv` retains its executable and positional arguments,
+but reports signed frozen deviation-gain estimates rather than exact NashConv.
+It learns one response per existing information key from sampled worlds, pools
+hidden opponent histories at the same public node, freezes descendant responses
+before ancestor responses, and confirms the frozen response on independent
+worlds. Unknown response keys follow the original profile and are counted;
+missing profile rows keep the existing check/call/fold behavior and have their
+own coverage counter. Any invalid distribution, menu drift, or frontier failure
+aborts the complete measurement.
+
+Per-seat means use that seat's confirmation sample count. Paired profile versus
+response gains retain their sign. The summed-gain standard error is computed
+from per-world sums, including covariance across seats. The approximate normal
+95% interval reflects confirmation sampling only; fewer than two worlds have
+undefined uncertainty. Sampling remains uniform over compatible joint hands,
+independently of artifact training ranges, and is reported explicitly.
+
+This is the measured gain of a legal, learned deviation, not proof of optimal
+best response or an exploitability upper bound. Low gain with low response
+coverage does not certify quality. Historical per-hidden-deal maximum results
+and their incorrectly normalized values are not comparable to this estimator.
 
 ## Flop and Turn Policy
 

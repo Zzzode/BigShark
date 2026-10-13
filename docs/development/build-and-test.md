@@ -246,9 +246,16 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `heads_up_solver_sampled` | Pinned SplitMix64, enumerated external-sampling update expectations under weighted ranges and free chance, kSimple averages, repeatability, PRNG/iteration rollback, chance-conditioned best response, and sampled convergence smoke gates |
 | `heads_up_allocations` | Every-allocation fault injection, transactional publication, and measured peak memory budgets |
 | `artifacts` | RFC 0005 checkpoint/export round trip, independent-process reader, split-run resume equality, canonical key grammar, identity-mismatch resume rejection, transactional ENOSPC, killed-writer and journal-removal recovery, page/header/truncation/version corruption, STRICT and foreign-key rejection, NaN/Inf and probability-sum validation, and immutable-publication guarantees |
-| `settlement` | Contribution layers, refunds, ties, capped rake, odd-chip order, exhaustive grids, and conservation |
+| `settlement` | Contribution layers, refunds, ties, capped rake, odd-chip order, exhaustive grids, conservation, and full-field/typed-rejection equivalence for each zero-rate/zero-cap condition through the numeric limit |
 | `icm` | Bounded prize equity, independent permutation oracle, bust handling, and prize-unit conservation |
 | `equity` | Deterministic equity, multiway sanity, and draw classification |
+| `abstract_tree_codec` | Current ATF roundtrip, malformed counts/cards/ledgers/paths, compressed truncation, and pre-allocation resource limits |
+| `nseat_policy_codec_limits` | NSP cursor validation, duplicate/distribution rejection, combined input/retained byte accounting, and exact-bound refusal |
+| `postflop_templates` | All six structural configurations, concrete/template equivalence, independent flop/turn L1 oracle, sparse rows, and folded-seat blockers |
+| `postflop_cache` | Concurrent single-flight loads, template reuse, tight lifetime accounting, eviction/wait wakeups, failed-flight retry, and process timeout |
+| `preflop_nash_conv` | Hidden-information counterexamples, pooled/frozen responses, held-out confirmation, normalization, signed paired uncertainty, and failure propagation |
+| `nseat_parallel` | Serial one-worker parity, repeated unchanged quality gates, twelve complete pre-optimization result fingerprints across widths/tails/weighted ranges/chance, frozen-sigma lifetime, global visit caps, clamp behavior, and frontier errors |
+| `seat_policy` | Exact independent concrete export, sparse parents with covered descendants, chance siblings, Preflop169, key grammar, and two-seat key identity |
 | `v0_protocol` | Legacy JSON mapping and repeated response serialization |
 | `v1_frame_stream` | RFC 0002 ULEB128 framing, canonical varints, 1 MiB pre-allocation rejection, and truncation |
 | `v1_semantic_validator` | Hand-written protovalidate and poker-semantic rejection coverage |

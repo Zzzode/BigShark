@@ -144,7 +144,10 @@ ContributionSettlement settle_contributions(const SettlementInput& input) {
   if (layered != result.pot)
     throw std::logic_error("settlement layer conservation failed");
 
-  if (result.pot != 0 && !(input.rake.no_flop_no_drop && !input.flop_dealt)) {
+  // Zero rate or cap makes the declared percentage identically zero. All
+  // input/layer validation above and final conservation checks still run.
+  if (result.pot != 0 && input.rake.basis_points != 0 && input.rake.cap != 0 &&
+      !(input.rake.no_flop_no_drop && !input.flop_dealt)) {
     result.rake =
         std::min(input.rake.cap, multiply_divide(result.pot, input.rake.basis_points, 10000).whole);
   }

@@ -322,6 +322,7 @@ struct OracleCtx {
   const AbstractTree* tree = nullptr;
   const std::vector<std::array<int, 2>>* holes = nullptr;
   OracleTable* rows = nullptr;
+  const OracleTable* profile = nullptr;
   std::size_t traverser = 0;
   SplitMix64* action = nullptr;
   SplitMix64* chance = nullptr;
@@ -375,14 +376,15 @@ double oracle_walk(OracleCtx& ctx, const GameState& state, std::size_t node_inde
       abstraction::CardBucketKind::CategoryTiersV1, (*ctx.holes)[actor], board));
   key.node_index = node_index;
   OracleRow& row = oracle_touch(*ctx.rows, key, menu);
-  const std::vector<double> sigma = oracle_sigma(row);
+  const auto frozen = ctx.profile->find(key);
+  const std::vector<double> sigma = frozen == ctx.profile->end()
+                                        ? std::vector<double>(menu.size(), 1.0 / menu.size())
+                                        : oracle_sigma(frozen->second);
   if (actor != ctx.traverser) {
     const std::size_t sampled = oracle_weighted(*ctx.action, sigma);
     GameState next = state.after_action(actor, menu[sampled]);
     return oracle_walk(ctx, next, node.children[sampled], own_reach);
   }
-  for (std::size_t a = 0; a < menu.size(); ++a)
-    row.sums[a] += own_reach * sigma[a];
   ++row.visits;
   std::vector<double> children(menu.size(), 0.0);
   for (std::size_t a = 0; a < menu.size(); ++a) {
@@ -408,9 +410,11 @@ void oracle_sweep(const AbstractTree& tree, const std::vector<std::vector<Weight
   const std::vector<std::array<int, 2>> holes =
       oracle_joint_deal(ranges, board, streams.joint_deal);
   OracleCtx ctx;
+  const OracleTable profile = rows;
   ctx.tree = &tree;
   ctx.holes = &holes;
   ctx.rows = &rows;
+  ctx.profile = &profile;
   ctx.traverser = traverser;
   ctx.action = &streams.opponent_action;
   ctx.chance = &streams.chance_card;
@@ -821,7 +825,7 @@ int test_three_seat_oracle() {
     }
     CHECK(any_visit);
     CHECK(any_regret);
-    CHECK(any_sum);
+    CHECK(!any_sum);
   }
   return 0;
 }

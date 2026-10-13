@@ -458,6 +458,22 @@ Three optimizations were applied to reduce the builder wall-clock from
 
 ## Decision
 
+Factual errata (2026-10-13): exact extraction means exact expectation under
+the saved abstract policy, not evidence that the saved policy converged to an
+equilibrium. The original preflop tool maximized separately for hidden joint
+deals and normalized by the combined seat count, so its old exploitability
+numbers cannot support this RFC's quality criterion. RFC 0015 replaces them
+with independently confirmed information-set-consistent deviation estimates.
+Individual table locks do not establish the claimed removal of a `sqrt(K)`
+convergence cost; new native fixtures expose an averaging defect in both
+serial and parallel revision-one training. RFC 0016 addresses the algorithm
+separately with frozen batches and independent averaging. Migration-tool
+references above are historical after commit `b154533` removed the old ATF
+version path and migration executable. Startup-inclusive bounded performance
+evidence is in `docs/development/benchmarking.md`; previous hour/day estimates
+are not verified long-run guarantees. None of these corrections changes
+existing persisted bytes or retroactively certifies old artifacts.
+
 Author agent: postflop-policy-persistence (main session)
 Approved by: independent approval agent a54e75dc11e79a519
 Decision date: 2026-10-12

@@ -2163,14 +2163,25 @@ static bool test_three_seat_belief_bridging(const fs::path& dir) {
 }
 
 static bool test_four_seat_declared_miss(const fs::path& dir) {
+  // This fixture covers startup, exact belief, and root lookup, not strategy
+  // quality. Eight samples retain the unchanged four-seat game and ranges
+  // while keeping the full-average export inside the native resident budget.
   const PublishedV2Fixture fixture =
-      publish_v2(four_seat_flop_def_v2(), four_seat_flop_ranges_v2(), 200, dir, "v2four");
+      publish_v2(four_seat_flop_def_v2(), four_seat_flop_ranges_v2(), 8, dir, "v2four");
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
       {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
   // RFC 0011: the 4-seat artifact loads, advertises, and conditions belief
   // exactly via the N-seat recursive backtracking path.
   CHECK(results.size() == 1);
+  if (results[0].status != RootStatus::Advertised) {
+    std::printf(
+        "four-seat resident startup: status=%s detail=%s resident_bytes=%zu budget_bytes=%zu "
+        "information_sets=%zu probabilities=%zu\n",
+        bs::resident::to_string(results[0].status), results[0].detail.c_str(),
+        results[0].resident_bytes, bs::resident::kDefaultResidentBudgetBytes,
+        results[0].information_sets, results[0].probability_count);
+  }
   CHECK(results[0].status == RootStatus::Advertised);
   CHECK(residents.advertised_roots() == 1);
 

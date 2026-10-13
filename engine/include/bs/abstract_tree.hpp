@@ -93,7 +93,7 @@ TerminalPayload make_frontier_payload(const GameState& state);
 
 // Constructs a TerminalPayload from a GameState at a showdown or fold leaf.
 // Unlike the builder's internal make_terminal, this does not charge a byte
-// budget — it is used by the tree codec when recomputing terminals on load.
+// budget; callers account for any retained payload themselves.
 TerminalPayload make_terminal_payload(const GameState& state, bool folded);
 
 // Compute the tree cache file name for a (flop_class, spr_bucket) config.
@@ -169,15 +169,15 @@ class AbstractTree {
   AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits = {});
 
   // RFC 0014: serialize/deserialize the tree structure for on-disk caching.
-  // save() writes only the tree structure (nodes, children, actions) in a
-  // compact binary format (ATF1). Terminal payloads are NOT serialized — they
-  // are recomputed on load by replaying the GameState through the tree, which
-  // is much cheaper than rebuilding from scratch (no legal-action or
-  // chance-card computation).
+  // save() writes structure and terminal payloads in the current compressed
+  // ATF format. load() retains the stored terminals and verifies their values
+  // against native action/chance paths; it does not reconstruct missing data.
   //
   // save() throws std::runtime_error on I/O failure.
-  // load() validates magic, version, and node count; throws std::runtime_error
-  // on any mismatch or I/O failure. The GameDef and ActionAbstraction must
+  // load() validates headers, node/edge/card/terminal shape, and true depth.
+  // It bounds input buffers and retained allocations before allocation and
+  // recomputes accounting. Malformed data throws std::runtime_error; exceeded
+  // limits throw tree_resource_exhausted. The GameDef and ActionAbstraction must
   // match the ones used to build the tree (the caller ensures this by
   // constructing them from the same config).
   void save(const std::filesystem::path& path) const;

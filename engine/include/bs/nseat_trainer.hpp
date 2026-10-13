@@ -1,72 +1,11 @@
-// RFC 0009 W2a: the seat-parameterized MCCFR trainer (L4).
-//
-// One external-sampling MCCFR trainer for 2..10 seats that consumes the L3
-// AbstractTree DIRECTLY (the design solve.hpp:15 already states) and keys its
-// rows by the tree's public-node index plus the acting seat's own card bucket.
-// It re-implements the conventions the stage-6 measurement trainer documents
-// and pins -- RM+ clipped regrets, the kFull own-reach-weighted average
-// (`sums[a] += own_reach * sigma[a]` once per traverser sweep at the
-// traverser's own node), the raw regret update `regrets[a] += children[a] -
-// value`, and the external-sampling walk signature
-// `walk(state, node_index, own_reach)` in which every non-traverser seat's
-// reach is integrated out by sampling -- but it does NOT depend on the stage-6
-// targets (the offline guard forbids that edge; sharing code instead of
-// re-deriving it is recorded as an RFC 0009 Open Question, not done here).
-//
-// What the walk does per traverser sweep:
-//
-//   * one joint deal is sampled per episode from the per-seat `ranges`
-//     (product-conditional rejection draw through
-//     bs::solver::sample_scalable_joint_deal, the RFC 0006 sampler);
-//   * traverser action node: freeze sigma, enumerate EVERY menu action, recurse
-//     into each sampled continuation, accumulate `sums[a] += own_reach *
-//     sigma[a]` once, then apply the RM+ update;
-//   * opponent action node: sample ONE action with the current policy and
-//     recurse with own_reach unchanged (no average contribution);
-//   * chance node: sample ONE public card uniformly over the sampled world's
-//     legal runout list (`public_runout_cards(state)` minus every seat's two
-//     hole cards, ascending -- the stage-6 convention), then address the
-//     tree's chance child by the card's BOARD-ONLY ordinal (the tree's chance
-//     children enumerate exactly the ascending {0..51}\board list), with the
-//     child's `incoming_card` edge label asserted against the sampled card;
-//   * terminal: fold leaves read the L3 TerminalPayload's stored
-//     `chip_utility`; showdown leaves call `state.settle_showdown(live_holes)`
-//     with the concrete per-seat hole cards in ascending live-seat order (the
-//     payload's `live_order`). Both assert exact chip conservation
-//     (`sum(chip_utility) == 0`) exactly as the stage-6 trainer does.
-//
-// One iteration runs one sweep per seat (0..n-1 as traverser), exactly like
-// stage-6. A sweep writes its regret/average deltas directly to the shared
-// row table (there is no local staging map); the atomicity guarantee is that
-// a limit interruption never publishes a partial sweep. The node, depth,
-// byte, information-set and visit caps all THROW out of the call (no result
-// is returned), and the wall cap is checked at iteration boundaries only, so
-// the returned policy is always the state after a whole number of completed
-// iterations.
-//
-// Streams: three SplitMix64 streams per sweep, derived deterministically from
-// the master seed by `derive_nseat_stream(seed, purpose, iteration, traverser)`
-// (the exact derivation is documented at that function and is PINNED: changing
-// it changes every sampled trajectory). The trainer holds no ambient
-// randomness.
-//
-// Rows are addressed by `NSeatInformationKey{own_card_bucket, node_index}`.
-// The node index abstracts the concrete board value (chance child positions
-// are board-only ordinals), so one tree serves every sampled flop of the
-// rooted profile. The own-card bucket uses the L2 card abstraction
-// (`abstraction::Preflop169` by default — 13 pairs + 78 suited + 78 offsuit
-// at preflop, falling back to CategoryTiersV1 at postflop), which is L4-owned
-// here: the artifact reader/writer side later maps buckets to concrete
-// decoding (RFC 0009 D3).
-//
-// Refusal layering (mirroring the stage-4 heads-up route): the trainer itself
-// throws std::invalid_argument for a malformed request (wrong range count,
-// empty or invalid ranges, zero iterations, a preflop root, a non-identity
-// action abstraction) and `nseat_training_exhausted` for a crossed resource
-// cap. `solve()` pre-validates the shape conditions it must report as typed
-// solver-selection refusals (`unsupported_tree_shape`) BEFORE forwarding, so
-// every condition today's Auto already refuses keeps its current typed
-// behavior through the unified entry point.
+// RFC 0016: synchronous external-sampling MCCFR for 2..10 seats.
+// Each epoch freezes one profile. Workers sample regret sweeps independently,
+// stage signed deltas, and reduce them in sample order before one RM+ clipping
+// step. A separate chance-sampled traversal enumerates all public actions and
+// accumulates each actor's own-reach-weighted average, including zero-opponent
+// reach paths. Batch width one uses the same kernel as parallel training.
+// Results identify sample count, epoch count, batch width, and revision.
+// No multiplayer equilibrium guarantee follows from these mechanics.
 #pragma once
 
 #include <array>
@@ -133,11 +72,13 @@ enum class NSeatStreamPurpose : std::uint64_t {
   JointDeal = 1,
   OpponentAction = 2,
   ChanceCard = 3,
+  AverageJointDeal = 4,
+  AverageChanceCard = 5,
 };
 
 // The trainer's declared algorithm revision. Two revisions are different
 // policies by definition (RFC 0009 D2), so this is stamped into every result.
-inline constexpr std::uint32_t kNSeatAlgorithmRevision = 1;
+inline constexpr std::uint32_t kNSeatAlgorithmRevision = 2;
 
 // The pinned stream derivation: SplitMix64 seeded with
 //   fnv1a("bsnseat|" + purpose(decimal) + "|" + master_seed(decimal) + "|" +
@@ -174,8 +115,8 @@ inline std::uint32_t nseat_own_card_bucket(const NSeatInformationKey& key) {
 }
 
 // One sealed information set. `actions` is the tree node's ordered menu (the
-// same values the walk enumerated); `probabilities` is the kFull average row,
-// or the uniform fallback when the row never received an own-node average
+// same values the walk enumerated); `probabilities` is the chance-sampled
+// full-action average row, or uniform when no positive own-reach average
 // contribution (deterministic, documented, and not counted anywhere).
 struct NSeatPolicyRow {
   std::vector<poker::Action> actions;
@@ -245,7 +186,7 @@ class NSeatPolicy {
   std::map<NSeatInformationKey, NSeatPolicyRow> rows_;
 };
 
-// One sweep's RAW accumulators. The trainer's live row store is a map of
+// Published cumulative RAW accumulators. The trainer's master row store is a map of
 // these keyed by NSeatInformationKey; the sealed NSeatPolicyRow is derived
 // from them at the end of a run. RFC 0012 Phase 4 exposes them on the result
 // so the builder can checkpoint and warm-start the trainer.
@@ -262,9 +203,14 @@ struct NSeatRawRow {
 struct NSeatTrainingResult {
   NSeatTerminationPhase termination = NSeatTerminationPhase::ResourceLimit;
   std::uint64_t completed_iterations = 0;
+  std::size_t batch_size = 1;
+  std::uint64_t completed_epochs = 0;
   std::size_t nodes = 0;  // materialized tree nodes
   std::size_t visits = 0;
   std::size_t information_sets = 0;
+  // Conservative retained raw-row plus sealed-policy charges. In-flight
+  // converted inputs, sampler buffers, deltas, registry and cohort controls
+  // also share max_bytes, but are released before the result is returned.
   std::size_t accounted_bytes = 0;
   std::uint64_t seed = 0;
   // SplitMix64 witness state advanced exactly once per COMMITTED iteration
@@ -291,6 +237,8 @@ struct NSeatTrainingResult {
 struct NSeatInitialState {
   std::map<NSeatInformationKey, NSeatRawRow> rows;
   std::uint64_t completed_iterations = 0;
+  std::uint32_t algorithm_revision = kNSeatAlgorithmRevision;
+  std::size_t batch_size = 1;
 };
 
 // Trains the materialized tree for the given per-seat ranges.
@@ -301,7 +249,7 @@ struct NSeatInitialState {
 // (`ranges.size()` must equal `tree.def().player_count`), each combo a sorted
 // distinct in-range pair with a finite strictly positive weight (normalized
 // internally by the joint sampler), a postflop root (`board_size` in 3..5; the
-// card abstraction is defined on a complete flop) OR a heads-up preflop root
+// card abstraction is defined on a complete flop) OR a 2..10-seat preflop root
 // with `terminal == TerminalDepth::Flop` (RFC 0007; the frontier evaluator
 // supplies leaf values and must be non-null), a positive iteration count, and
 // the identity or a declared-coarse (RFC 0008) action abstraction. Resource
@@ -309,13 +257,13 @@ struct NSeatInitialState {
 // `nseat_training_exhausted`; the wall cap instead returns the last completed
 // iteration counts with phase WallClock.
 //
-// RFC 0012 Phase 4: when `initial_state` is non-null and non-empty the trainer
-// warm-starts from that table, running `iterations` ADDITIONAL iterations
+// RFC 0016: a non-null revision-two, batch-one initial_state resumes its table
+// and counter, running `iterations` ADDITIONAL samples
 // beyond `initial_state->completed_iterations`. The per-iteration PRNG streams
 // are derived from the master seed and the absolute iteration number, so a
 // warm-started run that reaches iteration N is bitwise-identical to a
 // from-scratch run that reaches iteration N (same seed, same tree, same
-// ranges). A null or empty initial_state preserves the from-scratch behavior.
+// ranges and revision). A null or fresh empty initial_state starts from zero.
 NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,
                                 const std::vector<std::vector<WeightedHand>>& ranges,
                                 std::uint64_t iterations, std::uint64_t master_seed,
@@ -323,26 +271,14 @@ NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,
                                 const gto::FrontierEvaluator* frontier = nullptr,
                                 const NSeatInitialState* initial_state = nullptr);
 
-// Parallel version of train_nseat (RFC 0014 optimization). Runs `num_threads`
-// workers that share ONE regret/average-weight table protected by a
-// shared_mutex. Workers use synchronized regret updates: each worker reads the
-// current strategy under a shared lock, applies its average-weight and regret
-// updates under a unique lock, and releases the lock during recursion. This
-// eliminates the sqrt(K) convergence cost of the merge-at-end approach — every
-// worker sees the latest regrets immediately, so the effective iteration count
-// matches single-threaded training.
-//
-// Iteration assignment is deterministic: thread t runs iterations
-// {t, t+K, t+2K, ...}, so the result is reproducible given a fixed thread
-// count (but NOT identical to a single-threaded run or a run with a different
-// thread count, because the order of concurrent updates is nondeterministic).
-//
-// Resource caps (max_bytes, max_information_sets, max_visits) are NOT divided:
-// the shared table uses the full requested limits. The wall cap is checked at
-// iteration boundaries by each thread; when reached, all threads stop after
-// their current iteration.
-//
-// No warm-start in the parallel version (the builder always starts fresh).
+// RFC 0016: synchronous parallel batches. Width is num_threads clamped to
+// [1, iterations]; every sample's seat sweeps and independent averaging read
+// the same immutable epoch profile. Signed deltas are averaged and clipped
+// once by the coordinator. Fixed width/seed/input/sample count is reproducible;
+// changing width changes the algorithm trajectory and number of update epochs.
+// The byte cap covers master rows, all worker deltas, discovery registry and
+// reduction controls, not process RSS or caller-owned inputs. The wall cap is
+// checked only between complete epochs. This route has no warm-start input.
 NSeatTrainingResult train_nseat_parallel(const tree::AbstractTree& tree,
                                          const std::vector<std::vector<WeightedHand>>& ranges,
                                          std::uint64_t iterations, std::uint64_t master_seed,
@@ -354,8 +290,9 @@ NSeatTrainingResult train_nseat_parallel(const tree::AbstractTree& tree,
 // HeadsUpSolverDebug precedent): runs ONE external-sampling traverser sweep
 // with caller-owned streams over the REAL walk, menu rule, key addressing,
 // row store and terminal settlement. `rows` is both the input table and the
-// committed post-sweep state. Production training never exposes streams; this
-// is the only production-visible test seam of this component.
+// committed post-sweep state. Revision two freezes input rows for this regret-
+// only sweep: average sums stay unchanged. Full-epoch average mathematics is
+// verified through train_nseat rather than this seam.
 struct NSeatTraversalStreams {
   SplitMix64 joint_deal;
   SplitMix64 opponent_action;

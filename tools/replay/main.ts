@@ -1,65 +1,55 @@
 #!/usr/bin/env node
-// replay.mjs — run the engine over every actionable state found in the session
-// journals. Reports action mix, latency, illegal outputs. Read-only.
-import { readFileSync, readdirSync } from 'node:fs';
+// Offline replay only. Synthetic engineering fixtures never count as play history.
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  buildContext,
-  closeEngine,
-  decide,
-} from '../../platforms/river-club/src/engine.js';
-import {
-  isRiverRoom,
-  type Action,
-  type RiverState,
-} from '../../platforms/river-club/src/types.js';
+import { buildContext, closeEngine, decide } from '../../platforms/river-club/src/engine.js';
+import type { Action, GoldenFixture } from '../../platforms/river-club/src/types.js';
+import { collectReplaySnapshots, decisionProblem, replayExitCode, type ReplaySource } from './journal.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
+const args = process.argv.slice(2);
+if (args.some(arg => arg !== '--synthetic')) throw new Error('usage: node bin/replay.mjs [--synthetic]');
+const source: ReplaySource = args.includes('--synthetic') ? 'synthetic' : 'historical';
+let journals: { name: string; text: string }[];
+if (source === 'synthetic') {
+  const fixtures = JSON.parse(readFileSync(join(root, 'platforms/river-club/tests/fixtures/v0-golden.json'), 'utf8')) as GoldenFixture[];
+  journals = [{ name: 'fixed-v0-golden-engineering-fixtures', text: fixtures.map(f => JSON.stringify({ resp: f.state })).join('\n') }];
+} else {
+  const directory = join(root, 'sessions');
+  journals = existsSync(directory) ? readdirSync(directory).filter(f => f.endsWith('.jsonl')).sort().map(name => ({ name, text: readFileSync(join(directory, name), 'utf8') })) : [];
+}
+const { snapshots, stats } = collectReplaySnapshots(journals, source);
+console.log(`Replay source: ${source} | Snapshots: ${snapshots.length} | Malformed: ${stats.malformed} | Skipped: ${stats.skipped} | Duplicates: ${stats.duplicates}`);
+if (source === 'synthetic') console.log('Historical coverage: NONE (fixed synthetic engineering corpus only)');
+else if (snapshots.length === 0) console.log('Historical coverage: NONE (no usable historical snapshots)');
 
-const seen = new Set<string>();
 let n = 0, fallback = 0, illegal = 0, totalMs = 0, maxMs = 0;
 const mix: Partial<Record<Action, number>> = {};
 const samples: string[] = [];
-
-for (const f of readdirSync(join(root, 'sessions')).filter(f => f.endsWith('.jsonl'))) {
-  for (const line of readFileSync(join(root, 'sessions', f), 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    let e: { resp?: RiverState };
-    try {
-      e = JSON.parse(line) as { resp?: RiverState };
-    } catch {
-      continue;
-    }
-    const r = e.resp?.room;
-    if (!isRiverRoom(r) || !r.legal || !r.hero.cards.length) continue;
-    const key = r.handId + ':' + r.revision + ':' + r.street;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    const heroName = e.resp?.me?.name || r.hero?.name || '';
-    const ctx = buildContext(r, { style: 'tag', heroName });
+try {
+  for (const snapshot of snapshots) {
+    const room = snapshot.room;
+    const config = { style: 'tag', heroName: snapshot.heroName, timeoutMs: 10_000 };
+    const ctx = buildContext(room, config);
     const t0 = process.hrtime.bigint();
-    const d = await decide(r, { style: 'tag', heroName });
+    const decision = await decide(room, config);
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     totalMs += ms; maxMs = Math.max(maxMs, ms);
-    if (d.reason?.startsWith('safe-fallback')) fallback++;
-    if (!d || !r.legal.actions.includes(d.action)) { illegal++; if (illegal <= 5) console.log('ILLEGAL:', d); continue; }
-    if ((d.action === 'raise' || d.action === 'bet')
-      && (d.amount === undefined
-        || !r.legal.raiseTo
-        || d.amount < r.legal.raiseTo.min
-        || d.amount > r.legal.raiseTo.max)) {
-      illegal++; console.log('BAD SIZE', d, r.legal.raiseTo); continue;
+    if (decision.reason?.startsWith('safe-fallback')) fallback++;
+    const problem = decisionProblem(room, decision);
+    if (problem) {
+      illegal++;
+      if (illegal <= 5) console.log(`FAIL ${snapshot.file}:${snapshot.line}: ${problem}`);
+      continue;
     }
     n++;
-    mix[d.action] = (mix[d.action] ?? 0) + 1;
-    if (samples.length < 10 && (d.action === 'raise' || d.action === 'bet'))
-      samples.push(`${ctx.street} ${ctx.hole.join('')} ${ctx.position} ${d.action} ${d.amount} :: ${d.reason} (${ctx.raises}r,${ctx.limpers}l,${ctx.playersInHand}w)`);
+    mix[decision.action] = (mix[decision.action] ?? 0) + 1;
+    if (samples.length < 10 && (decision.action === 'raise' || decision.action === 'bet')) samples.push(`${ctx.street} ${ctx.position} ${decision.action} ${decision.amount}`);
   }
-}
-console.log(`\nDecisions: ${n} | Illegal: ${illegal} | JS fallbacks: ${fallback} | Average ${(totalMs / Math.max(1, n)).toFixed(2)}ms | Maximum ${maxMs.toFixed(1)}ms`);
+} finally { closeEngine(); }
+console.log(`Decisions: ${n} | Illegal: ${illegal} | JS fallbacks: ${fallback} | Average ${(totalMs / Math.max(1, snapshots.length)).toFixed(2)}ms | Maximum ${maxMs.toFixed(1)}ms`);
 console.log('Action mix:', JSON.stringify(mix));
 console.log('Bet and raise samples:'); samples.forEach(s => console.log('  ', s));
-closeEngine();
-process.exit(0);
+process.exit(replayExitCode(illegal, fallback));

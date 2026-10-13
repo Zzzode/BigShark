@@ -23,10 +23,35 @@
 #include <bs/game_definition.hpp>
 #include <bs/nseat_trainer.hpp>
 #include <cstddef>
+#include <memory>
 #include <span>
 #include <vector>
 
 namespace bs::gto {
+
+// Solver-local projection of a representative postflop tree. Public-card
+// labels and terminal boards remain private; requests supply the real board.
+class PostflopEvaluationTemplate {
+ public:
+  struct Node {
+    tree::NodeKind kind;
+    std::size_t actor;
+    std::span<const poker::Action> actions;
+    std::span<const std::size_t> children;
+    std::size_t terminal;
+  };
+
+  explicit PostflopEvaluationTemplate(tree::AbstractTree representative);
+  bool matches(const solver::NSeatPolicy& policy) const;
+  Node node(std::size_t index) const;
+  std::span<const std::int64_t> fold_utility(std::size_t terminal) const;
+  std::span<const std::size_t> live_order(std::size_t terminal) const;
+  std::size_t size() const noexcept;
+  std::size_t accounted_bytes() const noexcept;
+
+ private:
+  std::unique_ptr<const tree::AbstractTree> representative_;
+};
 
 // Extract the expected per-seat chip utility for one fixed joint deal at the
 // root of the solved tree. `deal` has one sorted hole-card pair per seat.
@@ -36,6 +61,13 @@ namespace bs::gto {
 // a deal-size mismatch or std::runtime_error on an unexpected node kind.
 std::vector<double> extract_root_value(const solver::NSeatPolicy& policy,
                                        const tree::AbstractTree& tree,
+                                       const poker::GameState& root_state,
+                                       std::span<const std::array<int, 2>> deal);
+
+// The same exact kernel over a structural template. Rejects mismatched
+// non-board configuration or action-abstraction identity.
+std::vector<double> extract_root_value(const solver::NSeatPolicy& policy,
+                                       const PostflopEvaluationTemplate& evaluation,
                                        const poker::GameState& root_state,
                                        std::span<const std::array<int, 2>> deal);
 

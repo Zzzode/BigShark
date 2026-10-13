@@ -28,6 +28,10 @@ their own RFC.
 | [0012](0012-flop-library-performance.md) | Flop Library Performance Optimization | Implemented | Engine, solver, artifact boundary, resident, benchmarks |
 | [0013](0013-preflop-phase2.md) | Preflop Phase 2: Postflop-Aware Frontier Evaluation | Accepted | Engine, solver, artifact boundary, benchmarks |
 | [0014](0014-postflop-policy-persistence.md) | Postflop Policy Persistence and On-Demand Evaluation | Accepted | Engine, solver, benchmarks |
+| [0015](0015-offline-frontier-evaluation.md) | Offline Frontier Evaluation Reuse and Measurement | Implemented | Engine, benchmarks, tests |
+| [0016](0016-synchronous-mccfr-averaging.md) | Synchronous MCCFR Batches and Correct Strategy Averaging | Implemented | Engine, artifacts, flop library, benchmarks, tests |
+| [0017](0017-training-pipeline-allocation-cost.md) | Training Pipeline Allocation Cost | Implemented | Engine, solver, artifacts, benchmarks, tests |
+| [0018](0018-zero-rake-settlement-fast-path.md) | Zero-Rake Settlement Fast Path | Implemented | Poker, tests, benchmarks |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.

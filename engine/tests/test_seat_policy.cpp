@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -131,7 +132,7 @@ void collect_expected(const AbstractTree& tree, const NSeatPolicy& nseat_policy,
                       std::map<InformationKey, SeatPolicyRow>& expected, std::size_t node_index,
                       GameState& cursor, std::vector<PublicAction>& path) {
   const TreeNode& node = tree.node(node_index);
-  if (node.is_terminal())
+  if (node.is_terminal() || node.is_flop_deal())
     return;
   if (node.is_chance()) {
     for (std::size_t ci = 0; ci < node.children.size(); ++ci) {
@@ -156,8 +157,7 @@ void collect_expected(const AbstractTree& tree, const NSeatPolicy& nseat_policy,
         continue;
       const std::array<int, 2> cards{c0, c1};
       const std::vector<int> board_vec(board.begin(), board.end());
-      const std::uint32_t bucket =
-          abstraction::card_bucket(abstraction::CardBucketKind::CategoryTiersV1, cards, board_vec);
+      const std::uint32_t bucket = abstraction::card_bucket(kNSeatCardKind, cards, board_vec);
       const NSeatInformationKey nk{bucket, node_index};
       const auto it = nseat_policy.rows().find(nk);
       if (it == nseat_policy.rows().end())
@@ -222,6 +222,79 @@ int test_export_bijection() {
   CHECK(eit == expected.end());
   std::printf("export bijection: %zu exported rows match the sealed (bucket, node) table\n",
               seat_rows.size());
+  return 0;
+}
+
+// Sparse roots must not hide covered descendants. This exhaustive reference
+// deliberately recomputes every combo at every node, including chance siblings.
+int test_sparse_export_reference(bool preflop) {
+  GameDef def{};
+  def.player_count = 2;
+  def.button = preflop ? 0 : 1;
+  def.big_blind = 2;
+  def.stacks = {preflop ? 6u : 1u, preflop ? 6u : 1u};
+  def.contributions = preflop ? std::array<Chips, 10>{} : std::array<Chips, 10>{1, 1};
+  def.pot = preflop ? 3 : 2;
+  def.board = preflop ? std::array<int, 5>{-1, -1, -1, 0, 0}
+                      : std::array<int, 5>{card("2c"), card("3d"), card("7h"), card("Ks"), -1};
+  def.board_size = preflop ? 0 : 4;
+  def.preflop = preflop;
+  def.terminal = preflop ? TerminalDepth::Flop : TerminalDepth::River;
+  if (preflop)
+    def.blinds_posted = {1, 2};
+  const AbstractTree tree(def, abstraction::ActionAbstraction::identity());
+  std::map<NSeatInformationKey, NSeatPolicyRow> sealed;
+  for (std::size_t index = 0; index < tree.size(); ++index) {
+    const auto& node = tree.node(index);
+    if (!node.is_action() || index == tree.root_index() || (!preflop && index % 13 != 0))
+      continue;
+    const std::uint32_t first_bucket = preflop ? 0 : 1;
+    const std::uint32_t last_bucket = preflop ? 168 : 9;
+    for (auto bucket = first_bucket; bucket <= last_bucket; ++bucket) {
+      NSeatPolicyRow row;
+      row.actions = node.actions;
+      const double denominator =
+          static_cast<double>(row.actions.size() * (row.actions.size() + 1)) / 2;
+      for (std::size_t action = 0; action < row.actions.size(); ++action)
+        row.probabilities.push_back(static_cast<double>(action + 1) / denominator);
+      row.visits = index + 17;
+      sealed.emplace(NSeatInformationKey{bucket, index}, std::move(row));
+    }
+  }
+  CHECK(!sealed.empty());
+  NSeatTrainingResult trained;
+  trained.termination = NSeatTerminationPhase::Complete;
+  trained.completed_iterations = 11;
+  trained.completed_epochs = 3;
+  trained.batch_size = 4;
+  trained.nodes = tree.size();
+  trained.information_sets = sealed.size();
+  trained.seed = 43;
+  trained.policy = NSeatPolicy::from_parts(def, tree.action_id(), std::move(sealed));
+  const std::vector<std::vector<WeightedHand>> ranges{{{{card("Ah"), card("Ac")}, 2}},
+                                                      {{{card("Qh"), card("Qc")}, 3}}};
+  const auto exported = export_seat_policy(trained, tree, ranges);
+  std::map<InformationKey, SeatPolicyRow> expected;
+  GameState cursor{def};
+  std::vector<PublicAction> path;
+  collect_expected(tree, trained.policy, expected, tree.root_index(), cursor, path);
+  CHECK(!expected.empty());
+  CHECK(exported.policy.rows().size() == expected.size());
+  CHECK(exported.batch_size == trained.batch_size);
+  CHECK(exported.completed_epochs == trained.completed_epochs);
+  std::set<std::vector<std::uint64_t>> boards;
+  for (const auto& [key, row] : expected) {
+    const auto found = exported.policy.rows().find(key);
+    CHECK(found != exported.policy.rows().end());
+    CHECK(found->second.actions == row.actions);
+    CHECK(found->second.probabilities == row.probabilities);
+    CHECK(found->second.visits == row.visits);
+    CHECK(key.size() > 4 + key[3]);  // Every emitted row is below the uncovered root.
+    boards.emplace(key.begin() + 4, key.begin() + 4 + key[3]);
+  }
+  CHECK(preflop ? boards.size() == 1 : boards.size() > 1);
+  std::printf("sparse %s export: %zu exact rows on %zu boards\n", preflop ? "preflop" : "turn",
+              expected.size(), boards.size());
   return 0;
 }
 
@@ -423,6 +496,8 @@ int test_two_seat_byte_identity() {
 
 int main() {
   if (test_export_bijection() != 0)
+    return 1;
+  if (test_sparse_export_reference(false) != 0 || test_sparse_export_reference(true) != 0)
     return 1;
   if (test_key_round_trip() != 0)
     return 1;

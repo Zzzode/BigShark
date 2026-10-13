@@ -498,3 +498,320 @@ Every class advertised; no root was refused. The probability codebook is
 active on all classes (63-64 distinct values for 2-seat, 131-175 for 3-seat,
 all under the 256-entry cap), so the probability blob costs ~1 byte per action
 plus a small per-root dictionary instead of 8 bytes per action.
+
+## Offline Preflop Frontier Measurements
+
+Status: Current
+
+`bigshark-preflop-profile-builder` retains its positional arguments and
+`--threads N` / `--cache-capacity N`. `--cache-bytes N` optionally sets the
+policy accounting budget in bytes (default 1 GiB, minimum 64 MiB). Loading
+reservations and in-use evicted policies share that budget. The separate
+template budget defaults to 4 GiB. These are accounted payload limits, not
+whole-process RSS limits. Six structural templates replace per-flop trees;
+policies remain specific to the canonical board and SPR bucket.
+
+The builder reports successful policy/template loads, retained and peak
+policy bytes, template bytes, and cumulative load/extraction milliseconds.
+Cumulative timings overlap across threads and cannot be added to derive wall
+time. First template loads include native state-path validation.
+
+`bigshark-preflop-nash-conv` keeps its executable name and positional
+arguments but reports a learned frozen deviation estimate, not exact
+NashConv. It pools actions by information set, then confirms on independent
+worlds. Signed per-seat gains use each seat's own sample count; summed gain
+uncertainty includes paired covariance. Profile fallbacks, response coverage,
+sample counts, frontier identity, and seeds accompany the estimate. A small
+gain is not an equilibrium certificate, and old hidden-deal-max numbers are
+not comparable. At three or more seats the output is average deviation gain,
+not two-player exploitability.
+
+### Bounded representation-only run (2026-10-13)
+
+On this workspace's release build, the same 100-iteration, 100 BB heads-up
+identity profile, seed `20261003`, eight workers, 128-entry cache, and fixed
+local frontier/policy snapshot took 147.05 seconds before RFC 0015 and
+74.96 and 66.16 seconds after it (one before and two after runs, including
+template startup). The first after
+run performed 1,271 policy loads and exactly six template loads. Peak policy
+accounting was 1,073,719,686 bytes within the 1,073,741,824-byte limit;
+templates retained 1,827,147,760 bytes. Cumulative template loading was
+3,734.42 ms, policy loading 28,927.59 ms, and extraction 402,799.94 ms.
+
+The observed wall-time ratios are about 1.96 and 2.22, not a steady-state or full-run
+speedup guarantee. OS page-cache state was not reset, and scheduling-dependent
+training paths need not be identical. These runs preserve the old trainer
+algorithm solely to isolate representation cost. New native exact-deviation
+fixtures expose a pre-existing averaging-quality defect in both serial and
+parallel training; this benchmark does not establish strategy quality or
+authorize a 100K-iteration campaign.
+
+### Corrected revision-two smoke runs (2026-10-13)
+
+With the same 100 BB heads-up identity game and fixed local policy/table
+snapshot, 16 samples completed at width eight in two epochs and at width one
+in 16 epochs. Training wall times were 13.45 s and 55.00 s respectively;
+shell-measured whole-process times were 44.477 s and 86.18 s. Both produced
+27,255 information sets, 49,012,992 accounted raw/sealed bytes, six template
+loads, and 276,460 exported concrete rows. The eight-worker output was
+152,268,800 bytes, illustrating that corrected full averaging also increases
+export/publication work and coverage. These runs overlapped the existing
+release test suite; no isolated steady-state throughput claim is made.
+
+Width one and width eight are different update identities and epoch counts,
+so this is cost/operational evidence, not equal-quality speedup evidence.
+Small native singleton-range river tests at 2,000 samples, seeds 1/17/43 and
+widths 2/4 repeated three times have exact summed deviation gains of
+0.00075--0.00416667 chips (heads-up) and 0.00212481--0.0145397 chips (three
+seats), within the unchanged 0.2/0.3-chip gates. Fixed-width repeats compare
+raw rows, policies, and metadata exactly. These fixtures do not certify full
+poker, and reusing revision-one NSP/frontier values does not repair those
+immutable policies' training history.
+
+Correct full-action averaging can exhaust existing budgets sooner. Native
+GDB identified the original 1,000-sample uniform three-seat turn/stack-10
+integration fixture exceeding its one-million-information-set cap, and the
+four-seat turn/stack-6 fixture exceeding its 1 GiB byte cap. Production caps
+and typed refusal remain unchanged; this is a real capability/resource
+regression relative to the defective sparse average. Functional success
+fixtures use bounded training samples while retaining their game definitions;
+separate strict exhaustion tests verify that no partial candidate is published.
+
+The original 200-sample four-seat resident startup fixture also crosses the
+unchanged 256 MiB resident gate. Its revision-two export contains 3,364,070
+information sets, 6,728,140 actions, and 174,624,512 key words. The native
+engine CLI, using the artifact's actual SHA-256 pin, reports `over-budget`
+with `probe-estimated resident footprint exceeds the remaining resident
+budget`. The existing estimator charges at least 419,952,304 bytes for the
+index alone, excluding the small immutable game copy. This is a conservative
+pre-load estimate, not measured process RSS or a materialized resident index.
+Only this functional fixture's training count is reduced to eight samples;
+the original game, ranges, default budget, strict advertised-root status,
+exact four-seat belief, and hero lookup assertions remain unchanged. This
+adaptation does not establish quality or affordability for larger artifacts.
+The fresh complete resident test passed all 21 cases in 436.86 seconds. Its
+eight-sample four-seat export has 229,504 information sets, 459,008 actions,
+and 10,584,336 key words. The same native CLI advertises this SHA-256-pinned
+artifact and measures 22,908,828 resident bytes under the unchanged
+268,435,456-byte budget. This is the resident index/game footprint, not RSS.
+
+### Allocation-cost measurements (RFC 0017)
+
+The offline builder additionally reports `export_seconds`,
+`checkpoint_seconds`, `publication_seconds`, `probe_seconds`,
+`pipeline_seconds`, and `peak_rss_bytes` in its JSON manifest. Pipeline time
+starts before game/tree/frontier setup and ends before the diagnostic manifest
+and process teardown. Use shell elapsed time for the complete process. RSS is
+the measured high-water resident set in bytes on Linux/macOS, not the trainer
+or cache accounting budget; unavailable measurements are `-1`.
+
+On 2026-10-13, three untouched revision-two baseline runs used 16 samples,
+batch eight, two epochs, a 100 BB heads-up identity game, seed `20261003`,
+128 retained policy entries, the same 1 GiB policy budget, and the pinned local
+frontier/policy snapshot described above. No cache flush was performed, and
+no project build or full test suite overlapped these matched runs. All outputs
+have SHA-256 `4d1344b2b3d106166d9ca433c7434d01c03c2293b37f42d33002d10aeda72316`,
+27,255 abstract information sets, 276,460 concrete rows, and 836,364 actions.
+
+| Baseline run | Training seconds | Export seconds | Checkpoint seconds | Publication seconds | Probe seconds | Pipeline seconds | Whole-process seconds | Peak RSS bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 14.09 | 0.731 | 2.328 | 22.194 | 2.652 | 42.975 | 44.743 | 4,342,398,976 |
+| 2 | 14.66 | 0.730 | 2.543 | 22.144 | 2.848 | 43.915 | 45.855 | 4,403,032,064 |
+| 3 | 18.69 | 0.792 | 2.397 | 22.385 | 2.717 | 47.989 | 49.808 | 4,379,246,592 |
+
+The measured dominant non-training stage is publication, not concrete export:
+it includes complete source loading, database writing, digest/fsync work, and
+independent pinned full output loading. The implementation removes intermediate
+schema-v2/v3 state/action maps and repeated key decoding; it does not remove
+publication checks or the final concrete policy maps.
+
+Three runs of the final optimized release binary used the identical workload,
+limits, and immutable inputs. All three retain the same SHA-256, row/action
+counts, 49,012,992 accounted bytes, and 152,268,800-byte output size.
+
+| Optimized run | Training seconds | Export seconds | Checkpoint seconds | Publication seconds | Probe seconds | Pipeline seconds | Whole-process seconds | Peak RSS bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 17.65 | 0.832 | 2.587 | 13.407 | 2.625 | 38.094 | 39.622 | 4,161,216,512 |
+| 2 | 14.71 | 0.952 | 2.492 | 13.697 | 2.574 | 35.495 | 37.130 | 4,138,590,208 |
+| 3 | 13.90 | 0.647 | 2.554 | 13.516 | 2.727 | 34.330 | 36.096 | 4,146,921,472 |
+
+Whole-process median fell from 45.855 to 37.130 seconds (19.03 percent);
+ranges were 44.743--49.808 and 36.096--39.622 seconds. Publication median
+fell from 22.194 to 13.516 seconds (39.10 percent). Pipeline median fell
+from 43.915 to 35.495 seconds (19.17 percent). Peak RSS median fell from
+4,379,246,592 to 4,146,921,472 bytes (5.31 percent, about 221.6 MiB).
+
+Training medians were 14.66 and 14.71 seconds; export medians were 0.731
+and 0.832 seconds. These runs establish no independent training or export
+throughput improvement. The retained changes are measured collectively, not
+as an isolated causal estimate for each allocation change. Other host load
+was not controlled, and cache/scheduling statistics can vary. This is a
+bounded same-output pipeline measurement, not steady-state throughput,
+full-scale memory affordability, or a strategy-quality certificate. Final
+policy maps and frontier templates remain substantial memory consumers.
+
+### Zero-rake settlement measurements (RFC 0018)
+
+A fresh whole-process CPU-clock profile of the unchanged native builder
+recorded 15,744 samples with no lost samples. `multiply_divide` accounted for
+14.00 percent self samples, predominantly in showdown settlement under exact
+template extraction. Native no-rake inputs still performed 53 binary-division
+steps at every positive-pot settlement. This sampling share is not a measured
+wall-time fraction or a promised speedup. The retained change adds positive
+rate/cap guards after validation; native payouts and nonzero-rake arithmetic
+remain unchanged. No extraction cache, new settlement implementation, or
+resource/algorithm change is involved.
+
+A separate repeat profile of the final binary records 13,992 CPU-clock samples
+with no losses and no self samples in `multiply_divide`. Allocation/free,
+settlement, state transitions, and strategy lookup remain visible hotspots.
+Their relative sample shares are not isolated stage costs or new regressions;
+this round does not optimize those remaining paths.
+
+Three clean before and three final after runs use the same 16-sample,
+batch-eight, two-epoch workload, immutable inputs, ranges, seed, and limits
+as RFC 0017 above. No builds/tests overlap these measurements. One extra
+before run overlapping a 4.90-second focused settlement test is excluded from
+timing comparisons, irrespective of its result. The profiler runs are also
+excluded from the timing table. OS cache was not flushed; other host load is
+uncontrolled. Extraction time below is cumulative across threads, not elapsed
+pipeline time; do not divide it by thread count to infer a wall-time stage.
+
+| Run | Training seconds | Cumulative extraction seconds | Publication seconds | Pipeline seconds | Whole-process seconds | Peak RSS bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Before 1 | 14.00 | 52.33327 | 13.531 | 34.236 | 35.963 | 4,144,943,104 |
+| Before 2 | 15.05 | 53.27530 | 13.461 | 35.647 | 37.632 | 4,161,871,872 |
+| Before 3 | 13.65 | 52.00751 | 13.516 | 33.896 | 35.361 | 4,112,113,664 |
+| After 1 | 11.58 | 42.53221 | 13.686 | 32.026 | 33.734 | 4,166,062,080 |
+| After 2 | 11.83 | 42.19819 | 13.455 | 31.953 | 33.434 | 4,150,001,664 |
+| After 3 | 12.49 | 44.29663 | 13.649 | 32.891 | 34.627 | 4,129,939,456 |
+
+Training median falls from 14.00 to 11.83 seconds (15.50 percent); cumulative
+extraction median from 52.33327 to 42.53221 seconds (18.73 percent). Whole
+process median falls from 35.963 to 33.734 seconds (6.20 percent), with ranges
+35.361--37.632 and 33.434--34.627 seconds. Pipeline median falls from 34.236
+to 32.026 seconds (6.46 percent). Publication shows no separate improvement;
+RSS median is essentially unchanged (+0.12 percent). The final policy maps
+and templates remain allocated and the policy cache's low hit rate is not
+repaired by this guard.
+
+All six outputs retain the complete SHA-256
+`4d1344b2b3d106166d9ca433c7434d01c03c2293b37f42d33002d10aeda72316`,
+152,268,800 file bytes, 27,255 abstract information sets, 276,460 concrete
+rows, 836,364 actions, 49,012,992 accounted raw/sealed bytes, and the same B8
+revision-two identity. All three paired whole-file byte comparisons pass.
+Cache hit/miss/load and computation counts remain 5/186/186/191; lifetime
+cache-byte statistics can vary with scheduling. These are bounded same-output
+performance measurements, not 1K/100K scale evidence, a six-hour forecast, or
+an endorsement of old frontier policies' training quality.
+
+
+### Independent 1K validation and evaluator retirement (2026-10-13)
+
+Status: Current
+
+An independent SSH workflow copied the current dirty source tree into a private
+temporary directory without changing the original checkout or its running Codex
+session. The matched binaries use the root release preset, GCC 12.2, Release
+optimization, system OpenSSL 3.0.20/zstd, and no HiGHS. This saved-NSP extraction
+workload does not call the river LP backend. Integration regression separately
+restored the original checkout's installed HiGHS prefix. No dependency was
+installed and no original build artifact was replaced.
+
+Each variant completed 1,000 samples and 125 frozen epochs: 100 BB heads-up,
+1,326 combinations per seat, identity abstraction, seed 20261003, eight workers,
+batch eight, 128 policy entries, 1 GiB policy/load accounting, and the unchanged
+4 GiB template bound. The FDT SHA-256 is
+`6a6dbcd7ac783b50c1c5fc92890964edf01c399e9f4d27a9e0cbe722535293b5`; its identity remains
+`rfc0013-stage2-hu-100bb-r1`. Policy input sizes, nanosecond
+mtimes, and inodes were unchanged; the entire policy directory was not rehashed.
+Runs were serial, with no builds/tests overlapping measurements, no OS-cache
+flush, a 30-minute external deadline and a 16 GiB process-RSS stop threshold.
+
+| Variant | Training s | Pipeline s | Whole-process s | Peak RSS bytes | Peak RSS GiB |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| before | 795.507 | 964.953 | 968.544 | 10767118336 | 10.028 |
+| after | 670.424 | 833.381 | 837.605 | 10683969536 | 9.950 |
+| optimized | 658.871 | 824.754 | 826.480 | 8760782848 | 8.159 |
+
+The zero-rake guard reduces observed training time by 15.72 percent
+and whole-process time by 13.52 percent on this one matched pair.
+It leaves the approximately 10 GiB publication peak largely unchanged. Training
+statistics retain roughly 1 GB of policies and 1.83 GB of templates after workers
+join, although export/checkpoint/publication never use that evaluator again.
+The sole new implementation change therefore resets the two optional postflop
+evaluators, then their referenced declared table, after statistics/resource-limit
+handling and before export. It preserves training caches, budgets, algorithms,
+values, validation, and all public/persisted contracts. Compared with the guard
+alone, observed peak RSS falls by 18.00 percent (1923186688 bytes).
+
+All three databases are exactly 1309892608 bytes and pass
+whole-file `cmp`. Their complete SHA-256 is
+`53fab7d033f993f1c1d6002224bfaf0453b6a0b5a676840999a56164f9e81ad5`. Each retains 295,143 abstract information sets,
+2,334,972 stored rows, 7,002,086 actions, 528,839,936 accounted raw/sealed bytes,
+and `rfc0016-nseat-rev2-frozen-batch-8-sampled-splitmix64` identity.
+
+Fresh verification: original-HiGHS release build/format checks, 88/88 CTest,
+multistreet benchmark, Node 127/127, protocol 25/25, docs and RFC checks passed.
+Clang 14 Debug `-g -O1`, with assertions, ASan, UBSan and leak detection active,
+passes cache/template/parallel tests 3/3 and the complete 16-sample builder path;
+its 152,268,800-byte artifact equals the matched release smoke byte-for-byte.
+Unoptimized Debug `-g` attempts are recorded as timeouts, not passes: the template
+suite hit its existing 180-second limit and the builder hit a 600-second limit.
+The original sequential release suite hit an external 900-second envelope;
+the final complete original-HiGHS suite passed with four jobs and 600-second
+per-test bounds. An initial missing-HiGHS snapshot failed capabilities/reason
+goldens; restoring the existing prefix resolved them without strategy edits.
+Replay completed with zero input decisions and therefore has no historical
+coverage.
+
+These are one-run observations per variant on one host with uncontrolled OS
+cache/load and allocator behavior. Whole-process timing uses Python monotonic
+clock plus `wait4`, polled at one-second resolution; kernel RSS agrees with the
+builder's normalized high-water value. Pipeline time excludes diagnostic-manifest
+writing and final teardown. Cumulative per-thread extraction timings cannot be
+added to wall time. The new lifetime change addresses publication memory, not
+training cache misses. No 100K forecast, equilibrium/legacy-frontier quality
+certification, live play, spending, commit, push, or deployment is implied.
+
+
+## Follow-up replay and cache-miss loading (2026-10-13)
+
+Status: Current
+
+No genuine River session journals were found. The fixed replay engineering
+corpus is explicitly synthetic and is not poker-quality or historical evidence.
+Journal/property tests now cover room-scoped deduplication, malformed/waiting
+records, legal amount boundaries and nonzero failure status. Empty history is
+reported as no coverage.
+
+A fresh 256-sample profile recorded 97,175 user CPU-clock samples with no lost
+samples: 3,298 policy requests, 2,448 unique keys, 81 hits and 3,217 misses.
+First encounters account for 76.1 percent of misses; 769 are repeated misses.
+A serial trace simulation at the unchanged 1 GiB payload budget produced the
+same 2.58 percent hit rate for 128, 256, 512 and 1,024 entries. The simulation
+ignores in-use objects, flights and concurrent reservations; it is diagnostic,
+not a speedup prediction. Increasing entry capacity is not retained as a fix.
+
+The measured smaller change uses the existing sorted map's end insertion hint
+while decoding NSP rows. It preserves valid unsorted-input fallback, the same
+map contents, codec validations, bytes, budgets, algorithms and strategy values.
+On 64 actual profiled policies loaded eight times per run, three before times
+were 11.686421/11.609725/11.839203 seconds and three after times were
+10.477591/10.501894/10.602214 seconds. Median isolated loading time improved
+10.14 percent, with identical 26,498,760 decoded-row counts and complete
+key/action/probability fingerprint 859afede2c76d6f5 in all six runs. This is a
+load microbenchmark, not a measured end-to-end training improvement. Existing
+corruption/budget tests and the new valid raw/compressed reversed-row fixtures
+pass, along with cache and parallel-training regression (3/3).
+
+No further 1K/5K/10K training was started during the publication priority.
+A fixed heads-up preflop tree has 1,776 action nodes and at most 169 card buckets
+per node: at most 300,144 information keys, of which the measured 1K reached
+295,143. A conservative raw-plus-sealed row bound is approximately 538 MB
+before transient controls, within the 1 GiB trainer accounting cap. Physical
+RSS remains a separate measured resource. Simple 1K scaling suggests about
+55/110 minutes of training for 5K/10K, plus publication; these are estimates,
+not validated larger-run throughput. Before expansion, repeat fixed seeds,
+check convergence/deviation and frontier provenance, then select a 5K run with
+a hard elapsed/RSS cap. No 100K forecast or quality certification is implied.

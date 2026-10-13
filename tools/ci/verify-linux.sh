@@ -13,6 +13,7 @@ export BIGSHARK_ALLOW_CFR_FALLBACK=1
 
 cmake --preset linux-release
 cmake --build --preset linux-release --target format-check
+cmake --build --preset linux-release --target protobuf-generate
 cmake --build --preset linux-release
 BIGSHARK_ENGINE_BINARY="$PWD/build/linux-release/apps/engine-host/bigshark-engine" \
   npm run check

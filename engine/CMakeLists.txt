@@ -513,12 +513,13 @@ target_link_libraries(bigshark-preflop-profile-builder PRIVATE
   bigshark_artifacts
 )
 
-# RFC 0009 W4b: offline NashConv measurement for the published preflop
-# blueprint. Loads the schema-v2 artifact, rebuilds the game tree, and
-# computes a Monte Carlo NashConv via best-response and policy-following
-# walks over sampled joint deals. Manual target, NOT a CTest.
+# RFC 0015: learn information-set-consistent deviations from a published
+# preflop profile and confirm their signed gains on independent sampled deals.
+# This is not exact NashConv or an equilibrium certificate. Manual target,
+# NOT a CTest; the helper's independent fixtures are registered below.
 add_executable(bigshark-preflop-nash-conv
   benchmarks/preflop_nash_conv.cpp
+  benchmarks/preflop_nash_conv_detail.cpp
 )
 target_link_libraries(bigshark-preflop-nash-conv PRIVATE
   bigshark_solver
@@ -984,6 +985,32 @@ if(BUILD_TESTING)
   add_executable(test_postflop_frontier tests/test_postflop_frontier.cpp)
   target_link_libraries(test_postflop_frontier PRIVATE bigshark_solver bigshark_stage6_eval)
   add_test(NAME postflop_frontier COMMAND test_postflop_frontier)
+
+  add_executable(test_nseat_policy_codec_limits tests/test_nseat_policy_codec_limits.cpp)
+  target_link_libraries(test_nseat_policy_codec_limits PRIVATE bigshark_solver)
+  add_test(NAME nseat_policy_codec_limits COMMAND test_nseat_policy_codec_limits)
+
+  add_executable(test_preflop_nash_conv
+    tests/test_preflop_nash_conv.cpp
+    benchmarks/preflop_nash_conv_detail.cpp
+  )
+  target_link_libraries(test_preflop_nash_conv PRIVATE bigshark_solver)
+  add_test(NAME preflop_nash_conv COMMAND test_preflop_nash_conv)
+
+  add_executable(test_postflop_cache tests/test_postflop_cache.cpp)
+  target_link_libraries(test_postflop_cache PRIVATE bigshark_solver)
+  add_test(NAME postflop_cache COMMAND test_postflop_cache)
+  set_tests_properties(postflop_cache PROPERTIES TIMEOUT 90)
+
+  add_executable(test_postflop_templates tests/test_postflop_templates.cpp)
+  target_link_libraries(test_postflop_templates PRIVATE bigshark_solver bigshark_stage6_eval)
+  add_test(NAME postflop_templates COMMAND test_postflop_templates)
+  set_tests_properties(postflop_templates PROPERTIES TIMEOUT 180)
+
+  add_executable(test_nseat_parallel tests/test_nseat_parallel.cpp)
+  target_link_libraries(test_nseat_parallel PRIVATE bigshark_solver)
+  add_test(NAME nseat_parallel COMMAND test_nseat_parallel)
+  set_tests_properties(nseat_parallel PROPERTIES TIMEOUT 60)
 
   # RFC 0009 W2b: the bucket->concrete seat-policy export and the unified
   # information-key constructor. Links the solver (which owns seat_policy.cpp)

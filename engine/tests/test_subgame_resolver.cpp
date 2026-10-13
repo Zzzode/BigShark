@@ -640,10 +640,14 @@ GameState make_uniform_state(std::size_t seats, bool river, Chips stack = 10) {
 // Verify that the candidate is non-empty and every row is a valid probability
 // distribution over the node's ordered abstract actions.
 int check_valid_candidate(const SubgameResolveResult& result) {
+  CHECK(result.completed_iterations > 0);
+  CHECK(result.nodes > 0);
+  CHECK(result.information_sets > 0);
   CHECK(!result.node_actions.empty());
   CHECK(!result.candidate.empty());
   for (const auto& [key, row] : result.candidate) {
     CHECK(!row.actions.empty());
+    CHECK(row.actions == result.node_actions);
     CHECK(row.actions.size() == row.probabilities.size());
     double sum = 0.0;
     for (double p : row.probabilities) {
@@ -666,20 +670,36 @@ int test_uniform_2seat_turn() {
   SubgameResolver resolver;
   const auto result = resolver.resolve_uniform(state, no_history, test_limits());
 
+  if (result.status != SubgameResolveStatus::Solved)
+    std::fprintf(
+        stderr,
+        "uniform %zu-seat turn: status=%s samples=%llu nodes=%zu infosets=%zu candidate=%zu\n",
+        state.player_count(), bs::resolver::to_string(result.status),
+        static_cast<unsigned long long>(result.completed_iterations), result.nodes,
+        result.information_sets, result.candidate.size());
   CHECK(result.status == SubgameResolveStatus::Solved);
   CHECK(result.seat_count == 2);
   return check_valid_candidate(result);
 }
 
-// (ix) Uniform 3-seat turn: same but with 3 seats.
+// (ix) Uniform 3-seat turn integration: preserve the original game and action
+// tree while bounding samples. Full-action averaging at 1,000 samples exceeds
+// the one-million-information-set budget; quality is gated independently.
 int test_uniform_3seat_turn() {
   GameState state = make_uniform_state(3, /*river=*/false);
   CHECK(state.legal().check);
 
   const std::vector<PublicAction> no_history;
   SubgameResolver resolver;
-  const auto result = resolver.resolve_uniform(state, no_history, test_limits());
+  const auto result = resolver.resolve_uniform(state, no_history, test_limits(8));
 
+  if (result.status != SubgameResolveStatus::Solved)
+    std::fprintf(
+        stderr,
+        "uniform %zu-seat turn: status=%s samples=%llu nodes=%zu infosets=%zu candidate=%zu\n",
+        state.player_count(), bs::resolver::to_string(result.status),
+        static_cast<unsigned long long>(result.completed_iterations), result.nodes,
+        result.information_sets, result.candidate.size());
   CHECK(result.status == SubgameResolveStatus::Solved);
   CHECK(result.seat_count == 3);
   return check_valid_candidate(result);
@@ -689,18 +709,41 @@ int test_uniform_3seat_turn() {
 // 4 seats (the production flop blueprint library has no 4-seat rows, so the
 // blueprint path cannot serve this seat count). Stacks are 6 (3 BB) to keep
 // the River-terminal subtree under the byte cap — a 4-seat tree with deeper
-// stacks exceeds the default 1 GB.
+// stacks exceeds the default 1 GB. Bound integration samples: 1,000 samples
+// with full-action averaging can exceed the trainer's shared resource limits.
 int test_uniform_4seat_turn() {
   GameState state = make_uniform_state(4, /*river=*/false, /*stack=*/6);
   CHECK(state.legal().check);
 
   const std::vector<PublicAction> no_history;
   SubgameResolver resolver;
-  const auto result = resolver.resolve_uniform(state, no_history, test_limits());
+  const auto result = resolver.resolve_uniform(state, no_history, test_limits(8));
 
+  if (result.status != SubgameResolveStatus::Solved)
+    std::fprintf(
+        stderr,
+        "uniform %zu-seat turn: status=%s samples=%llu nodes=%zu infosets=%zu candidate=%zu\n",
+        state.player_count(), bs::resolver::to_string(result.status),
+        static_cast<unsigned long long>(result.completed_iterations), result.nodes,
+        result.information_sets, result.candidate.size());
   CHECK(result.status == SubgameResolveStatus::Solved);
   CHECK(result.seat_count == 4);
   return check_valid_candidate(result);
+}
+
+// Resource failure must preserve the same deep game and publish no candidate,
+// even if some sampled work completed before the information-set cap fired.
+int test_uniform_deep_information_budget_refusal() {
+  const auto state = make_uniform_state(3, /*river=*/false, /*stack=*/10);
+  auto capped = test_limits();
+  capped.max_information_sets = 100;
+  SubgameResolver resolver;
+  const auto result = resolver.resolve_uniform(state, {}, capped);
+  CHECK(result.status == SubgameResolveStatus::SolveDeadline);
+  CHECK(result.completed_iterations == 0);
+  CHECK(result.candidate.empty());
+  CHECK(result.node_actions.empty());
+  return 0;
 }
 
 // (xi) Uniform river: a river decision (board_size=5) with uniform priors
@@ -858,6 +901,7 @@ int main() {
   failures += test_uniform_2seat_turn();
   failures += test_uniform_3seat_turn();
   failures += test_uniform_4seat_turn();
+  failures += test_uniform_deep_information_budget_refusal();
   failures += test_uniform_river();
   failures += test_uniform_mid_street_faces_bet();
   failures += test_uniform_mid_street_3seat();

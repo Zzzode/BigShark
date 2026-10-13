@@ -30,6 +30,7 @@
 #pragma once
 
 #include <bs/nseat_trainer.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -47,9 +48,17 @@ void save_nseat_policy(const NSeatPolicy& policy, std::uint8_t spr_bucket,
 // expected spr_bucket are passed so the returned policy is sealed against
 // the correct tree and the header is fully verified. Throws
 // std::runtime_error on I/O failure, format mismatch, or corrupt data.
+// max_bytes bounds simultaneous input buffers and conservative decoded-policy
+// accounting; tree::tree_resource_exhausted is thrown before a crossing allocation.
 NSeatPolicy load_nseat_policy(const std::filesystem::path& path, const poker::GameDef& game,
                               const abstraction::AbstractionId& action_id,
-                              std::uint8_t expected_spr_bucket);
+                              std::uint8_t expected_spr_bucket,
+                              std::size_t max_bytes = std::size_t{1} << 30);
+
+// Conservative retained bytes including the policy object, action-identity
+// strings, map-node overhead, and action/probability vector capacities.
+// Returns SIZE_MAX on arithmetic overflow, so cache admission fails closed.
+std::size_t nseat_policy_accounted_bytes(const NSeatPolicy& policy) noexcept;
 
 // Compute the policy file name for a (flop_class, spr_bucket) config.
 std::string policy_file_name(std::span<const int> flop_class, std::uint8_t spr_bucket);

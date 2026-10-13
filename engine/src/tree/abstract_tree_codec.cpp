@@ -54,12 +54,14 @@
 
 #include <zstd.h>
 
+#include <algorithm>
 #include <bs/abstract_tree.hpp>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -95,14 +97,18 @@ void write_i64(std::ostream& out, std::int64_t v) {
 }
 
 std::uint32_t read_u32(std::istream& in) {
-  std::uint32_t v;
+  std::uint32_t v = 0;
   in.read(reinterpret_cast<char*>(&v), sizeof(v));
+  if (!in)
+    throw std::runtime_error("abstract_tree_codec: truncated compressed header");
   return v;
 }
 
 std::uint64_t read_u64(std::istream& in) {
-  std::uint64_t v;
+  std::uint64_t v = 0;
   in.read(reinterpret_cast<char*>(&v), sizeof(v));
+  if (!in)
+    throw std::runtime_error("abstract_tree_codec: truncated compressed header");
   return v;
 }
 
@@ -193,7 +199,7 @@ class Cursor {
 
   template <typename T>
   T read() {
-    if (pos_ + sizeof(T) > size_)
+    if (sizeof(T) > size_ - pos_)
       throw std::runtime_error("abstract_tree_codec: unexpected end of data" +
                                (context_.empty() ? "" : " in " + context_));
     T v;
@@ -203,7 +209,7 @@ class Cursor {
   }
 
   void read_bytes(char* dst, std::size_t n) {
-    if (pos_ + n > size_)
+    if (n > size_ - pos_)
       throw std::runtime_error("abstract_tree_codec: unexpected end of data" +
                                (context_.empty() ? "" : " in " + context_));
     std::memcpy(dst, data_ + pos_, n);
@@ -211,13 +217,14 @@ class Cursor {
   }
 
   void skip(std::size_t n) {
-    if (pos_ + n > size_)
+    if (n > size_ - pos_)
       throw std::runtime_error("abstract_tree_codec: unexpected end of data" +
                                (context_.empty() ? "" : " in " + context_));
     pos_ += n;
   }
 
   std::size_t pos() const noexcept { return pos_; }
+  std::size_t remaining() const noexcept { return size_ - pos_; }
 
  private:
   const char* data_;
@@ -225,6 +232,47 @@ class Cursor {
   std::size_t pos_ = 0;
   std::string context_;
 };
+
+// Charge actual retained vector slabs before allocation. Serialized accounting
+// is advisory and cannot establish a safe allocation bound for a loaded tree.
+class LoadBudget {
+ public:
+  explicit LoadBudget(std::size_t limit) : limit_(limit) {}
+
+  void charge(std::size_t count, std::size_t width) {
+    if (count > (limit_ - bytes_) / width)
+      throw tree_resource_exhausted("abstract tree load exceeded the byte cap");
+    bytes_ += count * width;
+  }
+
+  std::size_t bytes() const { return bytes_; }
+
+ private:
+  std::size_t limit_;
+  std::size_t bytes_ = 0;
+};
+
+void require_valid(bool valid, const char* message) {
+  if (!valid)
+    throw std::runtime_error(std::string("abstract_tree_codec: ") + message);
+}
+
+bool read_bool(Cursor& cursor) {
+  const auto value = cursor.read<std::uint8_t>();
+  require_valid(value <= 1, "invalid boolean flag");
+  return value != 0;
+}
+
+poker::Chips read_chips(Cursor& cursor) {
+  const auto value = cursor.read<std::int64_t>();
+  require_valid(value >= 0 && static_cast<poker::Chips>(value) <= poker::kMaxHeadsUpChips,
+                "terminal chips exceed numeric bound");
+  return static_cast<poker::Chips>(value);
+}
+
+bool aggressive(Action action) {
+  return action.type == poker::ActionType::Bet || action.type == poker::ActionType::Raise;
+}
 
 // Serialize one terminal payload to the output stream.
 void serialize_terminal(const TerminalPayload& term, std::ostream& out) {
@@ -258,35 +306,79 @@ void serialize_terminal(const TerminalPayload& term, std::ostream& out) {
 }
 
 // Deserialize one terminal payload from a cursor.
-TerminalPayload deserialize_terminal(Cursor& cursor) {
+TerminalPayload deserialize_terminal(Cursor& cursor, const GameState& root, LoadBudget& budget) {
   TerminalPayload term;
   term.player_count = cursor.read<std::uint8_t>();
   term.live_count = cursor.read<std::uint8_t>();
-  term.folded = cursor.read<std::uint8_t>() != 0;
+  term.folded = read_bool(cursor);
   term.board_size = cursor.read<std::uint8_t>();
+  require_valid(term.player_count == root.player_count() && term.player_count <= term.seats.size(),
+                "invalid terminal player count");
+  require_valid(term.live_count > 0 && term.live_count <= term.player_count,
+                "invalid terminal live count");
+  require_valid(term.board_size <= term.board.size(), "invalid terminal board size");
+  require_valid(term.folded ? term.live_count == 1 : term.live_count >= 2,
+                "terminal fold flag disagrees with live count");
 
   // Per-seat data
+  std::size_t nonfolded = 0;
+  poker::Chips pot = 0;
   for (std::size_t s = 0; s < term.player_count; ++s) {
-    term.seats[s].contributed = cursor.read<std::int64_t>();
-    term.seats[s].refunded = cursor.read<std::int64_t>();
-    term.seats[s].stack = cursor.read<std::int64_t>();
-    term.seats[s].folded = cursor.read<std::uint8_t>() != 0;
+    term.seats[s].contributed = read_chips(cursor);
+    term.seats[s].refunded = read_chips(cursor);
+    term.seats[s].stack = read_chips(cursor);
+    term.seats[s].folded = read_bool(cursor);
+    require_valid(term.seats[s].refunded <= term.seats[s].contributed,
+                  "terminal refund exceeds contribution");
+    const auto net = term.seats[s].contributed - term.seats[s].refunded;
+    const auto& initial = root.players()[s];
+    const auto initial_total = initial.stack + initial.contributed - initial.refunded;
+    require_valid(net <= initial_total && term.seats[s].stack == initial_total - net,
+                  "terminal ledger violates seat chip conservation");
+    require_valid(!initial.folded || term.seats[s].folded, "terminal revives a folded seat");
+    require_valid(net <= poker::kMaxHeadsUpChips - pot, "terminal pot exceeds numeric bound");
+    pot += net;
+    nonfolded += !term.seats[s].folded;
     cursor.skip(7);  // padding
   }
+  require_valid(nonfolded == term.live_count, "terminal live seats disagree with ledger");
 
   // live_order
-  for (std::size_t i = 0; i < term.live_count; ++i)
+  for (std::size_t i = 0; i < term.live_count; ++i) {
     term.live_order[i] = cursor.read<std::uint32_t>();
+    require_valid(term.live_order[i] < term.player_count &&
+                      !term.seats[term.live_order[i]].folded &&
+                      (i == 0 || term.live_order[i - 1] < term.live_order[i]),
+                  "invalid terminal live seat order");
+  }
 
   // board
-  for (int i = 0; i < 5; ++i)
+  std::uint64_t cards = 0;
+  for (int i = 0; i < 5; ++i) {
     term.board[i] = cursor.read<std::int32_t>();
+    if (i < term.board_size) {
+      require_valid(term.board[i] >= 0 && term.board[i] < 52, "invalid terminal board card");
+      const auto bit = std::uint64_t{1} << term.board[i];
+      require_valid((cards & bit) == 0, "duplicate terminal board card");
+      cards |= bit;
+    }
+  }
 
   // chip_utility
   const std::uint32_t cu_count = cursor.read<std::uint32_t>();
+  require_valid(cu_count == (term.folded ? term.player_count : 0),
+                "invalid terminal utility count");
+  require_valid(cu_count <= cursor.remaining() / sizeof(std::int64_t),
+                "truncated terminal utilities");
+  budget.charge(cu_count, sizeof(std::int64_t));
   term.chip_utility.resize(cu_count);
-  for (std::uint32_t i = 0; i < cu_count; ++i)
+  for (std::uint32_t i = 0; i < cu_count; ++i) {
     term.chip_utility[i] = cursor.read<std::int64_t>();
+    const auto net = term.seats[i].contributed - term.seats[i].refunded;
+    const auto expected = (i == term.live_order[0]) ? static_cast<std::int64_t>(pot - net)
+                                                    : -static_cast<std::int64_t>(net);
+    require_valid(term.chip_utility[i] == expected, "invalid fold utility");
+  }
 
   return term;
 }
@@ -392,7 +484,12 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
   if (!in)
     throw std::runtime_error("abstract_tree_codec: cannot open " + path.string() + " for read");
 
-  const std::size_t file_size = static_cast<std::size_t>(in.tellg());
+  const auto file_end = in.tellg();
+  require_valid(file_end >= 0, "cannot determine file size");
+  const auto file_size = static_cast<std::uint64_t>(file_end);
+  if (file_size > limits.max_bytes ||
+      file_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max()))
+    throw tree_resource_exhausted("abstract tree file exceeded the byte cap");
   in.seekg(0);
 
   // Read magic to detect format.
@@ -406,27 +503,37 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
   if (std::memcmp(magic, kMagic, 4) == 0) {
     // ATF1 raw format: read the entire file into a buffer.
     in.seekg(0);
-    payload.resize(file_size);
+    payload.resize(static_cast<std::size_t>(file_size));
     in.read(payload.data(), static_cast<std::streamsize>(file_size));
     if (!in)
       throw std::runtime_error("abstract_tree_codec: cannot read payload from " + path.string());
   } else if (std::memcmp(magic, kMagicCompressed, 4) == 0) {
     // ATFZ compressed format: read header, decompress.
+    require_valid(file_size > 16, "truncated compressed file");
     const std::uint32_t version = read_u32(in);
     if (version != kVersion)
       throw std::runtime_error("abstract_tree_codec: unsupported ATFZ version " +
                                std::to_string(version) + " in " + path.string());
 
     const std::uint64_t uncompressed_size = read_u64(in);
-    if (uncompressed_size == 0)
-      throw std::runtime_error("abstract_tree_codec: zero uncompressed size in " + path.string());
+    require_valid(uncompressed_size >= 32, "invalid uncompressed size");
+    if (uncompressed_size > limits.max_bytes)
+      throw tree_resource_exhausted("abstract tree payload exceeded the byte cap");
 
-    const std::size_t compressed_size = file_size - 16;  // 4 + 4 + 8
+    const std::size_t compressed_size = static_cast<std::size_t>(file_size - 16);
     std::vector<char> compressed(compressed_size);
     in.read(compressed.data(), static_cast<std::streamsize>(compressed_size));
     if (!in)
       throw std::runtime_error("abstract_tree_codec: cannot read compressed data from " +
                                path.string());
+
+    const auto frame_size = ZSTD_getFrameContentSize(compressed.data(), compressed.size());
+    require_valid(frame_size != ZSTD_CONTENTSIZE_ERROR, "invalid zstd frame");
+    require_valid(frame_size == ZSTD_CONTENTSIZE_UNKNOWN || frame_size == uncompressed_size,
+                  "compressed frame size disagrees with header");
+    const auto frame_bytes = ZSTD_findFrameCompressedSize(compressed.data(), compressed.size());
+    require_valid(!ZSTD_isError(frame_bytes) && frame_bytes == compressed.size(),
+                  "truncated or trailing compressed data");
 
     payload.resize(static_cast<std::size_t>(uncompressed_size));
     const std::size_t actual_size =
@@ -434,7 +541,7 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
     if (ZSTD_isError(actual_size))
       throw std::runtime_error("abstract_tree_codec: zstd decompress failed for " + path.string() +
                                ": " + std::string(ZSTD_getErrorName(actual_size)));
-    payload.resize(actual_size);
+    require_valid(actual_size == uncompressed_size, "decompressed size disagrees with header");
   } else {
     throw std::runtime_error("abstract_tree_codec: bad magic in " + path.string());
   }
@@ -458,17 +565,30 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
   const std::uint32_t terminal_count = cursor.read<std::uint32_t>();
   const std::uint32_t depth = cursor.read<std::uint32_t>();
   const std::uint64_t accounted_bytes = cursor.read<std::uint64_t>();
-  cursor.skip(4);  // reserved
+  require_valid(cursor.read<std::uint32_t>() == 0, "invalid reserved header field");
 
   if (node_count == 0)
     throw std::runtime_error("abstract_tree_codec: zero node count in " + path.string());
+  require_valid(terminal_count <= node_count && depth > 0 && depth <= node_count,
+                "inconsistent tree header counts");
+  if (node_count > limits.max_nodes || depth > limits.max_depth)
+    throw tree_resource_exhausted("abstract tree load exceeded the node or depth cap");
+  if (accounted_bytes > limits.max_bytes)
+    throw tree_resource_exhausted("abstract tree declared accounting exceeded the byte cap");
+  require_valid(node_count <= cursor.remaining() / 24, "truncated node headers");
+  require_valid(terminal_count <= (cursor.remaining() - std::size_t{node_count} * 24) / 28,
+                "truncated terminal headers");
+  const GameState root(def);
+  LoadBudget budget(limits.max_bytes);
+  budget.charge(node_count, sizeof(TreeNode));
+  budget.charge(terminal_count, sizeof(TerminalPayload));
 
   // Construct tree without building
   AbstractTree tree(std::move(def), std::move(action), limits, no_build_tag{});
   tree.nodes_.resize(node_count);
   tree.terminals_.resize(terminal_count);
   tree.depth_ = depth;
-  tree.accounted_bytes_ = accounted_bytes;
+  std::uint32_t next_terminal = 0;
 
   // Read nodes — all fields via cursor (memcpy, no istringstream).
   for (std::uint32_t i = 0; i < node_count; ++i) {
@@ -486,38 +606,176 @@ AbstractTree AbstractTree::load(const std::filesystem::path& path, GameDef def,
     const std::uint32_t in_action_target = cursor.read<std::uint32_t>();
 
     node.kind = byte_to_node_kind(kind);
+    require_valid(street <= static_cast<std::uint8_t>(Street::Preflop), "invalid node street");
     node.street = static_cast<Street>(street);
     node.actor = (actor == kNoNodeU32) ? kNoNode : static_cast<std::size_t>(actor);
     node.incoming_action =
         Action{byte_to_action_type(in_action_type), static_cast<poker::Chips>(in_action_target)};
     node.incoming_card = incoming_card;
     node.terminal = (terminal == kNoNodeU32) ? kNoNode : static_cast<std::size_t>(terminal);
+    require_valid(incoming_card >= kNoCard && incoming_card < 52, "invalid incoming card");
+    require_valid(aggressive(node.incoming_action) ? in_action_target > 0 : in_action_target == 0,
+                  "invalid incoming action target");
+    if (node.is_action()) {
+      require_valid(node.actor < tree.def_.player_count && action_count > 0 && action_count <= 32 &&
+                        child_count == action_count && terminal == kNoNodeU32,
+                    "invalid action node shape");
+    } else {
+      require_valid(actor == kNoNodeU32 && action_count == 0, "invalid non-action node shape");
+      if (node.is_chance()) {
+        require_valid(child_count >= 48 && child_count <= 52 && terminal == kNoNodeU32,
+                      "invalid chance node shape");
+      } else {
+        require_valid(child_count == 0, "leaf has children");
+        if (node.is_terminal()) {
+          require_valid(terminal == next_terminal && terminal < terminal_count,
+                        "invalid terminal index");
+          ++next_terminal;
+        } else {
+          require_valid(terminal == kNoNodeU32, "flop-deal leaf has terminal payload");
+        }
+      }
+    }
+    require_valid(child_count <= cursor.remaining() / sizeof(std::uint32_t), "truncated children");
+    require_valid(
+        action_count <= (cursor.remaining() - std::size_t{child_count} * sizeof(std::uint32_t)) / 5,
+        "truncated actions");
 
+    budget.charge(child_count, sizeof(std::size_t));
     node.children.resize(child_count);
     for (std::uint32_t c = 0; c < child_count; ++c)
       node.children[c] = cursor.read<std::uint32_t>();
 
+    budget.charge(action_count, sizeof(Action));
     node.actions.resize(action_count);
     for (std::uint8_t a = 0; a < action_count; ++a) {
       const std::uint8_t type = cursor.read<std::uint8_t>();
       const std::uint32_t target = cursor.read<std::uint32_t>();
       node.actions[a] = Action{byte_to_action_type(type), static_cast<poker::Chips>(target)};
+      require_valid(aggressive(node.actions[a]) ? target > 0 : target == 0,
+                    "invalid action target");
     }
   }
 
   // Set parents from children
   for (std::uint32_t i = 0; i < node_count; ++i) {
     for (std::size_t child : tree.nodes_[i].children) {
-      if (child >= node_count)
+      if (child <= i || child >= node_count || tree.nodes_[child].parent != kNoNode)
         throw std::runtime_error("abstract_tree_codec: child index " + std::to_string(child) +
-                                 " out of range in " + path.string());
+                                 " is not a unique forward edge in " + path.string());
       tree.nodes_[child].parent = i;
     }
   }
+  require_valid(next_terminal == terminal_count, "unreferenced terminal payloads");
+  for (std::uint32_t i = 1; i < node_count; ++i)
+    require_valid(tree.nodes_[i].parent != kNoNode, "unreachable node");
 
   // Terminal payloads
   for (std::uint32_t t = 0; t < terminal_count; ++t)
-    tree.terminals_[t] = deserialize_terminal(cursor);
+    tree.terminals_[t] = deserialize_terminal(cursor, root, budget);
+  require_valid(cursor.remaining() == 0, "trailing payload bytes");
+
+  // Replay the native transition machine on a bounded explicit stack. Local
+  // ledger conservation alone cannot prove a terminal belongs to this path.
+  struct Frame {
+    std::size_t index;
+    std::size_t next_child;
+    GameState state;
+  };
+  if (depth > limits.max_bytes / sizeof(Frame))
+    throw tree_resource_exhausted("abstract tree validation stack exceeded the byte cap");
+  std::vector<Frame> stack;
+  stack.reserve(depth);
+  stack.push_back({0, 0, root});
+  require_valid(
+      tree.nodes_[0].incoming_card == kNoCard && tree.nodes_[0].incoming_action == Action{},
+      "root has incoming edge label");
+  std::size_t actual_depth = 1;
+  while (!stack.empty()) {
+    Frame& frame = stack.back();
+    const TreeNode& node = tree.nodes_[frame.index];
+    if (frame.next_child == 0) {
+      NodeKind expected_kind = NodeKind::Action;
+      switch (frame.state.phase()) {
+        case poker::Phase::Action:
+          expected_kind = NodeKind::Action;
+          break;
+        case poker::Phase::Deal:
+          expected_kind = tree.def_.terminal == poker::TerminalDepth::Flop ? NodeKind::FlopDeal
+                                                                           : NodeKind::Chance;
+          break;
+        case poker::Phase::Folded:
+          expected_kind = NodeKind::TerminalFold;
+          break;
+        case poker::Phase::Showdown:
+          expected_kind = NodeKind::TerminalShowdown;
+          break;
+        case poker::Phase::Frontier:
+          expected_kind = NodeKind::TerminalFrontier;
+          break;
+      }
+      require_valid(node.kind == expected_kind && node.street == frame.state.street(),
+                    "node kind or street disagrees with replayed state");
+      if (node.is_action()) {
+        require_valid(node.actor == frame.state.actor(), "actor disagrees with replayed state");
+        const auto expected_menu =
+            abstract_node_menu(frame.state, tree.action_, frame.state.legal());
+        require_valid(node.actions == expected_menu, "action menu disagrees with replayed state");
+      }
+      if (node.is_chance()) {
+        const auto cards = public_runout_cards(frame.state);
+        require_valid(node.children.size() == cards.size(), "chance degree disagrees with board");
+        for (std::size_t ordinal = 0; ordinal < cards.size(); ++ordinal)
+          require_valid(tree.nodes_[node.children[ordinal]].incoming_card == cards[ordinal],
+                        "invalid chance card order");
+      } else if (node.is_terminal()) {
+        const auto& term = tree.terminals_[node.terminal];
+        const auto expected =
+            make_terminal_payload(frame.state, node.kind == NodeKind::TerminalFold);
+        require_valid(
+            term.player_count == expected.player_count && term.folded == expected.folded &&
+                term.board_size == expected.board_size &&
+                std::equal(term.board.begin(), term.board.begin() + term.board_size,
+                           expected.board.begin()) &&
+                term.live_count == expected.live_count &&
+                std::equal(term.live_order.begin(), term.live_order.begin() + term.live_count,
+                           expected.live_order.begin()) &&
+                term.chip_utility == expected.chip_utility,
+            "terminal payload disagrees with replayed state");
+        for (std::size_t seat = 0; seat < term.player_count; ++seat)
+          require_valid(term.seats[seat].contributed == expected.seats[seat].contributed &&
+                            term.seats[seat].refunded == expected.seats[seat].refunded &&
+                            term.seats[seat].stack == expected.seats[seat].stack &&
+                            term.seats[seat].folded == expected.seats[seat].folded,
+                        "terminal seat ledger disagrees with replayed state");
+      }
+    }
+    if (frame.next_child == node.children.size()) {
+      stack.pop_back();
+      continue;
+    }
+    const auto ordinal = frame.next_child++;
+    const auto child_index = node.children[ordinal];
+    const auto& child = tree.nodes_[child_index];
+    Frame next{child_index, 0, frame.state};
+    if (node.is_action()) {
+      require_valid(child.incoming_card == kNoCard &&
+                        child.incoming_action.type == node.actions[ordinal].type &&
+                        child.incoming_action.target_total == node.actions[ordinal].target_total,
+                    "action edge disagrees with menu");
+      next.state = frame.state.after_action(node.actor, node.actions[ordinal]);
+    } else {
+      require_valid(child.incoming_action == Action{}, "chance edge has action label");
+      next.state = frame.state.after_card(child.incoming_card);
+    }
+    if (stack.size() >= limits.max_depth)
+      throw tree_resource_exhausted("abstract tree actual depth exceeded the depth cap");
+    require_valid(stack.size() < depth, "actual tree depth exceeds header");
+    stack.push_back(next);
+    actual_depth = std::max(actual_depth, stack.size());
+  }
+  require_valid(actual_depth == depth, "actual tree depth disagrees with header");
+  tree.accounted_bytes_ = budget.bytes();
 
   return tree;
 }

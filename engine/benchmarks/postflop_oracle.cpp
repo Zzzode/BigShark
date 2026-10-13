@@ -231,9 +231,12 @@ int main(int argc, char** argv) {
                          : pf_trained.termination == NSeatTerminationPhase::WallClock
                              ? "WallClock"
                              : "ResourceLimit";
-  std::printf("  training: %s, %llu iterations, %zu info sets, %.2f s\n", pf_phase,
-              static_cast<unsigned long long>(pf_trained.completed_iterations),
-              pf_trained.information_sets, pf_wall_s);
+  std::printf(
+      "  training: %s, %llu samples, %llu epochs, batch=%zu, revision=%u, "
+      "%zu info sets, %.2f s\n",
+      pf_phase, static_cast<unsigned long long>(pf_trained.completed_iterations),
+      static_cast<unsigned long long>(pf_trained.completed_epochs), pf_trained.batch_size,
+      pf_trained.algorithm_revision, pf_trained.information_sets, pf_wall_s);
 
   if (pf_trained.termination == NSeatTerminationPhase::ResourceLimit) {
     std::fprintf(stderr, "preflop training hit a resource limit; aborting\n");
@@ -323,6 +326,9 @@ int main(int argc, char** argv) {
   std::size_t skipped_classes = 0;
   std::size_t skipped_configs = 0;
   std::size_t failed_configs = 0;
+  const std::size_t resumed_table_entries = all_entries.size();
+  std::size_t trained_configs = 0;
+  std::size_t loaded_policy_configs = 0;
 
   NSeatTrainerLimits pf_postflop_limits;
   pf_postflop_limits.wall = std::chrono::minutes(5);
@@ -385,6 +391,7 @@ int main(int argc, char** argv) {
           continue;
         }
         std::fprintf(stderr, "  class %zu bucket %zu: loaded policy from disk\n", ci, b);
+        ++loaded_policy_configs;
       } else {
         // Train the policy.
         NSeatTrainingResult trained;
@@ -407,8 +414,14 @@ int main(int argc, char** argv) {
           continue;
         }
 
-        std::fprintf(stderr, "  class %zu bucket %zu: %zu info sets, tree %zu nodes\n", ci, b,
-                     trained.information_sets, tree->size());
+        std::fprintf(stderr,
+                     "  class %zu bucket %zu: %zu info sets, tree %zu nodes, "
+                     "%llu samples, %llu epochs, revision=%u\n",
+                     ci, b, trained.information_sets, tree->size(),
+                     static_cast<unsigned long long>(trained.completed_iterations),
+                     static_cast<unsigned long long>(trained.completed_epochs),
+                     trained.algorithm_revision);
+        ++trained_configs;
 
         policy = std::move(trained.policy);
 
@@ -540,7 +553,16 @@ int main(int argc, char** argv) {
       "  \"stack_bb\": 100,\n" + "  \"player_count\": 2,\n" +
       "  \"iterations_per_config\": " + std::to_string(iterations) + ",\n" +
       "  \"pf_iterations\": " + std::to_string(pf_iterations) + ",\n" +
-      "  \"class_start\": " + std::to_string(class_start) + ",\n" +
+      "  \"new_training_algorithm_revision\": " + std::to_string(kNSeatAlgorithmRevision) + ",\n" +
+      "  \"new_training_batch_size\": 1,\n" +
+      "  \"configs_trained_this_run\": " + std::to_string(trained_configs) + ",\n" +
+      "  \"configs_loaded_policy_unknown_revision\": " + std::to_string(loaded_policy_configs) +
+      ",\n" +
+      "  \"resumed_table_entries_unknown_revision\": " + std::to_string(resumed_table_entries) +
+      ",\n" + "  \"value_provenance\": \"" +
+      ((resumed_table_entries || loaded_policy_configs || skipped_configs) ? "mixed-or-unknown"
+                                                                           : "newly-trained") +
+      "\",\n" + "  \"class_start\": " + std::to_string(class_start) + ",\n" +
       "  \"classes_processed\": " + std::to_string(num_classes) + ",\n" +
       "  \"classes_total\": " + std::to_string(all_classes.size()) + ",\n" +
       "  \"buckets\": " + std::to_string(num_buckets) + ",\n" +

@@ -107,6 +107,8 @@ struct SeatTrainingResult {
   std::uint64_t seed = 0;
   std::uint64_t prng_state = 0;
   std::uint32_t algorithm_revision = kNSeatAlgorithmRevision;
+  std::size_t batch_size = 1;
+  std::uint64_t completed_epochs = 0;
   abstraction::AbstractionId action_id{};
   // The declared card abstraction (see SeatPolicy::card_id). The v2 writer
   // persists a nullopt value as a schema-v2 artifact; a set value is persisted

@@ -30,6 +30,7 @@
 #include <bs/postflop_frontier.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
+#include <charconv>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -39,6 +40,10 @@
 #include <string>
 #include <vector>
 
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/resource.h>
+#endif
+
 using namespace bs::abstraction;
 using namespace bs::poker;
 using namespace bs::solver;
@@ -47,6 +52,28 @@ using namespace bs::gto;
 using namespace bs::artifacts;
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double seconds_since(Clock::time_point started) {
+  return std::chrono::duration<double>(Clock::now() - started).count();
+}
+
+// Process peak RSS, not the trainer's portable accounted-byte budget.
+std::int64_t peak_rss_bytes() {
+#if defined(__APPLE__) || defined(__linux__)
+  struct rusage usage{};
+  if (getrusage(RUSAGE_SELF, &usage) != 0)
+    return -1;
+#if defined(__APPLE__)
+  return static_cast<std::int64_t>(usage.ru_maxrss);
+#else
+  return static_cast<std::int64_t>(usage.ru_maxrss) * 1024;
+#endif
+#else
+  return -1;
+#endif
+}
 
 GameDef make_preflop_def(int stack_bb, std::size_t player_count) {
   GameDef def{};
@@ -89,6 +116,7 @@ int main(int argc, char** argv) {
   // Parse optional flags first, then positional arguments.
   std::size_t num_threads = 1;
   std::size_t cache_capacity = 128;
+  PostflopCacheLimits cache_limits;
   std::vector<char*> positional;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -96,6 +124,16 @@ int main(int argc, char** argv) {
       num_threads = static_cast<std::size_t>(std::atoll(argv[++i]));
     } else if (arg == "--cache-capacity" && i + 1 < argc) {
       cache_capacity = static_cast<std::size_t>(std::atoll(argv[++i]));
+    } else if (arg == "--cache-bytes" && i + 1 < argc) {
+      const std::string value = argv[++i];
+      const auto parsed =
+          std::from_chars(value.data(), value.data() + value.size(), cache_limits.max_policy_bytes);
+      if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+          cache_limits.max_policy_bytes < cache_limits.max_load_bytes) {
+        std::fprintf(stderr, "--cache-bytes requires an integer of at least %zu bytes\n",
+                     cache_limits.max_load_bytes);
+        return 1;
+      }
     } else {
       positional.push_back(argv[i]);
     }
@@ -110,6 +148,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: %s <output-dir> [iterations] [stack-bb] [seats] [abstraction]\n"
                  "       [frontier-table-path] [policy-dir] [--threads N] [--cache-capacity N]\n"
+                 "       [--cache-bytes N]\n"
                  "  defaults: 100000 iterations, 100 BB stack, 2 seats (heads-up), identity\n"
                  "  seats 3..10 trains an RFC 0010 multiway profile\n"
                  "  abstraction: 'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)\n"
@@ -118,7 +157,8 @@ int main(int argc, char** argv) {
                  "  policy-dir: directory with .nsp policy files for on-the-fly\n"
                  "    evaluation of missing table entries (RFC 0013 Stage 2)\n"
                  "  --threads N: parallel CFR with N threads (default 1)\n"
-                 "  --cache-capacity N: LRU cache size (default 128)",
+                 "  --cache-capacity N: retained policy entry cap (default 128)\n"
+                 "  --cache-bytes N: policy/load accounted-byte cap (default 1073741824)",
                  argv[0]);
     return 1;
   }
@@ -142,6 +182,7 @@ int main(int argc, char** argv) {
   // short stacks) and when no table is supplied (backward-compatible default).
   const bool use_postflop = !frontier_table_path.empty() && stack_bb > 15;
 
+  const auto pipeline_started = Clock::now();
   std::filesystem::create_directories(out_dir);
 
   const GameDef def = make_preflop_def(stack_bb, player_count);
@@ -170,7 +211,7 @@ int main(int argc, char** argv) {
         NSeatDeclaredFrontierTable::load(frontier_table_path, &table_identity));
     if (!policy_dir.empty()) {
       onthefly_evaluator = std::make_unique<OnTheFlyPostflopEvaluator>(
-          *declared_table, std::filesystem::path(policy_dir), cache_capacity);
+          *declared_table, std::filesystem::path(policy_dir), cache_capacity, cache_limits);
       frontier = onthefly_evaluator.get();
       frontier_tag = "postflop-onthefly-v1";
     } else {
@@ -199,11 +240,8 @@ int main(int argc, char** argv) {
   }
 
   NSeatTrainerLimits limits;
-  // RFC 0014: raised from 30 minutes to 12 hours. With the serialized tree
-  // cache, the on-the-fly evaluator loads trees from disk (~100 ms) instead
-  // of building from scratch (~5 s), so 100K iterations completes in hours
-  // rather than days. The wall clock is a safety net, not the primary
-  // termination condition — Complete (all iterations) is the expected path.
+  // The existing twelve-hour safety envelope does not certify throughput or
+  // strategy quality. Complete means only that all requested samples finished.
   limits.wall = std::chrono::hours(12);
 
   const auto start = std::chrono::steady_clock::now();
@@ -217,17 +255,44 @@ int main(int argc, char** argv) {
   const char* phase = trained.termination == NSeatTerminationPhase::Complete    ? "Complete"
                       : trained.termination == NSeatTerminationPhase::WallClock ? "WallClock"
                                                                                 : "ResourceLimit";
-  std::printf("Training: %s, %llu iterations, %zu info sets, %zu bytes, %.2f s\n", phase,
-              static_cast<unsigned long long>(trained.completed_iterations),
-              trained.information_sets, trained.accounted_bytes, wall_s);
+  std::printf(
+      "Training: %s, %llu samples, %llu epochs, batch=%zu, revision=%u, "
+      "%zu info sets, %zu bytes, %.2f s\n",
+      phase, static_cast<unsigned long long>(trained.completed_iterations),
+      static_cast<unsigned long long>(trained.completed_epochs), trained.batch_size,
+      trained.algorithm_revision, trained.information_sets, trained.accounted_bytes, wall_s);
+  if (onthefly_evaluator) {
+    const auto stats = onthefly_evaluator->statistics();
+    std::printf(
+        "Frontier cache: hits=%zu misses=%zu table_hits=%zu computed=%zu "
+        "equity=%zu policy_loads=%zu templates=%zu\n",
+        onthefly_evaluator->cache_hits(), onthefly_evaluator->cache_misses(),
+        onthefly_evaluator->table_hits(), onthefly_evaluator->computed(),
+        onthefly_evaluator->equity_fallbacks(), stats.policy_loads, stats.template_loads);
+    std::printf("Frontier accounting: policy=%zu peak=%zu cap=%zu templates=%zu\n",
+                stats.policy_bytes, stats.peak_policy_bytes, cache_limits.max_policy_bytes,
+                stats.template_bytes);
+    std::printf(
+        "Frontier cumulative timing: policy_load=%.2f ms template_load=%.2f ms "
+        "extract=%.2f ms\n",
+        stats.policy_load_ms, stats.template_load_ms, stats.extract_ms);
+  }
 
   if (trained.termination == NSeatTerminationPhase::ResourceLimit) {
     std::fprintf(stderr, "training hit a resource limit; refusing to publish\n");
     return 1;
   }
 
+  // Training has joined its workers and all evaluation statistics are recorded.
+  // Release frontier caches before export and publication retain policy copies.
+  onthefly_evaluator.reset();
+  postflop_evaluator.reset();
+  declared_table.reset();
+
   // Export to concrete seat-indexed rows (schema v2: no card_id for preflop).
+  const auto export_started = Clock::now();
   const SeatTrainingResult exported = export_seat_policy(trained, tree, ranges);
+  const double export_s = seconds_since(export_started);
   std::printf("Export: %zu stored rows\n", exported.policy.rows().size());
 
   // Publish.
@@ -238,10 +303,18 @@ int main(int argc, char** argv) {
 
   SeatCheckpointProvenance provenance;
   provenance.validation = ValidationState::Unvalidated;
+  const auto checkpoint_started = Clock::now();
   create_checkpoint(checkpoint, exported, provenance);
+  const double checkpoint_s = seconds_since(checkpoint_started);
+  const auto publication_started = Clock::now();
   const PublishedPolicy published = publish_policy(checkpoint, policy);
+  const double publication_s = seconds_since(publication_started);
+  const auto probe_started = Clock::now();
   const ArtifactProbe probe = probe_artifact(policy);
+  const double probe_s = seconds_since(probe_started);
   std::filesystem::remove(checkpoint);
+
+  std::printf("Algorithm: %s\n", probe.manifest.algorithm_revision.c_str());
 
   std::printf("Published: %s (%llu bytes, SHA-256 %s)\n", published.path.string().c_str(),
               static_cast<unsigned long long>(published.file_bytes), published.sha256_hex.c_str());
@@ -250,10 +323,17 @@ int main(int argc, char** argv) {
               static_cast<unsigned long long>(probe.action_count),
               static_cast<unsigned long long>(probe.total_key_words));
 
-  // Heads-up keeps the RFC 0009 rules identifier so the published artifact
-  // stays byte-identical; 3+ way profiles use the RFC 0010 identifier.
+  // Rules identifiers describe the game, separately from training identity.
   const char* rules_id =
       player_count == 2 ? "rfc0009-unified-preflop-v1" : "rfc0010-multiway-preflop-v1";
+
+  // The measured pipeline ends before writing its diagnostic JSON manifest.
+  const double pipeline_s = seconds_since(pipeline_started);
+  const auto peak_rss = peak_rss_bytes();
+  std::printf(
+      "Pipeline: export=%.3f s checkpoint=%.3f s publication=%.3f s "
+      "probe=%.3f s total=%.3f s peak_rss_bytes=%lld\n",
+      export_s, checkpoint_s, publication_s, probe_s, pipeline_s, static_cast<long long>(peak_rss));
 
   // Write manifest.
   const auto manifest = out_dir / "manifest.json";
@@ -267,6 +347,10 @@ int main(int argc, char** argv) {
   mf << "  \"combos_per_seat\": " << ranges[0].size() << ",\n";
   mf << "  \"iterations_requested\": " << iterations << ",\n";
   mf << "  \"iterations_completed\": " << trained.completed_iterations << ",\n";
+  mf << "  \"completed_samples\": " << trained.completed_iterations << ",\n";
+  mf << "  \"completed_epochs\": " << trained.completed_epochs << ",\n";
+  mf << "  \"batch_size\": " << trained.batch_size << ",\n";
+  mf << "  \"algorithm_revision\": \"" << probe.manifest.algorithm_revision << "\",\n";
   mf << "  \"termination\": \"" << phase << "\",\n";
   mf << "  \"tree_nodes\": " << trained.nodes << ",\n";
   mf << "  \"action_nodes\": " << action_nodes << ",\n";
@@ -274,6 +358,12 @@ int main(int argc, char** argv) {
   mf << "  \"stored_rows\": " << exported.policy.rows().size() << ",\n";
   mf << "  \"accounted_bytes\": " << trained.accounted_bytes << ",\n";
   mf << "  \"wall_seconds\": " << wall_s << ",\n";
+  mf << "  \"export_seconds\": " << export_s << ",\n";
+  mf << "  \"checkpoint_seconds\": " << checkpoint_s << ",\n";
+  mf << "  \"publication_seconds\": " << publication_s << ",\n";
+  mf << "  \"probe_seconds\": " << probe_s << ",\n";
+  mf << "  \"pipeline_seconds\": " << pipeline_s << ",\n";
+  mf << "  \"peak_rss_bytes\": " << peak_rss << ",\n";
   mf << "  \"card_abstraction\": \"preflop-169\",\n";
   mf << "  \"action_abstraction\": \"" << action_abstraction.id().to_string() << "\",\n";
   mf << "  \"frontier_evaluator\": \"" << frontier_tag << "\",\n";

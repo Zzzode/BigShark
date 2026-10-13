@@ -33,6 +33,7 @@
 #include <bs/abstraction.hpp>
 #include <bs/flop_library.hpp>
 #include <bs/heads_up.hpp>  // poker::Chips
+#include <bs/strategy_artifact.hpp>
 #include <cerrno>
 #include <climits>
 #include <csignal>
@@ -224,6 +225,24 @@ int run_worker(const Args& args) {
 int run_parallel(const Args& args) {
   check_memory_budget(args.parallel);
   const bs::flop_library::BuildParams params = make_params(args);
+  // The parent must reject old raw state before spawning workers: the existing
+  // worker-failure cleanup removes checkpoint and policy files from this dir.
+  if (params.resume) {
+    for (std::size_t index = 0; index < params.class_count; ++index) {
+      char stem[64];
+      std::snprintf(stem, sizeof(stem), "class-%04zu-checkpoint.db", index);
+      const auto path = args.out_dir / stem;
+      if (!std::filesystem::exists(path))
+        continue;
+      const auto checkpoint = bs::artifacts::load_checkpoint(path);
+      if (checkpoint.algorithm_revision != bs::artifacts::kDefaultAlgorithmRevisionV2) {
+        std::fprintf(stderr,
+                     "incompatible checkpoint algorithm; refusing resume without modifying %s\n",
+                     path.string().c_str());
+        return 1;
+      }
+    }
+  }
   const std::string exe = executable_path();
 
   // Spawn N workers via fork/exec. Each worker trains a strided class range

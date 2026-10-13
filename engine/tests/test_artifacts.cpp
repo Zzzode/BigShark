@@ -479,6 +479,9 @@ int compare_seat_result_exact(const SeatTrainingResult& expected,
     return 1;
   if (expected.algorithm_revision != actual.algorithm_revision)
     return 1;
+  if (expected.batch_size != actual.batch_size ||
+      expected.completed_epochs != actual.completed_epochs)
+    return 1;
   if (expected.nodes != actual.nodes)
     return 1;
   if (actual.information_sets != expected.policy.rows().size())
@@ -1088,6 +1091,93 @@ static int test_roundtrip(const fs::path& dir) {
 // ---------------------------------------------------------------------------
 // test 1b: RFC 0009 W2b schema-v2 seat-generic checkpoint round trip
 // ---------------------------------------------------------------------------
+
+static int test_nseat_algorithm_identity(const fs::path& dir) {
+  const SeatTrainingResult serial = trained_seat_result_v2();
+  CHECK(serial.algorithm_revision == 2);
+  CHECK(serial.batch_size == 1);
+  CHECK(serial.completed_epochs == serial.completed_iterations);
+  SeatTrainingResult batched = serial;
+  batched.completed_iterations = 201;
+  batched.batch_size = 8;
+  batched.completed_epochs = 26;
+  const std::string batch_identity = "rfc0016-nseat-rev2-frozen-batch-8-sampled-splitmix64";
+  const auto batch_path = dir / "batch-eight.db";
+  create_checkpoint(batch_path, batched);
+  const auto loaded_batch = load_artifact(batch_path);
+  CHECK(loaded_batch.bundle.manifest.algorithm_revision == batch_identity);
+  CHECK(loaded_batch.bundle.nseat.has_value());
+  CHECK(compare_seat_result_exact(batched, *loaded_batch.bundle.nseat) == 0);
+  CHECK(probe_artifact(publish_policy(batch_path, dir / "batch-eight-policy.db").path)
+            .manifest.algorithm_revision == batch_identity);
+
+  SeatCheckpointProvenance mismatch;
+  mismatch.algorithm_revision = kDefaultAlgorithmRevisionV2;
+  const auto mismatch_path = dir / "mismatch.db";
+  CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, batched, mismatch); },
+                        ArtifactErrorKind::InvalidArgument));
+  CHECK(!fs::exists(mismatch_path));
+  mismatch.algorithm_revision = kLegacyAlgorithmRevisionV2;
+  CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, serial, mismatch); },
+                        ArtifactErrorKind::InvalidArgument));
+  auto wrong_epochs = batched;
+  --wrong_epochs.completed_epochs;
+  CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, wrong_epochs); },
+                        ArtifactErrorKind::InvalidArgument));
+  auto zero_batch = serial;
+  zero_batch.batch_size = 0;
+  CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, zero_batch); },
+                        ArtifactErrorKind::InvalidArgument));
+
+  // A synthetic old identity exercises old immutable reads without running
+  // the retired training algorithm or rewriting any deployed artifact.
+  auto legacy = serial;
+  legacy.algorithm_revision = 1;
+  legacy.batch_size = 0;
+  legacy.completed_epochs = 0;
+  const auto legacy_path = dir / "legacy-checkpoint.db";
+  create_checkpoint(legacy_path, legacy);
+  const auto legacy_policy = publish_policy(legacy_path, dir / "legacy-policy.db");
+  const auto legacy_sha = sha256_file_hex(legacy_policy.path);
+  const auto legacy_loaded = load_artifact(legacy_policy.path);
+  CHECK(legacy_loaded.bundle.manifest.algorithm_revision == kLegacyAlgorithmRevisionV2);
+  CHECK(compare_seat_result_exact(legacy, *legacy_loaded.bundle.nseat) == 0);
+  CHECK(sha256_file_hex(legacy_policy.path) == legacy_sha);
+
+  const std::vector<std::string> unknown_identities = {
+      "custom-unrecognized-algorithm",
+      "rfc0016-nseat-rev2-frozen-batch-0-sampled-splitmix64",
+      "rfc0016-nseat-rev2-frozen-batch-01-sampled-splitmix64",
+      "rfc0016-nseat-rev2-frozen-batch-+1-sampled-splitmix64",
+      "rfc0016-nseat-rev2-frozen-batch--1-sampled-splitmix64",
+      "rfc0016-nseat-rev2-frozen-batch-184467440737095516160-sampled-splitmix64",
+      "rfc0016-nseat-rev2-frozen-batch-2-sampled-splitmix64-extra",
+  };
+  for (std::size_t index = 0; index < unknown_identities.size(); ++index) {
+    SeatCheckpointProvenance unknown;
+    unknown.algorithm_revision = unknown_identities[index];
+    const auto path = dir / ("unknown-" + std::to_string(index) + ".db");
+    create_checkpoint(path, serial, unknown);
+    const auto published =
+        publish_policy(path, dir / ("unknown-policy-" + std::to_string(index) + ".db"));
+    const auto loaded = load_artifact(published.path);
+    CHECK(loaded.bundle.manifest.algorithm_revision == unknown.algorithm_revision);
+    auto expected = serial;
+    expected.algorithm_revision = 0;
+    expected.batch_size = 0;
+    expected.completed_epochs = 0;
+    CHECK(compare_seat_result_exact(expected, *loaded.bundle.nseat) == 0);
+    // Unknown provenance is preserved when explicitly republished, never
+    // silently stamped with the compiler's current revision.
+    const auto copy = dir / ("unknown-republished-" + std::to_string(index) + ".db");
+    const auto republished = publish_policy(path, copy);
+    CHECK(load_artifact(republished.path).bundle.manifest.algorithm_revision ==
+          unknown.algorithm_revision);
+    CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, *loaded.bundle.nseat); },
+                          ArtifactErrorKind::InvalidArgument));
+  }
+  return 0;
+}
 
 static int test_roundtrip_v2(const fs::path& dir) {
   const SeatTrainingResult exported = trained_seat_result_v2();
@@ -2177,6 +2267,209 @@ void overwrite_table_sql(const fs::path& path, const std::string& table, const s
            table + "';");
 }
 
+// The roundtrip cases have already independently validated these native
+// schema-v2/v3 files. Keep only three contiguous states to make each fault
+// injection cheap; the ordered reader must still consume both complete cursors.
+static int test_seat_stream_adversarial(const fs::path& dir) {
+  const char* kStatesNoCheck =
+      "CREATE TABLE information_states (id INTEGER PRIMARY KEY, player INTEGER NOT NULL,"
+      " card0 INTEGER NOT NULL, card1 INTEGER NOT NULL, public_key TEXT NOT NULL,"
+      " UNIQUE (player, card0, card1, public_key)) STRICT";
+  const char* kActionsNoCheck =
+      "CREATE TABLE actions (info_id INTEGER NOT NULL, ordinal INTEGER NOT NULL,"
+      " kind INTEGER NOT NULL, target INTEGER, probability REAL NOT NULL,"
+      " PRIMARY KEY (info_id, ordinal)) STRICT";
+  const char* kTrainingNoCheck =
+      "CREATE TABLE training (info_id INTEGER NOT NULL, ordinal INTEGER NOT NULL,"
+      " regret REAL NOT NULL, average_weight REAL NOT NULL,"
+      " PRIMARY KEY (info_id, ordinal)) STRICT";
+
+  struct Mutation {
+    const char* name;
+    const char* table;
+    const char* sql;
+    // Nonempty detail proves a post-integrity domain/stream check was reached.
+    // Empty detail deliberately permits rejection by the unchanged preflight.
+    const char* detail;
+  };
+  const Mutation mutations[] = {
+      {"state-prefix-gap", "", "DELETE FROM information_states WHERE id=0;",
+       "ids must be contiguous from zero"},
+      {"state-middle-gap", "", "DELETE FROM information_states WHERE id=1;",
+       "ids must be contiguous from zero"},
+      {"missing-actions", "", "DELETE FROM actions WHERE info_id=0;",
+       "information state has no actions"},
+      {"ordinal-prefix-gap", "", "DELETE FROM actions WHERE info_id=0 AND ordinal=0;",
+       "action ordinals must be contiguous from zero"},
+      {"ordinal-middle-gap", "", "UPDATE actions SET ordinal=30 WHERE info_id=0 AND ordinal=1;",
+       "action ordinals must be contiguous from zero"},
+      {"unnormalized", "", "UPDATE actions SET probability=0 WHERE info_id=0;",
+       "probabilities do not sum to 1"},
+      {"seat-outside-game", "", "UPDATE information_states SET player=9 WHERE id=0;",
+       "player outside player_count"},
+      {"bad-key", "", "UPDATE information_states SET public_key='invalid' WHERE id=0;",
+       "canonical key"},
+      {"noncanonical-key", "",
+       "UPDATE information_states SET public_key='0'||public_key"
+       " WHERE id=0;",
+       "leading zero"},
+      {"duplicate-board", "", "", "duplicate card on the public board"},
+      {"count-mismatch", "", "UPDATE manifest SET information_sets=4;", "stored state count"},
+      {"orphan-prefix", "actions", "INSERT INTO actions VALUES (-1,0,1,NULL,1.0);", ""},
+      {"orphan-tail", "actions", "INSERT INTO actions VALUES (3,0,1,NULL,1.0);", ""},
+      {"actions-with-no-states", "actions",
+       "DELETE FROM information_states;"
+       " INSERT INTO actions VALUES (3,0,1,NULL,1.0);",
+       ""},
+      {"overflow-seat", "information_states",
+       "UPDATE information_states SET player=4294967296 WHERE id=0;", ""},
+      {"overflow-card0", "information_states",
+       "UPDATE information_states SET card0=4294967296 WHERE id=0;", ""},
+      {"overflow-card1", "information_states",
+       "UPDATE information_states SET card1=4294967297 WHERE id=0;", ""},
+      {"overflow-kind", "actions",
+       "UPDATE actions SET kind=4294967297 WHERE info_id=0 AND ordinal=0;", ""},
+      {"overflow-ordinal", "actions",
+       "UPDATE actions SET ordinal=4294967296 WHERE info_id=0 AND ordinal=0;", ""},
+      {"negative-target", "actions",
+       "UPDATE actions SET kind=3,target=-1 WHERE info_id=0 AND ordinal=0;", ""},
+      {"overflow-target", "actions",
+       "UPDATE actions SET kind=3,target=9007199254740992 WHERE info_id=0 AND ordinal=0;", ""},
+      {"missing-aggressive-target", "actions",
+       "UPDATE actions SET kind=3,target=NULL WHERE info_id=0 AND ordinal=0;", ""},
+      {"unexpected-passive-target", "actions",
+       "UPDATE actions SET kind=1,target=1 WHERE info_id=0 AND ordinal=0;", ""},
+      {"nonfinite-probability", "actions",
+       "UPDATE actions SET probability=1e999 WHERE info_id=0 AND ordinal=0;", ""},
+      {"negative-probability", "actions",
+       "UPDATE actions SET probability=-0.1 WHERE info_id=0 AND ordinal=0;", ""},
+      {"unexpected-training", "", "INSERT INTO training VALUES (0,0,1.0,1.0);",
+       "must not carry training rows"},
+      {"nonfinite-training-regret", "", "INSERT INTO training VALUES (0,0,1e999,1.0);",
+       "non-finite REAL in cumulative regret"},
+      {"negative-training-weight", "training", "INSERT INTO training VALUES (0,0,1.0,-1.0);", ""},
+  };
+
+  for (const int version : {2, 3}) {
+    const std::string prefix = "roundtrip-v" + std::to_string(version);
+    const fs::path original = dir.parent_path() / prefix / (prefix + "-checkpoint.db");
+    const fs::path source = dir / ("stream-v" + std::to_string(version) + ".db");
+    fs::copy_file(original, source);
+    std::map<std::string, std::string> canonical;
+    std::string duplicate_board_sql;
+    {
+      RawDb raw(source);
+      CHECK(raw.scalar_i64("SELECT COUNT(*) FROM information_states") >= 3);
+      CHECK(raw.scalar_i64("SELECT COUNT(*) FROM actions WHERE info_id=0") >= 2);
+      raw.exec(
+          "DELETE FROM information_states WHERE id>=3;"
+          " UPDATE manifest SET information_sets=3;"
+          " VACUUM;");
+      const auto card0 = raw.scalar_i64("SELECT card0 FROM information_states WHERE id=0");
+      const auto card1 = raw.scalar_i64("SELECT card1 FROM information_states WHERE id=0");
+      int duplicate_card = 0;
+      while (duplicate_card == card0 || duplicate_card == card1)
+        ++duplicate_card;
+      int other_card = duplicate_card + 1;
+      while (other_card == card0 || other_card == card1)
+        ++other_card;
+      // Off-hand cards pin duplicate-board validation instead of triggering
+      // the earlier own-card-overlap check in either schema.
+      duplicate_board_sql = "UPDATE information_states SET public_key='0|" +
+                            std::to_string(duplicate_card) + "," + std::to_string(duplicate_card) +
+                            "," + std::to_string(other_card) + "|' WHERE id=0;";
+      for (const char* table : {"information_states", "actions", "training"})
+        canonical[table] = raw.scalar_text("SELECT sql FROM sqlite_schema WHERE name='" +
+                                           std::string(table) + "'");
+      // The SQL primary key rejects a duplicate ordinal before a malformed
+      // file can exist. This is not claimed as streamed-reader branch coverage.
+      CHECK(!raw.try_exec(
+          "INSERT INTO actions SELECT * FROM actions WHERE info_id=0 AND ordinal=0;"));
+    }
+    const LoadedArtifact valid = load_artifact(source);
+    CHECK(valid.bundle.nseat.has_value());
+    CHECK(valid.bundle.nseat->policy.rows().size() == 3);
+    CHECK(valid.bundle.nseat->information_sets == 3);
+    CHECK(valid.bundle.manifest.card_abstraction.has_value() == (version == 3));
+    const std::string source_hash = sha256_file_hex(source);
+
+    // Valid keys need not be ordered by state ID. The insertion hint must fall
+    // back correctly without changing the associated action distributions.
+    const fs::path reversed = dir / ("stream-v" + std::to_string(version) + "-reversed.db");
+    fs::copy_file(source, reversed);
+    {
+      RawDb raw(reversed);
+      raw.exec(
+          "PRAGMA foreign_keys=OFF;"
+          " UPDATE information_states SET id=id+3;"
+          " UPDATE actions SET info_id=info_id+3;"
+          " UPDATE information_states SET id=5-id;"
+          " UPDATE actions SET info_id=5-info_id;"
+          " PRAGMA foreign_keys=ON;");
+    }
+    const LoadedArtifact reordered = load_artifact(reversed);
+    CHECK(compare_seat_result_exact(*valid.bundle.nseat, *reordered.bundle.nseat) == 0);
+
+    for (const Mutation& mutation : mutations) {
+      const fs::path path =
+          dir / ("stream-v" + std::to_string(version) + "-" + mutation.name + ".db");
+      fs::copy_file(source, path);
+      const std::string table = mutation.table;
+      if (!table.empty())
+        overwrite_table_sql(path, table,
+                            table == "actions"    ? kActionsNoCheck
+                            : table == "training" ? kTrainingNoCheck
+                                                  : kStatesNoCheck);
+      {
+        RawDb raw(path);
+        // Orphan cases intentionally bypass write-time FK enforcement. The
+        // reader's unchanged FK/integrity preflight remains authoritative.
+        const std::string name = mutation.name;
+        if (name.starts_with("orphan") || name == "actions-with-no-states")
+          raw.exec("PRAGMA foreign_keys=OFF;");
+        raw.exec(name == "duplicate-board" ? duplicate_board_sql : mutation.sql);
+      }
+      if (!table.empty())
+        overwrite_table_sql(path, table, canonical.at(table));
+      bool rejected = false;
+      try {
+        (void)load_artifact(path);
+      } catch (const ArtifactError& error) {
+        rejected = true;
+        if (*mutation.detail != '\0') {
+          const std::string name = mutation.name;
+          const ArtifactErrorKind expected_kind =
+              name == "unnormalized" || name == "nonfinite-training-regret"
+                  ? ArtifactErrorKind::InvalidValue
+                  : ArtifactErrorKind::InvalidSchema;
+          CHECK(error.kind() == expected_kind);
+        }
+        if (*mutation.detail != '\0' &&
+            std::string(error.what()).find(mutation.detail) == std::string::npos) {
+          std::printf("stream v%d %s failed before expected domain check: %s\n", version,
+                      mutation.name, error.what());
+          return 1;
+        }
+      }
+      CHECK(rejected);
+    }
+    // Adversarial copies must not mutate the validated source.
+    CHECK(sha256_file_hex(source) == source_hash);
+    const LoadedArtifact again = load_artifact(source);
+    CHECK(compare_seat_result_exact(*valid.bundle.nseat, *again.bundle.nseat) == 0);
+    const fs::path empty = dir / ("stream-v" + std::to_string(version) + "-empty.db");
+    fs::copy_file(source, empty);
+    {
+      RawDb raw(empty);
+      raw.exec("DELETE FROM information_states; UPDATE manifest SET information_sets=0;");
+    }
+    const LoadedArtifact empty_loaded = load_artifact(empty);
+    CHECK(empty_loaded.bundle.nseat.has_value());
+    CHECK(empty_loaded.bundle.nseat->policy.rows().empty());
+  }
+  return 0;
+}
+
 static int test_adversarial(const fs::path& dir) {
   const HeadsUpGame game = canonical_fixture();
   const DebugTrainingOutput trained =
@@ -2338,12 +2631,9 @@ static int test_adversarial(const fs::path& dir) {
                "' WHERE id = " + std::to_string(first_id) + ";");
     }
     CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidSchema));
-    CHECK(throws_artifact(
-        [&] {
-          const fs::path bad_gen = dir / (name + "-gen.db");
-          (void)publish_policy(path, bad_gen);
-        },
-        ArtifactErrorKind::InvalidSchema));
+    const fs::path bad_gen = dir / (name + "-gen.db");
+    CHECK(throws_artifact([&] { (void)publish_policy(path, bad_gen); },
+                          ArtifactErrorKind::InvalidSchema));
   }
 
   // --- P2-4: schema-object zip bomb rejection and bounded heap design ------
@@ -2514,6 +2804,7 @@ int main() {
   const Case cases[] = {
       {"roundtrip", test_roundtrip},
       {"roundtrip-v2", test_roundtrip_v2},
+      {"nseat-algorithm-identity", test_nseat_algorithm_identity},
       {"roundtrip-v3", test_roundtrip_v3},
       {"roundtrip-preflop", test_roundtrip_preflop},
       {"roundtrip-preflop-3way", test_roundtrip_preflop_3way},
@@ -2524,6 +2815,7 @@ int main() {
       {"corruption", test_corruption},
       {"immutable", test_immutable},
       {"adversarial", test_adversarial},
+      {"seat-stream-adversarial", test_seat_stream_adversarial},
   };
   for (const Case& test_case : cases) {
     const fs::path case_dir = dir / test_case.name;

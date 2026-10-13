@@ -90,6 +90,7 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
       bs::solver::train_nseat(fx.tree, fx.ranges, 256, fx.seed, fx.limits, &fx.frontier);
   CHECK(r256.termination == bs::solver::NSeatTerminationPhase::Complete);
   CHECK(r256.completed_iterations == 256);
+  CHECK(r256.batch_size == 1 && r256.completed_epochs == 256);
   CHECK(!r256.raw_rows.empty());
 
   // Save a warm-start checkpoint with the raw training rows.
@@ -107,6 +108,7 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
   const bs::artifacts::CheckpointTrainingState ckpt =
       bs::artifacts::load_checkpoint(checkpoint_path);
   CHECK(ckpt.completed_iterations == 256);
+  CHECK(ckpt.algorithm_revision == bs::artifacts::kDefaultAlgorithmRevisionV2);
   CHECK(ckpt.abstraction_digest == fx.action.id().digest);
   CHECK(ckpt.card_abstraction.has_value());
   CHECK(ckpt.card_abstraction.value() == fx.card_id);
@@ -115,6 +117,7 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
   // Build the trainer's initial state from the checkpoint.
   const bs::solver::NSeatInitialState state = bs::flop_library::build_initial_state(ckpt, fx.tree);
   CHECK(state.completed_iterations == 256);
+  CHECK(state.algorithm_revision == 2 && state.batch_size == 1);
   CHECK(!state.rows.empty());
   CHECK(state.rows.size() == r256.raw_rows.size());
 
@@ -124,12 +127,14 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
       bs::solver::train_nseat(fx.tree, fx.ranges, 256, fx.seed, fx.limits, &fx.frontier, &state);
   CHECK(r512_resumed.termination == bs::solver::NSeatTerminationPhase::Complete);
   CHECK(r512_resumed.completed_iterations == 512);
+  CHECK(r512_resumed.batch_size == 1 && r512_resumed.completed_epochs == 512);
 
   // Reference: train 512 iterations from scratch.
   const bs::solver::NSeatTrainingResult r512_scratch =
       bs::solver::train_nseat(fx.tree, fx.ranges, 512, fx.seed, fx.limits, &fx.frontier);
   CHECK(r512_scratch.termination == bs::solver::NSeatTerminationPhase::Complete);
   CHECK(r512_scratch.completed_iterations == 512);
+  CHECK(r512_scratch.batch_size == 1 && r512_scratch.completed_epochs == 512);
 
   // Compare the raw regret/average-weight tables.
   CHECK(r512_resumed.raw_rows.size() == r512_scratch.raw_rows.size());
@@ -160,6 +165,93 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
         return false;
       }
     }
+  }
+  CHECK(r512_resumed.policy.rows().size() == r512_scratch.policy.rows().size());
+  for (const auto& [key, row] : r512_scratch.policy.rows()) {
+    const auto resumed = r512_resumed.policy.rows().find(key);
+    CHECK(resumed != r512_resumed.policy.rows().end());
+    CHECK(resumed->second.actions == row.actions);
+    CHECK(resumed->second.probabilities == row.probabilities);
+  }
+  return true;
+}
+
+bool test_incompatible_resume_preserves_files(const fs::path& dir) {
+  Fixture fx;
+  const auto trained =
+      bs::solver::train_nseat(fx.tree, fx.ranges, 16, fx.seed, fx.limits, &fx.frontier);
+  const auto exported = bs::solver::export_seat_policy(trained, fx.tree, fx.ranges, fx.card_id);
+  const auto raw = bs::flop_library::export_seat_training_rows(trained, fx.tree);
+  const auto source_dir = dir / "refused-resume";
+  fs::create_directory(source_dir);
+  const auto checkpoint = source_dir / "class-0000-checkpoint.db";
+  const auto policy = source_dir / "class-0000.db";
+  const std::vector<std::string> identities = {
+      bs::artifacts::kLegacyAlgorithmRevisionV2,
+      "rfc0016-nseat-rev2-frozen-batch-8-sampled-splitmix64",
+      "unknown-raw-algorithm",
+  };
+  for (const auto& identity : identities) {
+    auto result = exported;
+    bs::artifacts::SeatCheckpointProvenance provenance;
+    provenance.algorithm_revision = identity;
+    if (identity == bs::artifacts::kLegacyAlgorithmRevisionV2) {
+      result.algorithm_revision = 1;
+      result.batch_size = 0;
+      result.completed_epochs = 0;
+    } else if (identity.find("batch-8-") != std::string::npos) {
+      result.batch_size = 8;
+      result.completed_epochs = 2;
+    }
+    bs::artifacts::save_training_checkpoint(checkpoint, result, raw, provenance);
+    if (!fs::exists(policy)) {
+      // Immutable publication consumes a policy-only checkpoint; raw warm-start
+      // storage is intentionally read through load_checkpoint instead.
+      const auto immutable_source = source_dir / "immutable-source.db";
+      bs::artifacts::create_checkpoint(immutable_source, result, provenance);
+      (void)bs::artifacts::publish_policy(immutable_source, policy);
+    }
+    const auto checkpoint_sha = bs::artifacts::sha256_file_hex(checkpoint);
+    const auto policy_sha = bs::artifacts::sha256_file_hex(policy);
+    const auto loaded = bs::artifacts::load_checkpoint(checkpoint);
+    CHECK(loaded.algorithm_revision == identity);
+    bool refused = false;
+    try {
+      (void)bs::flop_library::build_initial_state(loaded, fx.tree);
+    } catch (const std::invalid_argument&) {
+      refused = true;
+    }
+    CHECK(refused);
+    refused = false;
+    try {
+      (void)bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 4, 2,
+                                            bs::flop_library::declared_library_range(), 2,
+                                            fx.action, true);
+    } catch (const std::runtime_error& error) {
+      refused =
+          std::string(error.what()).find("incompatible checkpoint algorithm") != std::string::npos;
+    }
+    CHECK(refused);
+    CHECK(fs::exists(checkpoint) && fs::exists(policy));
+    CHECK(bs::artifacts::sha256_file_hex(checkpoint) == checkpoint_sha);
+    CHECK(bs::artifacts::sha256_file_hex(policy) == policy_sha);
+  }
+  // The trainer's direct raw-state entry point independently rejects bad
+  // numeric identity even when no artifact loader or producer is involved.
+  for (bool wrong_revision : {false, true}) {
+    bs::solver::NSeatInitialState state;
+    state.rows = trained.raw_rows;
+    state.completed_iterations = trained.completed_iterations;
+    state.algorithm_revision = wrong_revision ? 1 : 2;
+    state.batch_size = wrong_revision ? 1 : 8;
+    bool refused = false;
+    try {
+      (void)bs::solver::train_nseat(fx.tree, fx.ranges, 1, fx.seed, fx.limits, &fx.frontier,
+                                    &state);
+    } catch (const std::invalid_argument&) {
+      refused = true;
+    }
+    CHECK(refused);
   }
   return true;
 }
@@ -205,6 +297,7 @@ int main() {
   bool ok = true;
   ok = test_warm_start_matches_scratch(dir) && ok;
   ok = test_checkpoint_overwrite(dir) && ok;
+  ok = test_incompatible_resume_preserves_files(dir) && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {
