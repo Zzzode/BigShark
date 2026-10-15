@@ -17,12 +17,18 @@
 // structure.
 //
 // Usage: bigshark-subgame-nash-conv [iterations] [seed]
+//        bigshark-subgame-nash-conv --t3 [iterations] [seed]
+//        bigshark-subgame-nash-conv --t3-dl [iterations] [seed]
+//
+// --t3     : full-tree feasibility scan (2..6 seats, 10/25/100 BB)
+// --t3-dl  : depth-limited feasibility scan (same fixtures, max_streets=1)
 //
 // This is a manual offline measurement tool, NOT a CTest.
 #include <algorithm>
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
+#include <bs/equity_frontier.hpp>
 #include <bs/eval.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/nseat_trainer.hpp>
@@ -47,6 +53,8 @@ using bs::abstraction::card_bucket;
 using bs::abstraction::CoverSeeds;
 using bs::abstraction::SizeSchedule;
 using bs::abstraction::StreetSizes;
+using bs::gto::EquityFrontierEvaluator;
+using bs::gto::FrontierEvaluator;
 
 namespace {
 
@@ -502,7 +510,8 @@ CoverageResult compute_coverage(const AbstractTree& tree, const NSeatPolicy& pol
 int run_fixture(const std::string& label, const GameDef& def,
                 const std::vector<std::array<int, 2>>& range, const SizeSchedule& schedule,
                 std::uint64_t iterations, std::uint64_t seed, int solve_wall_seconds = 120,
-                bool skip_nash_conv = false) {
+                bool skip_nash_conv = false, DepthLimit depth_limit = DepthLimit::none(),
+                const FrontierEvaluator* frontier = nullptr) {
   const std::size_t seat_count = def.player_count;
   const bool river_rooted = def.board_size == 5;
 
@@ -533,7 +542,7 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::unique_ptr<AbstractTree> tree_ptr;
   const auto build_start = std::chrono::steady_clock::now();
   try {
-    tree_ptr = std::make_unique<AbstractTree>(def, action, tree_limits);
+    tree_ptr = std::make_unique<AbstractTree>(def, action, tree_limits, depth_limit);
   } catch (const tree_resource_exhausted& e) {
     // Exceeding the 1 GiB TreeLimits::max_bytes cap is a measurement result,
     // not a benchmark failure: report it as a finding and move on.
@@ -560,7 +569,8 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::printf("  1 GiB cap:    fits (%.1f MiB of 1024 MiB)\n",
               tree.accounted_bytes() / (1024.0 * 1024.0));
 
-  std::size_t action_nodes = 0, chance_nodes = 0, fold_leaves = 0, showdown_leaves = 0;
+  std::size_t action_nodes = 0, chance_nodes = 0, fold_leaves = 0, showdown_leaves = 0,
+              frontier_leaves = 0;
   for (const auto& node : tree.nodes()) {
     switch (node.kind) {
       case NodeKind::Action:
@@ -575,6 +585,9 @@ int run_fixture(const std::string& label, const GameDef& def,
       case NodeKind::TerminalShowdown:
         ++showdown_leaves;
         break;
+      case NodeKind::TerminalFrontier:
+        ++frontier_leaves;
+        break;
       default:
         break;
     }
@@ -583,6 +596,8 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::printf("  chance:       %zu\n", chance_nodes);
   std::printf("  fold leaves:  %zu\n", fold_leaves);
   std::printf("  showdown:     %zu\n", showdown_leaves);
+  if (frontier_leaves > 0)
+    std::printf("  frontier:     %zu (depth-limited)\n", frontier_leaves);
   std::fflush(stdout);
 
   // Build ranges (filtered by blocks_board).
@@ -604,7 +619,7 @@ int run_fixture(const std::string& label, const GameDef& def,
   const auto solve_start = std::chrono::steady_clock::now();
   NSeatTrainingResult train_result;
   try {
-    train_result = train_nseat(tree, ranges, iterations, seed, trainer_limits, nullptr, nullptr);
+    train_result = train_nseat(tree, ranges, iterations, seed, trainer_limits, frontier, nullptr);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "  train_nseat failed: %s\n", e.what());
     return 1;
@@ -675,10 +690,19 @@ int main(int argc, char** argv) {
   // T3 feasibility scan: --t3 [iterations] [seed]
   // Runs 2..6 seats x 10/25/100 BB, turn-rooted, with a 30 s solve budget and
   // no NashConv (resource/deadline measurement, not quality certification).
+  //
+  // T3 depth-limited scan: --t3-dl [iterations] [seed]
+  // Same fixtures but with DepthLimit::streets(1) and EquityFrontierEvaluator.
+  // Measures the tree-size reduction and solve feasibility that depth-limited
+  // resolving provides for 5-6 seat games where the full tree exceeds 1 GiB.
   bool t3_scan = false;
+  bool t3_dl_scan = false;
   int arg_index = 1;
   if (argc > 1 && std::string(argv[1]) == "--t3") {
     t3_scan = true;
+    arg_index = 2;
+  } else if (argc > 1 && std::string(argv[1]) == "--t3-dl") {
+    t3_dl_scan = true;
     arg_index = 2;
   }
   const std::uint64_t iterations =
@@ -704,6 +728,31 @@ int main(int argc, char** argv) {
     }
     if (failures == 0)
       std::printf("\nT3 scan completed.\n");
+    else
+      std::printf("\n%d fixture(s) failed.\n", failures);
+    return failures;
+  }
+
+  if (t3_dl_scan) {
+    std::printf("T3-DL: depth-limited six-seat feasibility scan\n");
+    std::printf("  2..6 seats, 10/25/100 BB, turn-rooted, max_streets=1\n");
+    std::printf("  EquityFrontierEvaluator, 30 s solve budget, no NashConv\n");
+    std::printf("  (resource/deadline measurement; not quality certification)\n");
+    const EquityFrontierEvaluator frontier;
+    int failures = 0;
+    for (int stack_bb : {10, 25, 100}) {
+      for (std::size_t seats = 2; seats <= 6; ++seats) {
+        failures += run_fixture(
+            std::to_string(seats) + "-seat DL turn-rooted " + std::to_string(stack_bb) + " BB",
+            make_subgame_def_np(seats, stack_bb, false), range, schedule, iterations, seed,
+            /*solve_wall_seconds=*/30,
+            /*skip_nash_conv=*/true,
+            /*depth_limit=*/DepthLimit::streets(1),
+            /*frontier=*/&frontier);
+      }
+    }
+    if (failures == 0)
+      std::printf("\nT3-DL scan completed.\n");
     else
       std::printf("\n%d fixture(s) failed.\n", failures);
     return failures;
