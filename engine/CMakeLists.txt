@@ -1190,6 +1190,11 @@ if(BUILD_TESTING)
   target_link_libraries(test_depth_limited PRIVATE bigshark_resolver)
   add_test(NAME depth_limited COMMAND test_depth_limited)
 
+  # RFC 0024: depth-limited resolving integration tests.
+  add_executable(test_depth_limited_integration tests/test_depth_limited_integration.cpp)
+  target_link_libraries(test_depth_limited_integration PRIVATE bigshark_resolver)
+  add_test(NAME depth_limited_integration COMMAND test_depth_limited_integration)
+
   add_executable(test_equity tests/test_equity.cpp)
   target_link_libraries(test_equity PRIVATE bigshark_poker)
   add_test(NAME equity COMMAND test_equity)

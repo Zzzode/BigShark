@@ -863,6 +863,8 @@ Review summary: All three third-round findings verified as correctly addressed: 
   11 unit tests in `test_depth_limited.cpp` plus 1 river-rejection test in
   `test_subgame_resolver.cpp`. All gates pass: release CTest 92/92, ASan
   affected targets, Node, protocol, replay, docs/RFC checks, multistreet
-  benchmark. Integration tests (3-seat depth-limited subgame, full-tree vs
-  depth-limited comparison) and T3 harness benchmark extension remain as
-  follow-up work.
+  benchmark. Integration tests in `test_depth_limited_integration.cpp`:
+  3-seat depth-limited subgame (18.1x tree-size reduction, 876k→48k nodes)
+  and 2-seat full-tree vs depth-limited comparison (16.2x node reduction,
+  42k→2.6k nodes; 72x information-set reduction, 13.5k→187). T3 harness
+  benchmark extension remains as follow-up work.

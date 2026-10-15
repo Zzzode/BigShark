@@ -36,9 +36,9 @@ integration, and development documentation.
 | RFC | [RFC 0016: Synchronous MCCFR batches and correct strategy averaging](rfcs/0016-synchronous-mccfr-averaging.md) | Implemented | Frozen-profile training epochs, independent full-action averaging, and revision-aware checkpoint compatibility |
 | RFC | [RFC 0017: Training pipeline allocation cost](rfcs/0017-training-pipeline-allocation-cost.md) | Implemented | Allocation-efficient revision-two deltas, exact export reuse, ordered seat-artifact loading, and matched end-to-end measurements |
 | RFC | [RFC 0018: Zero-rake settlement fast path](rfcs/0018-zero-rake-settlement-fast-path.md) | Implemented | Preserve exact settlement while avoiding provably zero percentage calculations |
-| RFC | [RFC 0019: N-seat preflop reconstruction](rfcs/0019-nseat-preflop-reconstruction.md) | Implementing | Exact minor-2 multiway replay; an internal prerequisite, not six-max GTO completion |
-| RFC | [RFC 0020: Folded-root policy identity](rfcs/0020-folded-root-policy-identity.md) | Implementing | Reject a different root live set before resident or direct resolver lookup |
-| RFC | [RFC 0021: N-seat cross-street reconstruction](rfcs/0021-nseat-cross-street-reconstruction.md) | Implementing | Replay supplied hand history into the true flop root; public provenance and complete six-max remain open |
+| RFC | [RFC 0019: N-seat preflop reconstruction](rfcs/0019-nseat-preflop-reconstruction.md) | Implemented | Exact minor-2 multiway replay; an internal prerequisite, not six-max GTO completion |
+| RFC | [RFC 0020: Folded-root policy identity](rfcs/0020-folded-root-policy-identity.md) | Implemented | Reject a different root live set before resident or direct resolver lookup |
+| RFC | [RFC 0021: N-seat cross-street reconstruction](rfcs/0021-nseat-cross-street-reconstruction.md) | Implemented | Replay supplied hand history into the true flop root; public provenance and complete six-max remain open |
 | RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Draft | Coherent v2 ledger, public observations and rule identity; exact wire and provider gates remain open |
 | RFC | [RFC 0023: Artifact startup and decision deadlines](rfcs/0023-artifact-startup-and-decision-deadlines.md) | Implemented | Root-aware startup allowance and bounded active waits; no six-max quality claim |
 | RFC | [RFC 0024: Depth-limited resolving](rfcs/0024-depth-limited-resolving.md) | Implemented | Street-boundary value estimation for scalable subgame solving; enabling architecture for six-max |

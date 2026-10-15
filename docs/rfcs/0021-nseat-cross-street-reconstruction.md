@@ -1,7 +1,7 @@
 ---
 rfc: "0021"
 subject: "N-Seat Cross-Street Reconstruction"
-status: "Implementing"
+status: "Implemented"
 authors: "Codex /root"
 created: "2026-10-14"
 updated: "2026-10-14"
