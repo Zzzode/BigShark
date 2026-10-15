@@ -20,7 +20,7 @@ import {
   SolverSource,
   StrategySchema,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
-import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, autoDetectedFlopLibraries, warmupTimeoutMsFor, residentBudgetMiB } from '../src/engine.js';
+import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, autoDetectedFlopLibraries, warmupTimeoutMsFor, residentBudgetMiB, warmEngine } from '../src/engine.js';
 import {
   decisionEnvelope,
   fromV1DecisionResponse,
@@ -332,6 +332,17 @@ test('warmupTimeoutMsFor scales with library count', () => {
   assert.equal(warmupTimeoutMsFor(['/a', '/b', '/c']), 600_000);
 });
 
+test('warmupTimeoutMsFor includes pinned roots without changing library-only allowances', () => {
+  const roots = [
+    { path: '/x/policy.db', sha256: ROOT_A },
+    { path: '/y/policy.db', sha256: ROOT_B },
+  ];
+  assert.equal(warmupTimeoutMsFor([], []), 10_000);
+  assert.equal(warmupTimeoutMsFor([], roots.slice(0, 1)), 300_000);
+  assert.equal(warmupTimeoutMsFor([], roots), 600_000);
+  assert.equal(warmupTimeoutMsFor(['/lib'], roots.slice(0, 1)), 600_000);
+});
+
 // ---- solve budget sanitizer ---------------------------------------------
 
 test('resolveSolveTimeBudgetMs clamps into the declared 1..120000 window', () => {
@@ -467,11 +478,12 @@ test('real binary: a configured resident root serves the fixture flop end-to-end
     command: engineBinary,
     args: protoEngineLaunchArgs([{ path: fixture.path, sha256: fixture.sha256 }]),
     warmupEnvelope: warmup(),
-    warmupTimeoutMs: 10_000,
+    warmupTimeoutMs: warmupTimeoutMsFor([], [{ path: fixture.path, sha256: fixture.sha256 }]),
     negotiateMinor1: true,
     negotiateMinor2: true,
   });
   t.after(() => client.stop());
+  await client.start();
   const room = residentRoom();
   const decision = await decide(room, {
     style: 'tag',
@@ -507,27 +519,22 @@ test('real binary: the IMPLICIT client path serves the fixture root (singleton l
   // flopLibraries: [] suppresses auto-detection so the implicit client
   // launches with only the fixture root, not the 1,755-class library.
   const room = residentRoom();
-  const decision = await decide(room, {
+  const config = {
     style: 'tag',
     heroName: 'Hero',
     timeoutMs: 10_000,
     proto: true,
     residentRoots: [{ path: fixture.path, sha256: fixture.sha256 }],
     flopLibraries: [],
-  });
+  };
+  await warmEngine(config);
+  const decision = await decide(room, config);
   assert.match(decision.reason, /blueprint/,
     `expected the implicit client to serve the blueprint, got ${decision.reason}`);
   assert.equal(decision.artifactSha256, fixture.sha256);
   // A second decision reuses the keyed singleton (no relaunch, same answer
   // class); this is the regression the explicit-client tests cannot see.
-  const again = await decide(room, {
-    style: 'tag',
-    heroName: 'Hero',
-    timeoutMs: 10_000,
-    proto: true,
-    residentRoots: [{ path: fixture.path, sha256: fixture.sha256 }],
-    flopLibraries: [],
-  });
+  const again = await decide(room, config);
   assert.match(again.reason, /blueprint/);
   assert.equal(again.artifactSha256, fixture.sha256);
 });

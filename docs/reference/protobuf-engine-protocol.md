@@ -257,6 +257,17 @@ established.
 
 ### Levels and vocabulary
 
+RFC 0019 extends preflop reconstruction on negotiated minor 2 to 2..10 dealt
+seats. It replays the existing unified rules, preserving all dealt indices,
+button/blind order, folded/all-in status, and exact per-event payments.
+Minor 1 retains its heads-up preflop gate; supported heads-up wire fixtures
+remain unchanged. Equal hand-start stacks and the existing unsupported
+side-pot/ante/rake/straddle profile remain enforced. This adds no field or
+solver guarantee. A reconstructed six-seat request can still miss every
+configured artifact, and test-host routing is not six-max GTO evidence.
+The complete user feature remains In Progress in the
+[six-max delivery register](../plans/sixmax-gto-delivery.md).
+
 The ascending ladder is `operational_fallback < approximate <
 abstract_solved < exact_solved < certified_bound`. Today:
 
@@ -380,8 +391,26 @@ client, or platform targets.
 
 ### Postflop state reconstruction
 
+RFC 0021 selects exact hand-start replay for negotiated minor-2 requests
+with 3..10 dealt seats and any supplied preflop voluntary event. The same
+native replay used for preflop derives the starting stacks from current
+chips plus supplied gross payments under an explicitly no-refund profile.
+Every action's actual payment and the final per-seat status/chips are checked;
+any native refund rejects the profile. At the third flop card, the mapper
+rebases to the true flop pot, per-seat net contributions and folded bitmap,
+preserving the original button and all dealt indices. Only postflop actions
+enter the existing service's root-relative history. Strict failure never
+retries the legacy equal-contribution inference. Root folded flags must
+match under RFC 0020; a missing policy remains an honest coverage miss.
+No IDL or guarantee changes, provider-completeness proof, equilibrium range
+propagation, refund/side-pot support, or complete six-max quality follow from
+this reconstruction. Minor 0/1, heads-up and postflop-only histories retain
+their earlier behavior; that compatibility path is not whole-hand evidence.
+
+On that legacy/default path,
 `v1_resident_mapper.cpp` converts the current `HandState` into a
-`bs::poker::HeadsUpState` at the decision node. Player index is occupied
+`bs::poker::GameState` at the decision node (with a two-seat HeadsUpState
+differential oracle). Player index is occupied
 seat order (lower seat first), `root.button` is the button player's index,
 and cards map `(Rank-1)*4 + (Suit-1)` to the poker id. The flop root is
 `{ordered flop, stacks-behind-at-flop, equal matched contributions, pot,
@@ -392,7 +421,7 @@ supplies it). Preflop events establish only the root pot and are never
 replayed; flop/turn/river voluntary events replay through the exact poker
 engine with absolute bet/raise target totals, inserting turn/river cards at
 dealing boundaries. The reconstructor fail-closes (`OffTree` /
-`RootNotSupported`) on non-postflop, multiway, antes/button-antes/enabled
+`RootNotSupported`) on non-postflop, unsupported seat counts, antes/button-antes/enabled
 straddles/rakes, non-blind forced contributions, side pots, a folded seat,
 unresolved actors, card collisions, illegal transitions, unmatched
 stacks/street commitments/pot/to_call, or an unparseable ledger.
@@ -745,8 +774,22 @@ with an advertised resident root (see [Negotiated minor
 ULEB128 codec with the length cap checked before allocation, `fromBinary`/
 `toBinary` envelopes, all `uint64` values kept as `bigint` end to end,
 request correlation via the echoed `request_id` map (never FIFO), stderr
-isolated from framed stdout, and the same warmup, timeout, exit, and hard
-restart semantics as the NDJSON client. The River adapter
+isolated from framed stdout, and process exit/hard-restart recovery.
+Under RFC 0023 its existing `request(envelope, timeoutMs)` uses a monotonic
+deadline including startup/negotiation or a lazy restart, not a fresh timeout
+after readiness. An expired startup wait rejects that caller without killing
+shared warmup and cannot later enqueue its request. An enqueued transport
+timeout retains process-kill recovery, and a response beyond the deadline is
+rejected even if event-loop delay deferred the timeout callback. Nonfinite or
+nonpositive request budgets are rejected before startup. Administrative
+`start()` retains separate per-phase warmup/negotiation allowances; NDJSON is
+unchanged.
+
+The framed River adapter also bounds readiness, mapping and RPC waiting with
+one caller deadline, including structural injected clients, and rejects late
+decoded decisions. Its requested solver budget and wire fields are unchanged.
+This runtime bound is not complete native-work cancellation or six-max latency
+qualification. The River adapter
 `platforms/river-club/src/v1-mapper.ts` builds the `DecisionRequest` from a
 `RiverRoom` (chip unit 0, enum cards, ordered seats, forced blinds,
 round-replayed structured history, main pot plus every River side pot with

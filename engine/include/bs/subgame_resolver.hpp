@@ -91,10 +91,22 @@ struct SubgameResolveResult {
 
 // RFC 0011: turn/river subgame resolver. One bounded, offline, whole-range
 // resolve. A SubgameResolver is reusable and thread-affine.
+//
+// RFC 0024: the resolver optionally holds a FrontierEvaluator for
+// depth-limited resolving. When non-null and ResolveLimits::depth_limit is
+// set, the tree builder creates TerminalFrontier leaves at street boundaries
+// and the trainer calls the evaluator at those leaves. When null, the
+// resolver builds the full tree to showdown (current behavior).
 class SubgameResolver {
  public:
   SubgameResolver();
   ~SubgameResolver();
+
+  // RFC 0024: set the frontier evaluator for depth-limited resolving.
+  // Pass nullptr to restore the full-tree behavior (default).
+  void set_frontier_evaluator(const gto::FrontierEvaluator* evaluator) noexcept {
+    frontier_ = evaluator;
+  }
 
   // Resolve the turn/river decision at `node` (whose actor is the hero).
   // The blueprint supplies the game identity, declared ranges, and the flop
@@ -202,6 +214,10 @@ class SubgameResolver {
                             std::span<const poker::PublicAction> history, std::size_t hero,
                             bool walk_to_river, const ResolveLimits& limits,
                             SubgameResolveResult& result) const;
+
+  // RFC 0024: optional frontier evaluator for depth-limited resolving.
+  // Null means full-tree to showdown (default behavior).
+  const gto::FrontierEvaluator* frontier_ = nullptr;
 };
 
 }  // namespace bs::resolver

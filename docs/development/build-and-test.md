@@ -121,6 +121,28 @@ The RFC 0002 framed protocol parsers are native untrusted-input code, so the
 full ASan ctest (not only the new targets) is required after changes to
 `engine/src/protocol/v1_*`.
 
+Two complete native verification cases have sanitizer-specific wall allowances,
+without changing their fixtures, iterations, seeds, numerical thresholds or
+production limits. `postflop_templates` retains the release 180-second CTest
+watchdog and uses 900 seconds under sanitizers. The heads-up two-seat reference
+cross-check inside `stage6_br_estimator` retains five-minute training/evaluation
+budgets in release and uses fifteen minutes for each phase under sanitizers;
+every other fixture's limits remain unchanged. It still requires all eight
+training iterations before any evaluation. Its diagnostics report actual
+phase time and resource counters. A private
+`test_stage6_br_estimator --two-seat-crosscheck` entry isolates that same case
+for diagnosis only; CTest's no-argument entry always runs the full suite.
+
+Real resident-root Node integration uses RFC 0023's same root-aware startup
+policy in every build, rather than a sanitizer-only test switch. Actual engine
+preflight completes before the original ten-second decision RPC assertions;
+the implicit root-only test uses the production `warmEngine` path without an
+injected client or fake library. Native Node timer/decoded-frame regressions
+separately require bounded cold/restart waits, no expired dispatch, shared
+warmup reuse and refusal of late output. The runner source-order guards are
+structural checks, not live-provider or six-max quality evidence. No native
+fixture, numerical threshold, sanitizer flag or production solver limit changes.
+
 ## Framed Protocol Fuzzing
 
 The libFuzzer target is off by default so release and ASan ctest runs are
@@ -260,6 +282,9 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `v1_frame_stream` | RFC 0002 ULEB128 framing, canonical varints, 1 MiB pre-allocation rejection, and truncation |
 | `v1_semantic_validator` | Hand-written protovalidate and poker-semantic rejection coverage |
 | `v1_request_mapper` | Structured v1 state to `Ctx` reconstruction and six-fixture decision parity |
+| `v1_preflop_nseat` | Minor-2 exact 2..10-seat preflop replay, six-seat 100 BB sparse/all-position/fold/all-in/short-raise ledgers, per-call cancellation rejection, status/blind/card boundaries, frozen legacy admission, and explicitly synthetic host routing |
+| `v1_postflop_nseat` | Minor-2 supplied whole-hand replay into true six-seat flop roots, all positions/streets, folded dead money, exact per-action payments/types and short-all-in rights, refund/utility refusals, frozen legacy routing, and approximate mechanical host tests only |
+| `sixmax_hand_ledger` | Eighteen full native six-dealt-seat hand-start replays with literal per-node ledgers, all buttons, unequal all-ins/refunds, folded contributors, single-eligible side layers and odd-chip ties; offline legacy-rule arithmetic, not provider/v2/strategy qualification |
 | `v1_response_mapper` | Strategy/error mapping, selected-action membership, capabilities, and sentinels |
 | `gto` | River LP/DCFR policy contracts, exploitability, and range tracking |
 | `multistreet_ref` | Independent fixed-run best-response reference |

@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import {
   create,
+  fromBinary,
+  toBinary,
   type MessageInitShape,
 } from '@bufbuild/protobuf';
+import { EventEmitter } from 'node:events';
 import { dirname, join } from 'node:path';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -177,6 +180,7 @@ test('preserves uint64 bigint values end to end', async t => {
 test('restarts after a request timeout', async t => {
   const engine = client();
   t.after(() => engine.stop());
+  await engine.start();
 
   await assert.rejects(
     engine.request(decisionEnvelope('hang'), 15),
@@ -531,4 +535,219 @@ function servedResultUnchecked(envelope: Envelope) {
   const result = envelope.payload.value.result;
   if (result.case !== 'expandedStrategy') throw new Error('bad result');
   return result.value;
+}
+
+// RFC 0023 uses the real concrete client's framing, correlation and lifecycle.
+// Only the child I/O seam is controlled, as in the negotiation tests above.
+// Each recorded request was decoded from the actual outbound Protobuf frame.
+interface DeadlineChild {
+  process: EventEmitter;
+  frames: Envelope[];
+  kills: number;
+  reply(request: Envelope): void;
+}
+
+function deadlineClient(negotiateMinor2 = false) {
+  const children: DeadlineChild[] = [];
+  type SpawnOverride = NonNullable<
+    ConstructorParameters<typeof ProtoEngineProcessClient>[0]['spawnProcess']
+  >;
+  const spawnProcess = (() => {
+    const child = new EventEmitter();
+    const stdout = new EventEmitter();
+    const record: DeadlineChild = {
+      process: child,
+      frames: [],
+      kills: 0,
+      reply(request) {
+        const response = create(EnvelopeSchema, {
+          requestId: request.requestId,
+          protocolMinor: request.protocolMinor,
+          payload: {
+            case: 'getCapabilitiesResponse',
+            value: create(GetCapabilitiesResponseSchema, { supportedProtocolMinors: [0, 1, 2] }),
+          },
+        });
+        const payload = Buffer.from(toBinary(EnvelopeSchema, response));
+        stdout.emit('data', Buffer.concat([encodeVarint(payload.length), payload]));
+      },
+    };
+    const stdin = {
+      writable: true,
+      write(frame: Buffer, callback?: (error?: Error | null) => void) {
+        let length = 0;
+        let shift = 0;
+        let offset = 0;
+        let byte: number;
+        do {
+          byte = frame[offset++]!;
+          length += (byte & 0x7f) * 2 ** shift;
+          shift += 7;
+        } while ((byte & 0x80) !== 0);
+        assert.equal(frame.length - offset, length, 'one complete actual outbound frame');
+        record.frames.push(fromBinary(EnvelopeSchema, frame.subarray(offset)));
+        callback?.(null);
+        return true;
+      },
+    };
+    Object.assign(child, {
+      stdin,
+      stdout,
+      killed: false,
+      kill() {
+        record.kills += 1;
+        Object.assign(child, { killed: true });
+        stdin.writable = false;
+        return true;
+      },
+    });
+    children.push(record);
+    return child;
+  }) as unknown as SpawnOverride;
+  const engine = new ProtoEngineProcessClient({
+    command: 'controlled-framed-test-child',
+    spawnProcess,
+    warmupEnvelope: capabilitiesEnvelope(),
+    warmupTimeoutMs: 1000,
+    negotiateMinor2,
+  });
+  return { engine, children };
+}
+
+function observe<T>(promise: Promise<T>) {
+  const outcome: { settled: boolean; value?: T; error?: unknown } = { settled: false };
+  void promise.then(value => {
+    outcome.settled = true;
+    outcome.value = value;
+  }, error => {
+    outcome.settled = true;
+    outcome.error = error;
+  });
+  return outcome;
+}
+
+async function flushDeadlineWork() {
+  await new Promise<void>(resolve => setImmediate(resolve));
+}
+
+function deadlineClock(t: TestContext) {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  return {
+    async advance(ms: number) {
+      now += ms;
+      t.mock.timers.tick(ms);
+      await flushDeadlineWork();
+    },
+    stallTo(ms: number) { now = ms; },
+  };
+}
+
+test('deadline: cold request expires without killing warmup or sending a late frame', async t => {
+  const clock = deadlineClock(t);
+  const { engine, children } = deadlineClient();
+  t.after(() => engine.stop());
+  const expired = observe(engine.request(decisionEnvelope('cold-expired'), 10));
+  await flushDeadlineWork();
+  const child = children[0]!;
+  await clock.advance(10);
+  assert.equal(expired.settled, true, 'startup wait must settle at the caller deadline');
+  assert.match(String(expired.error), /timed out|deadline/i);
+  assert.equal(child.kills, 0, 'caller expiration must not kill shared administrative warmup');
+  assert.equal(child.frames.filter(frame => frame.payload.case === 'decisionRequest').length, 0);
+  child.reply(child.frames[0]!);
+  await engine.start();
+  await flushDeadlineWork();
+  assert.equal(child.frames.filter(frame => frame.payload.case === 'decisionRequest').length, 0,
+    'completed startup cannot resume an expired request into a real frame');
+  const later = engine.request(decisionEnvelope('warm-reused'), 20);
+  await flushDeadlineWork();
+  const frame = child.frames.at(-1)!;
+  assert.equal(frame.payload.case, 'decisionRequest');
+  child.reply(frame);
+  assert.equal((await later).requestId, frame.requestId);
+  assert.equal(children.length, 1, 'the later request reuses the same warmed child');
+  assert.equal(child.kills, 0);
+});
+
+test('deadline: readiness consumes the same remaining transport allowance', async t => {
+  const clock = deadlineClock(t);
+  const { engine, children } = deadlineClient();
+  t.after(() => engine.stop());
+  const pending = observe(engine.request(decisionEnvelope('remaining-transport'), 100));
+  await clock.advance(60);
+  const child = children[0]!;
+  child.reply(child.frames[0]!);
+  await flushDeadlineWork();
+  assert.equal(child.frames.at(-1)!.payload.case, 'decisionRequest');
+  await clock.advance(40);
+  assert.equal(pending.settled, true, 'transport cannot receive another full 100 ms after startup');
+  assert.match(String(pending.error), /timed out|deadline/i);
+  assert.equal(child.kills, 1, 'the existing enqueued transport timeout still kills the child');
+});
+
+test('deadline: request-internal restart cannot dispatch after its caller expires', async t => {
+  const clock = deadlineClock(t);
+  const { engine, children } = deadlineClient(true);
+  t.after(() => engine.stop());
+  const initial = engine.start();
+  const first = children[0]!;
+  first.reply(first.frames[0]!);
+  await flushDeadlineWork();
+  assert.match(first.frames[1]!.requestId, /^negotiate-minor2-/);
+  first.process.emit('exit', 1, null);
+  await initial;
+  assert.equal(engine.negotiatedProtocolMinor, 0);
+  const expired = observe(engine.request(decisionEnvelope('restart-expired'), 10));
+  await flushDeadlineWork();
+  assert.equal(children.length, 2, 'request actually entered concrete lazy restart');
+  const restarted = children[1]!;
+  await clock.advance(10);
+  assert.equal(expired.settled, true, 'private request restart readiness is deadline-bounded');
+  assert.match(String(expired.error), /timed out|deadline/i);
+  assert.equal(restarted.kills, 0);
+  restarted.reply(restarted.frames[0]!);
+  await flushDeadlineWork();
+  restarted.reply(restarted.frames[1]!);
+  await engine.start();
+  await flushDeadlineWork();
+  assert.equal(restarted.frames.filter(frame => frame.payload.case === 'decisionRequest').length, 0,
+    'actual decoded frames contain no expired post-restart decision');
+  const reused = engine.request(decisionEnvelope('restart-reused'), 20);
+  await flushDeadlineWork();
+  restarted.reply(restarted.frames.at(-1)!);
+  await reused;
+  assert.equal(children.length, 2);
+  assert.equal(restarted.kills, 0);
+});
+
+test('deadline: late actual output is rejected even before the timeout callback runs', async t => {
+  const clock = deadlineClock(t);
+  const { engine, children } = deadlineClient();
+  t.after(() => engine.stop());
+  const starting = engine.start();
+  children[0]!.reply(children[0]!.frames[0]!);
+  await starting;
+  const late = observe(engine.request(decisionEnvelope('late-output'), 10));
+  await flushDeadlineWork();
+  const child = children[0]!;
+  clock.stallTo(11); // Monotonic elapsed time, without firing mocked callbacks.
+  child.reply(child.frames.at(-1)!);
+  await flushDeadlineWork();
+  assert.equal(late.settled, true);
+  assert.match(String(late.error), /timed out|deadline/i);
+  assert.equal(late.value, undefined, 'a late correlated output is not an accepted response');
+});
+
+for (const timeoutMs of [NaN, Infinity, -Infinity, 0, -1]) {
+  test(`deadline: invalid request budget ${String(timeoutMs)} rejects before startup`, async t => {
+    const { engine, children } = deadlineClient();
+    t.after(() => engine.stop());
+    const invalid = observe(engine.request(decisionEnvelope('invalid-budget'), timeoutMs));
+    await flushDeadlineWork();
+    assert.equal(invalid.settled, true, 'invalid deadline rejects without waiting for readiness');
+    assert.ok(invalid.error instanceof Error);
+    assert.equal(children.length, 0, 'invalid deadline must not launch a child');
+  });
 }

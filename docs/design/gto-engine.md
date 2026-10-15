@@ -288,13 +288,30 @@ trains to completion: 670 nodes, 319 information sets, 285 KB, 0.02 s.
 The RFC 0007 measured 606 info sets at 3 BB is the abstracted count
 (conditioned on hole-card buckets), not the raw tree node count.
 
-The live six-max preflop charts remain in force for six-max play. The
-heads-up preflop profile is wired into the live v1 decision path through
-the resident layer: a heads-up preflop request is reconstructed by
-`reconstructPreflop()` and matched against the published artifact. Requests
-outside the declared profile (non-heads-up, different stack depth, or
-different blind structure) miss declared at the resident root match and
-fall back to the charts or operational fallback.
+The heads-up preflop profile is wired into the v1 resident decision path.
+RFC 0019 extends negotiated minor-2 preflop reconstruction to 2..10 dealt
+seats using the same exact `GameState` replay. Folded seats remain indexed;
+each newly admitted multiway action's actual payment and each player's final
+status are checked. Sparse physical seats and multiway blind positions retain
+their native meaning. Minor 1 keeps the heads-up reconstruction profile.
+The equal-hand-start-stack, no-side-pot/ante/rake/straddle limits still apply.
+Reconstruction is not policy coverage: an unmatched root still misses, and
+minor-2 AUTOMATIC uses its labeled operational fallback, not the charts.
+Explicit heuristic/legacy paths retain their chart behavior. No six-seat
+production artifact or complete six-max GTO qualification is established by
+this internal prerequisite; see the complete six-max delivery register.
+
+RFC 0021 additionally uses this same hand-start replay for minor-2 multiway
+postflop requests containing supplied preflop actions. A River-terminal replay
+reaches the complete flop and rebases to the real button, dealt-seat indices,
+per-seat net contributions, stacks, pot and folded bitmap. Postflop service
+history stays relative to that flop root, while the request retains its
+original preflop observations. Strict failure does not retry the earlier
+equal-contribution inference. Native refunds and existing unsupported utility
+still refuse; public observation completeness, action-conditioned ranges and
+six-max strategy qualification are not established by supplied-history replay.
+Legacy minor-0/1, heads-up and postflop-only paths stay unchanged. RFC 0020
+prevents matching a differently folded artifact root.
 
 ## Abstract Public Betting Tree and Unified Solve (RFC 0008 Stage 4)
 
@@ -755,9 +772,15 @@ bad artifact is `LoadFailed` and never disables the other roots. A capacity
 failure in one root is isolated to that root; other roots and the non-resident
 decision path are unaffected.
 
-Root identity at a query is the full canonical notion shared with the
-solver's `same_root` and the artifact reader's `same_game`: ordered flop,
-stacks, matched contributions, pot, big blind, and button. The range weights
+Policy-root matching is a normalized identity shared by resident selection
+and the terminal resolver's `same_root`: ordered flop, stacks, matched
+contributions, per-seat root folded flags, pot, big blind, and button.
+It retains the existing terminal-depth and canonical-flop normalization,
+not the full `same_game_def` predicate. RFC 0020 compares root definitions,
+not current-node folds: a fold explained by history after the same root still
+matches. A differently folded root must miss; existing persisted roots do not
+encode nonzero root folded flags. This guard does not provide folded-root
+artifact publication or complete six-max strategy coverage. The range weights
 and ordered rational sizing schedule cannot be spoilt by a query because
 they come from the advertised artifact itself; two artifacts with the same
 root but different range/size identity are both refused as duplicates. A
@@ -1073,13 +1096,25 @@ whose name starts with `flop-library` and contains a `manifest.json` (e.g.
 `flop-library/` for heads-up, `flop-library-3p/` for 3-way) when no explicit
 `flopLibraries` config or env var is set, and launches the engine with a
 resident budget auto-detected from system RAM (1/4 of total memory, e.g.
-12 GiB on a 48 GB machine) and a warmup timeout scaled to the library count
-(300 s for one library, 600 s for two or more). The engine probes and loads
+12 GiB on a 48 GB machine) and a per-phase warmup timeout scaled to configured
+artifact sources under RFC 0023: explicit roots plus library arguments.
+No sources retain 10 s, one gets 300 s and two or more get 600 s; library-only
+values are unchanged. These are startup/negotiation allowances, not a single
+total-preflight deadline or an active decision budget. The engine probes and loads
 all SQLite DBs before its first frame (~55 s probe alone for one library).
 `BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB` overrides the auto-detected value.
 The C++ engine client gains `resident_budget_mib` and `startup_timeout_ms`
 fields; the practice simulator auto-bumps the startup timeout to 300 s when
 `--flop-library` is passed.
+
+The River runner finishes preflight before joining when initially off-table;
+an already-seated runner enters its normal state machine without an
+unconditional long startup wait. The framed client and River adapter include
+readiness and response waiting in their existing caller timeout. An expired
+not-yet-enqueued request cannot dispatch after shared startup completes, and
+late output is refused. This preserves startup reuse without weakening policy
+checks or claiming that native construction/cancellation and complete six-max
+receipt-to-action costs are qualified.
 
 **Consolidated binary format (RFC 0012 Phase 2).** The offline
 `bigshark-flop-library-pack` tool converts a directory of schema-v3 SQLite

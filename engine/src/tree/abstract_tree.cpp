@@ -227,10 +227,22 @@ TerminalPayload make_terminal_payload(const GameState& state, bool folded) {
 // `friend class TreeBuilder` declaration on AbstractTree.
 class TreeBuilder {
  public:
-  TreeBuilder(AbstractTree& tree, Budget& budget) : tree_(tree), budget_(budget) {}
+  TreeBuilder(AbstractTree& tree, Budget& budget, DepthLimit depth_limit)
+      : tree_(tree), budget_(budget), depth_limit_(depth_limit) {}
 
   void build() {
     GameState root(tree_.def_);
+
+    // RFC 0024: validate DepthLimit against the root street. Preflop-rooted
+    // games with a DepthLimit are rejected because the Street enum ordering
+    // (Preflop = 3, after River = 2) breaks the offset arithmetic.
+    if (depth_limit_.max_streets && root.street() == Street::Preflop)
+      throw std::invalid_argument(
+          "AbstractTree: DepthLimit is not supported for preflop-rooted games");
+
+    // RFC 0024: store the root street for the depth-limit offset check.
+    root_street_ = root.street();
+
     // Recursion holds the GameState by value; do it iteratively on an explicit
     // stack so node ids are assigned in stable order and we never risk native
     // stack overflow on a deep tree. Each parent's children vector is appended
@@ -283,6 +295,7 @@ class TreeBuilder {
         TerminalPayload payload = make_terminal(frame.state, false, budget_);
         grow_to_fit(tree_.terminals_, tree_.terminals_.size() + 1, budget_);
         tree_.terminals_.push_back(std::move(payload));
+        tree_.has_frontier_leaves_ = true;  // RFC 0024
       } else if (phase == Phase::Deal) {
         if (tree_.def_.terminal == poker::TerminalDepth::Flop) {
           // Virtual flop deal: a single leaf replaces the entire 3-level
@@ -294,14 +307,29 @@ class TreeBuilder {
           node.kind = NodeKind::Chance;
         }
       } else {
-        node.kind = NodeKind::Action;
-        node.actor = *frame.state.actor();
-        std::vector<Action> menu =
-            abstract_node_menu(frame.state, tree_.action_, frame.state.legal());
-        // Bounded transient (the L2 builder rejects a menu over 32); charge the
-        // slab the node retains before it takes ownership.
-        budget_.charge_capacity(0, menu.capacity(), sizeof(Action));
-        node.actions = std::move(menu);
+        // Phase::Action
+        // RFC 0024: check the depth limit before generating the action menu.
+        // If the street offset reaches max_streets, create a TerminalFrontier
+        // leaf instead of an Action node.
+        if (depth_limit_.max_streets &&
+            static_cast<std::size_t>(static_cast<int>(frame.state.street()) -
+                                     static_cast<int>(root_street_)) >= *depth_limit_.max_streets) {
+          node.kind = NodeKind::TerminalFrontier;
+          node.terminal = tree_.terminals_.size();
+          TerminalPayload payload = make_terminal(frame.state, false, budget_);
+          grow_to_fit(tree_.terminals_, tree_.terminals_.size() + 1, budget_);
+          tree_.terminals_.push_back(std::move(payload));
+          tree_.has_frontier_leaves_ = true;
+        } else {
+          node.kind = NodeKind::Action;
+          node.actor = *frame.state.actor();
+          std::vector<Action> menu =
+              abstract_node_menu(frame.state, tree_.action_, frame.state.legal());
+          // Bounded transient (the L2 builder rejects a menu over 32); charge the
+          // slab the node retains before it takes ownership.
+          budget_.charge_capacity(0, menu.capacity(), sizeof(Action));
+          node.actions = std::move(menu);
+        }
       }
 
       node.index = tree_.nodes_.size();
@@ -316,6 +344,11 @@ class TreeBuilder {
       // Enqueue children. Reverse the natural order so LIFO popping expands them
       // in ascending edge order; each parent's children vector (appended above
       // in expansion order) then reads in the L1/L2 enumeration order.
+      //
+      // RFC 0024: TerminalFrontier leaves created by the depth-limit check have
+      // an empty actions vector, so the Phase::Action child-enqueuing loop
+      // iterates zero times and no children are enqueued. This is correct but
+      // implicit; the empty-range side effect prevents child enqueuing.
       if (phase == Phase::Deal && tree_.def_.terminal != poker::TerminalDepth::Flop) {
         const std::vector<int> cards = public_runout_cards(frame.state);
         for (auto it = cards.rbegin(); it != cards.rend(); ++it) {
@@ -335,13 +368,16 @@ class TreeBuilder {
  private:
   AbstractTree& tree_;
   Budget& budget_;
+  DepthLimit depth_limit_;
+  Street root_street_ = Street::Flop;  // RFC 0024
 };
 
-AbstractTree::AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits)
+AbstractTree::AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits,
+                           DepthLimit depth)
     : def_(std::move(def)), action_(std::move(action)), limits_(limits) {
   poker::validate(def_);
   Budget budget(limits_);
-  TreeBuilder builder(*this, budget);
+  TreeBuilder builder(*this, budget, depth);
   builder.build();
   accounted_bytes_ = budget.bytes();
 }

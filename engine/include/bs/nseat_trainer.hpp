@@ -251,7 +251,10 @@ struct NSeatInitialState {
 // internally by the joint sampler), a postflop root (`board_size` in 3..5; the
 // card abstraction is defined on a complete flop) OR a 2..10-seat preflop root
 // with `terminal == TerminalDepth::Flop` (RFC 0007; the frontier evaluator
-// supplies leaf values and must be non-null), a positive iteration count, and
+// supplies leaf values and must be non-null) OR a tree with frontier leaves
+// (RFC 0024; depth-limited trees have TerminalFrontier leaves at street
+// boundaries and also require a non-null frontier evaluator), a positive
+// iteration count, and
 // the identity or a declared-coarse (RFC 0008) action abstraction. Resource
 // caps throw
 // `nseat_training_exhausted`; the wall cap instead returns the last completed

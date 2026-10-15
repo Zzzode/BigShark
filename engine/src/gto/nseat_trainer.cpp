@@ -384,13 +384,33 @@ struct DepthGuard {
 // conservation across the whole table exactly as the stage-6 trainer does: a
 // fold leaf reads the L3 payload's stored chip_utility; a showdown leaf
 // settles the concrete live holdings through the L1 rules; a frontier leaf
-// (RFC 0007 flop-terminal) evaluates the continuation through the declared
-// frontier evaluator.
+// (RFC 0007 flop-terminal or RFC 0024 depth-limited) evaluates the
+// continuation through the declared frontier evaluator.
 double terminal_utility(SweepContext& ctx, const GameState& state, std::size_t node_index) {
   const TreeNode& node = ctx.tree->node(node_index);
   if (!node.is_terminal())
     throw std::runtime_error("nseat trainer terminal reached a non-terminal tree node");
   const TerminalPayload& payload = ctx.tree->terminal(node.terminal);
+
+  // RFC 0024: dispatch on node.kind for TerminalFrontier leaves. This handles
+  // both flop-terminal games (Phase::Frontier) and depth-limited trees
+  // (Phase::Action at a street boundary). The frontier evaluator supplies the
+  // continuation value; the evaluator sees the joint deal and the board, and
+  // must not condition on the acting player's own holding (the contract is
+  // documented in bs/frontier.hpp).
+  if (node.kind == NodeKind::TerminalFrontier) {
+    if (ctx.frontier == nullptr)
+      throw std::runtime_error(
+          "nseat trainer reached a frontier leaf without a frontier evaluator");
+    if (payload.folded)
+      throw std::runtime_error("nseat trainer frontier terminal does not match the tree leaf");
+    // evaluate() accepts spans; pass the board and holes directly.
+    const std::vector<double> values = ctx.frontier->evaluate(state.board(), ctx.holes, payload);
+    if (values.size() != state.player_count())
+      throw std::runtime_error("nseat trainer frontier evaluator returned the wrong seat count");
+    return values[ctx.traverser];
+  }
+
   if (state.phase() == Phase::Folded) {
     if (!payload.folded)
       throw std::runtime_error("nseat trainer fold terminal does not match the tree leaf");
@@ -402,22 +422,6 @@ double terminal_utility(SweepContext& ctx, const GameState& state, std::size_t n
     if (sum != 0)
       throw std::runtime_error("nseat trainer terminal settlement is not zero-sum");
     return static_cast<double>(payload.chip_utility[ctx.traverser]);
-  }
-  if (state.phase() == Phase::Frontier) {
-    // RFC 0007: the frontier leaf's value is supplied by the declared frontier
-    // evaluator, not by the rules' showdown. The evaluator sees the joint deal
-    // and the flop board; it must not condition on the acting player's own
-    // holding (the contract is documented in bs/frontier.hpp).
-    if (ctx.frontier == nullptr)
-      throw std::runtime_error(
-          "nseat trainer reached a frontier leaf without a frontier evaluator");
-    if (payload.folded)
-      throw std::runtime_error("nseat trainer frontier terminal does not match the tree leaf");
-    // evaluate() accepts spans; pass the board and holes directly.
-    const std::vector<double> values = ctx.frontier->evaluate(state.board(), ctx.holes, payload);
-    if (values.size() != state.player_count())
-      throw std::runtime_error("nseat trainer frontier evaluator returned the wrong seat count");
-    return values[ctx.traverser];
   }
   if (state.phase() != Phase::Showdown)
     throw std::runtime_error("nseat trainer terminal reached a non-terminal game state");
@@ -583,13 +587,20 @@ double walk_flop_deal(SweepContext& ctx, const GameState& state, std::size_t nod
 }
 
 double walk(SweepContext& ctx, const GameState& state, std::size_t node_index, double own_reach) {
+  // RFC 0024: check for terminal nodes before phase dispatch. Depth-limited
+  // trees have TerminalFrontier leaves at Phase::Action street boundaries;
+  // without this check they would be misrouted to walk_action. This is a
+  // no-op for existing trees (all terminal leaves already route to
+  // terminal_utility via the Folded/Showdown/Frontier phase cases).
+  const TreeNode& node = ctx.tree->node(node_index);
+  if (node.is_terminal())
+    return terminal_utility(ctx, state, node_index);
   switch (state.phase()) {
     case Phase::Folded:
     case Phase::Showdown:
     case Phase::Frontier:
       return terminal_utility(ctx, state, node_index);
     case Phase::Deal: {
-      const TreeNode& node = ctx.tree->node(node_index);
       if (node.is_flop_deal())
         return walk_flop_deal(ctx, state, node_index, own_reach);
       return walk_chance(ctx, state, node_index, own_reach);
@@ -922,9 +933,17 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
       limits.max_depth == 0 || limits.max_bytes == 0 || limits.max_visits == 0 ||
       limits.wall.count() <= 0)
     throw std::invalid_argument("nseat trainer requires positive samples and resource limits");
-  if (tree.def().terminal == poker::TerminalDepth::Flop && !frontier)
+  // RFC 0024: extend (not replace) the TerminalDepth::Flop check. The
+  // TerminalDepth::Flop condition is retained because preflop-rooted
+  // flop-terminal games have FlopDeal leaves (not TerminalFrontier leaves),
+  // so has_frontier_leaves() returns false for those trees. The new
+  // has_frontier_leaves condition covers depth-limited trees with
+  // TerminalFrontier leaves at Phase::Action street boundaries.
+  if ((tree.def().terminal == poker::TerminalDepth::Flop || tree.has_frontier_leaves()) &&
+      !frontier)
     throw std::invalid_argument(
-        "nseat trainer: a flop-terminal game requires a frontier evaluator");
+        "nseat trainer: a flop-terminal game or a tree with frontier leaves requires a frontier "
+        "evaluator");
   if (tree.size() > limits.max_nodes || tree.depth() > limits.max_depth ||
       tree.accounted_bytes() > limits.max_bytes)
     throw nseat_training_exhausted("nseat trainer tree exceeds structural resource limits");
@@ -1084,7 +1103,8 @@ void debug_run_one_nseat_sweep(const AbstractTree& tree,
                                RawTable& rows, const gto::FrontierEvaluator* frontier) {
   validate_request(tree, ranges);
   if (traverser >= tree.def().player_count ||
-      (tree.def().terminal == poker::TerminalDepth::Flop && !frontier))
+      ((tree.def().terminal == poker::TerminalDepth::Flop || tree.has_frontier_leaves()) &&
+       !frontier))
     throw std::invalid_argument("nseat debug sweep invalid traverser or missing frontier");
   const auto sampler_ranges = to_sampler_ranges(ranges, tree.def().player_count);
   const std::vector<int> board(tree.def().board.begin(),

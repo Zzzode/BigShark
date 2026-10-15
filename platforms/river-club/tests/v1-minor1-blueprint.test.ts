@@ -27,6 +27,7 @@ import {
   type Envelope,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
 import { fromV1DecisionResponse } from '../src/v1-mapper.js';
+import { warmupTimeoutMsFor } from '../src/engine.js';
 import type { RiverRoom } from '../src/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -131,7 +132,7 @@ function residentClient(fixture: PublishedFixture, pin = fixture.sha256):
     command: engineBinary,
     args: ['--serve-proto', '--resident-root', `${fixture.path}=${pin}`],
     warmupEnvelope: capabilitiesEnvelope(0),
-    warmupTimeoutMs: 10_000,
+    warmupTimeoutMs: warmupTimeoutMsFor([], [{ path: fixture.path, sha256: pin }]),
     negotiateMinor1: true,
   });
 }
@@ -144,6 +145,7 @@ test('real binary: minor-1 capability handshake advertises BLUEPRINT with a root
     if (!fixture) return;
     const client = residentClient(fixture);
     t.after(() => client.stop());
+    await client.start();
     await client.request(capabilitiesEnvelope(1), 10_000);
     assert.equal(client.minor1Capable, true);
     const caps = await client.request(capabilitiesEnvelope(1), 10_000);
@@ -165,6 +167,7 @@ test('real binary: forced BLUEPRINT hit returns the full (>5) distribution',
     if (!fixture) return;
     const client = residentClient(fixture);
     t.after(() => client.stop());
+    await client.start();
     const response = await client.request(
       decisionEnvelope(blueprintRequest(SolverMode.BLUEPRINT), 1),
       10_000,
@@ -209,6 +212,7 @@ test('real binary: sampling changes only with the seed, never the distribution',
       clientA.stop();
       clientB.stop();
     });
+    await Promise.all([clientA.start(), clientB.start()]);
     const a = await clientA.request(
       decisionEnvelope(blueprintRequest(SolverMode.BLUEPRINT, 1n), 1), 10_000);
     const b = await clientB.request(
@@ -233,6 +237,7 @@ test('real binary: forced BLUEPRINT on an unsupported root is a non-retryable er
     if (!fixture) return;
     const client = residentClient(fixture);
     t.after(() => client.stop());
+    await client.start();
     // Change one flop card: a different root identity -> RootNotSupported.
     const request = blueprintRequest(SolverMode.BLUEPRINT);
     const firstBoardCard = request.state?.board[0];
@@ -254,6 +259,7 @@ test('real binary: a wrong digest pin advertises no blueprint and forces a miss'
     const wrongPin = 'f'.repeat(64);
     const client = residentClient(fixture, wrongPin);
     t.after(() => client.stop());
+    await client.start();
     await client.request(capabilitiesEnvelope(1), 10_000);
     assert.equal(client.minor1Capable, true, 'minor 1 still negotiates');
     const caps = await client.request(capabilitiesEnvelope(1), 10_000);
@@ -274,10 +280,11 @@ test('real binary: non-opted-in client stays minor 0 even with a blueprint insta
       command: engineBinary,
       args: ['--serve-proto', '--resident-root', `${fixture.path}=${fixture.sha256}`],
       warmupEnvelope: capabilitiesEnvelope(0),
-      warmupTimeoutMs: 10_000,
+      warmupTimeoutMs: warmupTimeoutMsFor([], [{ path: fixture.path, sha256: fixture.sha256 }]),
       // negotiateMinor1 omitted: stays on minor 0.
     });
     t.after(() => client.stop());
+    await client.start();
     // BLUEPRINT mode is UNSUPPORTED_FEATURE on minor 0.
     const forced = await client.request(
       decisionEnvelope(blueprintRequest(SolverMode.BLUEPRINT), 0), 10_000);
@@ -297,6 +304,7 @@ test('real binary: RESOLVING (7) is rejected on minor 1',
     if (!fixture) return;
     const client = residentClient(fixture);
     t.after(() => client.stop());
+    await client.start();
     const response = await client.request(
       decisionEnvelope(blueprintRequest(SolverMode.RESOLVING), 1), 10_000);
     if (response.payload.case !== 'decisionResponse') throw new Error('bad payload');

@@ -280,6 +280,8 @@ export interface V1EnvelopeClient {
 export interface EngineConfig {
   style?: string;
   heroName?: string;
+  /** Framed adapter deadline including readiness, mapping and RPC waiting.
+   * The legacy NDJSON path retains its existing request timeout semantics. */
   timeoutMs?: number;
   /** Opt in to the RFC 0002 framed Protobuf engine path. */
   proto?: boolean;

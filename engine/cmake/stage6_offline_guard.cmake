@@ -148,5 +148,8 @@ add_custom_command(
   COMMENT "Verifying the RFC 0008 stage-6 offline resolved-include boundary"
 )
 add_custom_target(bigshark_stage6_offline_guard ALL DEPENDS "${_stage6_guard_stamp}")
+# The resolved-include check compiles protocol sources and needs the same
+# generated headers as their normal compilation, including on a fresh preset.
+add_dependencies(bigshark_stage6_offline_guard protobuf-generate)
 add_dependencies(bigshark_service bigshark_stage6_offline_guard)
 add_dependencies(bigshark_v1_protocol bigshark_stage6_offline_guard)

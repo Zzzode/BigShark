@@ -896,11 +896,44 @@ void test_two_seat_nash_conv_crosscheck() {
   TrainingLimits limits;
   limits.max_nodes = 200000000;
   limits.max_information_sets = 20000000;
+#ifdef BIGSHARK_TEST_SANITIZERS
+  limits.time = std::chrono::minutes{15};
+#else
   limits.time = std::chrono::minutes{5};
+#endif
+  std::fprintf(stderr,
+               "[br-2p train begin] iterations=8 time_ms=%lld max_nodes=%zu "
+               "max_information_sets=%zu max_bytes=%zu max_depth=%zu\n",
+               static_cast<long long>(limits.time.count()), limits.max_nodes,
+               limits.max_information_sets, limits.max_bytes, limits.max_depth);
+  std::fflush(stderr);
+  const auto training_begin = std::chrono::steady_clock::now();
   TrainingResult trained = HeadsUpTrainer(game).train(8, limits);
+  const auto training_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - training_begin);
+  std::fprintf(
+      stderr,
+      "[br-2p train end] elapsed_ms=%lld status=%s completed_iterations=%llu "
+      "nodes=%zu information_sets=%zu accounted_bytes=%zu rows=%zu\n",
+      static_cast<long long>(training_elapsed.count()),
+      trained.status == bs::solver::TrainingStatus::Complete ? "Complete" : "ResourceLimit",
+      static_cast<unsigned long long>(trained.completed_iterations), trained.nodes,
+      trained.information_sets, trained.accounted_bytes, trained.policy.rows().size());
+  std::fflush(stderr);
   check(trained.status == bs::solver::TrainingStatus::Complete,
         "the full-traversal heads-up policy completes on the tiny fixture");
+  if (trained.status != bs::solver::TrainingStatus::Complete)
+    return;
+  std::fprintf(stderr, "[br-2p evaluate begin] time_ms=%lld\n",
+               static_cast<long long>(limits.time.count()));
+  std::fflush(stderr);
+  const auto evaluation_begin = std::chrono::steady_clock::now();
   const bs::solver::ExactEvaluation ev = HeadsUpTrainer(game).evaluate(trained.policy, limits);
+  std::fprintf(stderr, "[br-2p evaluate end] elapsed_ms=%lld\n",
+               static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                          std::chrono::steady_clock::now() - evaluation_begin)
+                                          .count()));
+  std::fflush(stderr);
 
   // Replay the trained abstract policy on the unified GameState tree. Every
   // reached solver row must equal the declared deviation menu; a mismatch is a
@@ -1107,7 +1140,21 @@ void test_coarse_deviation_space() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc != 1) {
+    if (argc != 2 || std::string(argv[1]) != "--two-seat-crosscheck") {
+      std::fprintf(stderr, "Usage: %s [--two-seat-crosscheck]\n", argv[0]);
+      return 2;
+    }
+    std::puts("Running two-seat cross-check only (not the complete estimator suite)");
+    test_two_seat_nash_conv_crosscheck();
+    if (failures) {
+      std::fprintf(stderr, "TWO-SEAT CROSS-CHECK FAILED: %d\n", failures);
+      return 1;
+    }
+    std::puts("TWO-SEAT CROSS-CHECK PASSED");
+    return 0;
+  }
   test_exact_freeze_equals_oracle();
   test_exact_freeze_strict_pooling();
   test_mc_gain_passive();

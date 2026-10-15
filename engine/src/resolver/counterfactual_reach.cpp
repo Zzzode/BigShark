@@ -18,9 +18,9 @@ namespace {
 using poker::GameDef;
 using poker::PublicAction;
 
-// Resident six-field root identity, generalized to a GameDef: the flop cards,
-// the per-seat stacks and closed-street contributions, the pot, the big blind,
-// and the button. Deliberately looser than poker::same_game_def (which also
+// Resident normalized root identity, generalized to a GameDef: the flop cards,
+// the per-seat stacks, closed-street contributions and root folded flags,
+// the pot, the big blind and the button. Deliberately looser than poker::same_game_def (which also
 // compares preflop/blinds_posted/ante/variant/terminal); the resolver matches
 // the resident's documented identity, not the stricter predicate.
 bool same_root(const GameDef& a, const GameDef& b) {
@@ -33,7 +33,8 @@ bool same_root(const GameDef& a, const GameDef& b) {
     if (a.board[i] != b.board[i])
       return false;
   for (std::size_t p = 0; p < a.player_count; ++p)
-    if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p])
+    if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p] ||
+        a.folded[p] != b.folded[p])
       return false;
   return true;
 }

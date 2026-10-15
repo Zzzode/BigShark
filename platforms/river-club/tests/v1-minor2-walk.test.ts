@@ -14,6 +14,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { ProtoEngineProcessClient } from '../../../clients/node/proto-engine-process-client.js';
+import { warmupTimeoutMsFor } from '../src/engine.js';
 import {
   ActionType,
   DecisionRequestSchema,
@@ -69,7 +70,7 @@ function residentClient(published: PublishedFixture): ProtoEngineProcessClient {
     command: engineBinary,
     args: ['--serve-proto', '--resident-root', `${published.path}=${published.sha256}`],
     warmupEnvelope: capabilitiesEnvelope(),
-    warmupTimeoutMs: 10_000,
+    warmupTimeoutMs: warmupTimeoutMsFor([], [{ path: published.path, sha256: published.sha256 }]),
     negotiateMinor1: true,
     negotiateMinor2: true,
   });
@@ -139,6 +140,7 @@ test('real binary: minor-2 walk',
     if (!fixture) return;
     const client = residentClient(fixture);
     t.after(() => client.stop());
+    await client.start();
     await client.request(capabilitiesEnvelope(), 10_000);
     if (client.negotiatedProtocolMinor !== 2) {
       t.skip(`published binary negotiated minor ${client.negotiatedProtocolMinor}, not 2`);

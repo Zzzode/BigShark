@@ -36,11 +36,20 @@ integration, and development documentation.
 | RFC | [RFC 0016: Synchronous MCCFR batches and correct strategy averaging](rfcs/0016-synchronous-mccfr-averaging.md) | Implemented | Frozen-profile training epochs, independent full-action averaging, and revision-aware checkpoint compatibility |
 | RFC | [RFC 0017: Training pipeline allocation cost](rfcs/0017-training-pipeline-allocation-cost.md) | Implemented | Allocation-efficient revision-two deltas, exact export reuse, ordered seat-artifact loading, and matched end-to-end measurements |
 | RFC | [RFC 0018: Zero-rake settlement fast path](rfcs/0018-zero-rake-settlement-fast-path.md) | Implemented | Preserve exact settlement while avoiding provably zero percentage calculations |
+| RFC | [RFC 0019: N-seat preflop reconstruction](rfcs/0019-nseat-preflop-reconstruction.md) | Implementing | Exact minor-2 multiway replay; an internal prerequisite, not six-max GTO completion |
+| RFC | [RFC 0020: Folded-root policy identity](rfcs/0020-folded-root-policy-identity.md) | Implementing | Reject a different root live set before resident or direct resolver lookup |
+| RFC | [RFC 0021: N-seat cross-street reconstruction](rfcs/0021-nseat-cross-street-reconstruction.md) | Implementing | Replay supplied hand history into the true flop root; public provenance and complete six-max remain open |
+| RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Draft | Coherent v2 ledger, public observations and rule identity; exact wire and provider gates remain open |
+| RFC | [RFC 0023: Artifact startup and decision deadlines](rfcs/0023-artifact-startup-and-decision-deadlines.md) | Implemented | Root-aware startup allowance and bounded active waits; no six-max quality claim |
+| RFC | [RFC 0024: Depth-limited resolving](rfcs/0024-depth-limited-resolving.md) | Implemented | Street-boundary value estimation for scalable subgame solving; enabling architecture for six-max |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [RFC 0009 implementation](plans/0009-implementation.md) | Current | Unified engine delivery stages W1-W5, status, and evidence |
 | Plan | [RFC 0009 W2c-ii state layer](plans/0009-w2c-ii-state-layer.md) | Current | N-seat belief state layer design, generalization, and certification |
 | Plan | [GTO delivery roadmap](plans/gto-delivery-roadmap.md) | Proposed | Complete follow-up scope, dependencies, acceptance evidence, and outstanding decisions |
+| Plan | [Complete six-max GTO delivery](plans/sixmax-gto-delivery.md) | Current | Whole-feature In Progress status, audited blockers, task dependencies, and no partial-completion claims |
+| Plan | [Six-max GTO qualification](plans/sixmax-gto-qualification.md) | Proposed | Independent coverage, quality and resource gates; thresholds and complete-feature sign-off remain unapproved |
+| Plan | [T3 six-seat feasibility](plans/t3-six-seat-feasibility.md) | Current | Six-seat tree/solve resource measurement; current abstraction infeasible for 5+ seats, coarser schedule required |
 | Strategy | [Poker playbook](../strategy/PLAYBOOK.md) | Current | Baseline poker decisions and bankroll discipline |
 | Strategy | [Style selector](../.codex/skills/INDEX.md) | Current | Exploitative style selection and overrides |
 | Historical | [River Club v1 state notes](state-schema.md) | Historical | Observed protocol v1 fields retained for comparison |

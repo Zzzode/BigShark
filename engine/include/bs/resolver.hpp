@@ -72,6 +72,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bs/abstract_tree.hpp>  // RFC 0024: tree::DepthLimit
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
@@ -197,6 +198,12 @@ struct ResolveLimits {
   // SplitMix64 domain seed. The candidate must depend only on public context;
   // the caller derives this from digest/root/ranges/history/utility/sizes.
   std::uint64_t public_seed = 0;
+  // RFC 0024: optional depth limit for depth-limited resolving. When set, the
+  // tree builder creates TerminalFrontier leaves at street boundaries instead
+  // of expanding to showdown. The frontier evaluator (supplied by the caller)
+  // supplies the continuation value at those leaves. Default is none() (full
+  // tree to showdown, the current behavior).
+  tree::DepthLimit depth_limit = tree::DepthLimit::none();
 };
 
 // Conservative per-unit cost of one full-traversal gadget iteration. One

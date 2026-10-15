@@ -4,6 +4,7 @@ import {
   type SpawnOptions,
 } from 'node:child_process';
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
+import { performance } from 'node:perf_hooks';
 import type { Readable, Writable } from 'node:stream';
 
 import {
@@ -117,7 +118,8 @@ function errorMessage(error: unknown): string {
 /**
  * Length-delimited Protobuf engine client. Responses are correlated by the
  * echoed request_id (a map, never FIFO), all uint64 values stay bigint, and
- * timeout/exit/hard-restart semantics mirror the NDJSON EngineProcessClient.
+ * exit/hard-restart recovery mirrors the NDJSON EngineProcessClient. Framed
+ * request deadlines include readiness; administrative start remains separate.
  */
 export class ProtoEngineProcessClient {
   readonly command: string;
@@ -176,8 +178,29 @@ export class ProtoEngineProcessClient {
   }
 
   async request(envelope: Envelope, timeoutMs = 2000): Promise<Envelope> {
-    await this.start();
-    return this.enqueue(envelope, timeoutMs);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+      throw new Error('Engine request timeout must be finite and positive');
+    const deadline = performance.now() + timeoutMs;
+    let startupTimer: NodeJS.Timeout | undefined;
+    try {
+      const startupExpiry = new Promise<never>((_resolve, reject) => {
+        startupTimer = setTimeout(
+          () => reject(new Error('Engine request timed out')),
+          timeoutMs,
+        );
+      });
+      // Expire this caller, not the shared administrative startup. An expired
+      // request must never resume into enqueue when that startup finishes.
+      await Promise.race([this.start(), startupExpiry]);
+    } finally {
+      clearTimeout(startupTimer);
+    }
+    const remainingMs = deadline - performance.now();
+    if (remainingMs <= 0) throw new Error('Engine request timed out');
+    const response = await this.enqueue(envelope, remainingMs);
+    // A delayed event loop can deliver data before its overdue timer callback.
+    if (performance.now() >= deadline) throw new Error('Engine request timed out');
+    return response;
   }
 
   // RFC 0005/0008 capability handshakes. Probe order is strict: minor 2 when

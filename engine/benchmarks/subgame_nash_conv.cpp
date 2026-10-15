@@ -169,6 +169,28 @@ GameDef make_subgame_def_4p_turn() {
   return def;
 }
 
+// T3: parameterized N-seat fixture. Reproduces the 2/3/4-seat 10 BB fixtures
+// exactly when called with (n, 10, false) and extends the same shape to 5/6
+// seats and 25/100 BB normal stacks. Button is the last seat so seat 0 acts
+// first postflop, matching the multiway convention.
+GameDef make_subgame_def_np(std::size_t seat_count, int stack_bb, bool river_rooted) {
+  GameDef def{};
+  def.player_count = seat_count;
+  def.button = static_cast<int>(seat_count - 1);
+  def.big_blind = 2;
+  def.ante = 0;
+  for (std::size_t i = 0; i < seat_count; ++i) {
+    def.stacks[i] = static_cast<Chips>(2 * stack_bb);
+    def.contributions[i] = 1;
+  }
+  def.pot = static_cast<Chips>(seat_count);
+  def.board = {card("2c"), card("3d"), card("7h"), card("Js"), river_rooted ? card("9c") : 0};
+  def.board_size = river_rooted ? 5 : 4;
+  def.preflop = false;
+  def.terminal = TerminalDepth::River;
+  return def;
+}
+
 // 2-seat, river-rooted: flop check-through, turn check-through, river 9c.
 GameDef make_subgame_def_2p_river() {
   GameDef def = make_subgame_def_2p_turn();
@@ -479,7 +501,8 @@ CoverageResult compute_coverage(const AbstractTree& tree, const NSeatPolicy& pol
 
 int run_fixture(const std::string& label, const GameDef& def,
                 const std::vector<std::array<int, 2>>& range, const SizeSchedule& schedule,
-                std::uint64_t iterations, std::uint64_t seed) {
+                std::uint64_t iterations, std::uint64_t seed, int solve_wall_seconds = 120,
+                bool skip_nash_conv = false) {
   const std::size_t seat_count = def.player_count;
   const bool river_rooted = def.board_size == 5;
 
@@ -508,6 +531,7 @@ int run_fixture(const std::string& label, const GameDef& def,
   ActionAbstraction action = ActionAbstraction::declared(schedule, CoverSeeds::DeclaredOnly);
   TreeLimits tree_limits;
   std::unique_ptr<AbstractTree> tree_ptr;
+  const auto build_start = std::chrono::steady_clock::now();
   try {
     tree_ptr = std::make_unique<AbstractTree>(def, action, tree_limits);
   } catch (const tree_resource_exhausted& e) {
@@ -524,11 +548,14 @@ int run_fixture(const std::string& label, const GameDef& def,
     std::fprintf(stderr, "  tree build failed: %s\n", e.what());
     return 1;
   }
+  const auto build_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - build_start);
   const AbstractTree& tree = *tree_ptr;
 
   std::printf("\nTree:\n");
   std::printf("  nodes:        %zu\n", tree.size());
   std::printf("  depth:        %zu\n", tree.depth());
+  std::printf("  build time:   %.1f ms\n", build_elapsed.count() / 1.0);
   std::printf("  accounted:    %.1f KiB\n", tree.accounted_bytes() / 1024.0);
   std::printf("  1 GiB cap:    fits (%.1f MiB of 1024 MiB)\n",
               tree.accounted_bytes() / (1024.0 * 1024.0));
@@ -572,7 +599,7 @@ int run_fixture(const std::string& label, const GameDef& def,
 
   // Solve with CFR.
   NSeatTrainerLimits trainer_limits;
-  trainer_limits.wall = std::chrono::seconds(120);
+  trainer_limits.wall = std::chrono::seconds(solve_wall_seconds);
 
   const auto solve_start = std::chrono::steady_clock::now();
   NSeatTrainingResult train_result;
@@ -608,6 +635,10 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::fflush(stdout);
 
   // NashConv: CFR policy.
+  if (skip_nash_conv) {
+    std::printf("\nNashConv: skipped (feasibility scan)\n");
+    return 0;
+  }
   std::printf("\nNashConv (exact enumeration):\n");
   std::fflush(stdout);
   const auto cfr_result = compute_nash_conv(tree, &train_result.policy, range, def);
@@ -641,11 +672,42 @@ int run_fixture(const std::string& label, const GameDef& def,
 }  // namespace
 
 int main(int argc, char** argv) {
-  const std::uint64_t iterations = argc > 1 ? std::stoull(argv[1]) : 1000;
-  const std::uint64_t seed = argc > 2 ? std::stoull(argv[2]) : 42;
+  // T3 feasibility scan: --t3 [iterations] [seed]
+  // Runs 2..6 seats x 10/25/100 BB, turn-rooted, with a 30 s solve budget and
+  // no NashConv (resource/deadline measurement, not quality certification).
+  bool t3_scan = false;
+  int arg_index = 1;
+  if (argc > 1 && std::string(argv[1]) == "--t3") {
+    t3_scan = true;
+    arg_index = 2;
+  }
+  const std::uint64_t iterations =
+      argc > arg_index ? std::stoull(argv[arg_index]) : (t3_scan ? 100000 : 1000);
+  const std::uint64_t seed = argc > arg_index + 1 ? std::stoull(argv[arg_index + 1]) : 42;
 
   const auto range = make_representative_range();
   const auto schedule = make_coarse_schedule();
+
+  if (t3_scan) {
+    std::printf("T3: six-seat normal-stack feasibility scan\n");
+    std::printf("  2..6 seats, 10/25/100 BB, turn-rooted, 30 s solve budget, no NashConv\n");
+    std::printf("  (resource/deadline measurement; not quality certification)\n");
+    int failures = 0;
+    for (int stack_bb : {10, 25, 100}) {
+      for (std::size_t seats = 2; seats <= 6; ++seats) {
+        failures += run_fixture(
+            std::to_string(seats) + "-seat turn-rooted " + std::to_string(stack_bb) + " BB",
+            make_subgame_def_np(seats, stack_bb, false), range, schedule, iterations, seed,
+            /*solve_wall_seconds=*/30,
+            /*skip_nash_conv=*/true);
+      }
+    }
+    if (failures == 0)
+      std::printf("\nT3 scan completed.\n");
+    else
+      std::printf("\n%d fixture(s) failed.\n", failures);
+    return failures;
+  }
 
   std::printf("RFC 0011 Stage 3: Subgame Resolver NashConv Measurement\n");
   std::printf("  2-seat, 3-seat, and 4-seat, turn-rooted and river-rooted subgames\n");

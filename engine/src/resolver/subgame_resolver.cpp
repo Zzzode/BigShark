@@ -506,13 +506,24 @@ void SubgameResolver::solve_rooted_subgame(
     const std::vector<std::vector<solver::WeightedHand>>& prior_ranges, std::span<const int> board,
     std::span<const poker::PublicAction> history, std::size_t hero, bool walk_to_river,
     const ResolveLimits& limits, SubgameResolveResult& result) const {
+  // RFC 0024: validate the depth-limit/decision-street constraint. The
+  // resolver always builds a turn-rooted subgame. With max_streets = 1, the
+  // river Action node becomes a TerminalFrontier leaf with no action menu,
+  // so a river decision (walk_to_river = true) would find no candidate.
+  // River decisions require max_streets >= 2 or nullopt.
+  if (walk_to_river && limits.depth_limit.max_streets && *limits.depth_limit.max_streets < 2) {
+    result.status = SubgameResolveStatus::InvalidInput;
+    return;
+  }
+
   std::unique_ptr<tree::AbstractTree> tree_ptr;
   try {
     tree::TreeLimits tree_limits;
     tree_limits.max_nodes = limits.max_nodes;
     tree_limits.max_depth = limits.max_depth;
     tree_limits.max_bytes = limits.max_bytes;
-    tree_ptr = std::make_unique<tree::AbstractTree>(subgame_def, action, tree_limits);
+    tree_ptr =
+        std::make_unique<tree::AbstractTree>(subgame_def, action, tree_limits, limits.depth_limit);
   } catch (const tree::tree_resource_exhausted&) {
     result.status = SubgameResolveStatus::Ineligible;
     return;
@@ -533,7 +544,7 @@ void SubgameResolver::solve_rooted_subgame(
   solver::NSeatTrainingResult train_result;
   try {
     train_result = solver::train_nseat(tree, prior_ranges, limits.iterations, limits.public_seed,
-                                       trainer_limits, nullptr, nullptr);
+                                       trainer_limits, frontier_, nullptr);
   } catch (const solver::nseat_training_exhausted&) {
     result.status = SubgameResolveStatus::SolveDeadline;
     return;

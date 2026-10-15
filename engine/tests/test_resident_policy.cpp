@@ -592,6 +592,115 @@ PublishedV2Fixture publish_v2(
   return {policy_path, def, published.sha256_hex};
 }
 
+// RFC 0020 mechanical identity fixture: six dealt seats at 100 BB hand-start
+// depth, with one disjoint holding per seat and three hand-authored rows.
+// No trainer runs; these rows establish root selection/history continuity,
+// not policy quality or complete six-player strategy coverage.
+static bool test_folded_root_identity(const fs::path& dir) {
+  GameDef def{};
+  def.player_count = 6;
+  def.button = 0;
+  def.big_blind = 20;
+  std::fill_n(def.stacks.begin(), def.player_count, Chips{1980});
+  std::fill_n(def.contributions.begin(), def.player_count, Chips{20});
+  def.pot = 120;
+  def.board = {12, 17, 22, 0, 0};
+  def.board_size = 3;
+  std::vector<std::vector<WeightedHand>> ranges;
+  for (std::size_t seat = 0; seat < def.player_count; ++seat)
+    ranges.push_back({{{static_cast<int>(seat * 2), static_cast<int>(seat * 2 + 1)}, 1}});
+
+  const auto abstraction = bs::abstraction::ActionAbstraction::identity();
+  const auto& sizes = abstraction.schedule();
+  const GameState root(def);
+  CHECK(root.actor() == std::optional<std::size_t>{1});
+  const GameState bet = root.after_action(1, {ActionType::Bet, 20});
+  const std::vector<PublicAction> bet_history{{Street::Flop, 1, {ActionType::Bet, 20}}};
+  const GameState folded = bet.after_action(2, {ActionType::Fold});
+  const std::vector<PublicAction> folded_history{{Street::Flop, 1, {ActionType::Bet, 20}},
+                                                 {Street::Flop, 2, {ActionType::Fold}}};
+  CHECK(folded.actor() == std::optional<std::size_t>{3});
+  CHECK(!folded.def().folded[2] && folded.players()[2].folded);
+
+  SeatTrainingResult fixture;
+  fixture.termination = NSeatTerminationPhase::Complete;
+  fixture.algorithm_revision = 0;
+  fixture.completed_iterations = 0;
+  fixture.nodes = 3;
+  fixture.information_sets = 3;
+  fixture.action_id = abstraction.id();
+  fixture.terminal_depth = def.terminal;
+  bs::artifacts::detail::SeatPolicyAssembler::set_identity(fixture.policy, def, sizes, ranges,
+                                                           fixture.action_id, std::nullopt);
+  const auto add_row = [&](const GameState& state, std::span<const PublicAction> history) {
+    const std::size_t actor = *state.actor();
+    auto actions = abstract_actions(state, sizes);
+    std::vector<double> probabilities(actions.size(), 1.0 / static_cast<double>(actions.size()));
+    bs::artifacts::detail::SeatPolicyAssembler::add_row(
+        fixture.policy, make_information_key(actor, ranges[actor][0].cards, state.board(), history),
+        SeatPolicyRow{std::move(actions), std::move(probabilities), 0});
+  };
+  add_row(root, {});
+  add_row(bet, bet_history);
+  add_row(folded, folded_history);
+  const fs::path checkpoint = dir / "root-identity-hand-authored-checkpoint.db";
+  const fs::path policy_path = dir / "root-identity-hand-authored-policy.db";
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "resident-rfc0020-mechanical-test";
+  provenance.algorithm_revision = "rfc0020-hand-authored-fixture";
+  provenance.prng_identifier = kFullTraversalPrngIdentifier;
+  create_checkpoint(checkpoint, fixture, provenance);
+  const auto published = publish_policy(checkpoint, policy_path, "resident-rfc0020-fixture");
+  std::vector<RootLoadResult> results;
+  const ResidentPolicySet residents =
+      ResidentPolicySet::build({{policy_path, parse_sha256(published.sha256_hex)}}, {}, &results);
+  CHECK(results.size() == 1 && results[0].status == RootStatus::Advertised);
+  CHECK(results[0].information_sets == 3);
+  ResidentScratch scratch;
+
+  // Real matching rows must be found, so the negative control below cannot
+  // pass accidentally because this synthetic artifact has no usable row.
+  for (const auto pin :
+       {std::optional<std::string_view>{}, std::optional<std::string_view>{published.sha256_hex}}) {
+    CHECK(residents.public_belief(root, {}, pin, scratch).hit);
+    CHECK(residents.hero_decision(root, {}, ranges[1][0].cards, pin, scratch).hit);
+    const auto source = residents.resolver_source(root, {}, pin);
+    CHECK(source != nullptr);
+    CHECK(source->row(root, {}, 1, ranges[1][0].cards).has_value());
+    CHECK(residents.public_belief(folded, folded_history, pin, scratch).hit);
+    CHECK(residents.hero_decision(folded, folded_history, ranges[3][0].cards, pin, scratch).hit);
+    const auto folded_source = residents.resolver_source(folded, folded_history, pin);
+    CHECK(folded_source != nullptr);
+    CHECK(folded_source->row(folded, folded_history, 3, ranges[3][0].cards).has_value());
+  }
+
+  GameDef wrong_def = def;
+  wrong_def.folded[5] = true;  // Non-actor: all six legacy affinity fields remain identical.
+  const GameState wrong(wrong_def);
+  CHECK(wrong.actor() == root.actor() && wrong.pot() == root.pot());
+  CHECK(!same_game_def(wrong.def(), root.def()));
+  for (std::size_t seat = 0; seat < def.player_count; ++seat)
+    CHECK(wrong.players()[seat].stack == root.players()[seat].stack &&
+          wrong.players()[seat].contributed == root.players()[seat].contributed);
+  for (const auto pin :
+       {std::optional<std::string_view>{}, std::optional<std::string_view>{published.sha256_hex}}) {
+    const MissReason expected =
+        pin ? MissReason::RootIdentityMismatch : MissReason::RootNotSupported;
+    // These sentinel buffers are downstream of root admission. Unchanged
+    // values additionally establish rejection before belief/key/row work.
+    scratch.raw[0][0] = 37.0;
+    scratch.key_size = 73;
+    const auto belief = residents.public_belief(wrong, {}, pin, scratch);
+    CHECK(!belief.hit && belief.reason == expected);
+    CHECK(scratch.raw[0][0] == 37.0 && scratch.key_size == 73);
+    const auto hero = residents.hero_decision(wrong, {}, ranges[1][0].cards, pin, scratch);
+    CHECK(!hero.hit && hero.reason == expected);
+    CHECK(scratch.raw[0][0] == 37.0 && scratch.key_size == 73);
+    CHECK(residents.resolver_source(wrong, {}, pin) == nullptr);
+  }
+  return true;
+}
+
 // --- RFC 0007 preflop flop-terminal resident fixtures -----------------------
 
 // A trivial frontier evaluator for resident tests: every frontier leaf has
@@ -2772,6 +2881,7 @@ int main() {
     std::function<bool(const fs::path&)> run;
   };
   const std::vector<Case> cases = {
+      {"folded root identity", test_folded_root_identity},
       {"golden reach", test_golden_reach},
       {"chance filter", test_chance_filter},
       {"solver reach convention", test_solver_reach_convention},

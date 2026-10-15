@@ -41,11 +41,11 @@ DeclaredFrontierTable::DeclaredFrontierTable(std::vector<Entry> entries) {
   }
 }
 
-std::vector<double> DeclaredFrontierTable::evaluate(std::span<const int> flop,
+std::vector<double> DeclaredFrontierTable::evaluate(std::span<const int> board,
                                                     std::span<const std::array<int, 2>> hands,
                                                     const bs::tree::TerminalPayload& ledger) const {
   (void)ledger;  // The declared table is pre-computed; the ledger is not needed.
-  if (flop.size() != 3)
+  if (board.size() != 3)
     throw std::invalid_argument("DeclaredFrontierTable::evaluate: flop must have exactly 3 cards");
   if (hands.size() != 2)
     throw std::invalid_argument(
@@ -53,7 +53,7 @@ std::vector<double> DeclaredFrontierTable::evaluate(std::span<const int> flop,
         "(2 seats)");
 
   std::array<int, 3> flop_sorted{};
-  std::copy(flop.begin(), flop.end(), flop_sorted.begin());
+  std::copy(board.begin(), board.end(), flop_sorted.begin());
   sort3(flop_sorted);
   std::array<std::array<int, 2>, 2> hands_sorted{};
   std::copy(hands.begin(), hands.end(), hands_sorted.begin());

@@ -37,16 +37,17 @@ constexpr std::size_t kKeyOwn1 = 2;
 constexpr std::size_t kKeyBoardSize = 3;
 constexpr std::size_t kKeyBoard = 4;
 
-// Canonical root identity: ordered flop, per-seat stacks, matched
-// contributions, pot, big blind, and button. Range weights and the ordered
-// rational sizing schedule are identical within one advertised artifact and
+// Normalized policy-root identity: ordered flop, per-seat stacks, matched
+// contributions, root folded flags, pot, big blind, and button. Range weights
+// and the ordered rational sizing schedule are identical within one advertised artifact and
 // cannot be spoofed by a query; two artifacts sharing a root but differing in
 // those fields are both refused as ambiguous duplicates.
 //
 // Deliberately NOT poker::same_game_def, which additionally compares preflop,
 // blinds_posted, ante, variant, and terminal. This mirrors the resolver's
-// documented six-field identity (counterfactual_reach.cpp): the fields the
-// artifact path can actually store and read back. The two disagree in BOTH
+// documented normalized identity (counterfactual_reach.cpp), including the
+// implicit all-false root folded flags of existing persisted profiles.
+// The two disagree in BOTH
 // directions on valid roots (a flop root's blinds_posted is unobservable here),
 // so the divergence is documented rather than silently tightened.
 bool same_root(const GameDef& a, const GameDef& b,
@@ -79,7 +80,8 @@ bool same_root(const GameDef& a, const GameDef& b,
     }
   }
   for (std::size_t p = 0; p < a.player_count; ++p)
-    if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p])
+    if (a.stacks[p] != b.stacks[p] || a.contributions[p] != b.contributions[p] ||
+        a.folded[p] != b.folded[p])
       return false;
   return true;
 }

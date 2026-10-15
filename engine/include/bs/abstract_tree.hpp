@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -110,6 +111,28 @@ struct TreeLimits {
   std::size_t max_bytes = std::size_t{1} << 30;  // 1 GiB
 };
 
+// RFC 0024: a street-count depth limit for depth-limited resolving. When the
+// builder is about to open a new betting street and
+// (state.street() - root_street) >= max_streets, it creates a TerminalFrontier
+// leaf instead of an Action node. nullopt means no limit (full tree to
+// showdown, the default behavior).
+//
+// max_streets must be >= 1 when set. The DepthLimit is valid only for
+// flop-rooted (root_street = Flop) and turn-rooted (root_street = Turn)
+// subgames; preflop-rooted games with a DepthLimit are rejected because the
+// Street enum ordering (Preflop = 3, after River = 2) breaks the offset
+// arithmetic.
+struct DepthLimit {
+  std::optional<std::size_t> max_streets;
+
+  static DepthLimit none() { return {std::nullopt}; }
+  static DepthLimit streets(std::size_t n) {
+    if (n == 0)
+      throw std::invalid_argument("DepthLimit: max_streets must be >= 1");
+    return {n};
+  }
+};
+
 // Thrown when a tree cannot be built within its TreeLimits. Deliberately does
 // NOT derive from std::invalid_argument: resource exhaustion is an expected,
 // recoverable condition distinct from malformed input, and host
@@ -166,7 +189,14 @@ class AbstractTree {
   // Builds the full unconditioned public tree. Throws std::invalid_argument for
   // a malformed GameDef/abstraction and tree_resource_exhausted at a bound; a
   // failed build yields no tree (strong exception safety).
-  AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits = {});
+  //
+  // RFC 0024: the optional DepthLimit enables depth-limited resolving. When
+  // set, the builder creates TerminalFrontier leaves at street boundaries
+  // instead of expanding to showdown. The DepthLimit is valid only for
+  // flop-rooted and turn-rooted games; preflop-rooted games with a DepthLimit
+  // throw std::invalid_argument.
+  AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits = {},
+               DepthLimit depth = DepthLimit::none());
 
   // RFC 0014: serialize/deserialize the tree structure for on-disk caching.
   // save() writes structure and terminal payloads in the current compressed
@@ -201,6 +231,10 @@ class AbstractTree {
     return terminals_.at(leaf_index);
   }
 
+  // RFC 0024: true if the tree contains any TerminalFrontier leaves. Set
+  // during DFS construction for O(1) validation by the trainer.
+  bool has_frontier_leaves() const noexcept { return has_frontier_leaves_; }
+
  private:
   struct no_build_tag {};
   AbstractTree(GameDef def, abstraction::ActionAbstraction action, TreeLimits limits, no_build_tag);
@@ -212,6 +246,7 @@ class AbstractTree {
   std::vector<TerminalPayload> terminals_;
   std::size_t depth_ = 0;
   std::size_t accounted_bytes_ = 0;
+  bool has_frontier_leaves_ = false;  // RFC 0024
 
   friend class TreeBuilder;
 };

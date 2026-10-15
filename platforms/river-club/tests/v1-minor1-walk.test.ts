@@ -19,6 +19,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { ProtoEngineProcessClient } from '../../../clients/node/proto-engine-process-client.js';
+import { warmupTimeoutMsFor } from '../src/engine.js';
 import {
   ActionType,
   EnvelopeSchema,
@@ -209,7 +210,7 @@ function residentClient(published: PublishedFixture): ProtoEngineProcessClient {
     command: engineBinary,
     args: ['--serve-proto', '--resident-root', `${published.path}=${published.sha256}`],
     warmupEnvelope: capabilitiesEnvelope(),
-    warmupTimeoutMs: 10_000,
+    warmupTimeoutMs: warmupTimeoutMsFor([], [{ path: published.path, sha256: published.sha256 }]),
     negotiateMinor1: true,
   });
 }
@@ -234,6 +235,7 @@ function blueprintRequest(walk: Walk, heroSeat: 0 | 1, stripAmounts = false):
 
 async function ask(client: ProtoEngineProcessClient, walk: Walk,
                    heroSeat: 0 | 1, stripAmounts = false): Promise<Envelope> {
+  await client.start();
   return client.request(
     decisionFrame(blueprintRequest(walk, heroSeat, stripAmounts)), 10_000);
 }

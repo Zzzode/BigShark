@@ -1,6 +1,7 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { totalmem } from 'node:os';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 import { EngineProcessClient } from '../../../clients/node/engine-process-client.js';
@@ -43,8 +44,8 @@ const defaultBinary = process.env.BIGSHARK_ENGINE_BINARY || fileURLToPath(
 // class libraries under <repo>/artifacts/flop-library*/manifest.json.
 const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 // The full library takes ~55 s to probe and longer to load; the default
-// 10 s warmup would expire mid-handshake. 300 s for one library, 600 s
-// for two or more (the 3-player library is ~3× larger).
+// 10 s warmup would expire mid-handshake. Use the same per-phase allowance
+// for standalone roots: 300 s for one artifact source, 600 s for two or more.
 export const WARMUP_TIMEOUT_WITH_LIBRARY_MS = 300_000;
 const WARMUP_TIMEOUT_MULTI_LIBRARY_MS = 600_000;
 const WARMUP_TIMEOUT_DEFAULT_MS = 10_000;
@@ -280,13 +281,19 @@ export function protoEngineLaunchArgs(
 /**
  * The warmup timeout for the framed child. A flop library loads ~1,755
  * SQLite DBs before the engine's first frame (~55 s probe, longer to
- * load), so the default 10 s would expire mid-handshake. One library
- * gets 300 s; two or more (e.g. heads-up + 3-way) get 600 s. Resident
- * roots alone stay at 10 s. Exported for the wiring tests.
+ * load), so the default 10 s would expire mid-handshake. A standalone root
+ * also validates and indexes before the first frame. One configured source
+ * gets 300 s; two or more get 600 s. These are per-phase startup/negotiation
+ * allowances, never active decision budgets. Library-only callers retain
+ * their previous results. Exported for the wiring tests.
  */
-export function warmupTimeoutMsFor(libraries: readonly string[]): number {
-  if (libraries.length === 0) return WARMUP_TIMEOUT_DEFAULT_MS;
-  return libraries.length === 1
+export function warmupTimeoutMsFor(
+  libraries: readonly string[],
+  roots: readonly ResidentRootSpec[] = [],
+): number {
+  const sourceCount = libraries.length + roots.length;
+  if (sourceCount === 0) return WARMUP_TIMEOUT_DEFAULT_MS;
+  return sourceCount === 1
     ? WARMUP_TIMEOUT_WITH_LIBRARY_MS
     : WARMUP_TIMEOUT_MULTI_LIBRARY_MS;
 }
@@ -319,7 +326,7 @@ function protoEngineClient(
     command: defaultBinary,
     args: protoEngineLaunchArgs(roots, libraries, residentBudgetMiB),
     warmupEnvelope: warmup,
-    warmupTimeoutMs: warmupTimeoutMsFor(libraries),
+    warmupTimeoutMs: warmupTimeoutMsFor(libraries, roots),
     // The framed path stays minor 0 by default; callers must explicitly
     // negotiate a higher minor before its features can be used. RFC 0009 W1:
     // a configured resident root set or flop library is that explicit opt-in
@@ -340,10 +347,33 @@ function protoEnabled(config: EngineConfig): boolean {
   return config.proto === true || process.env.BIGSHARK_ENGINE_PROTO === '1';
 }
 
+// The adapter also accepts structural clients. Bound each asynchronous phase
+// itself rather than assuming every injected request enforces its timeout.
+async function withinDecisionDeadline<T>(
+  deadline: number,
+  operation: (remainingMs: number) => Promise<T>,
+): Promise<T> {
+  const remainingMs = deadline - performance.now();
+  if (remainingMs <= 0) throw new Error('Engine decision timed out');
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const expiry = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Engine decision timed out')), remainingMs);
+    });
+    const result = await Promise.race([operation(remainingMs), expiry]);
+    if (performance.now() >= deadline) throw new Error('Engine decision timed out');
+    return result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function decideV1(
   room: RiverRoom,
   config: EngineConfig,
 ): Promise<ExecutableDecision> {
+  const timeoutMs = config.timeoutMs ?? 2000;
+  const deadline = performance.now() + timeoutMs;
   // A malformed programmatic root spec is a configuration error, not an
   // operational outage: surface it instead of silently serving every turn
   // from the fallback with the fault hidden.
@@ -366,6 +396,8 @@ async function decideV1(
       `invalid flop library configuration: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    throw new Error('Engine decision timeout must be finite and positive');
   const client = (config.protoEngineClient as V1EnvelopeClient | undefined)
     ?? protoEngineClient(roots, libraries, residentBudgetMiB);
   if (!client)
@@ -373,7 +405,7 @@ async function decideV1(
   // The concrete process client completes its capability handshake at the end
   // of start(); awaiting it makes the negotiated minor available on the very
   // first decision instead of racing it as 0. Structural fakes omit start().
-  await client.start?.();
+  if (client.start) await withinDecisionDeadline(deadline, () => client.start!());
   // Minor 1+ is used only with a client whose capability handshake succeeded
   // (explicit opt-in at client construction). On minor 1 a forced blueprint
   // request runs in BLUEPRINT mode; otherwise AUTOMATIC tries the resident
@@ -401,11 +433,14 @@ async function decideV1(
         }
       : {}),
   });
-  const envelope = await client.request(
-    decisionEnvelope(request, minor),
-    config.timeoutMs ?? 2000,
-  ) as Envelope;
-  return fromV1DecisionResponse(envelope, room, minor);
+  const requestEnvelope = decisionEnvelope(request, minor);
+  const envelope = await withinDecisionDeadline(deadline, remainingMs => client.request(
+    requestEnvelope,
+    remainingMs,
+  )) as Envelope;
+  const decision = fromV1DecisionResponse(envelope, room, minor);
+  if (performance.now() >= deadline) throw new Error('Engine decision timed out');
+  return decision;
 }
 
 export async function decide(
@@ -471,8 +506,9 @@ export function closeEngine(): void {
  * preflight moves that cost off the first hand's decision path.
  *
  * The client is a keyed singleton; decide() reuses the warmed child.
- * A failure is logged by the caller and never thrown — the engine is
- * an enhancement, and decide() falls back to the heuristic on error.
+ * The caller logs preflight failure; decide() uses the legal operational
+ * fallback on runtime failure. Long preflight waits belong off-table, while
+ * an already-seated decision's readiness wait consumes its own timeout.
  */
 export async function warmEngine(config: EngineConfig): Promise<void> {
   let roots: ResidentRootSpec[];

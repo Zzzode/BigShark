@@ -74,8 +74,10 @@ class MapBlueprint final : public BlueprintSource {
 
   const UnifiedGame& game() const override { return game_; }
   std::string_view artifact_digest() const override { return digest_; }
+  mutable std::size_t row_calls = 0;
   std::optional<BlueprintRowView> row(const GameState& state, std::span<const PublicAction> history,
                                       std::size_t player, std::array<int, 2> cards) const override {
+    ++row_calls;
     const auto it =
         rows_.find({make_information_key(player, cards, state.board(), history), player});
     if (it == rows_.end())
@@ -903,10 +905,86 @@ int test_three_seat_per_seat_rejection() {
   return 0;
 }
 
+// RFC 0020 root admission only, not a six-seat solve/quality fixture. Keep the
+// six dealt indices and 100 BB starting depth. Hand-authored singleton ranges
+// and rows permit exact early-boundary/prefix-query assertions without CFR.
+int test_folded_root_identity() {
+  UnifiedGame game;
+  game.def.player_count = 6;
+  game.def.button = 0;
+  game.def.big_blind = 20;
+  std::fill_n(game.def.stacks.begin(), game.def.player_count, Chips{1980});
+  std::fill_n(game.def.contributions.begin(), game.def.player_count, Chips{20});
+  game.def.pot = 120;
+  game.def.board = {12, 17, 22, 0, 0};
+  game.def.board_size = 3;
+  for (std::size_t seat = 0; seat < game.def.player_count; ++seat)
+    game.ranges[seat] = {{{static_cast<int>(seat * 2), static_cast<int>(seat * 2 + 1)}, 1}};
+
+  // Both zero and nonzero equal root bitmaps must pass identity/replay. This
+  // ordinary flop node intentionally reaches the genuine non-terminal-only
+  // Ineligible result; that is not a claim of supported six-seat resolving.
+  for (bool source_folded : {false, true}) {
+    game.def.folded[5] = source_folded;
+    const GameState root(game.def);
+    CHECK(root.actor() == std::optional<std::size_t>{1});
+    MapBlueprint blueprint(game);
+    std::string detail;
+    rd::Budget same_budget(test_limits(1));
+    rd::ReachModel same_model{root, {}};
+    CHECK(rd::build_model(root, {}, blueprint, same_budget, same_model, detail) ==
+          ResolveStatus::Ineligible);
+    CHECK(detail == "node is not terminal-only");
+    CHECK(same_model.game == &blueprint.game() && same_model.seat_count == 6);
+    CHECK(blueprint.row_calls == 0);
+
+    const GameState bet = root.after_action(1, {ActionType::Bet, 20});
+    const std::vector<PublicAction> bet_history{{Street::Flop, 1, {ActionType::Bet, 20}}};
+    const GameState folded = bet.after_action(2, {ActionType::Fold});
+    const std::vector<PublicAction> history{{Street::Flop, 1, {ActionType::Bet, 20}},
+                                            {Street::Flop, 2, {ActionType::Fold}}};
+    CHECK(!folded.def().folded[2] && folded.players()[2].folded);
+    const auto install = [&](const GameState& state, std::span<const PublicAction> prefix) {
+      const std::size_t actor = *state.actor();
+      const auto actions = abstract_actions(state, game.sizes);
+      blueprint.set_row(state, prefix, actor, game.ranges[actor][0].cards, actions,
+                        std::vector<double>(actions.size(), 1.0 / actions.size()));
+    };
+    install(root, {});
+    install(bet, bet_history);
+    rd::Budget history_budget(test_limits(1));
+    rd::ReachModel history_model{folded, history};
+    CHECK(rd::build_model(folded, history, blueprint, history_budget, history_model, detail) ==
+          ResolveStatus::Ineligible);
+    CHECK(detail == "node is not terminal-only");
+    CHECK(blueprint.row_calls == 2);
+    CHECK(history_model.hero == 3 && history_model.history.size() == 2);
+
+    GameDef different = game.def;
+    different.folded[5] = !source_folded;
+    const GameState wrong(different);
+    CHECK(wrong.actor() == root.actor() && wrong.pot() == root.pot());
+    CHECK(!same_game_def(wrong.def(), root.def()));
+    blueprint.row_calls = 0;
+    rd::Budget wrong_budget(test_limits(1));
+    rd::ReachModel wrong_model{wrong, {}};
+    CHECK(rd::build_model(wrong, {}, blueprint, wrong_budget, wrong_model, detail) ==
+          ResolveStatus::CoverageMiss);
+    CHECK(detail == "node root does not match the blueprint game root");
+    CHECK(blueprint.row_calls == 0 && wrong_model.game == nullptr);
+    Resolver resolver;
+    CHECK(resolver.resolve(wrong, {}, blueprint, test_limits(1)).status ==
+          ResolveStatus::CoverageMiss);
+    CHECK(blueprint.row_calls == 0);
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
   try {
+    CHECK(test_folded_root_identity() == 0);
     CHECK(test_deceptive_whole_range_rejected() == 0);
     CHECK(test_locally_better_globally_worse_rejected() == 0);
     CHECK(test_equilibrium_passes_and_converges() == 0);

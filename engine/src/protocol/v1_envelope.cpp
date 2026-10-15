@@ -20,11 +20,11 @@ constexpr std::size_t kMaxRequestIdBytes = 128;
 // Street dispatch: preflop requests go through the RFC 0007 preflop
 // reconstructor; postflop requests use the existing postflop path.
 bool reconstructRequest(const pv::DecisionRequest& request, ReconstructedPostflop& out,
-                        V1BlueprintMiss& miss, bool for_resolve) {
+                        V1BlueprintMiss& miss, bool for_resolve, std::uint32_t negotiated_minor) {
   if (request.state().street() == pv::STREET_PREFLOP)
-    return reconstructPreflop(request, out, miss);
-  return for_resolve ? reconstructPostflopForResolve(request, out, miss)
-                     : reconstructPostflop(request, out, miss);
+    return reconstructPreflop(request, out, miss, negotiated_minor);
+  return for_resolve ? reconstructPostflopForResolve(request, out, miss, negotiated_minor)
+                     : reconstructPostflop(request, out, miss, negotiated_minor);
 }
 
 EnvelopeResult respondWithDecision(const std::string& requestId,
@@ -115,8 +115,8 @@ struct BlueprintLookup {
   V1BlueprintRow row;
 };
 
-BlueprintLookup lookupBlueprint(const V1HostServices& services,
-                                const pv::DecisionRequest& request) {
+BlueprintLookup lookupBlueprint(const V1HostServices& services, const pv::DecisionRequest& request,
+                                std::uint32_t negotiated_minor) {
   BlueprintLookup result;
   if (!services.blueprintAdvertised()) {
     result.miss_detail = "no resident blueprint root advertised";
@@ -124,7 +124,8 @@ BlueprintLookup lookupBlueprint(const V1HostServices& services,
   }
   ReconstructedPostflop reconstructed;
   V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
-  if (!reconstructRequest(request, reconstructed, reconstruct_miss, /*for_resolve=*/false)) {
+  if (!reconstructRequest(request, reconstructed, reconstruct_miss, /*for_resolve=*/false,
+                          negotiated_minor)) {
     result.miss_detail = to_string(reconstruct_miss);
     return result;
   }
@@ -157,7 +158,7 @@ struct ResolvingLookup {
 };
 
 ResolvingLookup lookupResolving(const V1HostServices& services, const pv::DecisionRequest& request,
-                                std::uint32_t deadline_ms) {
+                                std::uint32_t deadline_ms, std::uint32_t negotiated_minor) {
   ResolvingLookup result;
   if (!services.resolvingAdvertised()) {
     result.miss_detail = "no resolving root advertised";
@@ -165,7 +166,8 @@ ResolvingLookup lookupResolving(const V1HostServices& services, const pv::Decisi
   }
   ReconstructedPostflop reconstructed;
   V1BlueprintMiss reconstruct_miss = V1BlueprintMiss::None;
-  if (!reconstructRequest(request, reconstructed, reconstruct_miss, /*for_resolve=*/true)) {
+  if (!reconstructRequest(request, reconstructed, reconstruct_miss, /*for_resolve=*/true,
+                          negotiated_minor)) {
     result.miss_detail = to_string(reconstruct_miss);
     return result;
   }
@@ -226,7 +228,7 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
 
   const pv::SolverMode mode = request.options().solver_mode();
   if (mode == pv::SOLVER_MODE_BLUEPRINT) {
-    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    const BlueprintLookup lookup = lookupBlueprint(services, request, 1);
     if (!lookup.hit)
       return blueprintMissResponse(requestId, lookup.miss_detail, 1);
     return respondWithDecision(requestId, mapBlueprintExpandedResponse(request, lookup.row), 1);
@@ -240,7 +242,7 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
   if (mode == pv::SOLVER_MODE_RESOLVING) {
     const std::uint32_t deadline_ms = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(request.options().solve_time_budget_ms(), 120000));
-    const ResolvingLookup lookup = lookupResolving(services, request, deadline_ms);
+    const ResolvingLookup lookup = lookupResolving(services, request, deadline_ms, 1);
     if (lookup.answered) {
       if (lookup.outcome == V1ResolveOutcome::Certified)
         return respondWithDecision(
@@ -266,7 +268,7 @@ EnvelopeResult handleMinor1Decision(const std::string& requestId,
   // runs the heuristic. Any automatic-mode miss falls through to the existing
   // heuristic engine, which reports its real source.
   if (mode == pv::SOLVER_MODE_AUTOMATIC) {
-    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    const BlueprintLookup lookup = lookupBlueprint(services, request, 1);
     if (lookup.hit)
       return respondWithDecision(requestId, mapBlueprintExpandedResponse(request, lookup.row), 1);
   }
@@ -330,7 +332,7 @@ EnvelopeResult handleMinor2Decision(const std::string& requestId,
   bs::Guarantee achieved = bs::Guarantee::OperationalFallback;
 
   if (mode == pv::SOLVER_MODE_BLUEPRINT) {
-    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    const BlueprintLookup lookup = lookupBlueprint(services, request, 2);
     if (!lookup.hit)
       return blueprintMissResponse(requestId, lookup.miss_detail, 2);
     verifyStorageRowComplete(request, lookup.row);
@@ -339,7 +341,7 @@ EnvelopeResult handleMinor2Decision(const std::string& requestId,
   } else if (mode == pv::SOLVER_MODE_RESOLVING) {
     const std::uint32_t deadline_ms = static_cast<std::uint32_t>(
         std::min<std::uint64_t>(request.options().solve_time_budget_ms(), 120000));
-    const ResolvingLookup lookup = lookupResolving(services, request, deadline_ms);
+    const ResolvingLookup lookup = lookupResolving(services, request, deadline_ms, 2);
     if (lookup.answered) {
       verifyStorageRowComplete(request, lookup.row);
       if (lookup.outcome == V1ResolveOutcome::Certified) {
@@ -382,7 +384,7 @@ EnvelopeResult handleMinor2Decision(const std::string& requestId,
     // RFC 0009 W3 demotes the chart+heuristic cascade from an AUTOMATIC
     // fallthrough to an explicit HEURISTIC-only request, so a miss never
     // silently runs the parallel strategy.
-    const BlueprintLookup lookup = lookupBlueprint(services, request);
+    const BlueprintLookup lookup = lookupBlueprint(services, request, 2);
     if (lookup.hit) {
       verifyStorageRowComplete(request, lookup.row);
       achieved = bs::Guarantee::Approximate;
@@ -390,7 +392,7 @@ EnvelopeResult handleMinor2Decision(const std::string& requestId,
     } else {
       const std::uint32_t deadline_ms = static_cast<std::uint32_t>(
           std::min<std::uint64_t>(request.options().solve_time_budget_ms(), 120000));
-      const ResolvingLookup resolved = lookupResolving(services, request, deadline_ms);
+      const ResolvingLookup resolved = lookupResolving(services, request, deadline_ms, 2);
       if (resolved.answered) {
         verifyStorageRowComplete(request, resolved.row);
         if (resolved.outcome == V1ResolveOutcome::Certified) {

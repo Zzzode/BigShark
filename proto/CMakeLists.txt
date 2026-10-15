@@ -314,7 +314,7 @@ if(BUILD_TESTING)
   # matrix/full-distribution mapping/exact-seed sampling/membership/coverage
   # misses (seam fakes, no artifacts), and the HandState -> HeadsUpState
   # reconstruction oracle.
-  foreach(v1_test v1_resident_mapper v1_minor1 v1_resolving v1_minor2)
+  foreach(v1_test v1_resident_mapper v1_minor1 v1_resolving v1_minor2 v1_preflop_nseat v1_postflop_nseat)
     add_executable(test_${v1_test}
       "${BIGSHARK_ENGINE_DIR}/tests/test_${v1_test}.cpp"
     )

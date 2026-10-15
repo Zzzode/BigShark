@@ -116,13 +116,28 @@ to `.runtime/action.json` before the deadline replaces it. When the window
 closes, the runner refreshes state, validates hand, street, action, and amount,
 then submits.
 
+Engine preflight starts concurrently with initial public state loading. Under
+RFC 0023, an off-table runner completes it before joining; an already-seated
+runner does not wait unconditionally for a long preflight before polling.
+The framed adapter's existing `timeoutMs` covers readiness, mapping and RPC
+waiting; its concrete client's request also includes any private lazy restart.
+Startup expiration preserves shared warmup but suppresses expired dispatch,
+and late responses never become qualified actions. The requested solver budget
+is unchanged. Synchronous work and OS scheduling are not hard real-time bounds;
+complete six-max deadline/coverage/quality acceptance remains open.
+
+Startup phase allowances count explicit resident roots plus flop library
+arguments: 10 seconds without artifacts, 300 seconds for one source and
+600 seconds for two or more. Each warmup/negotiation phase uses that allowance;
+it is not a total preflight limit or an action-clock extension.
+
 ## Local State
 
 All files below are local and ignored by Git:
 
 | Path | Purpose |
 | --- | --- |
-| `.runtime/config.json` | Runner mode, style, timing, stop-loss settings, and (RFC 0009 W1) `residentRoots`: `[{path, sha256}]` resident artifact roots, each a published strategy artifact and its mandatory 64-lowercase-hex whole-file pin. A malformed value fails the runner at startup (`runner-config-invalid`, exit 2) instead of silently running without the configured roots. Also supports `flopLibraries`: `["<dir>", ...]` flop class library directories, each expanded by the engine into one resident root per class via `<dir>/manifest.json`. When `flopLibraries` is unset and the `BIGSHARK_ENGINE_FLOP_LIBRARIES` env var is unset, the runner auto-detects every directory under `<repo>/artifacts/` whose name starts with `flop-library` and contains a `manifest.json` (e.g. `flop-library/` for heads-up, `flop-library-3p/` for 3-way); all detected libraries are loaded with a resident budget auto-detected from system RAM (1/4 of total memory) and a warmup timeout scaled to the library count (300 s for one, 600 s for two or more). Set `flopLibraries: []` (or the env var to `[]`) to disable auto-detection. The `BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB` env var overrides the auto-detected budget. The engine is warmed during startup, before the main loop, so the full library load does not block the first hand. |
+| `.runtime/config.json` | Runner mode, style, timing, stop-loss settings, and (RFC 0009 W1) `residentRoots`: `[{path, sha256}]` resident artifact roots, each a published strategy artifact and its mandatory 64-lowercase-hex whole-file pin. A malformed value fails the runner at startup (`runner-config-invalid`, exit 2) instead of silently running without the configured roots. Also supports `flopLibraries`: `["<dir>", ...]` flop class library directories, each expanded by the engine into one resident root per class via `<dir>/manifest.json`. When `flopLibraries` is unset and the `BIGSHARK_ENGINE_FLOP_LIBRARIES` env var is unset, the runner auto-detects every directory under `<repo>/artifacts/` whose name starts with `flop-library` and contains a `manifest.json` (e.g. `flop-library/` for heads-up, `flop-library-3p/` for 3-way); all detected libraries are loaded with a resident budget auto-detected from system RAM (1/4 of total memory). Root/library startup allowances and off-table preflight follow the Timing Model above. Set `flopLibraries: []` (or the env var to `[]`) to disable auto-detection. The `BIGSHARK_ENGINE_RESIDENT_BUDGET_MIB` env var overrides the auto-detected budget. |
 | `.runtime/pending.json` | Latest model decision opportunity, including the engine decision's `guaranteeLevel` and `artifactSha256` (W1; `null` when the decision carried none) |
 | `.runtime/pending.log` | Append-only decision opportunities |
 | `.runtime/action.json` | Model override for one hand and street |

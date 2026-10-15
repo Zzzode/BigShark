@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <bs/abstraction.hpp>
+#include <bs/equity_frontier.hpp>
 #include <bs/eval.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>
@@ -886,6 +887,37 @@ int test_uniform_11seat_ineligible() {
   return 0;
 }
 
+// RFC 0024: the depth-limit/decision-street constraint rejects max_streets=1
+// for a river decision (walk_to_river=true): the depth-limited tree has no
+// river Action nodes, so the river walk would find no candidate.
+int test_depth_limit_river_rejected() {
+  FlopCheckThrough f;
+  MapBlueprint bp(f.unified);
+  install_flop_rows(bp, f);
+
+  // Construct a river-rooted state (board_size=5, river card 9c).
+  GameDef river_def = f.unified.def;
+  river_def.board = {card("2c"), card("3d"), card("7h"), card("Js"), card("9c")};
+  river_def.board_size = 5;
+  river_def.terminal = TerminalDepth::River;
+  GameState river_root(river_def);
+
+  // Full history: flop check-check + turn check-check.
+  std::vector<PublicAction> full_history = f.history;
+  full_history.push_back({Street::Turn, 1, {ActionType::Check}});
+  full_history.push_back({Street::Turn, 0, {ActionType::Check}});
+
+  SubgameResolver resolver;
+  bs::gto::EquityFrontierEvaluator frontier;
+  resolver.set_frontier_evaluator(&frontier);
+  ResolveLimits limits = test_limits();
+  limits.depth_limit = bs::tree::DepthLimit::streets(1);
+
+  const auto result = resolver.resolve(river_root, full_history, bp, limits);
+  CHECK(result.status == SubgameResolveStatus::InvalidInput);
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -908,6 +940,7 @@ int main() {
   failures += test_uniform_mid_street_river();
   failures += test_uniform_mid_street_faces_raise();
   failures += test_uniform_11seat_ineligible();
+  failures += test_depth_limit_river_rejected();
   if (failures == 0)
     std::printf("All subgame resolver tests passed.\n");
   else

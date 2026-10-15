@@ -168,12 +168,13 @@ function note(value: Record<string, unknown>): void {
   process.stderr.write(`${JSON.stringify(value)}\n`);
 }
 
-// Kick off engine warmup in parallel with state loading and table join.
+// Kick off engine warmup in parallel with initial state loading.
 // The engine loads all resident roots (~2 min for the full 1,755-class
 // library) before its first frame; starting here moves that cost off
 // the first hand's decision path. The client is a keyed singleton, so
-// decide() reuses the warmed child. A failure is logged, not thrown —
-// decide() falls back to the heuristic on error.
+// decide() reuses the warmed child. Finish preflight before joining if
+// off-table; an already-seated turn keeps its bounded decision wait.
+// A failure is logged; decide() uses legal operational recovery on error.
 const engineWarmup = warmEngine({
   ...(cfg.residentRoots !== undefined ? { residentRoots: cfg.residentRoots } : {}),
   ...(cfg.flopLibraries !== undefined ? { flopLibraries: cfg.flopLibraries } : {}),
@@ -484,8 +485,10 @@ if (baseline === null && s0.me) {
 if (baseline !== null && !existsSync(BASELINE_F)) {
   writeFileSync(BASELINE_F, JSON.stringify({ baseline, at: Date.now() }));
 }
-if (!s0.room) await findAndJoin();
-await engineWarmup;
+if (!s0.room) {
+  await engineWarmup;
+  await findAndJoin();
+}
 
 while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) {
   const nextResult = cli(['next', '--timeout', '6000']);

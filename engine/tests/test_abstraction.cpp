@@ -107,7 +107,7 @@ int test_action_menu_math() {
     const auto menu = build_action_menu(legal, default_size_schedule()[2], ctx);
     CHECK(menu.front().type == poker::ActionType::Check);
     CHECK(menu.size() == 2);
-    CHECK(menu.back() == poker::Action(poker::ActionType::Bet, 2));
+    CHECK((menu.back() == poker::Action{poker::ActionType::Bet, 2}));
   }
   // The cap is the opponent's MATCHING total, which can sit below the legal
   // maximum when the opponent is short: the menu must not offer a target the
@@ -631,7 +631,7 @@ int test_declared_only_coarse_menu() {
     const auto menu = coarse.menu(legal, ctx);
     CHECK(menu.size() == 2);
     CHECK(menu.front().type == poker::ActionType::Check);
-    CHECK(menu.back() == poker::Action(poker::ActionType::Bet, 2));
+    CHECK((menu.back() == poker::Action{poker::ActionType::Bet, 2}));
   }
 
   // Heads-up and multiway declared-only menus agree when the multiway cover is

@@ -817,6 +817,9 @@ if(BUILD_TESTING)
   # deviation-gain estimator (pooled BR, CRN pairing, exact-oracle gates).
   add_executable(test_stage6_br_estimator tests/test_stage6_br_estimator.cpp)
   target_link_libraries(test_stage6_br_estimator PRIVATE bigshark_stage6_eval)
+  if(BIGSHARK_ENABLE_SANITIZERS)
+    target_compile_definitions(test_stage6_br_estimator PRIVATE BIGSHARK_TEST_SANITIZERS=1)
+  endif()
   add_test(NAME stage6_br_estimator COMMAND test_stage6_br_estimator)
 
   # RFC 0008 stage 6 R12 step 6: the deterministic exact<->coarse translator
@@ -1006,6 +1009,9 @@ if(BUILD_TESTING)
   target_link_libraries(test_postflop_templates PRIVATE bigshark_solver bigshark_stage6_eval)
   add_test(NAME postflop_templates COMMAND test_postflop_templates)
   set_tests_properties(postflop_templates PROPERTIES TIMEOUT 180)
+  if(BIGSHARK_ENABLE_SANITIZERS)
+    set_tests_properties(postflop_templates PROPERTIES TIMEOUT 900)
+  endif()
 
   add_executable(test_nseat_parallel tests/test_nseat_parallel.cpp)
   target_link_libraries(test_nseat_parallel PRIVATE bigshark_solver)
@@ -1047,6 +1053,10 @@ if(BUILD_TESTING)
   add_executable(test_settlement tests/test_settlement.cpp)
   target_link_libraries(test_settlement PRIVATE bigshark_poker)
   add_test(NAME settlement COMMAND test_settlement)
+
+  add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
+  target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
+  add_test(NAME sixmax_hand_ledger COMMAND test_sixmax_hand_ledger)
 
   add_executable(test_heads_up_solver tests/test_heads_up_solver.cpp)
   target_link_libraries(test_heads_up_solver PRIVATE bigshark_solver)
@@ -1174,6 +1184,11 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_subgame_resolver PRIVATE bigshark_resolver)
   add_test(NAME subgame_resolver COMMAND test_subgame_resolver)
+
+  # RFC 0024: depth-limited resolving unit tests.
+  add_executable(test_depth_limited tests/test_depth_limited.cpp)
+  target_link_libraries(test_depth_limited PRIVATE bigshark_resolver)
+  add_test(NAME depth_limited COMMAND test_depth_limited)
 
   add_executable(test_equity tests/test_equity.cpp)
   target_link_libraries(test_equity PRIVATE bigshark_poker)
