@@ -8,6 +8,7 @@
 #include <bs/guarantee.hpp>
 #include <bs/protocol.hpp>
 #include <bs/service.hpp>
+#include <chrono>
 #include <cstdint>
 #include <exception>
 #include <new>
@@ -105,6 +106,26 @@ EnvelopeResult respondWithDecision(const std::string& requestId,
   *envelope.mutable_decision_response() = response;
   result.response = envelope.SerializeAsString();
   return result;
+}
+
+// Stamp the receipt-to-action wall time on a successful decision response.
+// The measurement covers validation, state reconstruction, blueprint lookup,
+// and solve — the full receipt-to-action budget. Error responses carry no
+// metadata and are left untouched.
+void stampSolveTime(pv2::DecisionResponse& response, std::chrono::steady_clock::time_point start) {
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+  const auto us = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
+  switch (response.result_case()) {
+    case pv2::DecisionResponse::kStrategy:
+      response.mutable_strategy()->mutable_solver()->set_solve_time_us(us);
+      break;
+    case pv2::DecisionResponse::kExpandedStrategy:
+      response.mutable_expanded_strategy()->mutable_solver()->set_solve_time_us(us);
+      break;
+    default:
+      break;
+  }
 }
 
 EnvelopeResult respondWithCapabilities(const std::string& requestId,
@@ -255,6 +276,10 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
 
   const pv2::DecisionRequest& request = envelope.decision_request();
   try {
+    // T6: receipt-to-action timing. Covers validation, reconstruction,
+    // blueprint lookup, and solve.
+    const auto decisionStart = std::chrono::steady_clock::now();
+
     // Phase 1: semantic validation.
     ValidationReport report;
     const pv2::ErrorCode validationCode = validateDecisionRequest(request, report);
@@ -283,7 +308,9 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
           return respondWithDecision(requestId,
                                      errorResponse(code, messageFor(code), retryableFor(code)));
         }
-        return respondWithDecision(requestId, mapBlueprintResponse(request, lookup.row));
+        pv2::DecisionResponse response = mapBlueprintResponse(request, lookup.row);
+        stampSolveTime(response, decisionStart);
+        return respondWithDecision(requestId, std::move(response));
       }
 
       case pv2::SOLVER_MODE_RESOLVING: {
@@ -294,15 +321,19 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
           return respondWithDecision(requestId,
                                      errorResponse(code, messageFor(code), retryableFor(code)));
         }
-        return respondWithDecision(requestId,
-                                   mapResolvedResponse(request, resolve.row, resolve.outcome));
+        pv2::DecisionResponse response = mapResolvedResponse(request, resolve.row, resolve.outcome);
+        stampSolveTime(response, decisionStart);
+        return respondWithDecision(requestId, std::move(response));
       }
 
       case pv2::SOLVER_MODE_AUTOMATIC: {
         // Try blueprint first; on miss, fall through to the heuristic.
         const BlueprintLookup lookup = lookupBlueprint(services, recon);
-        if (lookup.hit)
-          return respondWithDecision(requestId, mapBlueprintResponse(request, lookup.row));
+        if (lookup.hit) {
+          pv2::DecisionResponse response = mapBlueprintResponse(request, lookup.row);
+          stampSolveTime(response, decisionStart);
+          return respondWithDecision(requestId, std::move(response));
+        }
         // Fall through to heuristic.
         [[fallthrough]];
       }
@@ -323,7 +354,9 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
               errorResponse(pv2::ERROR_CODE_NO_DECISION, messageFor(pv2::ERROR_CODE_NO_DECISION),
                             retryableFor(pv2::ERROR_CODE_NO_DECISION)));
         }
-        return respondWithDecision(requestId, mapHeuristicResponse(request, answer));
+        pv2::DecisionResponse response = mapHeuristicResponse(request, answer);
+        stampSolveTime(response, decisionStart);
+        return respondWithDecision(requestId, std::move(response));
       }
 
       default:
