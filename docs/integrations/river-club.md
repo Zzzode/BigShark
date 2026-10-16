@@ -25,12 +25,14 @@ The historical protocol v1 field notes are retained in
 | `platforms/river-club/src/journal-cli.ts` | CLI wrapper and append-only session journal |
 | `platforms/river-club/src/v0-normalizer.ts` | River snapshot to legacy engine context mapping (fallback path) |
 | `platforms/river-club/src/v1-mapper.ts` | River snapshot to structured v1 engine context mapping (default path) |
+| `platforms/river-club/src/v2-mapper.ts` | River snapshot to v2 complete cash-hand context with G/F ledger and phase-tagged pot layers (opt-in path) |
 | `platforms/river-club/src/engine.ts` | River adapter, engine call, legality check, and operational fallback |
 | `platforms/river-club/src/wait-turn.ts` | Long polling until a decision or exit state |
 | `platforms/river-club/src/atomic-action.ts` | Atomic refresh, precondition validation, and action |
 | `apps/river-club-agent/main.ts` | Adaptive autonomous session runner |
 | `clients/node/engine-process-client.ts` | Platform-neutral engine process lifecycle and NDJSON framing (v0 fallback) |
 | `clients/node/proto-engine-process-client.ts` | Platform-neutral framed v1 engine process lifecycle (default) |
+| `clients/node/proto-engine-process-client-v2.ts` | Platform-neutral framed v2 engine process lifecycle with capability-tuple handshake (opt-in) |
 | `bin/*` | Stable launchers into compiled `dist/` modules |
 
 ## State Machine
@@ -83,6 +85,36 @@ fallback path and performs this mapping:
 
 Cards are converted from `{rank, suit}` objects to two-character engine
 notation. Position aliases such as `BTN/SB` are reduced to the first position.
+
+### V2 mapper (opt-in)
+
+The v2 mapper (`platforms/river-club/src/v2-mapper.ts`) implements the RFC
+0022 complete cash-hand protocol. It is enabled by setting
+`BIGSHARK_ENGINE_PROTO_V2=1`. When enabled, the runner tries v2 first and
+falls back to v1 on any v2 error.
+
+The v2 mapper produces a `DecisionRequest` with:
+
+- **G/F contribution ledger**: `startingStack`, `grossContributed` (G), and
+  `refunded` (F) per player, reconstructed from blind seeding and structured
+  action replay. The invariant `startingStack = stack + G - F` is validated
+  before sending. Refunds are detected at closed-street boundaries by
+  comparing per-street commitments; the current (open) street's refund is
+  applied by the engine at street close.
+- **Phase-tagged pot layers**: `PotState` with `PENDING` layers built from
+  `room.pots` when present, or from net contributions (`G - F`) otherwise.
+- **TransitionEvent path**: `ActionEvent` and `BoardDeal` events with
+  `potBefore` and `stackAfter` tracked incrementally from blinds through
+  every action.
+- **ObservationProvenance**: `source = PROVIDER`, `coverage = FULL`,
+  `controllerEpoch = handId:revision`.
+- **RuleProfile**: settlement, reopening, runout, and dealt seat count.
+- **DecisionOptions**: `utilityProfile = CASH_CHIP`.
+
+The v2 client (`clients/node/proto-engine-process-client-v2.ts`) reuses the
+v1 ULEB128 frame codec and process lifecycle pattern, replacing minor
+negotiation with a capability-tuple handshake. Every envelope carries
+`protocolVersion = 3`.
 
 ## Action-History Reconstruction
 
@@ -178,4 +210,6 @@ a future platform adapter to reuse the engine client without importing River
 types. A second platform remains pending under
 [RFC 0001](../rfcs/0001-engineering-architecture.md). The Protobuf migration
 defined by [RFC 0002](../rfcs/0002-protobuf-engine-protocol.md) has landed;
-v1 is the default protocol and v0 is the fallback.
+v1 is the default protocol and v0 is the fallback. The v2 complete cash-hand
+protocol ([RFC 0022](../rfcs/0022-complete-cash-hand-protocol.md)) is wired
+behind `BIGSHARK_ENGINE_PROTO_V2=1` with v1 as the fallback path.

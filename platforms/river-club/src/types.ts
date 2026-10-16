@@ -277,6 +277,17 @@ export interface V1EnvelopeClient {
   readonly minor2Capable?: boolean;
 }
 
+/** Structural framed v2 client type; the concrete Envelope types live in the
+ * generated Protobuf bindings imported by v2-mapper. */
+export interface V2EnvelopeClient {
+  request(envelope: unknown, timeoutMs?: number): Promise<unknown>;
+  /** Resolves once the process is started AND the capabilities handshake has
+   * finished. */
+  start?: () => Promise<void>;
+  /** Always 3 for v2. */
+  readonly protocolVersion?: 3;
+}
+
 export interface EngineConfig {
   style?: string;
   heroName?: string;
@@ -286,6 +297,9 @@ export interface EngineConfig {
   /** Opt in to the RFC 0002 framed Protobuf engine path. */
   proto?: boolean;
   protoEngineClient?: V1EnvelopeClient;
+  /** Opt in to the RFC 0022 v2 framed Protobuf engine path. When set, the
+   * runner tries v2 first and falls back to v1 on any v2 error. */
+  protoEngineClientV2?: V2EnvelopeClient;
   engineClient?: {
     request(message: V0DecisionContext, timeoutMs?: number): Promise<RawEngineDecision>;
   };

@@ -86,7 +86,11 @@ flowchart LR
 2. `platforms/river-club/src/v1-mapper.ts` converts the River room into the
    structured v1 context (chip units, enum cards, ordered seats, structured
    action history, side pots, absolute targets). The v0 normalizer remains
-   as the fallback path.
+   as the fallback path. When `BIGSHARK_ENGINE_PROTO_V2=1` is set,
+   `platforms/river-club/src/v2-mapper.ts` instead produces a v2
+   `DecisionRequest` with G/F contribution ledger, phase-tagged pot layers,
+   TransitionEvent path, observation provenance, and rule profile; v2 errors
+   fall back to v1.
 3. `clients/node/proto-engine-process-client.ts` sends the framed v1 request
    to the persistent C++ host.
 4. The v1 protocol mapper parses the message, the service invokes policy,
@@ -125,8 +129,9 @@ flowchart LR
   v0 NDJSON remains as the fallback. RFC 0002 defines the accepted v1
   contract, whose IDL and generated-code checks exist under `proto/`.
   The v2 framed Protobuf protocol (RFC 0022) is implemented and dispatched
-  by `protocol_version` field 1 in the engine-host; it is not yet wired
-  into the River Club runner (the runner still sends v1 envelopes).
+  by `protocol_version` field 1 in the engine-host; it is wired into the
+  River Club runner behind the `BIGSHARK_ENGINE_PROTO_V2=1` feature flag,
+  with v1 as the fallback path on any v2 error.
 - River action history is replayed as structured history on the v1 path;
   only past-street rounded display text remains text-only. The v0 path
   still compresses events into actor-tagged strings.

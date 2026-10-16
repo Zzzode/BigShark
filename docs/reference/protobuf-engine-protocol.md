@@ -967,6 +967,10 @@ V2-specific error codes (in addition to the shared set):
 | `engine/src/protocol/v2_response_mapper.cpp` | Native → wire response mappers, `errorResponse`, `buildCapabilities` |
 | `engine/src/protocol/v2_mappers.hpp` | Internal shared header (includes v2 generated protobuf) |
 | `engine/tests/test_v2_conformance.cpp` | RFC 0022 conformance vectors and envelope tests |
+| `clients/node/proto-engine-process-client-v2.ts` | TypeScript v2 framed client: ULEB128 codec (reused from v1), capability-tuple handshake, `protocolVersion = 3` envelopes |
+| `platforms/river-club/src/v2-mapper.ts` | River room → v2 `DecisionRequest` mapper: G/F ledger, phase-tagged pot layers, TransitionEvent path, observation provenance |
+| `platforms/river-club/tests/v2-mapper.test.ts` | 21 unit tests covering G/F ledger, pot layers, transition path, provenance, and response mapping |
+| `clients/node/tests/proto-engine-process-client-v2.test.ts` | 13 unit tests covering frame round-trip, capabilities handshake, correlation, and error handling |
 
 ### V2 conformance vectors
 
@@ -988,6 +992,41 @@ Three executable test vectors (from RFC 0022) are pinned in
 The v2 sampler uses SplitMix64 with domain separator
 `0x425356322d73616d` ("BSV2-sam"), distinct from v1's
 `0x425356312d73616d` ("BSV1-sam").
+
+### V2 TypeScript client and River adapter
+
+The v2 TypeScript client (`clients/node/proto-engine-process-client-v2.ts`)
+reuses the v1 client's ULEB128 frame codec (`encodeVarint`,
+`MAX_FRAME_BYTES`) and process lifecycle pattern. Key differences from v1:
+
+- No minor negotiation — a capabilities handshake replaces it. The client
+  sends `GetCapabilitiesRequest` at startup, verifies
+  `supported_protocol_versions` includes `3`, and stores the
+  `CapabilityTuple[]` from the response.
+- Every envelope carries `protocolVersion = 3`.
+- `EnvelopeSchema` from the v2 generated bindings.
+
+The River adapter v2 mapper (`platforms/river-club/src/v2-mapper.ts`)
+converts a `RiverRoom` snapshot into a v2 `DecisionRequest`:
+
+- **G/F ledger**: seeded with blind amounts, then replayed through
+  structured actions (reusing v1's `replayActionRounds` and
+  `parseExactChipAmount`). Refunds are detected at closed-street boundaries
+  by comparing per-street commitments; the current (open) street's refund
+  is applied by the engine at close. The invariant
+  `startingStack = stack + G - F` is validated before sending.
+- **Pot layers**: built from `room.pots` when present, otherwise from net
+  contributions (`G - F`). All layers are `PENDING` during the action phase.
+- **TransitionEvent path**: `ActionEvent` and `BoardDeal` events with
+  `potBefore` and `stackAfter` tracked incrementally from blinds.
+- **Response mapping**: reuses v1's `executeFromStrategy` and
+  `validateEngineDecision` since the v2 `Strategy`/`ExpandedStrategy`
+  shapes are unchanged.
+
+The v2 path is enabled by `BIGSHARK_ENGINE_PROTO_V2=1`. When enabled, the
+runner tries v2 first and falls back to v1 on any v2 error. v1 remains the
+default when the flag is unset. `GUARANTEE_BELOW_REQUEST` and configuration
+errors from v2 propagate without fallback.
 
 ## Golden Differential
 

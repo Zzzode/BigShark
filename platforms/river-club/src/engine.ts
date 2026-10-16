@@ -6,12 +6,19 @@ import { fileURLToPath } from 'node:url';
 
 import { EngineProcessClient } from '../../../clients/node/engine-process-client.js';
 import { ProtoEngineProcessClient } from '../../../clients/node/proto-engine-process-client.js';
+import { V2ProtoEngineProcessClient } from '../../../clients/node/proto-engine-process-client-v2.js';
 import {
   decisionEnvelope,
   fromV1DecisionResponse,
   toV1DecisionRequest,
   V1EngineError,
 } from './v1-mapper.js';
+import {
+  decisionEnvelopeV2,
+  fromV2DecisionResponse,
+  toV2DecisionRequest,
+  V2EngineError,
+} from './v2-mapper.js';
 import {
   buildContext,
   safeFallback,
@@ -25,6 +32,10 @@ import {
   GetCapabilitiesRequestSchema,
   SolverMode,
 } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
+import {
+  EnvelopeSchema as EnvelopeSchemaV2,
+  GetCapabilitiesRequestSchema as GetCapabilitiesRequestSchemaV2,
+} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
 import type {
   EngineConfig,
   ExecutableDecision,
@@ -33,8 +44,10 @@ import type {
   RiverRoom,
   V0DecisionContext,
   V1EnvelopeClient,
+  V2EnvelopeClient,
 } from './types.js';
 import type { Envelope } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
+import type { Envelope as EnvelopeV2 } from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
 
 const defaultBinary = process.env.BIGSHARK_ENGINE_BINARY || fileURLToPath(
   new URL('../../../../bin/bigshark-engine', import.meta.url),
@@ -70,6 +83,8 @@ export function residentBudgetMiB(): number {
 let defaultClient: EngineProcessClient<V0DecisionContext, RawEngineDecision> | null = null;
 let defaultProtoClient: ProtoEngineProcessClient | null = null;
 let defaultProtoClientKey = '';
+let defaultProtoClientV2: V2ProtoEngineProcessClient | null = null;
+let defaultProtoClientV2Key = '';
 
 function engineClient(): EngineProcessClient<V0DecisionContext, RawEngineDecision> | null {
   if (!defaultClient && existsSync(defaultBinary)) {
@@ -341,6 +356,34 @@ function protoEngineClient(
   return defaultProtoClient;
 }
 
+function protoEngineClientV2(
+  roots: readonly ResidentRootSpec[],
+  libraries: readonly string[],
+  residentBudgetMiB?: number,
+): V2ProtoEngineProcessClient | null {
+  const key = JSON.stringify({ roots, libraries, residentBudgetMiB });
+  if (defaultProtoClientV2 && defaultProtoClientV2Key === key)
+    return defaultProtoClientV2;
+  if (!existsSync(defaultBinary))
+    return null;
+  defaultProtoClientV2?.stop();
+  defaultProtoClientV2 = null;
+  const warmup = create(EnvelopeSchemaV2, { protocolVersion: 3 });
+  warmup.payload = {
+    case: 'getCapabilitiesRequest',
+    value: create(GetCapabilitiesRequestSchemaV2),
+  };
+  warmup.requestId = 'v2-warmup-capabilities';
+  defaultProtoClientV2 = new V2ProtoEngineProcessClient({
+    command: defaultBinary,
+    args: protoEngineLaunchArgs(roots, libraries, residentBudgetMiB),
+    warmupEnvelope: warmup,
+    warmupTimeoutMs: warmupTimeoutMsFor(libraries, roots),
+  });
+  defaultProtoClientV2Key = key;
+  return defaultProtoClientV2;
+}
+
 export { buildContext, safeFallback };
 
 function protoEnabled(config: EngineConfig): boolean {
@@ -443,6 +486,62 @@ async function decideV1(
   return decision;
 }
 
+function protoV2Enabled(config: EngineConfig): boolean {
+  return process.env.BIGSHARK_ENGINE_PROTO_V2 === '1';
+}
+
+async function decideV2(
+  room: RiverRoom,
+  config: EngineConfig,
+): Promise<ExecutableDecision> {
+  const timeoutMs = config.timeoutMs ?? 2000;
+  const deadline = performance.now() + timeoutMs;
+  let roots: ResidentRootSpec[];
+  try {
+    roots = parseResidentRoots(config);
+  } catch (error) {
+    throw new Error(
+      `invalid resident root configuration: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  let libraries: string[];
+  let residentBudgetMiB: number | undefined;
+  try {
+    const resolved = resolveFlopLibraries(config);
+    libraries = resolved.libraries;
+    residentBudgetMiB = resolved.residentBudgetMiB;
+  } catch (error) {
+    throw new Error(
+      `invalid flop library configuration: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
+    throw new Error('Engine decision timeout must be finite and positive');
+  const client = (config.protoEngineClientV2 as V2EnvelopeClient | undefined)
+    ?? protoEngineClientV2(roots, libraries, residentBudgetMiB);
+  if (!client)
+    return safeFallback(room);
+  if (client.start) await withinDecisionDeadline(deadline, () => client.start!());
+  const request = toV2DecisionRequest(room, {
+    ...(config.style !== undefined ? { style: config.style } : {}),
+    ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
+    ...(config.solveTimeBudgetMs !== undefined
+      ? { solveTimeBudgetMs: resolveSolveTimeBudgetMs(config.solveTimeBudgetMs) }
+      : {}),
+    ...(config.minimumGuaranteeLevel !== undefined
+      ? { minimumGuaranteeLevel: config.minimumGuaranteeLevel }
+      : {}),
+  });
+  const requestEnvelope = decisionEnvelopeV2(request);
+  const envelope = await withinDecisionDeadline(deadline, remainingMs => client.request(
+    requestEnvelope,
+    remainingMs,
+  )) as EnvelopeV2;
+  const decision = fromV2DecisionResponse(envelope, room);
+  if (performance.now() >= deadline) throw new Error('Engine decision timed out');
+  return decision;
+}
+
 export async function decide(
   room: RiverRoom,
   config: EngineConfig = {},
@@ -452,6 +551,23 @@ export async function decide(
 
   if (protoEnabled(config)) {
     try {
+      if (protoV2Enabled(config)) {
+        try {
+          return await decideV2(room, config);
+        } catch (v2Error) {
+          // v2 errors fall through to v1, then to safeFallback.
+          // GUARANTEE_BELOW_REQUEST from v2 also propagates.
+          if (v2Error instanceof V2EngineError
+            && v2Error.code === ErrorCode.GUARANTEE_BELOW_REQUEST)
+            throw v2Error;
+          // Configuration errors propagate from v2 as well.
+          if (v2Error instanceof Error
+            && (v2Error.message.startsWith('invalid resident root configuration')
+              || v2Error.message.startsWith('invalid flop library configuration')))
+            throw v2Error;
+          // Fall through to v1.
+        }
+      }
       return await decideV1(room, config);
     } catch (error) {
       // RFC 0008 stage 5: a GUARANTEE_BELOW_REQUEST refusal is a contract
@@ -496,6 +612,9 @@ export function closeEngine(): void {
   defaultProtoClient?.stop();
   defaultProtoClient = null;
   defaultProtoClientKey = '';
+  defaultProtoClientV2?.stop();
+  defaultProtoClientV2 = null;
+  defaultProtoClientV2Key = '';
 }
 
 /**
