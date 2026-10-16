@@ -97,6 +97,42 @@ bool blocks_board(const std::array<int, 2>& h, const std::array<int, 5>& board,
   return false;
 }
 
+// Direct showdown utility for a 5-card (river) board. Bypasses the
+// EquityFrontierEvaluator's cache/mutex/key-allocation overhead, which dominates
+// when millions of frontier leaves are evaluated (the evaluator's own equity
+// computation for a 5-card board is just this hand evaluation). Returns one
+// utility per seat: equity * pot - contributed.
+std::vector<double> direct_showdown_utility(std::span<const int> board,
+                                            std::span<const std::array<int, 2>> holes,
+                                            const bs::tree::TerminalPayload& payload) {
+  const std::size_t n = holes.size();
+  std::uint32_t best = 0;
+  std::array<std::uint32_t, kMaxUnifiedSeats> scores{};
+  for (std::size_t s = 0; s < n; ++s) {
+    if (payload.seats[s].folded)
+      continue;
+    const int cards[7] = {holes[s][0], holes[s][1], board[0], board[1],
+                          board[2],    board[3],    board[4]};
+    scores[s] = bs::evaluate(cards, 7).score;
+    if (scores[s] > best)
+      best = scores[s];
+  }
+  int tied = 0;
+  for (std::size_t s = 0; s < n; ++s)
+    if (!payload.seats[s].folded && scores[s] == best)
+      ++tied;
+  const double share = 1.0 / static_cast<double>(tied);
+  double pot = 0.0;
+  for (std::size_t s = 0; s < n; ++s)
+    pot += static_cast<double>(payload.seats[s].contributed);
+  std::vector<double> values(n);
+  for (std::size_t s = 0; s < n; ++s) {
+    const double equity = (!payload.seats[s].folded && scores[s] == best) ? share : 0.0;
+    values[s] = equity * pot - static_cast<double>(payload.seats[s].contributed);
+  }
+  return values;
+}
+
 // Legal runout cards: {0..51} minus the board and every live seat's hole
 // cards. Folded seats carry a placeholder {-1, -1} — their cards are dead
 // and must not block the runout deck.
@@ -392,66 +428,173 @@ struct NashConvResult {
   std::vector<double> br_value;
 };
 
-// Recursive N-way joint-deal enumerator. For each card-compatible assignment
-// of one hand per LIVE seat, walks the tree once per live seat for strategy
-// value only. Best response values are computed separately by the pooled
-// walker (information-set-consistent). Folded seats carry a placeholder
-// {-1, -1} — their cards are dead and do not block live seats' hands.
-// Accumulates into the output sums.
-void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
-                           const std::vector<std::array<int, 2>>& range, const GameState& root,
-                           const std::array<bool, kMaxUnifiedSeats>& folded, std::size_t seat_count,
-                           std::size_t current_seat, std::vector<std::array<int, 2>>& holes,
-                           std::vector<double>& strategy_sum, std::size_t& joint_deals,
-                           std::size_t& total_fallbacks, const FrontierEvaluator* frontier = nullptr) {
-  if (current_seat == seat_count) {
-    ++joint_deals;
-    for (std::size_t p = 0; p < seat_count; ++p) {
-      if (folded[p])
-        continue;  // folded seat: no strategy, no best response
-      NashConvWalker walker{tree, policy, p, /*best_response=*/false, /*fallbacks=*/0, frontier};
-      const double sv = walker.walk(root, tree.root_index(), holes);
-      strategy_sum[p] += sv;
-      total_fallbacks += walker.fallbacks;
+// Multi-traverser walker: walks the tree ONCE per joint deal and returns every
+// seat's utility in a fixed-size array. This replaces the old per-traverser
+// enumerate_joint_deals, which walked the tree seat_count times per deal and
+// re-evaluated every frontier leaf each time. The frontier evaluator is the
+// dominant cost at depth-limited leaves, so batching all seats into one walk
+// cuts frontier evaluations by a factor of seat_count.
+struct MultiValueWalker {
+  const AbstractTree& tree;
+  const NSeatPolicy* policy = nullptr;  // null = uniform baseline
+  std::size_t fallbacks = 0;
+  const FrontierEvaluator* frontier = nullptr;
+
+  std::array<double, kMaxUnifiedSeats> walk(const GameState& state, std::size_t node_index,
+                                            const std::vector<std::array<int, 2>>& holes) {
+    std::array<double, kMaxUnifiedSeats> result{};
+    const auto& node = tree.node(node_index);
+    const std::size_t n = holes.size();
+
+    if (node.kind == NodeKind::TerminalFold) {
+      const auto& util = tree.terminal(node.terminal).chip_utility;
+      for (std::size_t i = 0; i < n; ++i)
+        result[i] = static_cast<double>(util[i]);
+      return result;
     }
-    return;
-  }
-  if (folded[current_seat]) {
-    // Folded seat: push a placeholder, skip collision check and enumeration.
-    holes.push_back({-1, -1});
-    enumerate_joint_deals(tree, policy, range, root, folded, seat_count, current_seat + 1, holes,
-                          strategy_sum, joint_deals, total_fallbacks, frontier);
-    holes.pop_back();
-    return;
-  }
-  for (const auto& h : range) {
-    bool collides = false;
-    for (std::size_t s = 0; s < current_seat; ++s) {
-      if (folded[s])
-        continue;  // folded seat's placeholder cannot collide
-      if (hands_collide(h, holes[s])) {
-        collides = true;
-        break;
+
+    if (node.kind == NodeKind::TerminalShowdown) {
+      const auto& payload = tree.terminal(node.terminal);
+      std::vector<std::array<int, 2>> live(payload.live_count);
+      for (std::size_t i = 0; i < payload.live_count; ++i)
+        live[i] = holes[payload.live_order[i]];
+      const auto& util = state.settle_showdown(live).chip_utility;
+      for (std::size_t i = 0; i < n; ++i)
+        result[i] = static_cast<double>(util[i]);
+      return result;
+    }
+
+    if (node.kind == NodeKind::TerminalFrontier) {
+      const auto& payload = tree.terminal(node.terminal);
+      const auto board = std::vector<int>(state.board().begin(), state.board().end());
+      if (board.size() == 5) {
+        // River: direct showdown, bypass frontier evaluator cache overhead.
+        const auto utils = direct_showdown_utility(board, holes, payload);
+        for (std::size_t i = 0; i < n; ++i)
+          result[i] = utils[i];
+      } else {
+        if (!frontier)
+          throw std::runtime_error(
+              "multi-value walker: TerminalFrontier without frontier evaluator");
+        const auto utils = frontier->evaluate(board, holes, payload);
+        for (std::size_t i = 0; i < n; ++i)
+          result[i] = utils[i];
+      }
+      return result;
+    }
+
+    if (node.is_chance()) {
+      const auto legal = legal_runout_cards(state, holes);
+      for (int c : legal) {
+        const std::size_t ordinal = board_only_ordinal(state, c);
+        if (ordinal >= node.children.size())
+          throw std::runtime_error("multi-value walker: chance ordinal out of range");
+        auto child = walk(state.after_card(c), node.children[ordinal], holes);
+        for (std::size_t i = 0; i < n; ++i)
+          result[i] += child[i];
+      }
+      const double inv = 1.0 / static_cast<double>(legal.size());
+      for (std::size_t i = 0; i < n; ++i)
+        result[i] *= inv;
+      return result;
+    }
+
+    if (!node.is_action())
+      throw std::runtime_error("multi-value walker: unexpected node kind");
+
+    const std::size_t actor = *state.actor();
+    const auto& menu = node.actions;
+    const auto board = std::vector<int>(state.board().begin(), state.board().end());
+
+    // Policy probabilities for the actor (same regardless of traverser).
+    std::vector<double> probs(menu.size(), 1.0 / static_cast<double>(menu.size()));
+    if (policy) {
+      const auto bucket =
+          static_cast<std::uint32_t>(card_bucket(kNSeatCardKind, holes[actor], board));
+      const NSeatInformationKey key{bucket, static_cast<std::uint64_t>(node_index)};
+      const auto it = policy->rows().find(key);
+      if (it != policy->rows().end()) {
+        const auto& row = it->second;
+        if (row.actions != menu)
+          throw std::runtime_error("multi-value walker: row menu drifted from tree node");
+        probs = row.probabilities;
+      } else {
+        ++fallbacks;
       }
     }
-    if (!collides) {
-      holes.push_back(h);
-      enumerate_joint_deals(tree, policy, range, root, folded, seat_count, current_seat + 1, holes,
-                            strategy_sum, joint_deals, total_fallbacks, frontier);
-      holes.pop_back();
+
+    for (std::size_t a = 0; a < menu.size(); ++a) {
+      auto child = walk(state.after_action(actor, menu[a]), node.children[a], holes);
+      for (std::size_t i = 0; i < n; ++i)
+        result[i] += probs[a] * child[i];
     }
+    return result;
+  }
+};
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+// Compute strategy values for ALL seats in one tree walk per joint deal.
+// Parallelized across joint deals with OpenMP.
+void compute_strategy_values(const AbstractTree& tree, const NSeatPolicy* policy,
+                             const GameDef& def,
+                             const std::vector<std::vector<std::array<int, 2>>>& deals,
+                             std::vector<double>& strategy_sum, std::size_t& total_fallbacks,
+                             const FrontierEvaluator* frontier = nullptr) {
+  const GameState root(def);
+  const std::size_t seat_count = def.player_count;
+#ifdef _OPENMP
+  const int num_threads = omp_get_max_threads();
+#else
+  const int num_threads = 1;
+#endif
+
+  std::vector<std::vector<double>> sums_per_thread(num_threads,
+                                                   std::vector<double>(seat_count, 0.0));
+  std::vector<std::size_t> fallbacks_per_thread(num_threads, 0);
+
+#pragma omp parallel for schedule(dynamic)
+  for (std::ptrdiff_t d = 0; d < static_cast<std::ptrdiff_t>(deals.size()); ++d) {
+#ifdef _OPENMP
+    const int tid = omp_get_thread_num();
+#else
+    const int tid = 0;
+#endif
+    const auto& holes = deals[d];
+    MultiValueWalker walker{tree, policy, 0, frontier};
+    auto utils = walker.walk(root, tree.root_index(), holes);
+    for (std::size_t p = 0; p < seat_count; ++p) {
+      if (def.folded[p])
+        continue;
+      sums_per_thread[tid][p] += utils[p];
+    }
+    fallbacks_per_thread[tid] += walker.fallbacks;
+  }
+
+  strategy_sum.assign(seat_count, 0.0);
+  total_fallbacks = 0;
+  for (int t = 0; t < num_threads; ++t) {
+    for (std::size_t p = 0; p < seat_count; ++p)
+      strategy_sum[p] += sums_per_thread[t][p];
+    total_fallbacks += fallbacks_per_thread[t];
   }
 }
 
-// Forward declaration: information-set-consistent best response (defined below).
+// Forward declarations: information-set-consistent best response and joint
+// deal collection (defined below).
+std::vector<std::vector<std::array<int, 2>>> collect_joint_deals(
+    const std::vector<std::array<int, 2>>& range, std::size_t seat_count,
+    const std::array<bool, kMaxUnifiedSeats>& folded);
 double compute_pooled_br_value(const AbstractTree& tree, const NSeatPolicy* policy,
-                               const std::vector<std::array<int, 2>>& range, const GameDef& def,
-                               std::size_t traverser, const FrontierEvaluator* frontier);
+                               const std::vector<std::vector<std::array<int, 2>>>& deals,
+                               const GameDef& def, std::size_t traverser,
+                               const FrontierEvaluator* frontier);
 
 NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* policy,
                                  const std::vector<std::array<int, 2>>& range, const GameDef& def,
                                  const FrontierEvaluator* frontier = nullptr) {
-  const GameState root(def);
   const double bb = static_cast<double>(def.big_blind);
   const std::size_t seat_count = def.player_count;
 
@@ -463,34 +606,41 @@ NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* po
       live_range.push_back(h);
   }
 
-  std::vector<double> strategy_sum(seat_count, 0.0);
-  std::size_t joint_deals = 0;
-  std::size_t total_fallbacks = 0;
-  std::vector<std::array<int, 2>> holes;
-  holes.reserve(seat_count);
+  // Collect joint deals once; shared across strategy-value and BR walks.
+  const auto deals = collect_joint_deals(live_range, seat_count, def.folded);
 
-  enumerate_joint_deals(tree, policy, live_range, root, def.folded, seat_count, 0, holes,
-                        strategy_sum, joint_deals, total_fallbacks, frontier);
+  // Strategy values: one tree walk per joint deal, all seats at once.
+  std::vector<double> strategy_sum;
+  std::size_t total_fallbacks = 0;
+  compute_strategy_values(tree, policy, def, deals, strategy_sum, total_fallbacks, frontier);
 
   NashConvResult result;
   result.strategy_value.resize(seat_count);
   result.br_value.resize(seat_count);
-  result.joint_deals = joint_deals;
+  result.joint_deals = deals.size();
   result.fallbacks = total_fallbacks;
   std::size_t live_seats = 0;
+  for (std::size_t p = 0; p < seat_count; ++p)
+    if (!def.folded[p])
+      ++live_seats;
+
+  // Per-traverser best response is independent: parallelize across traversers.
+  // Each thread writes to a distinct element of strategy_value/br_value.
+  double nash_conv = 0.0;
+#pragma omp parallel for reduction(+ : nash_conv) schedule(dynamic)
   for (std::size_t p = 0; p < seat_count; ++p) {
     if (def.folded[p]) {
       result.strategy_value[p] = 0.0;
       result.br_value[p] = 0.0;
       continue;
     }
-    ++live_seats;
-    result.strategy_value[p] = strategy_sum[p] / static_cast<double>(joint_deals);
+    result.strategy_value[p] = strategy_sum[p] / static_cast<double>(deals.size());
     // Information-set-consistent best response: pool joint deals by the
     // traverser's own holding and choose one action per information set.
-    result.br_value[p] = compute_pooled_br_value(tree, policy, live_range, def, p, frontier);
-    result.nash_conv += result.br_value[p] - result.strategy_value[p];
+    result.br_value[p] = compute_pooled_br_value(tree, policy, deals, def, p, frontier);
+    nash_conv += result.br_value[p] - result.strategy_value[p];
   }
+  result.nash_conv = nash_conv;
   result.exploitability = result.nash_conv / static_cast<double>(live_seats);
   result.exploitability_bb = result.exploitability / bb;
   return result;
@@ -508,8 +658,11 @@ NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* po
 // action per group, pooling all opponent holdings. This matches the
 // exact_best_response_utility algorithm in engine/src/stage6/exact_oracle.cpp.
 
+// Fixed-size holes avoid a per-view heap allocation at every tree node.
+// kMaxUnifiedSeats is 10, so a BRView is ~96 bytes — cheap to copy in bulk.
 struct BRView {
-  std::vector<std::array<int, 2>> holes;
+  std::array<std::array<int, 2>, kMaxUnifiedSeats> holes{};
+  std::size_t seat_count = 0;
   double reach = 0.0;  // probability of reaching this public node
 };
 
@@ -562,17 +715,31 @@ PooledValue pooled_br_walk(const GameState& state, std::size_t node_index,
   }
 
   if (node.kind == NodeKind::TerminalFrontier) {
-    if (!frontier)
-      throw std::runtime_error("pooled-br: TerminalFrontier leaf without frontier evaluator");
     const auto& payload = tree.terminal(node.terminal);
     const auto board = std::vector<int>(state.board().begin(), state.board().end());
+    const bool river = board.size() == 5;
+    if (!river && !frontier)
+      throw std::runtime_error("pooled-br: TerminalFrontier leaf without frontier evaluator");
     for (BRView* v : live) {
-      std::vector<std::array<int, 2>> hands(v->holes.size());
-      for (std::size_t i = 0; i < v->holes.size(); ++i)
-        hands[i] = v->holes[i];
-      const auto utils = frontier->evaluate(board, hands, payload);
+      double util;
+      if (river) {
+        // Direct showdown: bypass frontier evaluator cache/mutex overhead.
+        std::array<std::array<int, 2>, kMaxUnifiedSeats> hands{};
+        for (std::size_t i = 0; i < v->seat_count; ++i)
+          hands[i] = v->holes[i];
+        const auto utils = direct_showdown_utility(
+            board, std::span<const std::array<int, 2>>(hands.data(), v->seat_count), payload);
+        util = utils[traverser];
+      } else {
+        std::array<std::array<int, 2>, kMaxUnifiedSeats> hands{};
+        for (std::size_t i = 0; i < v->seat_count; ++i)
+          hands[i] = v->holes[i];
+        const auto utils = frontier->evaluate(
+            board, std::span<const std::array<int, 2>>(hands.data(), v->seat_count), payload);
+        util = utils[traverser];
+      }
       out.mass += v->reach;
-      out.value += v->reach * utils[traverser];
+      out.value += v->reach * util;
     }
     return out;
   }
@@ -585,7 +752,8 @@ PooledValue pooled_br_walk(const GameState& state, std::size_t node_index,
       std::array<bool, 52> used{};
       for (int c : state.board())
         used[c] = true;
-      for (const auto& h : live[i]->holes) {
+      for (std::size_t s = 0; s < live[i]->seat_count; ++s) {
+        const auto& h = live[i]->holes[s];
         if (h[0] >= 0)
           used[h[0]] = true;
         if (h[1] >= 0)
@@ -606,7 +774,9 @@ PooledValue pooled_br_walk(const GameState& state, std::size_t node_index,
       for (std::size_t i = 0; i < live.size(); ++i) {
         if (view_used[i][card])
           continue;
-        children.push_back({live[i]->holes, live[i]->reach / static_cast<double>(view_avail[i])});
+        BRView child = *live[i];  // fixed-size copy: no per-view heap alloc
+        child.reach /= static_cast<double>(view_avail[i]);
+        children.push_back(child);
       }
       if (children.empty())
         continue;
@@ -637,7 +807,7 @@ PooledValue pooled_br_walk(const GameState& state, std::size_t node_index,
       std::vector<BRView> children;
       children.reserve(live.size());
       for (BRView* v : live)
-        children.push_back({v->holes, v->reach});  // fixed action, reach unchanged
+        children.push_back(*v);  // fixed action, reach unchanged
       PooledValue child = pooled_br_walk(state.after_action(actor, menu[a]), node.children[a],
                                          std::move(children), tree, policy, traverser, frontier);
       if (!have_best || child.value > best.value) {
@@ -669,8 +839,11 @@ PooledValue pooled_br_walk(const GameState& state, std::size_t node_index,
       } else {
         prob = 1.0 / static_cast<double>(menu.size());
       }
-      if (prob > 0.0)
-        children.push_back({v->holes, v->reach * prob});
+      if (prob > 0.0) {
+        BRView child = *v;
+        child.reach *= prob;
+        children.push_back(child);
+      }
     }
     if (children.empty())
       continue;
@@ -725,10 +898,10 @@ std::vector<std::vector<std::array<int, 2>>> collect_joint_deals(
 // Groups joint deals by the traverser's own holding, then walks each group
 // with the pooled walker. Returns the normalized best response value.
 double compute_pooled_br_value(const AbstractTree& tree, const NSeatPolicy* policy,
-                               const std::vector<std::array<int, 2>>& range, const GameDef& def,
-                               std::size_t traverser, const FrontierEvaluator* frontier) {
+                               const std::vector<std::vector<std::array<int, 2>>>& deals,
+                               const GameDef& def, std::size_t traverser,
+                               const FrontierEvaluator* frontier) {
   const GameState root(def);
-  const auto deals = collect_joint_deals(range, def.player_count, def.folded);
   if (deals.empty())
     return 0.0;
 
@@ -736,7 +909,12 @@ double compute_pooled_br_value(const AbstractTree& tree, const NSeatPolicy* poli
   std::map<std::pair<int, int>, std::vector<BRView>> groups;
   for (const auto& holes : deals) {
     const auto& own = holes[traverser];
-    groups[{std::min(own[0], own[1]), std::max(own[0], own[1])}].push_back({holes, 1.0});
+    BRView view;
+    view.seat_count = def.player_count;
+    view.reach = 1.0;
+    for (std::size_t i = 0; i < def.player_count; ++i)
+      view.holes[i] = holes[i];
+    groups[{std::min(own[0], own[1]), std::max(own[0], own[1])}].push_back(view);
   }
 
   double total_value = 0.0;
@@ -1102,15 +1280,15 @@ int main(int argc, char** argv) {
     int failures = 0;
     for (int stack_bb : {10, 25, 100}) {
       for (std::size_t seats = 2; seats <= 6; ++seats) {
-        failures += run_fixture(
-            std::to_string(seats) + "-seat DL-CAP-NC turn-rooted " + std::to_string(stack_bb) +
-                " BB",
-            make_subgame_def_np(seats, stack_bb, false), range, schedule, iterations, seed,
-            /*solve_wall_seconds=*/60,
-            /*skip_nash_conv=*/false,
-            /*depth_limit=*/DepthLimit::streets(1),
-            /*frontier=*/&frontier,
-            /*action_override=*/&action);
+        failures += run_fixture(std::to_string(seats) + "-seat DL-CAP-NC turn-rooted " +
+                                    std::to_string(stack_bb) + " BB",
+                                make_subgame_def_np(seats, stack_bb, false), range, schedule,
+                                iterations, seed,
+                                /*solve_wall_seconds=*/60,
+                                /*skip_nash_conv=*/false,
+                                /*depth_limit=*/DepthLimit::streets(1),
+                                /*frontier=*/&frontier,
+                                /*action_override=*/&action);
       }
     }
     if (failures == 0)

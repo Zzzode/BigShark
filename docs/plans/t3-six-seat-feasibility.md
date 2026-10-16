@@ -315,27 +315,112 @@ and chooses ONE action per information set, matching the
 `exact_best_response_utility` algorithm in `engine/src/stage6/exact_oracle.cpp`.
 
 The `--t3-dl-cap-nc` mode runs the raise-capped depth-limited fixtures with
-NashConv quality measurement. Initial results (100 CFR iterations, 10 BB):
+NashConv quality measurement. Results (1000 CFR iterations):
 
 | Seats | Joint deals | CFR Exploitability | Uniform Exploitability | Reduction |
 | --- | --- | --- | --- | --- |
-| 2 | 70 | 0.083 BB | 0.221 BB | 62.3% |
-| 3 | 342 | 0.233 BB | 0.370 BB | 37.2% |
-| 4 | 1,104 | 0.286 BB | 0.505 BB | 43.3% |
-| 5 | — | pending (slow pooled BR) | — | — |
-| 6 | — | pending (slow pooled BR) | — | — |
+| 2 | 70 | 0.084 BB | 0.221 BB | 61.8% |
+| 3 | 342 | 0.171 BB | 0.370 BB | 53.7% |
+| 4 | 1,104 | 0.189 BB | 0.505 BB | 62.6% |
+| 5 | 2,040 | 0.186 BB | 0.810 BB | 77.0% |
+| 6 | 1,440 | 0.198 BB | 0.901 BB | 78.0% |
+
+**Stack-depth independence:** the NashConv results are identical across
+10/25/100 BB for every seat count. This is expected: with
+`max_raises_per_street=1`, the tree structure, action menus, and policy are
+independent of stack depth (the cap bounds betting to one bet/raise per street
+regardless of remaining chips). The full 15-fixture scan (2..6 seats ×
+10/25/100 BB) confirms this — all three stack columns produce the same
+exploitability per seat count.
 
 Key findings:
-- The CFR policy is 37-62% less exploitable than uniform across all measured
-  seat counts, even at only 100 iterations.
-- Exploitability increases with seat count (0.083 → 0.233 → 0.286 BB), as
-  expected for multiway games.
-- The pooled best response is computationally expensive for 5+ seats due to
-  the combinatorial growth in joint deals. Optimization or sampling is needed
-  for full six-seat quality campaigns.
-- These are preliminary results at low iteration count. A full quality
-  campaign requires 100K+ iterations and the qualification proposal's
-  learn/confirm methodology.
+- The CFR policy is 54-78% less exploitable than uniform across all measured
+  seat counts, even at only 1000 iterations.
+- Exploitability stays in a narrow 0.08-0.20 BB band across 2-6 seats,
+  demonstrating that the raise-capped depth-limited abstraction produces
+  consistent multiway strategy quality.
+- The reduction percentage increases with seat count (62% → 78%), showing
+  that CFR learning compounds in multiway games where uniform random play
+  is increasingly exploitable.
+- The full 15-fixture quality scan completes in under 6 minutes (previously
+  the 5-seat fixture alone could not finish in 6+ minutes).
+
+### 100K-Iteration Quality Campaign (2026-10-16)
+
+A full quality campaign at 100,000 CFR iterations (60 s solve budget per
+fixture) confirms and strengthens the preliminary 1000-iteration results.
+All 15 fixtures completed successfully. 2-5 seat fixtures reached 100K
+iterations; 6-seat fixtures hit the 60 s wall-clock at ~60K iterations.
+
+| Seats | Iterations | CFR Exploitability | Uniform Exploitability | Reduction |
+| --- | --- | --- | --- | --- |
+| 2 | 100K | 0.080 BB | 0.221 BB | 63.6% |
+| 3 | 100K | 0.154 BB | 0.370 BB | 58.5% |
+| 4 | 100K | 0.101 BB | 0.505 BB | 80.1% |
+| 5 | 100K | 0.019 BB | 0.810 BB | 97.7% |
+| 6 | ~60K | 0.020 BB | 0.901 BB | 97.8% |
+
+**Stack-depth independence** holds at 100K iterations: identical results
+across 10/25/100 BB for every seat count.
+
+**Convergence comparison (1000 → 100K iterations):**
+
+| Seats | 1K iter | 100K iter | Improvement |
+| --- | --- | --- | --- |
+| 2 | 0.084 BB | 0.080 BB | 5% |
+| 3 | 0.171 BB | 0.154 BB | 10% |
+| 4 | 0.189 BB | 0.101 BB | 47% |
+| 5 | 0.186 BB | 0.019 BB | 90% |
+| 6 | 0.198 BB | 0.020 BB | 90% |
+
+Key findings:
+- **5-6 seat games achieve near-equilibrium quality** (~0.02 BB
+  exploitability) at 100K iterations. The larger information-set count in
+  multiway games gives CFR more to learn, and once learned, the strategy
+  is very close to equilibrium.
+- **4-seat games improve 47%** (0.189 → 0.101 BB), showing that the
+  abstraction has significant headroom beyond 1000 iterations.
+- **2-3 seat games were already near-converged** at 1000 iterations;
+  the improvement is marginal (5-10%).
+- **Reduction vs uniform reaches 97.7-97.8%** for 5-6 seats, demonstrating
+  that the CFR policy is nearly optimal against uniform opponents in
+  multiway games.
+- **Solve time at 100K iterations**: 2-seat ~1.1 s, 3-seat ~3.0 s, 4-seat
+  ~7.4 s, 5-seat ~18.5 s, 6-seat 60 s wall-clock (~60K iterations). All
+  within the 60 s budget.
+- These results use the information-set-consistent pooled BR walker, not
+  the qualification proposal's independent oracle. They are strong
+  internal quality evidence, not the independent quality gate the
+  qualification proposal requires.
+
+### NashConv Performance Optimization
+
+The initial pooled BR implementation could not complete 5+ seat fixtures in
+reasonable time (the 5-seat NashConv ran >6 minutes without finishing). Four
+optimizations were applied to `engine/benchmarks/subgame_nash_conv.cpp`:
+
+1. **Fixed-size BRView holes** (`std::array` instead of `std::vector`):
+   eliminates a per-view heap allocation at every tree node. The old code
+   allocated ~230M heap blocks for a 5-seat walk; the fixed-size BRView
+   (96 bytes, trivially copyable) reduces this to bulk vector storage.
+
+2. **Multi-traverser walker (MultiValueWalker)**: walks the tree ONCE per
+   joint deal and returns all seat utilities in a fixed-size array, replacing
+   the old `enumerate_joint_deals` which walked the tree `seat_count` times
+   per deal. This cuts frontier evaluations by a factor of `seat_count`.
+
+3. **OpenMP parallelization**: strategy values are parallelized across joint
+   deals; BR values are parallelized across traversers. The CMake build
+   detects OpenMP and links it when available (`find_package(OpenMP QUIET)`).
+
+4. **Direct showdown for 5-card boards**: bypasses the
+   `EquityFrontierEvaluator`'s cache/mutex/key-allocation overhead at river
+   frontier leaves, where the equity computation is just a 7-card hand
+   evaluation. The frontier evaluator's cache lookup (~300 ns) exceeds the
+   direct computation (~100 ns) for 5-card boards.
+
+With these optimizations, the full 15-fixture quality scan (2..6 seats ×
+10/25/100 BB, 1000 iterations each) completes in under 5 minutes.
 
 ## Impact on T4 and T5
 
@@ -343,10 +428,14 @@ With the raise-count cap and depth-limited resolving, six-max subgame solving
 is now feasible at all measured stack depths (10/25/100 BB). T4 (six-position
 preflop policies) and T5 (flop/turn/river coverage) can proceed using the
 raise-capped + depth-limited configuration. The remaining constraint is solve
-time at 6 seats (~30K iterations in 30 s), which should be sized for the
-available decision budget before a quality campaign. Policy quality
-(NashConv/exploitability) has not yet been measured for the raise-capped
-abstraction.
+time at 6 seats (~60K iterations in 60 s), which should be sized for the
+available decision budget before a production quality campaign. Policy quality
+(NashConv/exploitability) has been measured at both 1000 and 100K iterations
+(see the [Quality Measurement](#quality-measurement-2026-10-16) section):
+0.02-0.15 BB exploitability at 100K iterations, 58-98% reduction vs uniform,
+with 5-6 seat games achieving near-equilibrium quality (~0.02 BB). The
+qualification proposal's independent quality gate remains the next step
+before T4/T5 can claim certified strategy quality.
 
 ## Reproduce
 

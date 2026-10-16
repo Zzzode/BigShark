@@ -352,6 +352,16 @@ else()
   message(STATUS "HiGHS not found: river solver uses bounded DCFR (brew install highs for exact LP).")
 endif()
 
+# OpenMP: optional, used by the subgame NashConv benchmark to parallelize the
+# per-traverser best-response walk. The benchmark builds and runs correctly
+# without it (single-threaded); OpenMP only speeds up the quality scan.
+find_package(OpenMP QUIET)
+if(OpenMP_CXX_FOUND)
+  message(STATUS "OpenMP found: subgame NashConv benchmark will parallelize BR walks.")
+else()
+  message(STATUS "OpenMP not found: subgame NashConv benchmark runs single-threaded.")
+endif()
+
 add_executable(bigshark-multistreet-benchmark
   benchmarks/multistreet_cfr_benchmark.cpp
 )
@@ -572,6 +582,9 @@ add_executable(bigshark-subgame-nash-conv
 target_link_libraries(bigshark-subgame-nash-conv PRIVATE
   bigshark_solver
 )
+if(OpenMP_CXX_FOUND)
+  target_link_libraries(bigshark-subgame-nash-conv PRIVATE OpenMP::OpenMP_CXX)
+endif()
 
 # RFC 0005 Stage 9 bounded-resolve microbenchmark. Tiny fixed-runout terminal
 # game; reports solve+cert wall time, worst bound slack, and iterations. Manual
