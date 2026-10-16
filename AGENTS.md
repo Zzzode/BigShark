@@ -47,6 +47,20 @@ Apply these rules in priority order.
    enters leaving mode and completes the hand. Poll until `room` is `null`.
    Use `unwatch` when observing.
 
+## No Legacy Code
+
+This project does not maintain versioned implementations or backward-
+compatibility fallbacks. When a new approach replaces an old one, the old
+code, tests, documentation, and configuration are deleted in the same change.
+
+- Do not introduce feature flags to select between old and new implementations.
+- Do not keep deprecated code paths "just in case."
+- Do not version internal concepts (v0, v1, v2, etc.). The wire protocol's
+  version field is a transport detail, not a project versioning scheme.
+- Aggressive refactoring is the default: replace, do not accumulate.
+- External API versions (e.g., River Club protocol v2.1) are outside our
+  control and are referenced as-is.
+
 ## Engine Build Contract
 
 Use the root `CMakePresets.json` for every C++ build:
@@ -72,7 +86,7 @@ Use `asan` for memory, lifetime, bounds, and undefined-behavior changes.
 Detailed architecture and verification requirements are in
 `docs/design/gto-engine.md` and `docs/development/build-and-test.md`.
 
-## Protocol v2 State Machine
+## State Machine
 
 | State | Only valid next step |
 | --- | --- |
@@ -201,8 +215,8 @@ local `sessions/` logs.
 - `docs/README.md`: documentation index and policy
 - `docs/architecture/system-overview.md`: implemented component boundaries
 - `docs/design/gto-engine.md`: C++ strategy and solver implementation
-- `docs/reference/engine-protocol.md`: current NDJSON process contract
-- `docs/reference/protobuf-engine-protocol.md`: v1 IDL and generation contract
+- `docs/reference/engine-protocol.md`: NDJSON process contract (legacy, to be removed)
+- `docs/reference/protobuf-engine-protocol.md`: engine protocol IDL and generation contract
 - `docs/integrations/river-club.md`: River Club adapter and operations
 - `docs/development/build-and-test.md`: presets, formatting, tests, and release
 - `docs/rfcs/`: architecture proposals and RFC process
@@ -210,7 +224,7 @@ local `sessions/` logs.
 - `docs/SKILL.md`: official River Club v2 operating contract
 - `docs/upstream-STRATEGY.md`: official River Club decision guide
 - `docs/openapi.json`: official OpenAPI 3.1 definition
-- `docs/state-schema.md`: historical protocol v1 observations
+- `docs/state-schema.md`: historical protocol observations (legacy, to be removed)
 - `strategy/PLAYBOOK.md`: baseline poker decision framework
 - `strategy/table-notes.md`: durable opponent and table observations
 - `.codex/skills/`: exploitative style selector and style modules
@@ -218,7 +232,7 @@ local `sessions/` logs.
 - `apps/engine-host/`: C++ process composition root
 - `apps/river-club-agent/`: TypeScript River session composition root
 - `clients/node/`: generic TypeScript engine process client
-- `proto/`: authoritative Protobuf v1 IDL, Buf lock, baseline, and vectors
+- `proto/`: authoritative engine protocol IDL, Buf lock, baseline, and vectors
 - `platforms/river-club/`: typed River adapter and operational commands
 - `tools/replay/`: historical decision replay implementation
 - `bin/`: thin compatibility launchers and published engine executable
