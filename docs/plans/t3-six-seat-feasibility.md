@@ -306,6 +306,37 @@ six-max subgame solving feasible at all measured stack depths:
    exact `EquityFrontierEvaluator` enumeration with a learned value function
    to further reduce frontier-evaluation cost.
 
+## Quality Measurement (2026-10-16)
+
+The information-set-consistent NashConv walker (pooled best response) replaces
+the previous per-deal walker, which allowed hidden-information-dependent
+responses. The pooled walker groups joint deals by the traverser's own holding
+and chooses ONE action per information set, matching the
+`exact_best_response_utility` algorithm in `engine/src/stage6/exact_oracle.cpp`.
+
+The `--t3-dl-cap-nc` mode runs the raise-capped depth-limited fixtures with
+NashConv quality measurement. Initial results (100 CFR iterations, 10 BB):
+
+| Seats | Joint deals | CFR Exploitability | Uniform Exploitability | Reduction |
+| --- | --- | --- | --- | --- |
+| 2 | 70 | 0.083 BB | 0.221 BB | 62.3% |
+| 3 | 342 | 0.233 BB | 0.370 BB | 37.2% |
+| 4 | 1,104 | 0.286 BB | 0.505 BB | 43.3% |
+| 5 | — | pending (slow pooled BR) | — | — |
+| 6 | — | pending (slow pooled BR) | — | — |
+
+Key findings:
+- The CFR policy is 37-62% less exploitable than uniform across all measured
+  seat counts, even at only 100 iterations.
+- Exploitability increases with seat count (0.083 → 0.233 → 0.286 BB), as
+  expected for multiway games.
+- The pooled best response is computationally expensive for 5+ seats due to
+  the combinatorial growth in joint deals. Optimization or sampling is needed
+  for full six-seat quality campaigns.
+- These are preliminary results at low iteration count. A full quality
+  campaign requires 100K+ iterations and the qualification proposal's
+  learn/confirm methodology.
+
 ## Impact on T4 and T5
 
 With the raise-count cap and depth-limited resolving, six-max subgame solving
@@ -330,6 +361,9 @@ cmake --build --preset release --target bigshark-subgame-nash-conv
 
 # Depth-limited + raise-capped scan (2026-10-16)
 ./build/release/engine/bigshark-subgame-nash-conv --t3-dl-cap 100000 42
+
+# Depth-limited + raise-capped with NashConv quality measurement
+./build/release/engine/bigshark-subgame-nash-conv --t3-dl-cap-nc 1000 42
 ```
 
 The scan writes each fixture's tree metrics, solve termination and coverage to
