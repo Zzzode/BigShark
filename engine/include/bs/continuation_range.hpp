@@ -17,7 +17,12 @@
 // exactly once in the output, never once per line.
 //
 // CARD REMOVAL: a combo that shares a card with the flop receives zero reach
-// at that flop (it cannot be dealt). The conditioning is exact.
+// at that flop (it cannot be dealt). Joint deals where two seats share a card
+// are impossible and excluded. The conditioning is exact.
+//
+// SEATS: the export serves any player count the tree supports (2..10). The
+// walker follows the policy's per-actor rows at every action node, so every
+// seat's hole cards condition the reach through the tree.
 #pragma once
 
 #include <array>
@@ -33,13 +38,14 @@ namespace bs::solver {
 
 // One flop's continuation ranges: the per-seat combo distribution at the
 // frontier, estimated from the policy's reach. The ranges are normalized to
-// sum to one per seat; only combos with positive reach are present.
+// sum to one per seat; only combos with positive reach are present. The
+// outer vector is sized to the game's player count (one map per seat).
 //
 // The combo index is bs::comboIndex(c0, c1) — the same index the belief model
 // and artifact reader use.
 struct PolicyReachRangePair {
   std::array<int, 3> flop{};
-  std::array<std::map<int, double>, 2> ranges;  // [seat][combo_index] = probability
+  std::vector<std::map<int, double>> ranges;  // [seat][combo_index] = probability
 };
 
 // Compute continuation ranges for every flop reached with positive
@@ -48,18 +54,19 @@ struct PolicyReachRangePair {
 // `policy` is the sealed average policy from a preflop flop-terminal training
 // run. `tree` must be the tree the policy was trained on (same GameDef and
 // action abstraction). `ranges` are the per-seat declared ranges (prior
-// weights); they must match the ranges the policy was trained on.
+// weights); they must match the ranges the policy was trained on, with one
+// entry per seat.
 //
 // The export walks the preflop tree for each in-range joint deal, following
 // the average policy, and accumulates the reach at each flop chance node. A
 // flop reachable through multiple preflop lines is accumulated (summed), not
-// duplicated. Card removal is exact: a combo that blocks the flop receives
-// zero reach at that flop.
+// duplicated. Card removal is exact in two dimensions: (1) joint deals where
+// two seats share a card are impossible and excluded, and (2) a combo that
+// blocks the flop receives zero reach at that flop.
 //
-// Performance: the tree walk is memoized by (hero_bucket, opp_bucket) pair
-// (at most 169*169 = 28,561 unique walks instead of one per joint deal). The
-// per-flop accumulation uses a subtraction trick — total weight minus the
-// ~150 combos that block the flop — instead of iterating all joint entries.
+// The tree walk is memoized by the per-seat Preflop169 bucket tuple, so the
+// number of walks is at most the number of distinct bucket tuples across the
+// in-range combos, not the number of joint deals.
 //
 // Returns one entry per flop with positive total reach, sorted by flop cards
 // (ascending). Each entry's ranges are normalized to sum to one per seat.

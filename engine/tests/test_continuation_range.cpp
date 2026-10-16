@@ -57,7 +57,7 @@ class ZeroFrontierEvaluator : public bs::gto::FrontierEvaluator {
     (void)flop;
     (void)hands;
     (void)ledger;
-    return {0.0, 0.0};
+    return std::vector<double>(hands.size(), 0.0);
   }
 };
 
@@ -125,8 +125,212 @@ double independent_flop_reach(const NSeatPolicy& policy, const AbstractTree& tre
 }
 
 // ---------------------------------------------------------------------------
-// Correctness: hand-derived marginal, card removal, normalization, multi-line.
+// N-seat helpers: game definition, ranges, and an independent N-seat walk.
 // ---------------------------------------------------------------------------
+
+// An N-seat preflop flop-terminal game: 3 BB stacks, standard blinds.
+GameDef nseat_preflop_def(std::size_t player_count) {
+  GameDef def{};
+  def.player_count = player_count;
+  def.button = 0;
+  def.big_blind = 2;
+  def.stacks = {6, 6, 6, 6, 6, 6, 6, 6, 6, 6};  // 3 BB
+  def.contributions = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.pot = 3;  // SB 1 + BB 2
+  def.board = {-1, -1, -1, 0, 0};
+  def.board_size = 0;
+  def.preflop = true;
+  def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.blinds_posted[small_blind_seat(def)] = 1;
+  def.blinds_posted[big_blind_seat(def)] = 2;
+  def.terminal = TerminalDepth::Flop;
+  return def;
+}
+
+// Two combos per seat (one pair, one offsuit high card) with DIFFERENT
+// Preflop169 buckets so the policy distinguishes them. All 2*player_count
+// combos are mutually card-distinct, so every joint combination is
+// card-compatible. Supports up to 6 seats.
+std::vector<std::vector<WeightedHand>> nseat_preflop_ranges(std::size_t player_count) {
+  static const int cards[6][2][2] = {
+      {{card("Ks"), card("Kd")}, {card("6d"), card("7s")}},
+      {{card("Qh"), card("Qc")}, {card("4c"), card("5h")}},
+      {{card("Js"), card("Jd")}, {card("2d"), card("3s")}},
+      {{card("Th"), card("Tc")}, {card("6c"), card("7h")}},
+      {{card("9s"), card("9d")}, {card("4d"), card("5s")}},
+      {{card("8h"), card("8c")}, {card("2c"), card("3h")}},
+  };
+  static const double weights[6][2] = {
+      {3, 2}, {7, 5}, {11, 13}, {17, 19}, {23, 29}, {31, 37},
+  };
+  std::vector<std::vector<WeightedHand>> ranges(player_count);
+  for (std::size_t s = 0; s < player_count; ++s) {
+    for (int c = 0; c < 2; ++c)
+      ranges[s].push_back({{cards[s][c][0], cards[s][c][1]}, weights[s][c]});
+  }
+  return ranges;
+}
+
+// Independent N-seat tree walk: compute the total flop reach by walking the
+// preflop tree and summing the reach at every flop chance node. This is a
+// separate implementation of the export's core reach computation.
+double independent_flop_reach_n(const NSeatPolicy& policy, const AbstractTree& tree,
+                                std::size_t node_index,
+                                const std::vector<std::array<int, 2>>& hole_cards, double reach) {
+  const TreeNode& node = tree.node(node_index);
+  if (node.is_terminal())
+    return 0.0;
+  if (node.is_flop_deal())
+    return reach;
+
+  const std::size_t actor = node.actor;
+  const std::array<int, 2>& own = hole_cards[actor];
+  const std::uint32_t bucket =
+      static_cast<std::uint32_t>(bs::abstraction::card_bucket(kNSeatCardKind, own, {}));
+  const NSeatInformationKey key{bucket, static_cast<std::uint64_t>(node_index)};
+  const auto it = policy.rows().find(key);
+
+  std::vector<double> probs;
+  if (it != policy.rows().end()) {
+    probs = it->second.probabilities;
+  } else {
+    probs.assign(node.actions.size(), 1.0 / static_cast<double>(node.actions.size()));
+  }
+
+  double total = 0.0;
+  for (std::size_t a = 0; a < node.actions.size(); ++a) {
+    if (probs[a] <= 0.0)
+      continue;
+    total += independent_flop_reach_n(policy, tree, node.children[a], hole_cards, reach * probs[a]);
+  }
+  return total;
+}
+
+// One joint deal's independently computed reach.
+struct JointReach {
+  std::array<int, 10> combo_indices{};
+  double joint_prior = 0.0;
+  double reach = 0.0;
+};
+
+// Enumerate every card-compatible joint deal (2 combos per seat) and compute
+// its reach via the independent walk. All combos are mutually card-distinct,
+// so every 2^N combination is card-compatible.
+std::vector<JointReach> enumerate_joint_reaches(
+    const NSeatPolicy& policy, const AbstractTree& tree,
+    const std::vector<std::vector<WeightedHand>>& ranges) {
+  const std::size_t player_count = ranges.size();
+  // Normalized priors per seat.
+  std::vector<std::array<double, 2>> norm_prior(player_count);
+  for (std::size_t s = 0; s < player_count; ++s) {
+    const double total = ranges[s][0].weight + ranges[s][1].weight;
+    norm_prior[s] = {ranges[s][0].weight / total, ranges[s][1].weight / total};
+  }
+
+  std::vector<JointReach> results;
+  const int n_joint = 1 << static_cast<int>(player_count);
+  results.reserve(static_cast<std::size_t>(n_joint));
+  for (int mask = 0; mask < n_joint; ++mask) {
+    std::vector<std::array<int, 2>> hole_cards(player_count);
+    double joint_prior = 1.0;
+    for (std::size_t s = 0; s < player_count; ++s) {
+      const int ci = (mask >> static_cast<int>(s)) & 1;
+      hole_cards[s] = ranges[s][ci].cards;
+      joint_prior *= norm_prior[s][ci];
+    }
+    const double reach = independent_flop_reach_n(policy, tree, tree.root_index(), hole_cards, 1.0);
+    JointReach jr;
+    for (std::size_t s = 0; s < player_count; ++s)
+      jr.combo_indices[s] = bs::comboIndex(hole_cards[s][0], hole_cards[s][1]);
+    jr.joint_prior = joint_prior;
+    jr.reach = reach;
+    results.push_back(jr);
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// Correctness: N-seat hand-derived marginal, card removal, normalization.
+// ---------------------------------------------------------------------------
+
+bool test_nseat_continuation_range(std::size_t player_count) {
+  const GameDef def = nseat_preflop_def(player_count);
+  const auto ranges = nseat_preflop_ranges(player_count);
+  const AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
+  const ZeroFrontierEvaluator frontier;
+  const NSeatTrainingResult trained =
+      train_nseat(tree, ranges, 200, 20261003, NSeatTrainerLimits{}, &frontier);
+  CHECK(trained.termination == NSeatTerminationPhase::Complete);
+
+  const std::vector<PolicyReachRangePair> exported =
+      export_continuation_ranges(trained.policy, tree, ranges);
+  CHECK(!exported.empty());
+
+  // Every flop's ranges normalize to one and have the right seat count.
+  for (const auto& pair : exported) {
+    CHECK(pair.ranges.size() == player_count);
+    for (std::size_t seat = 0; seat < player_count; ++seat) {
+      double sum = 0.0;
+      for (const auto& [combo, prob] : pair.ranges[seat])
+        sum += prob;
+      CHECK(near(sum, 1.0, 1e-9));
+    }
+  }
+
+  // No duplicate flops.
+  for (std::size_t i = 1; i < exported.size(); ++i) {
+    const auto& prev = exported[i - 1].flop;
+    const auto& curr = exported[i].flop;
+    CHECK(prev[0] < curr[0] || (prev[0] == curr[0] && prev[1] < curr[1]) ||
+          (prev[0] == curr[0] && prev[1] == curr[1] && prev[2] < curr[2]));
+  }
+
+  // Hand-derived marginal at a probe flop that blocks no combo.
+  // Sorted by card id (Qd < Kc < As) to match the export's flop ordering.
+  const std::array<int, 3> probe_flop{card("Qd"), card("Kc"), card("As")};
+  const PolicyReachRangePair* probe = nullptr;
+  for (const auto& pair : exported) {
+    if (pair.flop == probe_flop) {
+      probe = &pair;
+      break;
+    }
+  }
+  CHECK(probe != nullptr);
+
+  const auto joint_reaches = enumerate_joint_reaches(trained.policy, tree, ranges);
+
+  // Expected marginal for seat 0, combo 0 (the pair).
+  const int idx0 = bs::comboIndex(ranges[0][0].cards[0], ranges[0][0].cards[1]);
+  const int idx1 = bs::comboIndex(ranges[0][1].cards[0], ranges[0][1].cards[1]);
+  double z0 = 0.0, z1 = 0.0;
+  for (const auto& jr : joint_reaches) {
+    if (jr.combo_indices[0] == idx0)
+      z0 += jr.joint_prior * jr.reach;
+    else if (jr.combo_indices[0] == idx1)
+      z1 += jr.joint_prior * jr.reach;
+  }
+  CHECK(z0 + z1 > 0.0);
+  const double expected = z0 / (z0 + z1);
+  const auto it = probe->ranges[0].find(idx0);
+  CHECK(it != probe->ranges[0].end());
+  CHECK(near(it->second, expected, 1e-9));
+
+  // Card removal: a flop containing Ks blocks seat 0's KsKd combo.
+  // Sorted by card id (2s < 3d < Ks) to match the export's flop ordering.
+  const std::array<int, 3> blocking_flop{card("2s"), card("3d"), card("Ks")};
+  const PolicyReachRangePair* blocked = nullptr;
+  for (const auto& pair : exported) {
+    if (pair.flop == blocking_flop) {
+      blocked = &pair;
+      break;
+    }
+  }
+  if (blocked) {
+    CHECK(blocked->ranges[0].find(idx0) == blocked->ranges[0].end());
+  }
+
+  return true;
+}
 
 bool test_continuation_range() {
   const GameDef def = two_seat_preflop_def();
@@ -391,6 +595,18 @@ int main() {
     return 1;
   }
   std::printf("[continuation-range] correctness passed\n");
+
+  if (!test_nseat_continuation_range(3)) {
+    std::printf("test_nseat_continuation_range(3) FAILED\n");
+    return 1;
+  }
+  std::printf("[continuation-range] 3-seat correctness passed\n");
+
+  if (!test_nseat_continuation_range(6)) {
+    std::printf("test_nseat_continuation_range(6) FAILED\n");
+    return 1;
+  }
+  std::printf("[continuation-range] 6-seat correctness passed\n");
 
   if (!test_preflop_training_evidence()) {
     std::printf("test_preflop_training_evidence FAILED\n");

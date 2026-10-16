@@ -54,6 +54,10 @@ struct LibraryManifest {
   poker::Chips contribution = 0;  // per-seat pot contribution (chips)
   std::uint64_t iterations_per_class = 0;
   std::uint64_t seed = 0;
+  // RFC 0024: cap on full raises per street (0 = no cap). Recorded so the
+  // published artifact carries the action-abstraction configuration that
+  // shaped its tree; the cap is not part of the AbstractionId digest.
+  std::uint8_t max_raises_per_street = 0;
   std::vector<ClassEntry> classes;
   // Honest measurements.
   std::size_t class_count = 0;       // classes in this library

@@ -772,6 +772,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   manifest.card_id = card_id;
   manifest.action_id = action.id();
   manifest.player_count = player_count;
+  manifest.max_raises_per_street = action.max_raises_per_street();
   manifest.big_blind = kDefaultBigBlind;
   manifest.stack = stack;
   manifest.contribution = contribution;
@@ -888,6 +889,7 @@ LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const Buil
   manifest.card_id = card_id;
   manifest.action_id = params.action.id();
   manifest.player_count = params.player_count;
+  manifest.max_raises_per_street = params.action.max_raises_per_street();
   manifest.big_blind = kDefaultBigBlind;
   manifest.stack = params.stack;
   manifest.contribution = params.contribution;
@@ -946,6 +948,8 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
       << "\",\n";
   out << "  \"action_abstraction_digest\": \"" << digest_hex(manifest.action_id.digest) << "\",\n";
   out << "  \"player_count\": " << manifest.player_count << ",\n";
+  out << "  \"max_raises_per_street\": " << static_cast<int>(manifest.max_raises_per_street)
+      << ",\n";
   out << "  \"big_blind\": " << manifest.big_blind << ",\n";
   out << "  \"stack\": " << manifest.stack << ",\n";
   out << "  \"contribution\": " << manifest.contribution << ",\n";

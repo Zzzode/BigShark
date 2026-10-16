@@ -117,6 +117,7 @@ int main(int argc, char** argv) {
   std::size_t num_threads = 1;
   std::size_t cache_capacity = 128;
   PostflopCacheLimits cache_limits;
+  std::uint8_t raise_cap = 0;
   std::vector<char*> positional;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -134,6 +135,13 @@ int main(int argc, char** argv) {
                      cache_limits.max_load_bytes);
         return 1;
       }
+    } else if (arg == "--raise-cap" && i + 1 < argc) {
+      const int cap = std::atoi(argv[++i]);
+      if (cap < 0 || cap > 255) {
+        std::fprintf(stderr, "--raise-cap must be in 0..255 (got %d)\n", cap);
+        return 1;
+      }
+      raise_cap = static_cast<std::uint8_t>(cap);
     } else {
       positional.push_back(argv[i]);
     }
@@ -148,7 +156,7 @@ int main(int argc, char** argv) {
     std::fprintf(stderr,
                  "usage: %s <output-dir> [iterations] [stack-bb] [seats] [abstraction]\n"
                  "       [frontier-table-path] [policy-dir] [--threads N] [--cache-capacity N]\n"
-                 "       [--cache-bytes N]\n"
+                 "       [--cache-bytes N] [--raise-cap N]\n"
                  "  defaults: 100000 iterations, 100 BB stack, 2 seats (heads-up), identity\n"
                  "  seats 3..10 trains an RFC 0010 multiway profile\n"
                  "  abstraction: 'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)\n"
@@ -158,7 +166,8 @@ int main(int argc, char** argv) {
                  "    evaluation of missing table entries (RFC 0013 Stage 2)\n"
                  "  --threads N: parallel CFR with N threads (default 1)\n"
                  "  --cache-capacity N: retained policy entry cap (default 128)\n"
-                 "  --cache-bytes N: policy/load accounted-byte cap (default 1073741824)",
+                 "  --cache-bytes N: policy/load accounted-byte cap (default 1073741824)\n"
+                 "  --raise-cap N: cap raises per street, 0 = no cap (default 0)",
                  argv[0]);
     return 1;
   }
@@ -191,9 +200,11 @@ int main(int argc, char** argv) {
   // aggressive node (MinAndCap); the 3+ way action tree then exceeds the node
   // cap past ~16 BB. The coarse DeclaredOnly menu (RFC 0008) drops those forced
   // seeds so deeper multiway profiles stay buildable.
-  const ActionAbstraction action_abstraction =
+  ActionAbstraction action_abstraction =
       coarse ? ActionAbstraction::declared(default_size_schedule(), CoverSeeds::DeclaredOnly)
              : ActionAbstraction::identity();
+  if (raise_cap > 0)
+    action_abstraction.set_max_raises_per_street(raise_cap);
   const AbstractTree tree(def, action_abstraction);
 
   // Frontier selector: equity by default, postflop-declared when a table is
@@ -366,6 +377,7 @@ int main(int argc, char** argv) {
   mf << "  \"peak_rss_bytes\": " << peak_rss << ",\n";
   mf << "  \"card_abstraction\": \"preflop-169\",\n";
   mf << "  \"action_abstraction\": \"" << action_abstraction.id().to_string() << "\",\n";
+  mf << "  \"max_raises_per_street\": " << static_cast<int>(raise_cap) << ",\n";
   mf << "  \"frontier_evaluator\": \"" << frontier_tag << "\",\n";
   if (num_threads > 1)
     mf << "  \"parallel_threads\": " << num_threads << ",\n";

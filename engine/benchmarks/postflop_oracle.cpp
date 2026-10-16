@@ -121,17 +121,20 @@ bool blocks_board(const std::array<int, 2>& hand, const std::array<int, 3>& boar
 // per seat per class.
 std::map<std::array<int, 3>, std::vector<std::vector<WeightedHand>>> aggregate_class_ranges(
     const std::vector<PolicyReachRangePair>& flop_ranges) {
-  std::map<std::array<int, 3>, std::array<std::map<int, double>, 2>> accum;
+  std::map<std::array<int, 3>, std::vector<std::map<int, double>>> accum;
 
   for (const auto& pair : flop_ranges) {
     const CanonicalBoard canon = canonicalize(pair.flop);
-    for (std::size_t seat = 0; seat < 2; ++seat) {
+    auto& seat_maps = accum[canon.board];
+    if (seat_maps.empty())
+      seat_maps.resize(pair.ranges.size());
+    for (std::size_t seat = 0; seat < pair.ranges.size(); ++seat) {
       for (const auto& [combo_idx, prob] : pair.ranges[seat]) {
         const auto cards = bs::comboCards(combo_idx);
         const int c0 = (cards[0] / 4) * 4 + canon.relabel[cards[0] % 4];
         const int c1 = (cards[1] / 4) * 4 + canon.relabel[cards[1] % 4];
         const int new_idx = bs::comboIndex(c0, c1);
-        accum[canon.board][seat][new_idx] += prob;
+        seat_maps[seat][new_idx] += prob;
       }
     }
   }
@@ -139,8 +142,8 @@ std::map<std::array<int, 3>, std::vector<std::vector<WeightedHand>>> aggregate_c
   std::map<std::array<int, 3>, std::vector<std::vector<WeightedHand>>> result;
   for (auto& [flop_class, seat_maps] : accum) {
     auto& seat_vecs = result[flop_class];
-    seat_vecs.resize(2);
-    for (std::size_t seat = 0; seat < 2; ++seat) {
+    seat_vecs.resize(seat_maps.size());
+    for (std::size_t seat = 0; seat < seat_maps.size(); ++seat) {
       double total = 0.0;
       for (const auto& [idx, w] : seat_maps[seat])
         total += w;

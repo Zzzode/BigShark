@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -175,6 +177,34 @@ bool test_build_library_coarse(const fs::path& dir) {
   return true;
 }
 
+// RFC 0024: the raise-cap is recorded in the manifest so published artifacts
+// carry the action-abstraction configuration that shaped their tree.
+bool test_build_library_raise_cap(const fs::path& dir) {
+  const auto range = bs::flop_library::declared_library_range();
+  auto action = bs::abstraction::ActionAbstraction::declared(
+      bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly);
+  action.set_max_raises_per_street(1);
+  const bs::flop_library::LibraryManifest manifest =
+      bs::flop_library::build_library(dir, 1, 50, 20261002, 4, 2, range, 2, action);
+
+  // The manifest struct carries the cap.
+  CHECK(manifest.max_raises_per_street == 1);
+
+  // The manifest JSON on disk records the cap.
+  const fs::path manifest_path = dir / "manifest.json";
+  CHECK(fs::exists(manifest_path));
+  std::ifstream mf(manifest_path);
+  CHECK(mf.good());
+  const std::string content((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+  CHECK(content.find("\"max_raises_per_street\": 1") != std::string::npos);
+
+  // The uncapped default records zero.
+  const bs::flop_library::LibraryManifest uncapped =
+      bs::flop_library::build_library(dir / "uncapped", 1, 50, 20261002, 4, 2, range, 2);
+  CHECK(uncapped.max_raises_per_street == 0);
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -189,6 +219,7 @@ int main() {
   ok = test_coverage() && ok;
   ok = test_build_library(dir) && ok;
   ok = test_build_library_coarse(dir / "coarse") && ok;
+  ok = test_build_library_raise_cap(dir / "raise-cap") && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {

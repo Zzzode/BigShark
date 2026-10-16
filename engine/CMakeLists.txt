@@ -1181,6 +1181,19 @@ if(BUILD_TESTING)
   add_dependencies(test_flop_library_loading bigshark-engine)
   add_test(NAME flop_library_loading COMMAND test_flop_library_loading)
 
+  # RFC 0024: builder --raise-cap integration test. Spawns the real
+  # bigshark-preflop-profile-builder and bigshark-flop-library-builder
+  # binaries with --raise-cap 1 and verifies the cap is recorded in each
+  # published manifest.
+  add_executable(test_builder_raise_cap tests/test_builder_raise_cap.cpp)
+  target_compile_definitions(test_builder_raise_cap PRIVATE
+    PREFLOP_BUILDER_PATH="$<TARGET_FILE:bigshark-preflop-profile-builder>"
+    FLOP_BUILDER_PATH="$<TARGET_FILE:bigshark-flop-library-builder>")
+  add_dependencies(test_builder_raise_cap
+    bigshark-preflop-profile-builder
+    bigshark-flop-library-builder)
+  add_test(NAME builder_raise_cap COMMAND test_builder_raise_cap)
+
   foreach(test_name gto multistreet_ref)
     add_executable(test_${test_name} tests/test_${test_name}.cpp)
     target_link_libraries(test_${test_name} PRIVATE bigshark_solver)

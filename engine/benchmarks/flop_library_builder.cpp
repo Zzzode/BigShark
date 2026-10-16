@@ -24,6 +24,9 @@
 //   --resume      warm-start each class from its class-NNNN-checkpoint.db if
 //                 present (RFC 0012 Phase 4). A checkpoint is written every
 //                 256 iterations so a crashed build can resume.
+//   --raise-cap N cap the number of full raises per street (RFC 0024). Zero
+//                 means no cap (the default). The cap is recorded in the
+//                 library manifest.
 //
 // Worker mode (internal, spawned by the parent via fork/exec):
 //   --worker-id W --parallel N  (then the same positional args)
@@ -62,6 +65,7 @@ struct Args {
   bool coarse = false;
   std::size_t parallel = 1;
   bool resume = false;
+  std::uint8_t raise_cap = 0;
   // Worker mode (internal).
   bool worker = false;
   std::size_t worker_id = 0;
@@ -79,7 +83,8 @@ struct Args {
                "  abstraction   'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)\n"
                "options:\n"
                "  --parallel N  train with N forked workers      (default 1)\n"
-               "  --resume      warm-start from per-class checkpoints\n",
+               "  --resume      warm-start from per-class checkpoints\n"
+               "  --raise-cap N cap raises per street, 0 = no cap (default 0)\n",
                prog);
   std::exit(2);
 }
@@ -99,6 +104,15 @@ Args parse_args(int argc, char** argv) {
       }
     } else if (arg == "--resume") {
       args.resume = true;
+    } else if (arg == "--raise-cap") {
+      if (i + 1 >= argc)
+        usage(argv[0]);
+      const unsigned long long cap = std::strtoull(argv[++i], nullptr, 10);
+      if (cap > 255) {
+        std::fprintf(stderr, "--raise-cap must be in 0..255\n");
+        std::exit(2);
+      }
+      args.raise_cap = static_cast<std::uint8_t>(cap);
     } else if (arg == "--worker-id") {
       if (i + 1 >= argc)
         usage(argv[0]);
@@ -152,6 +166,7 @@ bs::flop_library::BuildParams make_params(const Args& args) {
                                     bs::abstraction::default_size_schedule(),
                                     bs::abstraction::CoverSeeds::DeclaredOnly)
                               : bs::abstraction::ActionAbstraction::identity();
+  params.action.set_max_raises_per_street(args.raise_cap);
   params.resume = args.resume;
   return params;
 }
@@ -271,9 +286,11 @@ int run_parallel(const Args& args) {
       const std::string st = std::to_string(args.stack);
       const std::string ct = std::to_string(args.contribution);
       const char* abstraction = args.coarse ? "coarse" : "identity";
+      const std::string cap = std::to_string(static_cast<int>(args.raise_cap));
       ::execl(exe.c_str(), exe.c_str(), "--worker-id", wid.c_str(), "--parallel", par.c_str(),
               args.out_dir.string().c_str(), cc.c_str(), it.c_str(), pc.c_str(), st.c_str(),
-              ct.c_str(), abstraction, args.resume ? "--resume" : nullptr, nullptr);
+              ct.c_str(), abstraction, "--raise-cap", cap.c_str(),
+              args.resume ? "--resume" : nullptr, nullptr);
       // exec failed.
       std::perror("execl");
       ::_exit(127);
