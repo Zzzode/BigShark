@@ -6,7 +6,7 @@ Status: Current
 
 BigShark is an agent-driven no-limit Texas Hold'em system. The current product
 integrates with River Club, while the C++ decision process consumes a compact
-normalized context over a local NDJSON protocol.
+normalized context over a framed Protobuf protocol.
 
 The repository separates three concerns:
 
@@ -18,21 +18,17 @@ The repository separates three concerns:
    heuristic policy, and river equilibrium solving.
 
 The TypeScript application and River adapter boundaries and the C++ target
-split are implemented. The v1 framed Protobuf engine protocol is the default
-for the River Club runner (with roots; v0 NDJSON remains as the fallback).
-The resident layer serves blueprint decisions on the v1 path (flop-rooted,
-turn-rooted, river-rooted, and heads-up preflop), with terminal-only
-resolving on a minor-2 AUTOMATIC blueprint miss and a labeled operational
-fallback (check/call/fold) when the resolver also misses.
-
-The v2 framed Protobuf engine protocol (RFC 0022) is implemented alongside
-v1. It carries a G/F contribution ledger, phase-tagged pot layers,
-observation provenance, and capability tuples. The engine-host peeks
-`protocol_version` (field 1) on every frame and routes versions 0–2 to the
-frozen v1 handler and version 3 to the v2 handler. The v2 handler replays
+split are implemented. The framed Protobuf engine protocol (RFC 0022) is the
+only engine protocol. It carries a G/F contribution ledger, phase-tagged pot
+layers, observation provenance, and capability tuples. The engine-host
+accepts `protocol_version` field 1 == 3 on every frame. The handler replays
 from the true hand-start root (no mid-street rebase) and validates the
 declared G/F ledger and pot state against the native replay. Capability
 tuples (`hu-r1`) are advertised; `sixmax-r1` is gated on T2–T5 completion.
+The resident layer serves blueprint decisions (flop-rooted, turn-rooted,
+river-rooted, and heads-up preflop), with terminal-only resolving on an
+AUTOMATIC blueprint miss and a labeled operational fallback
+(check/call/fold) when the resolver also misses.
 
 ## Runtime Components
 
@@ -45,12 +41,8 @@ flowchart LR
   CLI --> API[River Club Agent API]
   River --> Client[clients/node process client]
   Client --> Host[apps/engine-host]
-  Host --> V2[bigshark_v2_protocol]
-  Host --> V1[bigshark_v1_protocol]
-  Host --> V0[bigshark_v0_protocol]
-  V2 --> Service[bigshark_service]
-  V1 --> Service
-  V0 --> Service
+  Host --> Proto[bigshark_engine_protocol]
+  Proto --> Service[bigshark_service]
   Service --> Policy[bigshark_policy]
   Policy --> Resident[bigshark_resident]
   Resident --> Artifacts[bigshark_artifacts]
@@ -68,12 +60,12 @@ flowchart LR
 
 | Component | Owns | Must not own |
 | --- | --- | --- |
-| `engine/` | Poker, solver, abstraction, policy, service, v0, v1, and v2 protocol libraries, resident lookup, artifacts, resolver, and solver-owned benchmarks | Authentication, HTTP, room discovery, platform tokens |
+| `engine/` | Poker, solver, abstraction, policy, service, protocol library, resident lookup, artifacts, resolver, and solver-owned benchmarks | Authentication, HTTP, room discovery, platform tokens |
 | `bigshark_abstraction` (RFC 0008 stage 3) | Card bucketing, declared ordered action menus, abstraction identity (`AbstractionId`), and the typed mismatch refusal; depends only on the rules layer | Knowledge of solvers, storage, or IO, and any modification of the rules. The solver's live menu is a thin adapter over the lifted builder (bit-for-bit identical decisions, replay 156/0/0); card buckets and `AbstractionId` are consumed by the flop class library and class-based `resolve_root` (W4a/W4c) |
 | `bigshark_tree` (RFC 0008 stage 4 L3) | The seat-count-agnostic abstract public betting tree (`AbstractTree`): abstracted action nodes, probability-free public-card chance nodes, and fold/showdown terminal ledgers built from an L1 `GameDef` and an L2 menu; links only `bigshark_poker` and `bigshark_abstraction` | Regrets, ranges, hole cards, policy, probabilities on chance edges, per-deal conditioning, and any solver, transitional rules adapter (heads-up or multiway), storage/transport, or private-holding evaluator (enforced unconditionally at build time by allowlisting the compiler-resolved include closure — which macro-paste, line-splice, digraph, no-space, and `#import` spellings cannot evade — and at link time by the link-negative test). A build that crosses a deterministic node/depth/byte bound throws the typed `tree_resource_exhausted`, never a truncated tree; the byte bound covers requested retained capacity |
 | `bigshark_solver::solve` (RFC 0008 stage 4 L4) | The single unified solver seam: routes a two-seat identity tree to heads-up CFR with the numeric core unchanged (bit-for-bit under both drivers and every runout variant), and explicitly refuses unsupported shapes with the typed `unsupported_tree_shape` | Silent approximation of a model it does not solve, conflating a shape refusal with a malformed request (the exception is not `invalid_argument`), and a self-assigned guarantee level on the result (the source-to-guarantee map is L6). The river LP/DCFR and experimental multistreet solvers are reachable but refuse-only this stage |
-| `apps/engine-host` | C++ process composition, v0 NDJSON host lifecycle, framed Protobuf host modes (`--proto` / `--serve-proto`, the default serving mode), and version-aware frame routing (v0/v1/v2 via `peekProtocolVersion`) | Platform mapping or strategy rules |
-| `clients/node` | Generic engine process lifecycle, NDJSON framing, timeouts, and FIFO correlation | River fields or poker strategy |
+| `apps/engine-host` | C++ process composition, framed Protobuf host (`--serve-proto`, the default serving mode) | Platform mapping or strategy rules |
+| `clients/node` | Generic engine process lifecycle, framed Protobuf request/response, timeouts, and FIFO correlation | River fields or poker strategy |
 | `platforms/river-club` | River API, state parsing, normalization, legality checks, action submission, and journaling | Independent poker strategy |
 | `apps/river-club-agent` | River session composition, timing, stop-loss, and model override window | Reusable adapter or client logic |
 | `bin/` | Stable launchers into compiled TypeScript and the published engine executable | Reusable implementation |
@@ -83,29 +75,18 @@ flowchart LR
 ## Decision Flow
 
 1. The River Club runner obtains an authoritative state snapshot.
-2. `platforms/river-club/src/v1-mapper.ts` converts the River room into the
-   structured v1 context (chip units, enum cards, ordered seats, structured
-   action history, side pots, absolute targets). The v0 normalizer remains
-   as the fallback path. When `BIGSHARK_ENGINE_PROTO_V2=1` is set,
-   `platforms/river-club/src/v2-mapper.ts` instead produces a v2
+2. `platforms/river-club/src/mapper.ts` converts the River room into a
    `DecisionRequest` with G/F contribution ledger, phase-tagged pot layers,
-   TransitionEvent path, observation provenance, and rule profile; v2 errors
-   fall back to v1.
-3. `clients/node/proto-engine-process-client.ts` sends the framed v1 request
+   TransitionEvent path, observation provenance, and rule profile.
+3. `clients/node/proto-engine-process-client.ts` sends the framed request
    to the persistent C++ host.
-4. The v1 protocol mapper parses the message, the service invokes policy,
-   and the host serializes one decision. On the resident path, the policy
-   layer first looks up a blueprint in `bigshark_resident`; on a minor-2
-   AUTOMATIC blueprint miss the bounded terminal-only resolver runs; if the
-   resolver also misses, a labeled operational fallback (check/call/fold)
-   is served. On the v0 fallback path, the v0 protocol mapper parses JSON,
-   the service invokes policy, and the host serializes one decision.
-   On the v2 path (RFC 0022), the engine-host peeks `protocol_version`
-   field 1 and routes version-3 frames to `bigshark_v2_protocol`, which
-   validates the G/F ledger and phase-tagged pot layers, replays the
-   TransitionEvent path from the true hand-start root, and routes by
-   solver_mode to the same service, blueprint, resolving, or heuristic
-   paths.
+4. The protocol handler validates the G/F ledger and phase-tagged pot layers,
+   replays the TransitionEvent path from the true hand-start root, and routes
+   by solver_mode to the service, blueprint, resolving, or heuristic paths.
+   On the resident path, the policy layer first looks up a blueprint in
+   `bigshark_resident`; on an AUTOMATIC blueprint miss the bounded
+   terminal-only resolver runs; if the resolver also misses, a labeled
+   operational fallback (check/call/fold) is served.
 5. The River adapter verifies that the action and amount remain legal.
 6. The runner refreshes the server snapshot immediately before submission.
 7. River Club validates the hand ID, revision, action, and amount atomically.
@@ -125,24 +106,16 @@ flowchart LR
 
 ## Remaining Coupling
 
-- The v1 framed Protobuf protocol is the default for the River Club runner;
-  v0 NDJSON remains as the fallback. RFC 0002 defines the accepted v1
-  contract, whose IDL and generated-code checks exist under `proto/`.
-  The v2 framed Protobuf protocol (RFC 0022) is implemented and dispatched
-  by `protocol_version` field 1 in the engine-host; it is wired into the
-  River Club runner behind the `BIGSHARK_ENGINE_PROTO_V2=1` feature flag,
-  with v1 as the fallback path on any v2 error.
-- River action history is replayed as structured history on the v1 path;
-  only past-street rounded display text remains text-only. The v0 path
-  still compresses events into actor-tagged strings.
+- The framed Protobuf protocol (RFC 0022) is the only engine protocol.
+  Its IDL and generated-code checks exist under `proto/`.
+- River action history is replayed as a TransitionEvent path; only past-street
+  rounded display text remains text-only.
 - The River runner invokes the River CLI as a local child process.
 - A second platform has not yet validated the adapter boundary.
 
 See [RFC 0001](../rfcs/0001-engineering-architecture.md) for the accepted
-adapter boundary,
-[RFC 0002](../rfcs/0002-protobuf-engine-protocol.md) for the accepted engine
-protocol, and
-[RFC 0022](../rfcs/0022-complete-cash-hand-protocol.md) for the v2 complete
+adapter boundary and
+[RFC 0022](../rfcs/0022-complete-cash-hand-protocol.md) for the complete
 cash-hand protocol.
 
 ## Deployment Constraints
@@ -162,7 +135,7 @@ The live engine is a hybrid poker decision engine:
 
 - Preflop: approximate 6-max, 100 BB charts; a trained heads-up preflop
   profile (flop-terminal, full-range 100 BB with exact all-in-at-flop equity)
-  is published as an artifact and wired into the live v1 decision path
+  is published as an artifact and wired into the live decision path
   through the resident layer (heads-up only; other table sizes and stack
   depths fall back to the charts or operational fallback).
 - Flop and turn: deterministic Monte Carlo equity plus heuristics;
@@ -171,11 +144,11 @@ The live engine is a hybrid poker decision engine:
 - River: exact sequence-form LP when available and within budget, otherwise
   bounded DCFR; resident blueprints serve river-rooted decisions at the
   `certified_bound` guarantee level.
-- Terminal-only resolving: on a minor-2 AUTOMATIC blueprint miss, the
+- Terminal-only resolving: on an AUTOMATIC blueprint miss, the
   bounded terminal-only resolver runs; if it also misses, a labeled
   operational fallback (check/call/fold) is served.
 - Engine-served practice tier: the practice simulator forwards bot
-  decisions to the engine via v1 framed Protobuf.
+  decisions to the engine via framed Protobuf.
 - Experimental multi-street CFR: offline and test-only.
 
 The current implementation must not be represented as a complete equilibrium

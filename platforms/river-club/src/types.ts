@@ -178,38 +178,6 @@ export interface CachedDecisionState {
   };
 }
 
-export interface V0LegalContext {
-  actions: Action[];
-  call: number;
-  potOdds: number;
-  raiseTo?: RaiseRange;
-}
-
-export interface V0DecisionContext {
-  handId: string;
-  revision: number;
-  style: string;
-  street: Street;
-  blinds: [number, number];
-  position: string;
-  playersInHand: number;
-  effectiveStackBb: number;
-  hole: string[];
-  board: string[];
-  pot: number;
-  riverGtoOn: boolean;
-  riverLine?: string;
-  flopLine?: string;
-  turnLine?: string;
-  riverBetFrac?: number;
-  raises: number;
-  openerPosition: string;
-  heroWasRaiser: boolean;
-  heroPreflopAggressor: boolean;
-  limpers: number;
-  legal?: V0LegalContext;
-}
-
 export interface RawEngineDecision {
   action: Action;
   amount?: number;
@@ -223,22 +191,19 @@ export interface ExecutableDecision {
   amount?: number;
   reason: string;
   /**
-   * RFC 0008 stage 5 L6 guarantee level attached by the adapter: the engine's
-   * field-11 token on a negotiated minor-2 decision, or "operational_fallback"
-   * on every locally produced fallback. Absent on the frozen v0 path so its
-   * golden deepEqual stays byte-identical.
+   * Guarantee level attached by the adapter: the engine's guarantee-level
+   * token on a strategy response, or "operational_fallback" on every locally
+   * produced fallback.
    */
   guaranteeLevel?: string;
   /**
-   * RFC 0009 W1 provenance: the SHA-256 of the resident artifact that served
-   * this decision (SolverMetadata field 9), attached with the level on a
-   * negotiated minor-2 strategy response. Absent on the v0 path, on minors
-   * 0/1, and on every local fallback, so golden deepEqual stays byte-identical.
+   * SHA-256 of the resident artifact that served this decision, attached
+   * with the level on a strategy response. Absent on every local fallback.
    */
   artifactSha256?: string;
 }
 
-/** Caller-declared minimum acceptable guarantee level (minor 2 only). */
+/** Caller-declared minimum acceptable guarantee level. */
 export type GuaranteeLevel =
   | 'operational_fallback'
   | 'approximate'
@@ -257,72 +222,34 @@ export interface ResidentRootSpec {
   sha256: string;
 }
 
-/** Structural framed v1 client type; the concrete Envelope types live in the
- * generated Protobuf bindings imported by v1-mapper. */
-export interface V1EnvelopeClient {
-  request(envelope: unknown, timeoutMs?: number): Promise<unknown>;
-  /**
-   * Resolves once the process is started AND the capability handshake has
-   * finished. The adapter MUST await this before reading
-   * negotiatedProtocolMinor: a cold first request's own readiness wait
-   * completes negotiation only after the minor would otherwise have been read.
-   */
-  start?: () => Promise<void>;
-  /** Negotiated protocol minor (0 unless the client opted into a higher minor
-   * and the host capability handshake succeeded). */
-  readonly negotiatedProtocolMinor?: 0 | 1 | 2;
-  /** True when the current process negotiated minor 1 or higher. */
-  readonly minor1Capable?: boolean;
-  /** True when the current process negotiated minor 2. */
-  readonly minor2Capable?: boolean;
-}
-
-/** Structural framed v2 client type; the concrete Envelope types live in the
- * generated Protobuf bindings imported by v2-mapper. */
-export interface V2EnvelopeClient {
+/** Structural engine client type; the concrete Envelope types live in the
+ * generated Protobuf bindings imported by the mapper. */
+export interface EngineClient {
   request(envelope: unknown, timeoutMs?: number): Promise<unknown>;
   /** Resolves once the process is started AND the capabilities handshake has
    * finished. */
   start?: () => Promise<void>;
-  /** Always 3 for v2. */
-  readonly protocolVersion?: 3;
 }
 
 export interface EngineConfig {
   style?: string;
   heroName?: string;
-  /** Framed adapter deadline including readiness, mapping and RPC waiting.
-   * The legacy NDJSON path retains its existing request timeout semantics. */
+  /** Engine deadline including readiness, mapping and RPC waiting. */
   timeoutMs?: number;
-  /** Opt in to the RFC 0002 framed Protobuf engine path. */
-  proto?: boolean;
-  protoEngineClient?: V1EnvelopeClient;
-  /** Opt in to the RFC 0022 v2 framed Protobuf engine path. When set, the
-   * runner tries v2 first and falls back to v1 on any v2 error. */
-  protoEngineClientV2?: V2EnvelopeClient;
-  engineClient?: {
-    request(message: V0DecisionContext, timeoutMs?: number): Promise<RawEngineDecision>;
-  };
-  /** Negotiated minor 1: force a resident blueprint lookup for covered
-   * postflop heads-up decisions (a coverage miss routes to the operational
-   * safe fallback) instead of AUTOMATIC heuristic-first mode. Requires a
-   * client that negotiated minor 1; otherwise requests stay on minor 0. */
-  protoBlueprint?: boolean;
+  /** Caller-supplied engine client (structural interface for testing). */
+  engineClient?: EngineClient;
   /**
-   * RFC 0008 stage 5: caller-declared minimum guarantee level, encoded only on
-   * a negotiated minor-2 request. The shipped runner never sets this; when an
-   * explicit caller does and the engine answers below the floor, the typed
-   * GUARANTEE_BELOW_REQUEST error propagates (it is never converted into a
-   * safe fallback).
+   * Caller-declared minimum guarantee level. When set and the engine answers
+   * below the floor, the typed GUARANTEE_BELOW_REQUEST error propagates (it
+   * is never converted into a safe fallback).
    */
   minimumGuaranteeLevel?: GuaranteeLevel;
   /**
-   * RFC 0009 W1: resident artifact roots (path + mandatory SHA-256 pin) the
-   * engine child is launched with. Each entry becomes a repeatable
+   * Resident artifact roots (path + mandatory SHA-256 pin) the engine child
+   * is launched with. Each entry becomes a repeatable
    * `--resident-root <path>=<sha256>` child argument. Only the implicit
-   * process client consumes this; a caller-supplied `protoEngineClient` owns
-   * its own launch line. On the framed path the client also negotiates minor 2
-   * so the served decision's guarantee level and artifact digest are decoded.
+   * process client consumes this; a caller-supplied `engineClient` owns its
+   * own launch line.
    */
   residentRoots?: readonly ResidentRootSpec[];
   /**
@@ -330,24 +257,17 @@ export interface EngineConfig {
    * entry becomes a repeatable `--flop-library <dir>` child argument; the
    * engine expands it into one resident root per class via `<dir>/manifest.json`.
    * Only the implicit process client consumes this; a caller-supplied
-   * `protoEngineClient` owns its own launch line.
+   * `engineClient` owns its own launch line.
    */
   flopLibraries?: readonly string[];
   /**
-   * RFC 0009 W1: the caller's real remaining-time budget in milliseconds for
-   * this decision (the runner derives it from the server's timeLeftMs). It is
-   * sanitized into the wire's declared 1..120000 range by the mapper
-   * (`resolveSolveTimeBudgetMs`) and omitted pins the historical 2000 ms. It
-   * bounds the resolver's solve; the transport timeout stays `timeoutMs`.
+   * The caller's real remaining-time budget in milliseconds for this decision
+   * (the runner derives it from the server's timeLeftMs). It is sanitized into
+   * the wire's declared 1..120000 range by the mapper and omitted pins the
+   * historical 2000 ms. It bounds the resolver's solve; the transport timeout
+   * stays `timeoutMs`.
    */
   solveTimeBudgetMs?: number;
-}
-
-export interface GoldenFixture {
-  name: string;
-  state: RiverState & { me: RiverMe; room: RiverRoom };
-  context: V0DecisionContext;
-  decision: ExecutableDecision;
 }
 
 export function isAction(value: unknown): value is Action {

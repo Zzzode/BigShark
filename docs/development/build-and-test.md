@@ -117,9 +117,9 @@ automatically. When network access is unavailable (FetchContent cannot
 download protobuf), pre-populate `build/asan/_deps/` from a debug or release
 build and add `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`.
 
-The RFC 0002 framed protocol parsers are native untrusted-input code, so the
+The framed protocol parsers are native untrusted-input code, so the
 full ASan ctest (not only the new targets) is required after changes to
-`engine/src/protocol/v1_*`.
+`engine/src/protocol/`.
 
 Two complete native verification cases have sanitizer-specific wall allowances,
 without changing their fixtures, iterations, seeds, numerical thresholds or
@@ -150,16 +150,16 @@ unaffected. Build it with Clang against the ASan preset:
 
 ```bash
 cmake --preset asan -DBIGSHARK_ENABLE_FUZZ=ON
-cmake --build --preset asan --target fuzz_v1_proto
+cmake --build --preset asan --target fuzz_proto
 # Apple Clang default: deterministic ASan/UBSan campaign over built-in seeds
-BS_FUZZ_MAX_RUNS=100000 ./build/asan/proto/fuzz_v1_proto
+BS_FUZZ_MAX_RUNS=100000 ./build/asan/proto/fuzz_proto
 # Replay saved corpus files directly
-./build/asan/proto/fuzz_v1_proto ./a.bin ./b.bin
+./build/asan/proto/fuzz_proto ./a.bin ./b.bin
 # Coverage-guided fuzzing with Homebrew LLVM
 cmake --preset asan -DBIGSHARK_ENABLE_FUZZ=ON -DBIGSHARK_FUZZ_LIBFUZZER=ON \
   -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++
-cmake --build --preset asan --target fuzz_v1_proto
-./build/asan/proto/fuzz_v1_proto -max_len=1048576
+cmake --build --preset asan --target fuzz_proto
+./build/asan/proto/fuzz_proto -max_len=1048576
 ```
 
 The target feeds arbitrary bytes to the ULEB128 frame decoder, Envelope
@@ -251,8 +251,8 @@ ctest --preset release -R '^protobuf_'
 ```
 
 `proto:check` runs linting, formatting, breaking checks against
-`proto/baseline/v1.binpb`, C++ and TypeScript generation, generated TypeScript
-checking, and cross-language golden-vector tests. Generated files live under
+`proto/baseline/v2.binpb`, C++ and TypeScript generation, and generated
+TypeScript checking. Generated files live under
 `build/generated`.
 
 ## Native Tests
@@ -278,26 +278,17 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `preflop_nash_conv` | Hidden-information counterexamples, pooled/frozen responses, held-out confirmation, normalization, signed paired uncertainty, and failure propagation |
 | `nseat_parallel` | Serial one-worker parity, repeated unchanged quality gates, twelve complete pre-optimization result fingerprints across widths/tails/weighted ranges/chance, frozen-sigma lifetime, global visit caps, clamp behavior, and frontier errors |
 | `seat_policy` | Exact independent concrete export, sparse parents with covered descendants, chance siblings, Preflop169, key grammar, and two-seat key identity |
-| `v0_protocol` | Legacy JSON mapping and repeated response serialization |
-| `v1_frame_stream` | RFC 0002 ULEB128 framing, canonical varints, 1 MiB pre-allocation rejection, and truncation |
-| `v1_semantic_validator` | Hand-written protovalidate and poker-semantic rejection coverage |
-| `v1_request_mapper` | Structured v1 state to `Ctx` reconstruction and six-fixture decision parity |
-| `v1_preflop_nseat` | Minor-2 exact 2..10-seat preflop replay, six-seat 100 BB sparse/all-position/fold/all-in/short-raise ledgers, per-call cancellation rejection, status/blind/card boundaries, frozen legacy admission, and explicitly synthetic host routing |
-| `v1_postflop_nseat` | Minor-2 supplied whole-hand replay into true six-seat flop roots, all positions/streets, folded dead money, exact per-action payments/types and short-all-in rights, refund/utility refusals, frozen legacy routing, and approximate mechanical host tests only |
-| `sixmax_hand_ledger` | Eighteen full native six-dealt-seat hand-start replays with literal per-node ledgers, all buttons, unequal all-ins/refunds, folded contributors, single-eligible side layers and odd-chip ties; offline legacy-rule arithmetic, not provider/v2/strategy qualification |
-| `v1_response_mapper` | Strategy/error mapping, selected-action membership, capabilities, and sentinels |
+| `sixmax_hand_ledger` | Eighteen full native six-dealt-seat hand-start replays with literal per-node ledgers, all buttons, unequal all-ins/refunds, folded contributors, single-eligible side layers and odd-chip ties |
 | `gto` | River LP/DCFR policy contracts, exploitability, and range tracking |
 | `multistreet_ref` | Independent fixed-run best-response reference |
 | `benchmark_multistreet` | Deterministic multi-street convergence, exploitability thresholds, and timing measurements |
 | `benchmark_heads_up_blueprint` | RFC 0004 version-2 heads-up full and external-sampling fixed/sampled-chance quality gates (Release only) |
-| `protobuf_generated` | C++ binary, ProtoJSON, bigint, unknown-field, and enum compatibility |
-| `protobuf_cpp_vector` | C++ generation for the TypeScript cross-language consumer |
+| `conformance` | RFC 0022 conformance vectors, envelope dispatch, and capabilities |
 | `protobuf_lint` | Buf STANDARD lint rules |
 | `protobuf_format` | Canonical Protobuf formatting |
-| `protobuf_breaking` | FILE compatibility against the accepted v1 descriptor baseline |
-| `protobuf_typescript` | Generated TypeScript compilation and shared vectors |
+| `protobuf_breaking` | FILE compatibility against the accepted descriptor baseline |
 | `typescript` | Strict TypeScript compiler diagnostics |
-| `node` | Process clients (NDJSON and framed Protobuf), launchers, River v0 golden decisions, and v0/v1 golden differential |
+| `node` | Process client, launchers, River mapper, and engine integration tests |
 | `rfc` | RFC metadata, lifecycle, sections, decisions, and index membership |
 | `docs` | English-only first-party text and valid local Markdown links |
 
@@ -361,8 +352,8 @@ cmake --build --preset release --target benchmark-resolver
 
 The solver-level resolver gate is a normal CTest (`resolver`, built from
 `engine/tests/test_resolver.cpp` plus the separately written
-`engine/tests/resolver_oracle.{hpp,cpp}`); minor-1 resolving protocol
-coverage is `v1_resolving` (proto test target). Both run under the full
+`engine/tests/resolver_oracle.{hpp,cpp}`); protocol-level resolving coverage
+is `conformance` (engine test target). Both run under the full
 `ctest --preset release`.
 
 Run the RFC check directly with:

@@ -34,10 +34,8 @@ subsystems. It does not imply full-game equilibrium coverage.
 
 ```mermaid
 flowchart TD
-  Input[Normalized v1 framed context] --> Protocol[v1 protocol mapper]
-  Input --> V0Fallback[v0 protocol mapper fallback]
+  Input[Framed Protobuf DecisionRequest] --> Protocol[Protocol handler]
   Protocol --> Service[Decision service]
-  V0Fallback --> Service
   Service --> Resident{Resident blueprint?}
   Resident -->|Hit| Blueprint[Serve blueprint]
   Resident -->|Miss| Street{Street}
@@ -74,7 +72,7 @@ flowchart TD
 | `include/bs/solve.hpp`, `src/gto/solve.cpp`, `include/bs/detail/solve_projection.hpp`, `src/gto/solve_projection.cpp` | RFC 0008 stage 4 L4 unified solver seam: `SolveResult solve(const SolveRequest&)`. Every RFC-named solver is reachable through it; a solver that does not model the tree's shape throws a typed, non-`invalid_argument` `unsupported_tree_shape` rather than approximating. Stage 4 routes the heads-up multistreet CFR behind solve() by a pure field-copy projection of the two-seat `GameDef` onto a `HeadsUpRoot` (the projection is a separately unit-tested detail translation unit so the unmaterializable preflop arm is still verified), with the numeric `HeadsUpTrainer` core unchanged and bit-for-bit conformance over both drivers and all fixed-runout variants (`test_solve_conformance`); it pre-validates fixed conditioning with the typed refusal. The river LP/DCFR and experimental multistreet solvers are registered as explicit refuse-only adapters because their bespoke models are not L1 identity trees. No `Guarantee` enum lives here (the source-to-guarantee map is L6) |
 | `include/bs/heads_up_solver.hpp`, `src/gto/heads_up_solver.cpp` | Multi-size full-traversal and external-sampling heads-up CFR (pinned SplitMix64 PRNG, two-player kSimple averages), immutable policies, and exact modeled best response. The fractional size schedule types and the ordered action menu now live in `bigshark_abstraction`; this target re-exports the types unchanged and delegates `abstract_actions` to the lifted builder. As of stage 4 its only unified entry point is `solve()`; the direct trainer remains the bit-for-bit reference that conformance pins against, not a second strategy |
 | `include/bs/strategy_artifact.hpp`, `src/artifacts/` | RFC 0005 offline checkpoint and immutable-policy SQLite artifacts, transactional writes, SHA-256 publication, and a bounded untrusted reader; SQLite and OpenSSL are private to this target |
-| `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup. Wired into the v1 decision path: linked by `bigshark_v1_protocol` (PRIVATE) and serves blueprint decisions on the resident path |
+| `include/bs/resident_policy.hpp`, `src/resident/` | RFC 0005 Stage 6 resident policy lookup: explicit digest-pinned supported roots, an immutable compact flat index with contiguous probability storage, hero-card-independent public belief propagation, and a separate hero-private blocker filter; no SQL, locks, or heap allocation on a lookup. Wired into the decision path: linked by `bigshark_engine_protocol` (PRIVATE) and serves blueprint decisions on the resident path |
 | `include/bs/flop_library.hpp`, `src/flop_library/` | RFC 0009 W4c-iii offline flop class library builder: enumerates the 1,755 suit-isomorphic canonical classes, trains and publishes a per-class schema-v3 artifact with a declared premium range, and writes an honest coverage/storage manifest. Links `bigshark_artifacts` PUBLIC; offline only, linked by nothing on a decision path |
 | `include/bs/icm.hpp`, `src/poker/icm.cpp` | Bounded offline prize-equity arithmetic and declared simultaneous-bust handling |
 | `include/bs/settlement.hpp`, `src/poker/settlement.cpp` | Contribution-layer pots, refunds, declared capped rake, odd-chip awards, and exact 2..10-player ledger (widened from 2..6 in RFC 0008 stage 2) |
@@ -83,8 +81,7 @@ flowchart TD
 | `include/bs/range.hpp` | Concrete two-card combinations and range utilities |
 | `include/bs/policy.hpp`, `include/bs/guarantee.hpp`, `src/policy/decision.cpp`, `src/policy/guarantee.cpp` | Street routing, heuristic policy, solver action translation, and (RFC 0008 stage 5) the declared `DecisionSource` ladder. `evaluatePolicySourced(Ctx, RiverBackendHint)` names the source that selected each decision at the routing branch; `guaranteeFor` is the single normative source-to-level table (policy-producible sources span `approximate`, `certified_bound`, and `operational_fallback` after W3/W4d), owned here under a narrow `-Werror=switch` |
 | `include/bs/service.hpp`, `src/service/decision_service.cpp` | Protocol-neutral decision service entry point; stage 5 adds `decideSourced(Ctx)` returning the decision plus its declared source |
-| `include/bs/v0_protocol.hpp`, `src/protocol/v0_json.cpp` | Legacy JSON request and response mapping (frozen; no guarantee surface) |
-| `src/protocol/v1_*.{hpp,cpp}` | RFC 0002/0005 framed Protobuf host: minor 0 (frozen), minor 1 (`ExpandedStrategy`, resident blueprint/resolve, field 10 vocabulary), and (RFC 0008 stage 5) minor 2 with the typed five-level ladder — `SolverMetadata.guarantee_level` (field 11) on every successful response, the `minimum_guarantee` request floor (field 8), and non-retryable error code 9 for a complete below-floor answer. RFC 0009 W3 demotes the minor-2 `AUTOMATIC` heuristic fallthrough to an explicit `HEURISTIC` request; W4d wires terminal-only resolving into the minor-2 `AUTOMATIC` branch on a blueprint miss (certified → `certified_bound`/RESOLVING, deadline baseline → `approximate`/BLUEPRINT, resolver miss → operational fallback) |
+| `include/bs/protocol.hpp`, `src/protocol/` | RFC 0022 framed Protobuf host: envelope dispatch, semantic validation, resident state reconstruction, request/response mapping, and the typed five-level guarantee ladder — `SolverMetadata.guarantee_level` on every successful response, the `minimum_guarantee` request floor, and a structured error with field violations. The heuristic `AUTOMATIC` path serves blueprint hits, terminal-only resolving on a blueprint miss (certified → `certified_bound`/RESOLVING, deadline baseline → `approximate`/BLUEPRINT, resolver miss → operational fallback) |
 | `src/gto/range_tracker.*` | Action-line-based weighted range narrowing |
 | `src/gto/range_equity.*` | Combo equity against a weighted opposing range |
 | `src/gto/river_game.*` | OpenSpiel-compatible heads-up river game |
@@ -93,13 +90,13 @@ flowchart TD
 | `src/gto/cfr_solver.*` | Bounded full-tree DCFR fallback |
 | `include/bs/river_gto.hpp`, `src/gto/river_gto.cpp` | Public river solver facade and scheduling |
 | `src/gto/multistreet_cfr.*` | Experimental offline flop-to-river DCFR |
-| `apps/engine-host/main.cpp` | One-shot and persistent NDJSON process composition, plus framed Protobuf host modes (`--proto` / `--serve-proto`, the default serving mode) |
+| `apps/engine-host/main.cpp` | Framed Protobuf process composition root (`--serve-proto`, the default serving mode) |
 
 The corresponding CMake dependency graph is:
 
 ```mermaid
 flowchart LR
-  Host[bigshark-engine] --> V0[bigshark_v0_protocol]
+  Host[bigshark-engine] --> Proto[bigshark_engine_protocol]
   Host --> Service[bigshark_service]
   Service --> Policy[bigshark_policy]
   Policy --> Solver[bigshark_solver]
@@ -133,9 +130,9 @@ by construction. (A new repo-local file can only enter the target via the
 explicit, reviewed source list in `CMakeLists.txt`; `bigshark_tree` is not
 globbed.)
 
-`bigshark_v0_protocol` is the only first-party C++ target that compiles
-against yyjson. OpenSpiel and HiGHS remain private dependencies of
-`bigshark_solver`.
+`bigshark_engine_protocol` is the only first-party C++ target that compiles
+against generated protobuf bindings. OpenSpiel and HiGHS remain private
+dependencies of `bigshark_solver`.
 
 ## Card and Hand Representation
 
@@ -288,7 +285,7 @@ trains to completion: 670 nodes, 319 information sets, 285 KB, 0.02 s.
 The RFC 0007 measured 606 info sets at 3 BB is the abstracted count
 (conditioned on hole-card buckets), not the raw tree node count.
 
-The heads-up preflop profile is wired into the v1 resident decision path.
+The heads-up preflop profile is wired into the resident decision path.
 RFC 0019 extends negotiated minor-2 preflop reconstruction to 2..10 dealt
 seats using the same exact `GameState` replay. Folded seats remain indexed;
 each newly admitted multiway action's actual payment and each player's final
@@ -605,7 +602,7 @@ regret/average rows). SQLite and OpenSSL headers never appear in the public
 header; SQL handles never cross the boundary. The library links
 `bigshark_solver` publicly for the domain types and keeps the vendored SQLite
 amalgamation and OpenSSL Crypto PRIVATE. The library is linked by
-`bigshark_resident`, which is wired into the v1 decision path.
+`bigshark_resident`, which is wired into the decision path.
 
 ```mermaid
 flowchart LR
@@ -716,7 +713,7 @@ Optional digest pinning rejects a tampered file before parsing. Failures are
 typed `ArtifactError` values (including a dedicated capacity-exceeded kind).
 This stage eagerly loads all rows into immutable domain records; bounded
 resident subset selection and decision-path access landed in Stage 6 (the
-resident layer, wired into the v1 path).
+resident layer, wired into the decision path).
 Checkpoint writers fail closed: after setting the writer pragmas they read
 `synchronous` (`2`/FULL) and `journal_mode` (`delete`) back on the same
 connection and abort on mismatch; the per-connection synchronous setting is
@@ -738,12 +735,12 @@ validated artifacts. Its public surface is
 (`resident_policy.cpp`, `public_reach.{hpp,cpp}`,
 `resident_index.{hpp,cpp}`). It links `bigshark_artifacts` PUBLIC (which
 brings the solver and poker domain records) and is linked by
-`bigshark_v1_protocol` (PRIVATE), serving blueprint decisions on the v1
+`bigshark_engine_protocol` (PRIVATE), serving blueprint decisions on the
 decision path.
 
 ```mermaid
 flowchart LR
-  V1[bigshark_v1_protocol] --> Resident[bigshark_resident]
+  Proto[bigshark_engine_protocol] --> Resident[bigshark_resident]
   Resident --> Artifacts[bigshark_artifacts]
   Artifacts --> Solver[solver domain records]
 ```
@@ -1294,7 +1291,7 @@ rather than untimed after the solver consumed the budget.
 
 The offline practice simulator's `engine` difficulty tier (RFC 0009 W4e) is a
 process-boundary consumer of this pipeline: it spawns `bigshark-engine
---serve-proto` and forwards bot decisions over the v1 framed protocol, so a
+--serve-proto` and forwards bot decisions over the framed protocol, so a
 practice bot plays the resident blueprint → terminal-only resolver → labeled
 operational fallback chain. See [the practice-table
 doc](../development/practice-table.md) and [the protobuf protocol
@@ -2252,9 +2249,7 @@ are documented in [Benchmarking](../development/benchmarking.md).
 - Process-level parse failures currently return a fold-shaped response.
 
 The current wire contract is documented in
-[Engine Protocol](../reference/engine-protocol.md). Its error model is a known
-limitation addressed by
-[RFC 0002](../rfcs/0002-protobuf-engine-protocol.md).
+[Protobuf Engine Protocol](../reference/protobuf-engine-protocol.md).
 
 ## Verification
 
@@ -2262,7 +2257,7 @@ The native suite covers:
 
 - hand categories and ordering;
 - straight and draw-mask boundaries;
-- v0 request mapping and repeated response serialization;
+- Protocol request mapping and response serialization;
 - deterministic equity behavior;
 - multiway equity sanity;
 - DCFR exploitability and policy normalization;

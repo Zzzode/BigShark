@@ -4,50 +4,30 @@ import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
-import { EngineProcessClient } from '../../../clients/node/engine-process-client.js';
-import { ProtoEngineProcessClient } from '../../../clients/node/proto-engine-process-client.js';
-import { V2ProtoEngineProcessClient } from '../../../clients/node/proto-engine-process-client-v2.js';
-import {
-  decisionEnvelope,
-  fromV1DecisionResponse,
-  toV1DecisionRequest,
-  V1EngineError,
-} from './v1-mapper.js';
-import {
-  decisionEnvelopeV2,
-  fromV2DecisionResponse,
-  toV2DecisionRequest,
-  V2EngineError,
-} from './v2-mapper.js';
-import {
-  buildContext,
-  safeFallback,
-  validateEngineDecision,
-} from './v0-normalizer.js';
-import { resolveSolveTimeBudgetMs } from './v1-mapper.js';
 import { create } from '@bufbuild/protobuf';
+
+import { ProtoEngineProcessClient } from '../../../clients/node/proto-engine-process-client.js';
 import {
   EnvelopeSchema,
   ErrorCode,
   GetCapabilitiesRequestSchema,
-  SolverMode,
-} from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
-import {
-  EnvelopeSchema as EnvelopeSchemaV2,
-  GetCapabilitiesRequestSchema as GetCapabilitiesRequestSchemaV2,
+  type Envelope,
 } from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+import {
+  decisionEnvelope,
+  EngineError,
+  fromDecisionResponse,
+  resolveSolveTimeBudgetMs,
+  safeFallback,
+  toDecisionRequest,
+} from './mapper.js';
 import type {
+  EngineClient,
   EngineConfig,
   ExecutableDecision,
-  RawEngineDecision,
   ResidentRootSpec,
   RiverRoom,
-  V0DecisionContext,
-  V1EnvelopeClient,
-  V2EnvelopeClient,
 } from './types.js';
-import type { Envelope } from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
-import type { Envelope as EnvelopeV2 } from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
 
 const defaultBinary = process.env.BIGSHARK_ENGINE_BINARY || fileURLToPath(
   new URL('../../../../bin/bigshark-engine', import.meta.url),
@@ -80,44 +60,13 @@ export function residentBudgetMiB(): number {
   }
   return Math.floor(totalmem() / 4 / (1024 * 1024));
 }
-let defaultClient: EngineProcessClient<V0DecisionContext, RawEngineDecision> | null = null;
-let defaultProtoClient: ProtoEngineProcessClient | null = null;
-let defaultProtoClientKey = '';
-let defaultProtoClientV2: V2ProtoEngineProcessClient | null = null;
-let defaultProtoClientV2Key = '';
-
-function engineClient(): EngineProcessClient<V0DecisionContext, RawEngineDecision> | null {
-  if (!defaultClient && existsSync(defaultBinary)) {
-    defaultClient = new EngineProcessClient({
-      command: defaultBinary,
-      warmupRequest: {
-        handId: 'warmup',
-        revision: 0,
-        style: 'tag',
-        street: 'preflop',
-        blinds: [10, 20],
-        position: 'BTN',
-        playersInHand: 2,
-        effectiveStackBb: 100,
-        hole: [],
-        board: [],
-        pot: 0,
-        riverGtoOn: false,
-        raises: 0,
-        openerPosition: '',
-        heroWasRaiser: false,
-        heroPreflopAggressor: false,
-        limpers: 0,
-      },
-    });
-  }
-  return defaultClient;
-}
+let defaultClient: ProtoEngineProcessClient | null = null;
+let defaultClientKey = '';
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
 /**
- * RFC 0009 W1: parse the resident-root configuration surface. The explicit
+ * Parse the resident-root configuration surface. The explicit
  * `config.residentRoots` wins over the `BIGSHARK_ENGINE_RESIDENT_ROOTS`
  * environment variable (a JSON array of `{path, sha256}` objects). Malformed
  * entries are configuration errors: the engine child would refuse the launch
@@ -270,8 +219,8 @@ function residentRootArgs(roots: readonly ResidentRootSpec[]): string[] {
 }
 
 /**
- * RFC 0009 W1: the framed child's launch line. With no configured roots or
- * libraries this is exactly the historical `['--serve-proto']`; each root
+ * The engine child's launch line. With no configured roots or
+ * libraries this is exactly the bare `['--serve-proto']`; each root
  * appends the host's documented repeatable `--resident-root <path>=<sha256>`
  * argument, each flop library appends `--flop-library <dir>`, and a
  * residentBudgetMiB appends `--resident-budget <MiB>`, in the
@@ -294,7 +243,7 @@ export function protoEngineLaunchArgs(
 }
 
 /**
- * The warmup timeout for the framed child. A flop library loads ~1,755
+ * The warmup timeout for the engine child. A flop library loads ~1,755
  * SQLite DBs before the engine's first frame (~55 s probe, longer to
  * load), so the default 10 s would expire mid-handshake. A standalone root
  * also validates and indexes before the first frame. One configured source
@@ -313,7 +262,7 @@ export function warmupTimeoutMsFor(
     : WARMUP_TIMEOUT_MULTI_LIBRARY_MS;
 }
 
-function protoEngineClient(
+function engineClient(
   roots: readonly ResidentRootSpec[],
   libraries: readonly string[],
   residentBudgetMiB?: number,
@@ -324,71 +273,29 @@ function protoEngineClient(
   // libraries, no budget) keeps the historical bare `--serve-proto` launch
   // line.
   const key = JSON.stringify({ roots, libraries, residentBudgetMiB });
-  if (defaultProtoClient && defaultProtoClientKey === key)
-    return defaultProtoClient;
+  if (defaultClient && defaultClientKey === key)
+    return defaultClient;
   if (!existsSync(defaultBinary))
     return null;
-  defaultProtoClient?.stop();
-  defaultProtoClient = null;
-  const warmup: Envelope = create(EnvelopeSchema, { protocolMinor: 0 });
+  defaultClient?.stop();
+  defaultClient = null;
+  const warmup = create(EnvelopeSchema, { protocolVersion: 3 });
   warmup.payload = {
     case: 'getCapabilitiesRequest',
     value: create(GetCapabilitiesRequestSchema),
   };
   warmup.requestId = 'warmup-capabilities';
-  const hasResidentArtifacts = roots.length > 0 || libraries.length > 0;
-  defaultProtoClient = new ProtoEngineProcessClient({
-    command: defaultBinary,
-    args: protoEngineLaunchArgs(roots, libraries, residentBudgetMiB),
-    warmupEnvelope: warmup,
-    warmupTimeoutMs: warmupTimeoutMsFor(libraries, roots),
-    // The framed path stays minor 0 by default; callers must explicitly
-    // negotiate a higher minor before its features can be used. RFC 0009 W1:
-    // a configured resident root set or flop library is that explicit opt-in
-    // to the minor-2 guarantee-and-digest surface, so the runner's served
-    // decisions carry their provenance; without artifacts nothing changes.
-    negotiateMinor1: hasResidentArtifacts
-      || process.env.BIGSHARK_ENGINE_PROTO_MINOR1 === '1',
-    negotiateMinor2: hasResidentArtifacts
-      || process.env.BIGSHARK_ENGINE_PROTO_MINOR2 === '1',
-  });
-  defaultProtoClientKey = key;
-  return defaultProtoClient;
-}
-
-function protoEngineClientV2(
-  roots: readonly ResidentRootSpec[],
-  libraries: readonly string[],
-  residentBudgetMiB?: number,
-): V2ProtoEngineProcessClient | null {
-  const key = JSON.stringify({ roots, libraries, residentBudgetMiB });
-  if (defaultProtoClientV2 && defaultProtoClientV2Key === key)
-    return defaultProtoClientV2;
-  if (!existsSync(defaultBinary))
-    return null;
-  defaultProtoClientV2?.stop();
-  defaultProtoClientV2 = null;
-  const warmup = create(EnvelopeSchemaV2, { protocolVersion: 3 });
-  warmup.payload = {
-    case: 'getCapabilitiesRequest',
-    value: create(GetCapabilitiesRequestSchemaV2),
-  };
-  warmup.requestId = 'v2-warmup-capabilities';
-  defaultProtoClientV2 = new V2ProtoEngineProcessClient({
+  defaultClient = new ProtoEngineProcessClient({
     command: defaultBinary,
     args: protoEngineLaunchArgs(roots, libraries, residentBudgetMiB),
     warmupEnvelope: warmup,
     warmupTimeoutMs: warmupTimeoutMsFor(libraries, roots),
   });
-  defaultProtoClientV2Key = key;
-  return defaultProtoClientV2;
+  defaultClientKey = key;
+  return defaultClient;
 }
 
-export { buildContext, safeFallback };
-
-function protoEnabled(config: EngineConfig): boolean {
-  return config.proto === true || process.env.BIGSHARK_ENGINE_PROTO === '1';
-}
+export { safeFallback };
 
 // The adapter also accepts structural clients. Bound each asynchronous phase
 // itself rather than assuming every injected request enforces its timeout.
@@ -411,10 +318,13 @@ async function withinDecisionDeadline<T>(
   }
 }
 
-async function decideV1(
+export async function decide(
   room: RiverRoom,
-  config: EngineConfig,
+  config: EngineConfig = {},
 ): Promise<ExecutableDecision> {
+  if (!room?.legal)
+    return { action: 'fold', reason: 'no-legal', guaranteeLevel: 'operational_fallback' };
+
   const timeoutMs = config.timeoutMs ?? 2000;
   const deadline = performance.now() + timeoutMs;
   // A malformed programmatic root spec is a configuration error, not an
@@ -440,89 +350,12 @@ async function decideV1(
     );
   }
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
-    throw new Error('Engine decision timeout must be finite and positive');
-  const client = (config.protoEngineClient as V1EnvelopeClient | undefined)
-    ?? protoEngineClient(roots, libraries, residentBudgetMiB);
+    return safeFallback(room);
+  const client = config.engineClient
+    ?? engineClient(roots, libraries, residentBudgetMiB);
   if (!client)
     return safeFallback(room);
-  // The concrete process client completes its capability handshake at the end
-  // of start(); awaiting it makes the negotiated minor available on the very
-  // first decision instead of racing it as 0. Structural fakes omit start().
-  if (client.start) await withinDecisionDeadline(deadline, () => client.start!());
-  // Minor 1+ is used only with a client whose capability handshake succeeded
-  // (explicit opt-in at client construction). On minor 1 a forced blueprint
-  // request runs in BLUEPRINT mode; otherwise AUTOMATIC tries the resident
-  // blueprint and deterministically falls back to the heuristic on any miss.
-  const minor: 0 | 1 | 2 = client.negotiatedProtocolMinor ?? 0;
-  const solverMode = config.protoBlueprint && minor >= 1
-    ? SolverMode.BLUEPRINT
-    : SolverMode.AUTOMATIC;
-  const request = toV1DecisionRequest(room, {
-    ...(config.style !== undefined ? { style: config.style } : {}),
-    ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
-    ...(minor >= 1 ? { solverMode } : {}),
-    // RFC 0009 W1: the runner's real remaining-time budget reaches the
-    // resolver instead of the historical pinned 2000 ms.
-    ...(config.solveTimeBudgetMs !== undefined
-      ? { solveTimeBudgetMs: resolveSolveTimeBudgetMs(config.solveTimeBudgetMs) }
-      : {}),
-    // Field 8 is only valid on minor 2; pass the minor so the mapper gates it.
-    ...(minor === 2
-      ? {
-          negotiatedMinor: 2 as const,
-          ...(config.minimumGuaranteeLevel !== undefined
-            ? { minimumGuaranteeLevel: config.minimumGuaranteeLevel }
-            : {}),
-        }
-      : {}),
-  });
-  const requestEnvelope = decisionEnvelope(request, minor);
-  const envelope = await withinDecisionDeadline(deadline, remainingMs => client.request(
-    requestEnvelope,
-    remainingMs,
-  )) as Envelope;
-  const decision = fromV1DecisionResponse(envelope, room, minor);
-  if (performance.now() >= deadline) throw new Error('Engine decision timed out');
-  return decision;
-}
-
-function protoV2Enabled(config: EngineConfig): boolean {
-  return process.env.BIGSHARK_ENGINE_PROTO_V2 === '1';
-}
-
-async function decideV2(
-  room: RiverRoom,
-  config: EngineConfig,
-): Promise<ExecutableDecision> {
-  const timeoutMs = config.timeoutMs ?? 2000;
-  const deadline = performance.now() + timeoutMs;
-  let roots: ResidentRootSpec[];
-  try {
-    roots = parseResidentRoots(config);
-  } catch (error) {
-    throw new Error(
-      `invalid resident root configuration: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  let libraries: string[];
-  let residentBudgetMiB: number | undefined;
-  try {
-    const resolved = resolveFlopLibraries(config);
-    libraries = resolved.libraries;
-    residentBudgetMiB = resolved.residentBudgetMiB;
-  } catch (error) {
-    throw new Error(
-      `invalid flop library configuration: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0)
-    throw new Error('Engine decision timeout must be finite and positive');
-  const client = (config.protoEngineClientV2 as V2EnvelopeClient | undefined)
-    ?? protoEngineClientV2(roots, libraries, residentBudgetMiB);
-  if (!client)
-    return safeFallback(room);
-  if (client.start) await withinDecisionDeadline(deadline, () => client.start!());
-  const request = toV2DecisionRequest(room, {
+  const request = toDecisionRequest(room, {
     ...(config.style !== undefined ? { style: config.style } : {}),
     ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
     ...(config.solveTimeBudgetMs !== undefined
@@ -532,93 +365,49 @@ async function decideV2(
       ? { minimumGuaranteeLevel: config.minimumGuaranteeLevel }
       : {}),
   });
-  const requestEnvelope = decisionEnvelopeV2(request);
-  const envelope = await withinDecisionDeadline(deadline, remainingMs => client.request(
-    requestEnvelope,
-    remainingMs,
-  )) as EnvelopeV2;
-  const decision = fromV2DecisionResponse(envelope, room);
-  if (performance.now() >= deadline) throw new Error('Engine decision timed out');
-  return decision;
-}
-
-export async function decide(
-  room: RiverRoom,
-  config: EngineConfig = {},
-): Promise<ExecutableDecision> {
-  if (!room?.legal)
-    return { action: 'fold', reason: 'no-legal', guaranteeLevel: 'operational_fallback' };
-
-  if (protoEnabled(config)) {
-    try {
-      if (protoV2Enabled(config)) {
-        try {
-          return await decideV2(room, config);
-        } catch (v2Error) {
-          // v2 errors fall through to v1, then to safeFallback.
-          // GUARANTEE_BELOW_REQUEST from v2 also propagates.
-          if (v2Error instanceof V2EngineError
-            && v2Error.code === ErrorCode.GUARANTEE_BELOW_REQUEST)
-            throw v2Error;
-          // Configuration errors propagate from v2 as well.
-          if (v2Error instanceof Error
-            && (v2Error.message.startsWith('invalid resident root configuration')
-              || v2Error.message.startsWith('invalid flop library configuration')))
-            throw v2Error;
-          // Fall through to v1.
-        }
-      }
-      return await decideV1(room, config);
-    } catch (error) {
-      // RFC 0008 stage 5: a GUARANTEE_BELOW_REQUEST refusal is a contract
-      // response to a caller-declared floor, not an operational outage. It
-      // must propagate so the explicit caller can react; it never becomes a
-      // strategic safe fallback.
-      if (error instanceof V1EngineError
-        && error.code === ErrorCode.GUARANTEE_BELOW_REQUEST)
-        throw error;
-      // RFC 0009 W1: a malformed resident-root or flop-library configuration
-      // is a caller error, not an outage; it must be visible rather than
-      // becoming a per-turn silent fallback.
-      if (error instanceof Error
-        && (error.message.startsWith('invalid resident root configuration')
-          || error.message.startsWith('invalid flop library configuration')))
-        throw error;
-      // Transport, validation, or capability failures are operational errors;
-      // the v1 mapper never converts them into a strategic fold.
-      return safeFallback(room);
-    }
-  }
-
-  const client = config.engineClient || engineClient();
-  if (!client)
-    return safeFallback(room);
-
+  const requestEnvelope = decisionEnvelope(request);
   try {
-    const context = buildContext(room, config);
-    const rawDecision = await client.request(context, config.timeoutMs ?? 2000);
-    return validateEngineDecision(room, rawDecision) || safeFallback(room);
-  } catch {
+    // The concrete process client completes its capability handshake at the
+    // end of start(); awaiting it makes capabilities available on the very
+    // first decision. Structural fakes omit start().
+    if (client.start) await withinDecisionDeadline(deadline, () => client.start!());
+    const envelope = await withinDecisionDeadline(deadline, remainingMs => client.request(
+      requestEnvelope,
+      remainingMs,
+    )) as Envelope;
+    const decision = fromDecisionResponse(envelope, room);
+    if (performance.now() >= deadline) throw new Error('Engine decision timed out');
+    return decision;
+  } catch (error) {
+    // A GUARANTEE_BELOW_REQUEST refusal is a contract response to a
+    // caller-declared floor, not an operational outage. It must propagate so
+    // the explicit caller can react; it never becomes a strategic fallback.
+    if (error instanceof EngineError
+      && error.code === ErrorCode.GUARANTEE_BELOW_REQUEST)
+      throw error;
+    // A malformed resident-root or flop-library configuration is a caller
+    // error, not an outage; it must be visible rather than becoming a
+    // per-turn silent fallback.
+    if (error instanceof Error
+      && (error.message.startsWith('invalid resident root configuration')
+        || error.message.startsWith('invalid flop library configuration')))
+      throw error;
+    // Transport, validation, or capability failures are operational errors;
+    // the mapper never converts them into a strategic fold.
     return safeFallback(room);
   }
 }
 
 export function closeEngine(): void {
   // Resets the implicit-client key too: a later decide() re-evaluates the
-  // launch line instead of reusing the stopped client's key. Any future reset
-  // path must clear both fields together.
+  // launch line instead of reusing the stopped client's key.
   defaultClient?.stop();
   defaultClient = null;
-  defaultProtoClient?.stop();
-  defaultProtoClient = null;
-  defaultProtoClientKey = '';
-  defaultProtoClientV2?.stop();
-  defaultProtoClientV2 = null;
-  defaultProtoClientV2Key = '';
+  defaultClientKey = '';
 }
 
 /**
- * Warm the framed engine client before the first decision. When the
+ * Warm the engine client before the first decision. When the
  * config carries resident roots or flop libraries, the engine child
  * loads every resident root before answering its first frame (~2 min
  * for the full 1,755-class library). Calling this during startup
@@ -642,6 +431,6 @@ export async function warmEngine(config: EngineConfig): Promise<void> {
     return; // Malformed config surfaces on the first decide() call
   }
   if (roots.length === 0 && libraries.length === 0) return;
-  const client = protoEngineClient(roots, libraries, budget);
+  const client = engineClient(roots, libraries, budget);
   if (client) await client.start?.();
 }

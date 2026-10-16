@@ -2,12 +2,16 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import type { GoldenFixture } from '../../platforms/river-club/src/types.js';
+import type { RiverRoom, RiverState } from '../../platforms/river-club/src/types.js';
 import { collectReplaySnapshots, decisionProblem, replayExitCode } from './journal.js';
 
-const fixtures = JSON.parse(readFileSync(resolve('platforms/river-club/tests/fixtures/v0-golden.json'), 'utf8')) as GoldenFixture[];
-const first = fixtures[0];
-assert.ok(first);
+interface SyntheticFixture {
+  name: string;
+  state: RiverState & { me: { name: string }; room: RiverRoom };
+}
+
+const fixtures = JSON.parse(readFileSync(resolve('tools/replay/fixtures/synthetic-rooms.json'), 'utf8')) as SyntheticFixture[];
+const first = fixtures[0]!;
 const record = JSON.stringify({ resp: first.state });
 
 test('fixed engineering corpus stays explicitly synthetic and covers all betting streets', () => {

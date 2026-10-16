@@ -215,7 +215,6 @@ local `sessions/` logs.
 - `docs/README.md`: documentation index and policy
 - `docs/architecture/system-overview.md`: implemented component boundaries
 - `docs/design/gto-engine.md`: C++ strategy and solver implementation
-- `docs/reference/engine-protocol.md`: NDJSON process contract (legacy, to be removed)
 - `docs/reference/protobuf-engine-protocol.md`: engine protocol IDL and generation contract
 - `docs/integrations/river-club.md`: River Club adapter and operations
 - `docs/development/build-and-test.md`: presets, formatting, tests, and release
@@ -224,7 +223,6 @@ local `sessions/` logs.
 - `docs/SKILL.md`: official River Club v2 operating contract
 - `docs/upstream-STRATEGY.md`: official River Club decision guide
 - `docs/openapi.json`: official OpenAPI 3.1 definition
-- `docs/state-schema.md`: historical protocol observations (legacy, to be removed)
 - `strategy/PLAYBOOK.md`: baseline poker decision framework
 - `strategy/table-notes.md`: durable opponent and table observations
 - `.codex/skills/`: exploitative style selector and style modules

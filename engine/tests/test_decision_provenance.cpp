@@ -41,7 +41,7 @@ Legal legalNoBet() {
   return l;
 }
 
-// Independent re-coding of the frozen reason-text inference (v1_response_mapper
+// Independent re-coding of the frozen reason-text inference (response_mapper
 // solverSource): its own table, never shared with production code. This is
 // what minor 0/1 still emit; it exists here only to pin the divergence.
 DecisionSource legacyInferredSource(const std::string& reason) {

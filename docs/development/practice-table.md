@@ -16,7 +16,7 @@ The bot roster is deliberately labelled by what it does:
 | --- | --- |
 | `easy` | Uniform random over the declared finite action menu (fold/check/call, minimum raise, five declared pot fractions, and the cap). Loose and unpredictable, not strategic. |
 | `medium` | The pinned preflop charts plus the postflop Monte-Carlo-equity heuristic — standard ABC poker. The engine records this policy as `Guarantee::Approximate`; it is **not** a solved equilibrium and is never labelled "GTO". |
-| `engine` | Forwards every bot decision to a separate `bigshark-engine --serve-proto` subprocess over the v1 framed protobuf protocol. With resident roots configured the bot plays the resident blueprint → terminal-only resolver pipeline (RFC 0009 W4d); without roots it receives the engine's declared operational fallback (check, else call, else fold — never the heuristic, per the W3 demotion). On any transport or engine error the adapter falls back to check/call/fold locally, classified and counted in the shutdown report. The label is descriptive; it is **not** "GTO". Heads-up only in this stage. |
+| `engine` | Leaves bot seats null; the caller injects a policy via `PracticeTable::set_bot()`. With resident roots configured the bot plays the resident blueprint → terminal-only resolver pipeline (RFC 0009 W4d); without roots it receives the engine's declared operational fallback (check, else call, else fold — never the heuristic, per the W3 demotion). On any transport or engine error the adapter falls back to check/call/fold locally, classified and counted in the shutdown report. The label is descriptive; it is **not** "GTO". Heads-up only in this stage. |
 
 The `easy` and `medium` rosters are self-contained offline policies. The `engine`
 tier is a process boundary, not a new strategy: it reuses the same resident
@@ -118,35 +118,12 @@ prefixes, so it cannot be linked into the decision service, either wire
 protocol, or the engine host, and the interactive binary is a leaf that never
 links those targets.
 
-### Engine client boundary
+### Engine tier
 
-The `engine` difficulty tier adds the `bigshark_engine_client` static library
-(`engine/include/bs/engine_client/engine_client.hpp`,
-`engine/src/engine_client/`). It implements the v1 framed protobuf client:
-ULEB128 frame codec, process spawn/kill, minor-2 handshake (with minor-0
-fallback), `GameState` → `DecisionRequest` builder, and `DecisionResponse` →
-`poker::Action` mapper. It links only `bigshark_protocol` (generated
-protobuf), `bigshark_poker`, and the `bigshark_behavior` interface — it must
-not link `bigshark_v1_protocol` (which would drag in the service, policy,
-solver, and resident layers). The guard enforces this by construction:
-`bigshark_engine_client` is a forbidden prefix for live targets, and two
-directional closure checks verify that `bigshark_practice` does not link it
-and that it does not link the service, protocol, policy, solver, or resident
-libraries.
-
-The `EngineServedPolicy` is a `BehaviorPolicy` adapter: `distribution()`
-spawns the engine lazily (or respawns after a crash), builds a decision
-request from the live `GameState` and `HandLog`, sends it over the pipe, and
-maps the response. On any failure — timeout, end-of-stream, malformed frame,
-engine error, or illegal returned action — it falls back to check/call/fold
-and records the failure in a classified stats counter. The single-element
-distribution makes `PracticeTable::sample_bot` a deterministic no-op.
-
-The practice core itself knows nothing about the engine client:
-`PracticeTable::set_bot(seat, unique_ptr<BehaviorPolicy>)` is the seam the CLI
-uses to inject the `EngineServedPolicy`. The core's `make_practice_bot`
-returns `nullptr` for the `Engine` tier, and `play_hand` throws if an Engine
-bot seat was not filled via `set_bot`.
+The `engine` difficulty tier leaves bot seats null; the caller injects a
+policy via `PracticeTable::set_bot(seat, unique_ptr<BehaviorPolicy>)`. The
+core's `make_practice_bot` returns `nullptr` for the `Engine` tier, and
+`play_hand` throws if an Engine bot seat was not filled via `set_bot`.
 
 ## Adapter verb convention
 

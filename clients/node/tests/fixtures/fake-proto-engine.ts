@@ -9,11 +9,19 @@ import {
   ExpandedStrategySchema,
   GetCapabilitiesResponseSchema,
   GuaranteeLevel,
+  ObservationCoverage,
+  ObservationSource,
+  PotPhase,
+  LayerStatus,
+  SettlementRule,
+  ReopeningRule,
+  RunoutRule,
   SolverMode,
   SolverSource,
   StrategySchema,
+  UtilityProfile,
   type Envelope,
-} from '../../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
+} from '../../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
 
 const CONTINUATION = 0x80;
 const PAYLOAD_MASK = 0x7f;
@@ -23,7 +31,7 @@ function encodeVarint(value: number): Buffer {
   const bytes: number[] = [];
   do {
     let byte = value & PAYLOAD_MASK;
-    value >>>= 7;  // fake never emits lengths beyond uint32
+    value >>>= 7;
     if (value !== 0) byte |= CONTINUATION;
     bytes.push(byte);
   } while (value !== 0);
@@ -32,8 +40,8 @@ function encodeVarint(value: number): Buffer {
 
 let accumulated = Buffer.alloc(0);
 
-function responseEnvelope(requestId: string, envelope: Envelope, minor: number): Buffer {
-  envelope.protocolMinor = minor;
+function responseEnvelope(requestId: string, envelope: Envelope): Buffer {
+  envelope.protocolVersion = 3;
   envelope.requestId = requestId;
   const payload = Buffer.from(toBinary(EnvelopeSchema, envelope));
   return Buffer.concat([encodeVarint(payload.length), payload]);
@@ -46,96 +54,15 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
   const handId = state?.handId ?? '';
   const toCall = state?.toCall ?? 0n;
   const bigintEcho = handId === 'bigint';
-  const minor = request.protocolMinor;
   const decision = create(DecisionResponseSchema);
 
-  // Minor-1 scripted scenarios.
-  if (minor === 1) {
-    if (handId === 'blueprint-hit') {
-      decision.result = {
-        case: 'expandedStrategy',
-        value: create(ExpandedStrategySchema, {
-          actions: [
-            { type: ActionType.CHECK, probability: 0.4 },
-            { type: ActionType.BET, targetTotal: 100n, probability: 0.3 },
-            {
-              type: ActionType.BET,
-              targetTotal: 200n,
-              allIn: false,
-              probability: 0.2,
-            },
-            { type: ActionType.BET, targetTotal: 400n, probability: 0.1 },
-          ],
-          selectedAction: { type: ActionType.BET, targetTotal: 200n },
-          solver: {
-            source: SolverSource.BLUEPRINT,
-            reasonCode: 'blueprint',
-            cacheHit: true,
-            artifactSha256:
-              '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-            guarantee: 'uncertified',
-          },
-        }),
-      };
-      const envelope = create(EnvelopeSchema);
-      envelope.payload = { case: 'decisionResponse', value: decision };
-      return envelope;
-    }
-    if (handId === 'blueprint-bad-member') {
-      decision.result = {
-        case: 'expandedStrategy',
-        value: create(ExpandedStrategySchema, {
-          actions: [
-            { type: ActionType.CHECK, probability: 0.6 },
-            { type: ActionType.BET, targetTotal: 100n, probability: 0.4 },
-          ],
-          // Sampled action is not a member of the distribution.
-          selectedAction: { type: ActionType.BET, targetTotal: 999n },
-          solver: {
-            source: SolverSource.BLUEPRINT,
-            reasonCode: 'blueprint',
-            artifactSha256:
-              'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-            guarantee: 'uncertified',
-          },
-        }),
-      };
-      const envelope = create(EnvelopeSchema);
-      envelope.payload = { case: 'decisionResponse', value: decision };
-      return envelope;
-    }
-    if (handId === 'blueprint-miss') {
-      decision.result = {
-        case: 'error',
-        value: create(EngineErrorSchema, {
-          code: 4,  // UNSUPPORTED_FEATURE
-          message: 'blueprint coverage unavailable: off-tree-amount',
-          retryable: false,
-        }),
-      };
-      const envelope = create(EnvelopeSchema);
-      envelope.payload = { case: 'decisionResponse', value: decision };
-      return envelope;
-    }
-    // Default minor-1 echo: a degenerate expanded strategy carrying the
-    // heuristic's real source (never BLUEPRINT).
+  if (handId === 'error') {
     decision.result = {
-      case: 'expandedStrategy',
-      value: create(ExpandedStrategySchema, {
-        actions: [
-          {
-            type: bigintEcho ? ActionType.FOLD : ActionType.CHECK,
-            ...(bigintEcho ? { targetTotal: toCall } : {}),
-            probability: 1,
-          },
-        ],
-        ...(bigintEcho
-          ? { selectedAction: { type: ActionType.FOLD, targetTotal: toCall } }
-          : { selectedAction: { type: ActionType.CHECK } }),
-        solver: {
-          source: SolverSource.POSTFLOP_HEURISTIC,
-          reasonCode: 'postflop-heuristic',
-        },
+      case: 'error',
+      value: create(EngineErrorSchema, {
+        code: 13, // OFF_TREE_AMOUNT
+        message: 'off-tree amount',
+        retryable: false,
       }),
     };
     const envelope = create(EnvelopeSchema);
@@ -143,67 +70,25 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
     return envelope;
   }
 
-  // Minor-2 scripted scenarios (RFC 0008 stage 5).
-  if (minor === 2) {
-    const hasFloor = request.payload.case === 'decisionRequest'
-      && request.payload.value.options?.minimumGuarantee !== undefined;
-    const floor = request.payload.case === 'decisionRequest'
-      ? request.payload.value.options?.minimumGuarantee
-      : undefined;
-    // A caller floor above APPROXIMATE(2) is refused with code 9, except the
-    // hand-id-selected certified scenario which meets every floor.
-    if (handId !== 'certified' && hasFloor && (floor ?? 0) > GuaranteeLevel.APPROXIMATE) {
-      decision.result = {
-        case: 'error',
-        value: create(EngineErrorSchema, {
-          code: 9,  // GUARANTEE_BELOW_REQUEST
-          message: 'achieved guarantee level is below the requested minimum',
-          retryable: false,
-        }),
-      };
-      const envelope = create(EnvelopeSchema);
-      envelope.payload = { case: 'decisionResponse', value: decision };
-      return envelope;
-    }
-    if (handId === 'certified') {
-      decision.result = {
-        case: 'expandedStrategy',
-        value: create(ExpandedStrategySchema, {
-          actions: [{ type: ActionType.CALL, probability: 1 }],
-          selectedAction: { type: ActionType.CALL },
-          solver: {
-            source: SolverSource.RESOLVING,
-            reasonCode: 'resolving',
-            cacheHit: false,
-            artifactSha256:
-              'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
-            // Field 11 only; field 10 is deliberately never set.
-            guaranteeLevel: 'certified_bound',
-          },
-        }),
-      };
-      const envelope = create(EnvelopeSchema);
-      envelope.payload = { case: 'decisionResponse', value: decision };
-      return envelope;
-    }
-    // Default minor-2 echo: heuristic answer carrying field 11 = approximate.
+  if (handId === 'expanded') {
     decision.result = {
       case: 'expandedStrategy',
       value: create(ExpandedStrategySchema, {
         actions: [
-          {
-            type: bigintEcho ? ActionType.FOLD : ActionType.CHECK,
-            ...(bigintEcho ? { targetTotal: toCall } : {}),
-            probability: 1,
-          },
+          { type: ActionType.CHECK, probability: 0.4 },
+          { type: ActionType.BET, targetTotal: 100n, probability: 0.3 },
+          { type: ActionType.BET, targetTotal: 200n, probability: 0.2 },
+          { type: ActionType.BET, targetTotal: 400n, probability: 0.1 },
         ],
-        ...(bigintEcho
-          ? { selectedAction: { type: ActionType.FOLD, targetTotal: toCall } }
-          : { selectedAction: { type: ActionType.CHECK } }),
+        selectedAction: { type: ActionType.BET, targetTotal: 200n },
         solver: {
-          source: SolverSource.POSTFLOP_HEURISTIC,
-          reasonCode: 'postflop-heuristic',
+          source: SolverSource.BLUEPRINT,
+          reasonCode: 'blueprint',
+          cacheHit: true,
+          artifactSha256:
+            '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
           guaranteeLevel: 'approximate',
+          utilityProfile: UtilityProfile.CASH_CHIP,
         },
       }),
     };
@@ -222,10 +107,12 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
       }],
       ...(bigintEcho
         ? { selectedAction: { type: ActionType.FOLD, targetTotal: toCall } }
-        : {}),
+        : { selectedAction: { type: ActionType.CHECK } }),
       solver: {
         source: SolverSource.POSTFLOP_HEURISTIC,
         reasonCode: 'postflop-heuristic',
+        guaranteeLevel: 'approximate',
+        utilityProfile: UtilityProfile.CASH_CHIP,
       },
     }),
   };
@@ -234,31 +121,32 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
   return envelope;
 }
 
-function capabilitiesEnvelope(minor: number): Envelope {
+function capabilitiesEnvelope(): Envelope {
   const capabilities = create(GetCapabilitiesResponseSchema, {
-    supportedProtocolMinors: minor === 2 ? [0, 1, 2] : minor === 1 ? [0, 1] : [0],
-    engineBuildVersion: minor === 2
-      ? 'fake-v1.2'
-      : minor === 1 ? 'fake-v1.1' : 'fake',
-    supportedGameVariants: [1],
-    supportedBettingStructures: [1],
-    minimumPlayers: 2,
-    maximumPlayers: 10,
-    supportedStreets: [1, 2, 3, 4],
-    supportedActions: [1, 2, 3, 4, 5],
-    amountSemantics: 1,
-    // Minor 1/2 capabilities advertise BLUEPRINT (6); RESOLVING (7) stays
-    // unadvertised like the root-less published binary.
-    solverModes: minor >= 1
-      ? [SolverMode.AUTOMATIC, SolverMode.HEURISTIC, SolverMode.BLUEPRINT]
-      : [1],
-    strategyProfiles: ['tag'],
-    exactLp: 3,
-    dcfr: 3,
-    multistreet: 2,
-    sidePots: 1,
-    rake: 1,
-    tournamentIcm: 1,
+    supportedProtocolVersions: [0, 1, 2, 3],
+    engineBuildVersion: 'fake-v2.0',
+    capabilities: [
+      {
+        minDealtPlayers: 2,
+        maxDealtPlayers: 2,
+        minLivePlayers: 2,
+        maxLivePlayers: 2,
+        supportedStreets: [1, 2, 3, 4],
+        maxStackBb: 100,
+        sidePots: false,
+        ruleProfile: {
+          settlement: SettlementRule.CLOCKWISE_LEFT_OF_BUTTON,
+          reopening: ReopeningRule.NEVER_CUMULATIVE,
+          runout: RunoutRule.SINGLE,
+          dealtSeatCount: 2,
+        },
+        utilityProfile: UtilityProfile.CASH_CHIP,
+        requiredCoverage: ObservationCoverage.FULL,
+        solverMode: SolverMode.AUTOMATIC,
+        maxGuarantee: GuaranteeLevel.APPROXIMATE,
+        qualityScope: 'heads-up-r1',
+      },
+    ],
     maximumRequestBytes: BigInt(MAX_FRAME_BYTES),
     maximumSolveTimeMs: 120000,
   });
@@ -291,12 +179,9 @@ function pump(): void {
 
 function handle(request: Envelope): void {
   const requestId = request.requestId;
-  const minor = request.protocolMinor <= 2 ? request.protocolMinor : 0;
 
   if (request.payload.case === 'getCapabilitiesRequest') {
-    process.stdout.write(
-      responseEnvelope(requestId, capabilitiesEnvelope(minor), minor),
-    );
+    process.stdout.write(responseEnvelope(requestId, capabilitiesEnvelope()));
     return;
   }
   if (request.payload.case !== 'decisionRequest'
@@ -312,29 +197,20 @@ function handle(request: Envelope): void {
     return;
   }
   if (mode === 'truncated') {
-    const frame = responseEnvelope(requestId, decisionResponseEnvelope(request), minor);
+    const frame = responseEnvelope(requestId, decisionResponseEnvelope(request));
     process.stdout.write(frame.subarray(0, Math.min(frame.length, 6)));
     setTimeout(() => process.exit(0), 30);
     return;
   }
   if (mode === 'malformed-varint') {
-    // Value 1 with a trailing zero continuation group is non-canonical.
     process.stdout.write(Buffer.from([0x81, 0x00]));
     return;
   }
-  if (mode === 'unknown-payload') {
-    process.stdout.write(responseEnvelope(requestId, capabilitiesEnvelope(minor), minor));
-    return;
-  }
-  const frame = responseEnvelope(requestId, decisionResponseEnvelope(request), minor);
+  const frame = responseEnvelope(requestId, decisionResponseEnvelope(request));
   if (mode === 'split') {
     const middle = Math.floor(frame.length / 2);
     process.stdout.write(frame.subarray(0, middle));
     setTimeout(() => process.stdout.write(frame.subarray(middle)), 15);
-    return;
-  }
-  if (mode === 'reorder-1') {
-    setTimeout(() => process.stdout.write(frame), 60);
     return;
   }
   process.stdout.write(frame);

@@ -384,19 +384,17 @@ function responseCode(value: unknown): string | undefined {
     : undefined;
 }
 
-// RFC 0009 W1: one shared frame-path decision object. With at least one
-// configured resident root or flop library the runner opts into the framed
-// v1 path so the served decision's guarantee level and artifact digest are
-// decoded and journaled; without artifacts the call stays exactly as before
-// (v0 unless the caller opted in). `protoBlueprint` is deliberately NOT set:
-// AUTOMATIC mode already tries the resident blueprint first on minor 1+, and
-// the minor-2 AUTOMATIC route keeps the demotion contract (a miss falls
-// through to the engine's declared fallback rather than failing the turn).
+// The shared engine decision config. With at least one configured resident
+// root or flop library the runner passes them so the served decision's
+// guarantee level and artifact digest are decoded and journaled.
+// AUTOMATIC mode already tries the resident blueprint first, and the
+// AUTOMATIC route keeps the demotion contract (a miss falls through to the
+// engine's declared fallback rather than failing the turn).
 //
 // When no explicit flopLibraries config is set, the launcher auto-detects
 // the bundled library (artifacts/flop-library/manifest.json at the repo
-// root). When it fires, the framed path is required so the library actually
-// loads; decide() re-resolves the same set and attaches its 6 GiB budget.
+// root). When it fires, the library actually loads; decide() re-resolves the
+// same set and attaches its resident budget.
 function engineDecisionConfig(
   timeoutMs: number,
 ): Parameters<typeof decide>[1] {
@@ -414,7 +412,6 @@ function engineDecisionConfig(
     timeoutMs,
     ...(hasArtifacts
       ? {
-          proto: true,
           ...(roots && roots.length > 0 ? { residentRoots: roots } : {}),
           ...(libraries && libraries.length > 0 ? { flopLibraries: libraries } : {}),
           solveTimeBudgetMs: timeoutMs,

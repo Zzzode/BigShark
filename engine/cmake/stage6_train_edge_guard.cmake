@@ -55,8 +55,7 @@ set(_train_forbidden
   bigshark_policy
   bigshark_stage6_eval
   bigshark_service
-  bigshark_v0_protocol
-  bigshark_v1_protocol
+  bigshark_engine_protocol
   bigshark-engine
 )
 

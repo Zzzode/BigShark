@@ -10,8 +10,33 @@ import type { Readable, Writable } from 'node:stream';
 import {
   EnvelopeSchema,
   GetCapabilitiesRequestSchema,
+  type CapabilityTuple,
   type Envelope,
-} from '../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
+  type GetCapabilitiesResponse,
+} from '../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+
+// --- ULEB128 frame codec ---------------------------------------------------
+
+export const MAX_FRAME_BYTES = 1 << 20;
+
+const CONTINUATION = 0x80;
+const PAYLOAD_MASK = 0x7f;
+
+/** Canonical ULEB128 encoding. Throws above the 1 MiB frame limit. */
+export function encodeVarint(value: number | bigint): Buffer {
+  let remaining = typeof value === 'bigint' ? value : BigInt(value);
+  if (remaining < 0n || remaining > BigInt(MAX_FRAME_BYTES)) {
+    throw new Error(`Refusing to encode frame length ${remaining}`);
+  }
+  const bytes: number[] = [];
+  do {
+    let byte = Number(remaining & 0x7fn);
+    remaining >>= 7n;
+    if (remaining !== 0n) byte |= CONTINUATION;
+    bytes.push(byte);
+  } while (remaining !== 0n);
+  return Buffer.from(bytes);
+}
 
 type EngineChild = ChildProcessByStdio<Writable, Readable, null>;
 type SpawnProcess = (
@@ -31,52 +56,12 @@ export interface ProtoEngineClientOptions {
   command: string;
   args?: readonly string[];
   spawnProcess?: SpawnProcess;
-  /** Capabilities or decision envelope used to validate the spawned process. */
+  /** Capabilities envelope used to validate the spawned process. */
   warmupEnvelope: Envelope;
   warmupTimeoutMs?: number;
-  /**
-   * RFC 0005 negotiated minor 1 opt-in. When true the client performs the
-   * two-step capability handshake (query at minor 0, re-query advertising
-   * minor 1) before use and downgrades to minor 0 on a host that does not
-   * negotiate it. Callers that do not opt in always stay on minor 0; the
-   * client never auto-upgrades a caller. Negotiation repeats after every hard
-   * restart.
-   */
-  negotiateMinor1?: boolean;
-  /**
-   * RFC 0008 stage 5 negotiated minor 2 opt-in (typed guarantee levels). When
-   * true the handshake probes minor 2 first, then minor 1 (only when
-   * negotiateMinor1 is also set), then minor 0. Independent opt-in flags
-   * match the minor-1 rollout: a minor-2 probe against an older host is a
-   * harmless single UNSUPPORTED_PROTOCOL response.
-   */
-  negotiateMinor2?: boolean;
 }
 
-// RFC 0002 transport limit. Declared lengths above this are rejected before
-// any payload Buffer is allocated.
-export const MAX_FRAME_BYTES = 1 << 20;
-
-const CONTINUATION = 0x80;
-const PAYLOAD_MASK = 0x7f;
-const MAX_VARINT_BYTES = 5;
-
-/** Canonical ULEB128 encoding. Returns null above the 1 MiB frame limit. */
-export function encodeVarint(value: number | bigint): Buffer {
-  let remaining = typeof value === 'bigint' ? value : BigInt(value);
-  if (remaining < 0n || remaining > BigInt(MAX_FRAME_BYTES)) {
-    throw new Error(`Refusing to encode frame length ${remaining}`);
-  }
-  const bytes: number[] = [];
-  do {
-    let byte = Number(remaining & 0x7fn);
-    remaining >>= 7n;
-    if (remaining !== 0n) byte |= CONTINUATION;
-    bytes.push(byte);
-  } while (remaining !== 0n);
-  return Buffer.from(bytes);
-}
-
+// ULEB128 frame scanner.
 type FrameScan =
   | { status: 'need-data' }
   | {
@@ -87,7 +72,8 @@ type FrameScan =
   | { status: 'malformed' }
   | { status: 'oversize' };
 
-/** Scans one length-delimited frame without allocating the payload yet. */
+const MAX_VARINT_BYTES = 5;
+
 function scanFrame(buffer: Buffer, offset: number): FrameScan {
   let length = 0n;
   let prefixBytes = 0;
@@ -100,7 +86,6 @@ function scanFrame(buffer: Buffer, offset: number): FrameScan {
     prefixBytes++;
     if (length > BigInt(MAX_FRAME_BYTES)) return { status: 'oversize' };
     if ((byte & CONTINUATION) === 0) {
-      // A terminating zero group in a multi-byte prefix is overlong.
       if (prefixBytes > 1 && group === 0) return { status: 'malformed' };
       break;
     }
@@ -118,8 +103,10 @@ function errorMessage(error: unknown): string {
 /**
  * Length-delimited Protobuf engine client. Responses are correlated by the
  * echoed request_id (a map, never FIFO), all uint64 values stay bigint, and
- * exit/hard-restart recovery mirrors the NDJSON EngineProcessClient. Framed
- * request deadlines include readiness; administrative start remains separate.
+ * exit/hard-restart recovery. The capabilities handshake replaces
+ * minor negotiation with a capabilities query that verifies
+ * `supported_protocol_versions` includes 3 and stores the advertised
+ * CapabilityTuples.
  */
 export class ProtoEngineProcessClient {
   readonly command: string;
@@ -127,17 +114,14 @@ export class ProtoEngineProcessClient {
   readonly spawnProcess: SpawnProcess;
   readonly warmupEnvelope: Envelope;
   readonly warmupTimeoutMs: number;
-  readonly negotiateMinor1Option: boolean;
-  readonly negotiateMinor2Option: boolean;
 
   private process: EngineChild | null = null;
   private pending = new Map<string, PendingRequest>();
   private chunks: Buffer[] = [];
   private startPromise: Promise<void> | null = null;
   private requestCounter = 0;
-  // Negotiated result for the current process: 0 by default, 1 or 2 only
-  // after the corresponding capability handshake succeeds.
-  private negotiatedMinor = 0;
+  private capabilitiesList: CapabilityTuple[] = [];
+  private engineBuildVersion = '';
 
   constructor({
     command,
@@ -145,8 +129,6 @@ export class ProtoEngineProcessClient {
     spawnProcess = spawn as SpawnProcess,
     warmupEnvelope,
     warmupTimeoutMs = 600,
-    negotiateMinor1 = false,
-    negotiateMinor2 = false,
   }: ProtoEngineClientOptions) {
     if (!command) throw new Error('Engine process command is required');
     this.command = command;
@@ -154,27 +136,21 @@ export class ProtoEngineProcessClient {
     this.spawnProcess = spawnProcess;
     this.warmupEnvelope = warmupEnvelope;
     this.warmupTimeoutMs = warmupTimeoutMs;
-    this.negotiateMinor1Option = negotiateMinor1;
-    this.negotiateMinor2Option = negotiateMinor2;
   }
 
-  /**
-   * Negotiated protocol minor for the current process (0, 1, or 2). Available
-   * once start() resolves; reset and re-negotiated after a hard restart.
-   */
-  get negotiatedProtocolMinor(): 0 | 1 | 2 {
-    if (this.negotiatedMinor === 2) return 2;
-    return this.negotiatedMinor === 1 ? 1 : 0;
+  /** Always 3. */
+  get protocolVersion(): 3 {
+    return 3;
   }
 
-  /** True when the current process negotiated minor 1 or higher. */
-  get minor1Capable(): boolean {
-    return this.negotiatedProtocolMinor >= 1;
+  /** Capability tuples from the handshake; empty before start() resolves. */
+  get capabilities(): readonly CapabilityTuple[] {
+    return this.capabilitiesList;
   }
 
-  /** True only when the current process successfully negotiated minor 2. */
-  get minor2Capable(): boolean {
-    return this.negotiatedProtocolMinor === 2;
+  /** Engine build version from the handshake; empty before start() resolves. */
+  get buildVersion(): string {
+    return this.engineBuildVersion;
   }
 
   async request(envelope: Envelope, timeoutMs = 2000): Promise<Envelope> {
@@ -189,8 +165,6 @@ export class ProtoEngineProcessClient {
           timeoutMs,
         );
       });
-      // Expire this caller, not the shared administrative startup. An expired
-      // request must never resume into enqueue when that startup finishes.
       await Promise.race([this.start(), startupExpiry]);
     } finally {
       clearTimeout(startupTimer);
@@ -198,52 +172,8 @@ export class ProtoEngineProcessClient {
     const remainingMs = deadline - performance.now();
     if (remainingMs <= 0) throw new Error('Engine request timed out');
     const response = await this.enqueue(envelope, remainingMs);
-    // A delayed event loop can deliver data before its overdue timer callback.
     if (performance.now() >= deadline) throw new Error('Engine request timed out');
     return response;
-  }
-
-  // RFC 0005/0008 capability handshakes. Probe order is strict: minor 2 when
-  // opted in, then minor 1 when IT was opted in (a minor-2-only caller never
-  // silently uses minor 1), then stay on minor 0. The host must echo the
-  // probed minor and list it in supported_protocol_minors; an old host simply
-  // answers the probe with an error/echo 0 and the client stays below.
-  //
-  // A probe that fails IN BAND (echo mismatch, error payload, missing minor)
-  // falls through to the next candidate. A probe that fails OUT OF BAND
-  // (timeout, exit, broken pipe) kills the child via failProcess; there is no
-  // live process left to probe, so the cascade ends at minor 0 and start()
-  // still resolves. The child is restarted lazily on the next request (start()
-  // respawns whenever this.process is null), so a failed probe never wedges
-  // the client permanently.
-  private async negotiate(): Promise<void> {
-    this.negotiatedMinor = 0;
-    for (const candidate of (this.negotiateMinor2Option ? [2] : [])
-      .concat(this.negotiateMinor1Option ? [1] : [])) {
-      const probe = create(EnvelopeSchema, {
-        protocolMinor: candidate,
-        requestId: `negotiate-minor${candidate}-${process.pid}-${++this.requestCounter}`,
-      });
-      probe.payload = {
-        case: 'getCapabilitiesRequest',
-        value: create(GetCapabilitiesRequestSchema),
-      };
-      let response: Envelope;
-      try {
-        response = await this.enqueue(probe, this.warmupTimeoutMs);
-      } catch {
-        // Out-of-band probe failure: stop probing and accept minor 0. When
-        // the child is gone, the later request path respawns it.
-        return;
-      }
-      if (response.protocolMinor !== candidate
-        || response.payload.case !== 'getCapabilitiesResponse')
-        continue;
-      if (response.payload.value.supportedProtocolMinors.includes(candidate)) {
-        this.negotiatedMinor = candidate;
-        return;
-      }
-    }
   }
 
   start(): Promise<void> {
@@ -254,7 +184,8 @@ export class ProtoEngineProcessClient {
     });
     this.process = child;
     this.chunks = [];
-    this.negotiatedMinor = 0;
+    this.capabilitiesList = [];
+    this.engineBuildVersion = '';
     child.stdout.on('data', (chunk: Buffer) => this.onData(child, chunk));
     child.on('error', error => this.onExit(child, error));
     child.on('exit', (code, signal) => {
@@ -269,7 +200,7 @@ export class ProtoEngineProcessClient {
     child.unref?.();
 
     this.startPromise = this.enqueue(this.warmupEnvelope, this.warmupTimeoutMs)
-      .then(() => this.negotiate())
+      .then(response => this.handshake(response))
       .then(() => undefined)
       .catch((error: unknown) => {
         this.stop();
@@ -280,6 +211,25 @@ export class ProtoEngineProcessClient {
 
   stop(): void {
     this.failProcess(new Error('Engine client stopped'));
+  }
+
+  /**
+   * Capabilities handshake: verify the host supports protocol version 3
+   * and store the advertised capability tuples. A host that does not support
+   * protocol version 3 (missing 3 in supported_protocol_versions) causes start() to fail.
+   */
+  private handshake(response: Envelope): void {
+    if (response.payload.case !== 'getCapabilitiesResponse') {
+      throw new Error('Engine warmup did not return a capabilities response');
+    }
+    const caps: GetCapabilitiesResponse = response.payload.value;
+    if (!caps.supportedProtocolVersions.includes(3)) {
+      throw new Error(
+        `Engine does not support protocol version 3 (supported: [${caps.supportedProtocolVersions.join(', ')}])`,
+      );
+    }
+    this.capabilitiesList = caps.capabilities;
+    this.engineBuildVersion = caps.engineBuildVersion;
   }
 
   private assignRequestId(envelope: Envelope): string {
@@ -343,8 +293,6 @@ export class ProtoEngineProcessClient {
   }
 
   private pump(child: EngineChild): void {
-    // Concatenate once per arrival; completed frames are sliced without
-    // copying, and only the unconsumed tail is retained.
     const packed = Buffer.concat(this.chunks);
     let offset = 0;
     for (;;) {
@@ -362,7 +310,7 @@ export class ProtoEngineProcessClient {
       const payload = packed.subarray(start, start + scan.frameLength);
       offset = start + scan.frameLength;
       this.dispatch(child, payload);
-      if (this.process !== child) return;  // dispatch killed the process
+      if (this.process !== child) return;
     }
     this.chunks = offset < packed.length ? [packed.subarray(offset)] : [];
   }
@@ -370,9 +318,7 @@ export class ProtoEngineProcessClient {
   private dispatch(child: EngineChild, payload: Buffer): void {
     let envelope: Envelope;
     try {
-      envelope = fromBinary(EnvelopeSchema, payload, {
-        // Wire-level parser stays strict; ignoreUnknownFields defaults false.
-      });
+      envelope = fromBinary(EnvelopeSchema, payload);
     } catch (error) {
       this.failProcess(
         new Error(`Engine sent an undecodable envelope: ${errorMessage(error)}`),
@@ -380,11 +326,7 @@ export class ProtoEngineProcessClient {
       return;
     }
     const entry = this.pending.get(envelope.requestId);
-    if (!entry) {
-      // Uncorrelated responses (unknown or reused ids) are dropped rather
-      // than shifting later legitimate responses.
-      return;
-    }
+    if (!entry) return;
     if (this.process !== child) return;
     entry.resolve(envelope);
   }
@@ -411,4 +353,18 @@ export class ProtoEngineProcessClient {
     this.pending.clear();
     for (const entry of pending) entry.reject(error);
   }
+}
+
+/**
+ * Creates a warmup envelope (GetCapabilitiesRequest with
+ * protocol_version = 3).
+ */
+export function warmupEnvelope(): Envelope {
+  const envelope = create(EnvelopeSchema, { protocolVersion: 3 });
+  envelope.payload = {
+    case: 'getCapabilitiesRequest',
+    value: create(GetCapabilitiesRequestSchema),
+  };
+  envelope.requestId = 'warmup-capabilities';
+  return envelope;
 }

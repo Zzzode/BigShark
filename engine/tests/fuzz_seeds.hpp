@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace bs::v1::fuzz {
+namespace bs::fuzz {
 
 namespace pv = ::bigshark::engine::v1;
 
@@ -375,7 +375,7 @@ inline std::vector<std::string> structuredSeeds() {
   return seeds;
 }
 
-// Defined in fuzz_v1_proto.cpp alongside the entry point.
+// Defined in fuzz_main.cpp alongside the entry point.
 std::vector<std::string> structuredFuzzSeeds();
 
-}  // namespace bs::v1::fuzz
+}  // namespace bs::fuzz

@@ -563,7 +563,7 @@ GameDef two_seat_turn_def_v2() {
   return def;
 }
 
-struct PublishedV2Fixture {
+struct PublishedNSeatFixture {
   fs::path policy_path;
   GameDef def;
   std::string sha256_hex;
@@ -571,7 +571,7 @@ struct PublishedV2Fixture {
 
 // Train, checkpoint, and publish a seat-generic v2 policy. W4c-ii: an optional
 // card_id produces a schema-v3 class policy instead.
-PublishedV2Fixture publish_v2(
+PublishedNSeatFixture publish_nseat_fixture(
     const GameDef& def, const std::vector<std::vector<WeightedHand>>& ranges,
     std::uint64_t iterations, const fs::path& dir, const std::string& name,
     std::optional<bs::abstraction::AbstractionId> card_id = std::nullopt) {
@@ -742,7 +742,7 @@ std::vector<std::vector<WeightedHand>> two_seat_preflop_ranges() {
 }
 
 // Train, checkpoint, and publish a preflop flop-terminal policy.
-PublishedV2Fixture publish_preflop(const fs::path& dir, const std::string& name) {
+PublishedNSeatFixture publish_preflop(const fs::path& dir, const std::string& name) {
   const GameDef def = two_seat_preflop_def();
   const auto ranges = two_seat_preflop_ranges();
   const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
@@ -1810,10 +1810,10 @@ static bool test_probe_api(const fs::path& dir) {
 // turn/river-rooted source is still refused at load (board_size != 3).
 // ---------------------------------------------------------------------------
 
-static bool test_v2_resident_projection(const fs::path& dir) {
+static bool test_resident_projection(const fs::path& dir) {
   // Two-seat flop-rooted v2: advertised and served through the projection.
-  const PublishedV2Fixture fixture =
-      publish_v2(two_seat_flop_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2proj");
+  const PublishedNSeatFixture fixture =
+      publish_nseat_fixture(two_seat_flop_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2proj");
 
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
@@ -1856,8 +1856,8 @@ static bool test_v2_resident_projection(const fs::path& dir) {
   // and W2c-ii-b serves its belief and hero-decision queries exactly. The
   // fixture's combos are all mutually card-distinct, so the root marginals
   // are just the declared range weights normalized per seat.
-  const PublishedV2Fixture three =
-      publish_v2(three_seat_flop_def_v2(), three_seat_flop_ranges_v2(), 200, dir, "v2three");
+  const PublishedNSeatFixture three = publish_nseat_fixture(
+      three_seat_flop_def_v2(), three_seat_flop_ranges_v2(), 200, dir, "v2three");
   std::vector<RootLoadResult> three_results;
   ResidentPolicySet three_set = ResidentPolicySet::build(
       {{three.policy_path, parse_sha256(three.sha256_hex)}}, {}, &three_results);
@@ -1906,8 +1906,8 @@ static bool test_v2_resident_projection(const fs::path& dir) {
 
   // Two-seat turn-rooted v2: the projection is flop-rooted only, so a
   // turn/river-rooted source is refused as LoadFailed at load.
-  const PublishedV2Fixture turn =
-      publish_v2(two_seat_turn_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2turn");
+  const PublishedNSeatFixture turn =
+      publish_nseat_fixture(two_seat_turn_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2turn");
   std::vector<RootLoadResult> turn_results;
   ResidentPolicySet turn_set = ResidentPolicySet::build(
       {{turn.policy_path, parse_sha256(turn.sha256_hex)}}, {}, &turn_results);
@@ -1930,9 +1930,9 @@ static bool test_v2_resident_projection(const fs::path& dir) {
 
 static bool test_v3_resident_projection(const fs::path& dir) {
   // Train and publish a v3 class policy on the canonical board {2s,7h,Kd}.
-  const PublishedV2Fixture fixture =
-      publish_v2(two_seat_flop_canonical_def_v3(), two_seat_flop_ranges_v3(), 200, dir, "v3proj",
-                 bs::abstraction::suit_canonicalization_id());
+  const PublishedNSeatFixture fixture =
+      publish_nseat_fixture(two_seat_flop_canonical_def_v3(), two_seat_flop_ranges_v3(), 200, dir,
+                            "v3proj", bs::abstraction::suit_canonicalization_id());
 
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
@@ -2085,7 +2085,7 @@ static bool test_v3_resident_projection(const fs::path& dir) {
 // ---------------------------------------------------------------------------
 
 static bool test_preflop_resident(const fs::path& dir) {
-  const PublishedV2Fixture fixture = publish_preflop(dir, "preflop");
+  const PublishedNSeatFixture fixture = publish_preflop(dir, "preflop");
 
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
@@ -2177,7 +2177,7 @@ static bool test_preflop_resident(const fs::path& dir) {
 // ---------------------------------------------------------------------------
 
 static bool test_three_seat_belief_collision(const fs::path& dir) {
-  const PublishedV2Fixture fixture = publish_v2(
+  const PublishedNSeatFixture fixture = publish_nseat_fixture(
       three_seat_flop_def_v2(), three_seat_collision_ranges_v2(), 200, dir, "v2collision");
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
@@ -2232,8 +2232,8 @@ static bool test_three_seat_belief_collision(const fs::path& dir) {
 // must be added back once. A regression that deleted the pairwise loop would
 // drop the joint from 5 to 4 and shift every marginal below.
 static bool test_three_seat_belief_bridging(const fs::path& dir) {
-  const PublishedV2Fixture fixture =
-      publish_v2(three_seat_flop_def_v2(), three_seat_bridging_ranges_v2(), 200, dir, "v2bridging");
+  const PublishedNSeatFixture fixture = publish_nseat_fixture(
+      three_seat_flop_def_v2(), three_seat_bridging_ranges_v2(), 200, dir, "v2bridging");
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
       {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
@@ -2275,8 +2275,8 @@ static bool test_four_seat_declared_miss(const fs::path& dir) {
   // This fixture covers startup, exact belief, and root lookup, not strategy
   // quality. Eight samples retain the unchanged four-seat game and ranges
   // while keeping the full-average export inside the native resident budget.
-  const PublishedV2Fixture fixture =
-      publish_v2(four_seat_flop_def_v2(), four_seat_flop_ranges_v2(), 8, dir, "v2four");
+  const PublishedNSeatFixture fixture =
+      publish_nseat_fixture(four_seat_flop_def_v2(), four_seat_flop_ranges_v2(), 8, dir, "v2four");
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
       {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
@@ -2892,7 +2892,7 @@ int main() {
       {"free slot reserved card", test_free_slot_reserved_card},
       {"shared combo ranges", test_shared_combo_ranges},
       {"probe api", test_probe_api},
-      {"v2 resident projection", test_v2_resident_projection},
+      {"resident projection", test_resident_projection},
       {"v3 resident projection", test_v3_resident_projection},
       {"preflop resident projection", test_preflop_resident},
       {"three seat belief collision", test_three_seat_belief_collision},

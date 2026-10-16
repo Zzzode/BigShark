@@ -5,9 +5,7 @@
 // seat is a deterministic bot BehaviorPolicy. It deals real shuffled cards,
 // posts blinds, advances a full hand street by street, settles fold/showdown
 // with the exact L1 rules, rotates the button, and tracks each seat's chip P/L
-// across hands. The interactive CLI (engine/benchmarks/practice_simulator.cpp)
-// is a thin view over this core, so the whole loop is unit-testable without a
-// terminal.
+// across hands. The core is unit-testable without a terminal.
 //
 // Strictly offline: it links bigshark_practice -> bigshark_stage6_eval for the
 // bot policies, never bigshark_service / the engine host / a protocol, and

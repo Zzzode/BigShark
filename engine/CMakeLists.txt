@@ -76,7 +76,7 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR AND TARGET engine-format)
   add_custom_target(format-check DEPENDS engine-format-check)
 endif()
 
-# Vendored yyjson: used by the v0 protocol boundary and the engine host
+# Vendored yyjson: used by the engine host for manifest parsing.
 # composition root (flop-library manifest expansion). Nothing else links it.
 add_library(bigshark_yyjson STATIC third_party/yyjson/yyjson.c)
 target_include_directories(bigshark_yyjson PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -438,17 +438,6 @@ target_link_libraries(bigshark-stage6-measurement-driver PRIVATE
   bigshark_stage6_eval bigshark_stage6_train
 )
 
-# RFC 0008 stage 6: the offline interactive practice table leaf. One human at
-# stdin, every other seat an offline bot. Like the measurement driver it is a
-# leaf over the offline eval surface only: no service, host, protocol,
-# network, or credentials.
-add_executable(bigshark-practice
-  benchmarks/practice_simulator.cpp
-)
-target_link_libraries(bigshark-practice PRIVATE
-  bigshark_practice bigshark_engine_client
-)
-
 # RFC 0004 Stage 4 frozen release matrix (schema_version 3 CSV): frozen flop
 # families, stack profiles, SPR 1/4/10, weighted ranges, and runout policies
 # with exact/estimated labeling and node, memory, elapsed-time, and coverage
@@ -731,42 +720,6 @@ target_link_libraries(bigshark_practice
   PRIVATE bigshark_poker
 )
 
-# RFC 0009 W4e: the engine-served practice tier. A process-client that speaks
-# the v1 framed Protobuf contract to a separate bigshark-engine --serve-proto
-# process, exposed as a BehaviorPolicy. It links only bigshark_behavior (the
-# policy interface), bigshark_poker (domain types), and bigshark_protocol
-# (generated protobuf); it must never link the service, either wire protocol's
-# server side, the policy, the solver, or the resident layer. The
-# stage6_offline_guard enforces this by construction.
-add_library(bigshark_engine_client STATIC
-  src/engine_client/frame_stream.cpp
-  src/engine_client/engine_process.cpp
-  src/engine_client/hand_state_builder.cpp
-  src/engine_client/response_mapper.cpp
-  src/engine_client/engine_served_policy.cpp
-)
-target_compile_features(bigshark_engine_client PUBLIC cxx_std_23)
-target_include_directories(bigshark_engine_client
-  PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
-target_link_libraries(bigshark_engine_client
-  PUBLIC  bigshark_behavior
-  PRIVATE bigshark_poker bigshark_protocol
-)
-
-add_library(bigshark_v0_protocol STATIC
-  src/protocol/v0_json.cpp
-)
-target_include_directories(bigshark_v0_protocol
-  PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
-  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-)
-target_link_libraries(bigshark_v0_protocol
-  PUBLIC  bigshark_poker
-  PRIVATE bigshark_yyjson
-)
-
 if(BUILD_TESTING)
   add_executable(test_eval tests/test_eval.cpp)
   target_link_libraries(test_eval PRIVATE bigshark_poker)
@@ -778,15 +731,6 @@ if(BUILD_TESTING)
   add_executable(test_behavior_policy tests/test_behavior_policy.cpp)
   target_link_libraries(test_behavior_policy PRIVATE bigshark_behavior)
   add_test(NAME behavior_policy COMMAND test_behavior_policy)
-
-  # RFC 0008 stage 6 R4/F5: the GameState->Ctx adapter must drive the pinned
-  # baseline byte-identically to the deployed parseRequest path (same action
-  # and amount) on the required corpus. Links the eval surface, which is the
-  # one place allowed to join poker and policy vocabulary.
-  add_executable(test_stage6_adapter_corpus tests/test_stage6_adapter_corpus.cpp)
-  target_link_libraries(test_stage6_adapter_corpus
-    PRIVATE bigshark_stage6_eval bigshark_v0_protocol)
-  add_test(NAME stage6_adapter_corpus COMMAND test_stage6_adapter_corpus)
 
   # RFC 0008 stage 6 R4: golden SHA-256 over the parsed chart data pins the
   # baseline by content, not prose.
@@ -1047,13 +991,13 @@ if(BUILD_TESTING)
   add_test(NAME tree_link_negative COMMAND test_tree_link_negative)
 
   # RFC 0008 stage 6 offline link-negative guard: this binary links the live
-  # v0+v1 protocols (and through them the service, policy, solver) and drives
-  # one parse/evaluate/serialize path. A companion cmake-script test runs nm
+  # protocol (and through it the service, policy, solver) and drives one
+  # parse/evaluate/serialize path. A companion cmake-script test runs nm
   # and fails if the final link contains ANY bs::stage6 symbol, proving no
   # offline object code reached a live binary.
   add_executable(test_stage6_link_negative tests/test_stage6_link_negative.cpp)
   target_link_libraries(test_stage6_link_negative
-    PRIVATE bigshark_v1_protocol bigshark_v0_protocol)
+    PRIVATE bigshark_engine_protocol)
   add_test(NAME stage6_link_negative_scan
     COMMAND ${CMAKE_COMMAND}
             -DSTAGE6_BIN=$<TARGET_FILE:test_stage6_link_negative>
@@ -1216,10 +1160,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_equity_capacity PRIVATE bigshark_poker)
   add_test(NAME equity-capacity COMMAND test_equity_capacity)
 
-  add_executable(test_v0_protocol tests/test_v0_protocol.cpp)
-  target_link_libraries(test_v0_protocol PRIVATE bigshark_v0_protocol)
-  add_test(NAME v0_protocol COMMAND test_v0_protocol)
-
   # RFC 0008 stage 5: the guarantee ladder/single normative table, and the
   # structural decision-source provenance oracle (river backend seam lives in
   # the solver facade, which bigshark_policy links privately).
@@ -1231,53 +1171,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_decision_provenance PRIVATE bigshark_policy bigshark_solver)
   target_include_directories(test_decision_provenance PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   add_test(NAME decision_provenance COMMAND test_decision_provenance)
-
-  # RFC 0009 W4e: engine-served practice tier. The frame codec and response
-  # mapper are pure unit tests (no subprocess). The builder and policy tests
-  # use scripted transports. The live test spawns a real bigshark-engine.
-  add_executable(test_engine_client_frame_stream tests/test_engine_client_frame_stream.cpp)
-  target_link_libraries(test_engine_client_frame_stream PRIVATE bigshark_engine_client)
-  target_include_directories(test_engine_client_frame_stream PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  add_test(NAME engine_client_frame_stream COMMAND test_engine_client_frame_stream)
-
-  add_executable(test_engine_client_response tests/test_engine_client_response.cpp)
-  target_link_libraries(test_engine_client_response PRIVATE
-    bigshark_engine_client bigshark_poker bigshark_protocol)
-  target_include_directories(test_engine_client_response PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  add_test(NAME engine_client_response COMMAND test_engine_client_response)
-
-  add_executable(test_engine_client_builder tests/test_engine_client_builder.cpp)
-  target_link_libraries(test_engine_client_builder PRIVATE
-    bigshark_engine_client bigshark_poker bigshark_protocol)
-  target_include_directories(test_engine_client_builder PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  add_test(NAME engine_client_builder COMMAND test_engine_client_builder)
-
-  # Scripted engine for policy adapter tests: speaks the v1 framed protocol
-  # with behavior controlled by environment variables.
-  add_executable(scripted_engine tests/scripted_engine.cpp)
-  target_link_libraries(scripted_engine PRIVATE
-    bigshark_engine_client bigshark_protocol)
-  target_include_directories(scripted_engine PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-
-  add_executable(test_engine_client_policy tests/test_engine_client_policy.cpp)
-  target_link_libraries(test_engine_client_policy PRIVATE
-    bigshark_engine_client bigshark_poker bigshark_protocol)
-  target_include_directories(test_engine_client_policy PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_compile_definitions(test_engine_client_policy PRIVATE
-    SCRIPTED_ENGINE_PATH="$<TARGET_FILE:scripted_engine>")
-  add_dependencies(test_engine_client_policy scripted_engine)
-  add_test(NAME engine_client_policy COMMAND test_engine_client_policy)
-
-  # Live integration test: spawns the real bigshark-engine binary and exercises
-  # the full client stack (handshake, one heads-up decision, fallback path).
-  add_executable(test_engine_client_live tests/test_engine_client_live.cpp)
-  target_link_libraries(test_engine_client_live PRIVATE
-    bigshark_engine_client bigshark_poker bigshark_protocol)
-  target_include_directories(test_engine_client_live PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-  target_compile_definitions(test_engine_client_live PRIVATE
-    ENGINE_PATH="$<TARGET_FILE:bigshark-engine>")
-  add_dependencies(test_engine_client_live bigshark-engine)
-  add_test(NAME engine_client_live COMMAND test_engine_client_live)
 
   # Flop library loading integration test: spawns the real bigshark-engine
   # binary with --flop-library and verifies manifest parsing, spec expansion,

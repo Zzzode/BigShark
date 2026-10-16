@@ -135,11 +135,11 @@ Ctx adapt_to_ctx(const poker::GameState& state, std::size_t seat, const std::arr
   }
 
   // Observation fields. These mirror the platform normalizer
-  // (v0-normalizer.ts buildContext): the raises count, limpers, and opener
-  // position are PREFLOP-ONLY fields (the platform's preflopRaises list is
-  // empty on later streets); heroWasRaiser/heroPreflopAggressor are the same
-  // boolean — whether the last raise event across every street so far was
-  // this seat's.
+  // (buildContext in the River Club mapper): the raises count, limpers, and
+  // opener position are PREFLOP-ONLY fields (the platform's preflopRaises
+  // list is empty on later streets); heroWasRaiser/heroPreflopAggressor are
+  // the same boolean — whether the last raise event across every street so
+  // far was this seat's.
   int preflop_raises = 0;
   int preflop_calls = 0;
   bool first_aggressor_seen = false;

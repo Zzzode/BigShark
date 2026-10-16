@@ -1,4 +1,4 @@
-// RFC 0023 structural-client deadline boundaries. These are mechanical
+// Structural-client deadline boundaries. These are mechanical
 // lifecycle tests, not artifact/solver quality or live-platform acceptance.
 import assert from 'node:assert/strict';
 import { create } from '@bufbuild/protobuf';
@@ -11,9 +11,9 @@ import {
   ExpandedStrategySchema,
   SolverSource,
   type Envelope,
-} from '../../../build/generated/ts/bigshark/engine/v1/engine_pb.js';
+} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
 import { decide, safeFallback } from '../src/engine.js';
-import type { EngineConfig, ExecutableDecision, RiverRoom, V1EnvelopeClient } from '../src/types.js';
+import type { EngineClient, EngineConfig, ExecutableDecision, RiverRoom } from '../src/types.js';
 
 const room: RiverRoom = {
   id: 'deadline-offline-fixture',
@@ -53,7 +53,7 @@ function response(): Envelope {
       }),
     },
   });
-  return create(EnvelopeSchema, { protocolMinor: 2, payload: { case: 'decisionResponse', value: decision } });
+  return create(EnvelopeSchema, { protocolVersion: 3, payload: { case: 'decisionResponse', value: decision } });
 }
 
 function deferred<T>() {
@@ -82,9 +82,9 @@ function clock(t: TestContext) {
   };
 }
 
-function config(client: V1EnvelopeClient, timeoutMs = 100): EngineConfig {
+function config(client: EngineClient, timeoutMs = 100): EngineConfig {
   return {
-    proto: true, protoEngineClient: client, protoBlueprint: true,
+    engineClient: client,
     heroName: 'Hero', timeoutMs, solveTimeBudgetMs: 1500,
     residentRoots: [], flopLibraries: [],
   };
@@ -102,8 +102,7 @@ test('deadline: never-ready structural startup expires and sends no request', as
   const timer = clock(t);
   const starting = deferred<void>();
   let requests = 0;
-  const client: V1EnvelopeClient = {
-    negotiatedProtocolMinor: 2,
+  const client: EngineClient = {
     start: () => starting.promise,
     async request() { requests += 1; return response(); },
   };
@@ -119,7 +118,7 @@ test('deadline: never-ready structural startup expires and sends no request', as
 
 test('deadline: rejected structural readiness uses legal recovery without an RPC', async () => {
   let requests = 0;
-  const client: V1EnvelopeClient = {
+  const client: EngineClient = {
     start: async () => { throw new Error('startup rejected'); },
     async request() { requests += 1; return response(); },
   };
@@ -147,8 +146,7 @@ test('deadline: rejection after startup expiration remains handled', async t => 
 test('deadline: startup completion after the monotonic deadline cannot begin an RPC', async t => {
   const timer = clock(t);
   let requests = 0;
-  const client: V1EnvelopeClient = {
-    negotiatedProtocolMinor: 2,
+  const client: EngineClient = {
     start: async () => { timer.stallTo(101); },
     async request() { requests += 1; return response(); },
   };
@@ -163,8 +161,7 @@ test('deadline: transport receives remaining time, while requested solver fields
   const starting = deferred<void>();
   let budget = 0;
   let request: Envelope | undefined;
-  const client: V1EnvelopeClient = {
-    negotiatedProtocolMinor: 2,
+  const client: EngineClient = {
     start: () => starting.promise,
     async request(value, timeoutMs) {
       request = value as Envelope;
@@ -181,19 +178,18 @@ test('deadline: transport receives remaining time, while requested solver fields
   assert.equal(pending.value?.action, 'bet');
   assert.ok(Number.isFinite(budget) && budget > 0 && budget <= 40,
     `remaining transport budget must be positive and at most40, got ${budget}`);
-  assert.equal(request?.protocolMinor, 2);
+  assert.equal(request?.protocolVersion, 3);
   assert.equal(request?.payload.case, 'decisionRequest');
   if (request?.payload.case !== 'decisionRequest') throw new Error('missing actual mapped request');
   assert.equal(request.payload.value.options?.solveTimeBudgetMs, 1500);
-  assert.equal(request.payload.value.options?.solverMode, 6 /* BLUEPRINT */);
+  assert.equal(request.payload.value.options?.solverMode, 1 /* AUTOMATIC */);
 });
 
 test('deadline: request-internal restart readiness is covered by the outer adapter deadline', async t => {
   const timer = clock(t);
   const restarting = deferred<Envelope>();
   let requests = 0;
-  const client: V1EnvelopeClient = {
-    negotiatedProtocolMinor: 2,
+  const client: EngineClient = {
     start: async () => {},
     request() { requests += 1; return restarting.promise; },
   };
@@ -211,8 +207,7 @@ test('deadline: request-internal restart readiness is covered by the outer adapt
 test('deadline: late response is refused even without a scheduled timeout callback', async t => {
   const timer = clock(t);
   let requests = 0;
-  const client: V1EnvelopeClient = {
-    negotiatedProtocolMinor: 2,
+  const client: EngineClient = {
     start: async () => {},
     async request() { requests += 1; timer.stallTo(101); return response(); },
   };
@@ -226,8 +221,7 @@ for (const timeoutMs of [NaN, Infinity, -Infinity, 0, -1]) {
   test(`deadline: invalid adapter budget ${String(timeoutMs)} recovers before startup`, async () => {
     let starts = 0;
     let requests = 0;
-    const client: V1EnvelopeClient = {
-      negotiatedProtocolMinor: 2,
+    const client: EngineClient = {
       start: async () => { starts += 1; },
       async request() { requests += 1; return response(); },
     };

@@ -125,8 +125,7 @@ Historical protocol statistics are cumulative counters, not percentages:
 - PFR rate is `pfr / hands`;
 - 3-bet rate is `threeBets / threeBetOpportunities`.
 
-See the historical [state schema](../docs/state-schema.md). Before a useful
-sample exists, use the tight-aggressive baseline and avoid unsupported labels.
+Before a useful sample exists, use the tight-aggressive baseline and avoid unsupported labels.
 Update at least one table observation after each reviewed session.
 
 ## 5. Bankroll and Mental Discipline

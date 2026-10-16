@@ -6,7 +6,6 @@
     "noEmit": false
   },
   "include": [
-    "tests/**/*.ts",
     "../build/generated/ts/**/*.ts"
   ],
   "exclude": []

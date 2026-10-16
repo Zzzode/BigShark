@@ -11,8 +11,7 @@ integration, and development documentation.
 | --- | --- | --- | --- |
 | Architecture | [System overview](architecture/system-overview.md) | Current | Components, boundaries, data flow, and runtime safety |
 | Design | [GTO engine](design/gto-engine.md) | Current | Implemented decision logic, solvers, range tracking, RFC 0005 strategy artifacts, and limitations |
-| Reference | [Engine protocol](reference/engine-protocol.md) | Current | NDJSON request and response contract used by the C++ process |
-| Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | Implemented v1 and v2 IDL, pinned generation, compatibility baseline, and conformance vectors |
+| Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | IDL, pinned generation, compatibility baseline, and conformance vectors |
 | Integration | [River Club](integrations/river-club.md) | Current | River Club adapter, state machine, and operational mapping |
 | Development | [Build and test](development/build-and-test.md) | Current | CMake presets, formatting, tests, sanitizers, and release publishing |
 | Development | [Benchmarking](development/benchmarking.md) | Current | Reproducible solver-quality fixtures, metrics, and thresholds |
@@ -52,7 +51,6 @@ integration, and development documentation.
 | Plan | [T3 six-seat feasibility](plans/t3-six-seat-feasibility.md) | Current | Six-seat tree/solve resource measurement; current abstraction infeasible for 5+ seats, coarser schedule required |
 | Strategy | [Poker playbook](../strategy/PLAYBOOK.md) | Current | Baseline poker decisions and bankroll discipline |
 | Strategy | [Style selector](../.codex/skills/INDEX.md) | Current | Exploitative style selection and overrides |
-| Historical | [River Club v1 state notes](state-schema.md) | Historical | Observed protocol v1 fields retained for comparison |
 | Upstream | [River Club skill](SKILL.md) | Upstream | Official operating contract |
 | Upstream | [River Club strategy](upstream-STRATEGY.md) | Upstream | Official decision guidance |
 | Upstream | [River Club OpenAPI](openapi.json) | Upstream | Official HTTP protocol definition |

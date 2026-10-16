@@ -14,25 +14,18 @@ The official source documents are:
 - [Decision guide](../upstream-STRATEGY.md)
 - [OpenAPI definition](../openapi.json)
 
-The historical protocol v1 field notes are retained in
-[state-schema.md](../state-schema.md). Runtime behavior follows protocol v2.
-
 ## Components
 
 | File | Responsibility |
 | --- | --- |
 | `platforms/river-club/src/river-cli.ts` | Official protocol v2.1 API client and command implementation |
 | `platforms/river-club/src/journal-cli.ts` | CLI wrapper and append-only session journal |
-| `platforms/river-club/src/v0-normalizer.ts` | River snapshot to legacy engine context mapping (fallback path) |
-| `platforms/river-club/src/v1-mapper.ts` | River snapshot to structured v1 engine context mapping (default path) |
-| `platforms/river-club/src/v2-mapper.ts` | River snapshot to v2 complete cash-hand context with G/F ledger and phase-tagged pot layers (opt-in path) |
+| `platforms/river-club/src/mapper.ts` | River snapshot to engine `DecisionRequest` with G/F ledger and phase-tagged pot layers |
 | `platforms/river-club/src/engine.ts` | River adapter, engine call, legality check, and operational fallback |
 | `platforms/river-club/src/wait-turn.ts` | Long polling until a decision or exit state |
 | `platforms/river-club/src/atomic-action.ts` | Atomic refresh, precondition validation, and action |
 | `apps/river-club-agent/main.ts` | Adaptive autonomous session runner |
-| `clients/node/engine-process-client.ts` | Platform-neutral engine process lifecycle and NDJSON framing (v0 fallback) |
-| `clients/node/proto-engine-process-client.ts` | Platform-neutral framed v1 engine process lifecycle (default) |
-| `clients/node/proto-engine-process-client-v2.ts` | Platform-neutral framed v2 engine process lifecycle with capability-tuple handshake (opt-in) |
+| `clients/node/proto-engine-process-client.ts` | Platform-neutral framed engine process lifecycle with capability-tuple handshake |
 | `bin/*` | Stable launchers into compiled `dist/` modules |
 
 ## State Machine
@@ -62,38 +55,8 @@ Operational invariants:
 
 ## River-to-Engine Mapping
 
-The v1 mapper (`platforms/river-club/src/v1-mapper.ts`) is the default path.
-It produces a structured v1 context with chip units, enum cards, ordered
-seats, structured action history, side pots, and absolute targets. The v0
-normalizer (`platforms/river-club/src/v0-normalizer.ts`) remains as the
-fallback path and performs this mapping:
-
-| River field | Engine field |
-| --- | --- |
-| `room.handId` | `handId` |
-| `room.revision` | `revision` |
-| `room.street` | `street` |
-| `room.blinds` | `blinds` |
-| `room.hero.cards` | `hole` |
-| `room.board` | `board` |
-| `room.solver.heroPosition` | `position` |
-| `room.solver.playersInHand` | `playersInHand` |
-| `room.solver.effectiveStackBb` | `effectiveStackBb` |
-| `room.pot` | `pot` |
-| `room.legal` | `legal` |
-| `room.events` | preflop counters and actor-tagged street lines |
-
-Cards are converted from `{rank, suit}` objects to two-character engine
-notation. Position aliases such as `BTN/SB` are reduced to the first position.
-
-### V2 mapper (opt-in)
-
-The v2 mapper (`platforms/river-club/src/v2-mapper.ts`) implements the RFC
-0022 complete cash-hand protocol. It is enabled by setting
-`BIGSHARK_ENGINE_PROTO_V2=1`. When enabled, the runner tries v2 first and
-falls back to v1 on any v2 error.
-
-The v2 mapper produces a `DecisionRequest` with:
+The mapper (`platforms/river-club/src/mapper.ts`) produces a `DecisionRequest`
+with:
 
 - **G/F contribution ledger**: `startingStack`, `grossContributed` (G), and
   `refunded` (F) per player, reconstructed from blind seeding and structured
@@ -111,9 +74,8 @@ The v2 mapper produces a `DecisionRequest` with:
 - **RuleProfile**: settlement, reopening, runout, and dealt seat count.
 - **DecisionOptions**: `utilityProfile = CASH_CHIP`.
 
-The v2 client (`clients/node/proto-engine-process-client-v2.ts`) reuses the
-v1 ULEB128 frame codec and process lifecycle pattern, replacing minor
-negotiation with a capability-tuple handshake. Every envelope carries
+The client (`clients/node/proto-engine-process-client.ts`) uses a ULEB128
+frame codec and capability-tuple handshake. Every envelope carries
 `protocolVersion = 3`.
 
 ## Action-History Reconstruction
@@ -180,10 +142,9 @@ All files below are local and ignored by Git:
 
 With at least one configured resident root, configured flop library, or
 auto-detected flop library the runner uses the
-framed v1 protocol at negotiated minor 2 (the guarantee-level and
+framed Protobuf protocol (the guarantee-level and
 artifact-digest surface) and passes the server's remaining-time budget through
-as the solve budget. Since W3, v1 is the default protocol for the River Club
-runner; v0 NDJSON remains as the fallback path. On a minor-2 AUTOMATIC
+as the solve budget. On an AUTOMATIC
 blueprint miss, the engine tries terminal-only resolving; if the resolver also
 misses, a labeled operational fallback (check/call/fold) is served (W4d).
 
@@ -208,8 +169,6 @@ launchers never import TypeScript source directly.
 River normalization and generic process management are separate. This allows
 a future platform adapter to reuse the engine client without importing River
 types. A second platform remains pending under
-[RFC 0001](../rfcs/0001-engineering-architecture.md). The Protobuf migration
-defined by [RFC 0002](../rfcs/0002-protobuf-engine-protocol.md) has landed;
-v1 is the default protocol and v0 is the fallback. The v2 complete cash-hand
-protocol ([RFC 0022](../rfcs/0022-complete-cash-hand-protocol.md)) is wired
-behind `BIGSHARK_ENGINE_PROTO_V2=1` with v1 as the fallback path.
+[RFC 0001](../rfcs/0001-engineering-architecture.md). The complete cash-hand
+protocol ([RFC 0022](../rfcs/0022-complete-cash-hand-protocol.md)) is the
+only engine protocol.

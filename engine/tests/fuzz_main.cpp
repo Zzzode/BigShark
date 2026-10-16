@@ -71,7 +71,7 @@ void mutate(std::string& value, std::mt19937_64& rng) {
 
 std::vector<std::string> allSeeds() {
   std::vector<std::string> seeds = framingSeeds();
-  for (const std::string& structured : bs::v1::fuzz::structuredFuzzSeeds())
+  for (const std::string& structured : bs::fuzz::structuredFuzzSeeds())
     seeds.push_back(structured);
   return seeds;
 }
