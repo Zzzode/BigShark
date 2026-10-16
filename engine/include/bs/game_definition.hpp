@@ -234,6 +234,10 @@ class GameState {
   // Sum of live contributions. Never `def().pot`.
   Chips pot() const;
   Chips last_full_raise() const { return last_full_raise_; }
+  // RFC 0024: number of full raises on the current street. Zero at street
+  // start; incremented by each full raise; reset when the street advances.
+  // Used by the raise-count cap in the action abstraction.
+  std::uint8_t raises_this_street() const { return raises_this_street_; }
   bool can_raise(std::size_t player) const;
   LegalActions legal() const;
   // Seats that have not folded, in seat order.
@@ -304,6 +308,7 @@ class GameState {
   Street street_ = Street::Flop;
   Phase phase_ = Phase::Action;
   Chips last_full_raise_ = 0;
+  std::uint8_t raises_this_street_ = 0;
 };
 
 // One observed public action on the path from the root to a decision node.

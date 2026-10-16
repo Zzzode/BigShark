@@ -220,6 +220,7 @@ class ActionAbstraction {
   explicit ActionAbstraction(SizeSchedule schedule)
       : schedule_(reduced(std::move(schedule))),
         seeds_(CoverSeeds::MinAndCap),
+        max_raises_per_street_(0),
         id_(make_id(schedule_)) {}
 
   static ActionAbstraction identity() { return ActionAbstraction(default_size_schedule()); }
@@ -228,6 +229,14 @@ class ActionAbstraction {
   // fractions; `seeds` is serialized into the identity parameters so that
   // MinAndCap and DeclaredOnly mint distinct digests even at equal fractions.
   static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds);
+
+  // RFC 0024: set a cap on the number of full raises per street. Zero means
+  // no cap (the default). When the cap is reached, the menu suppresses
+  // aggressive actions (bet/raise) and offers only fold/check/call. This
+  // bounds the branching factor for multiway subgames, making 5-6 seat
+  // depth-limited trees feasible within the 1 GiB builder cap.
+  void set_max_raises_per_street(std::uint8_t cap) { max_raises_per_street_ = cap; }
+  std::uint8_t max_raises_per_street() const noexcept { return max_raises_per_street_; }
 
   const AbstractionId& id() const noexcept { return id_; }
   const SizeSchedule& schedule() const noexcept { return schedule_; }
@@ -257,6 +266,7 @@ class ActionAbstraction {
   static SizeSchedule reduced(SizeSchedule schedule);
   SizeSchedule schedule_;
   CoverSeeds seeds_;
+  std::uint8_t max_raises_per_street_;
   AbstractionId id_;
 };
 

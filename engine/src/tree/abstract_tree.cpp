@@ -146,6 +146,16 @@ std::vector<Action> abstract_node_menu(const GameState& state,
                                        const LegalActions& legal) {
   const std::size_t actor = *state.actor();
   const GamePlayer& hero = state.players()[actor];
+
+  // RFC 0024: raise-count cap. When the number of full raises on this street
+  // reaches the cap, suppress aggressive actions (bet/raise) and offer only
+  // fold/check/call. This bounds the branching factor for multiway subgames.
+  LegalActions capped = legal;
+  if (action.max_raises_per_street() > 0 &&
+      state.raises_this_street() >= action.max_raises_per_street()) {
+    capped.aggressive = std::nullopt;
+  }
+
   if (state.player_count() == 2) {
     std::size_t opponent = actor;
     for (std::size_t seat : state.live_players())
@@ -158,14 +168,14 @@ std::vector<Action> abstract_node_menu(const GameState& state,
     ctx.actor_committed = hero.street_committed;
     ctx.opponent_committed = other.street_committed;
     ctx.opponent_stack = other.stack;
-    return action.menu(legal, ctx);
+    return action.menu(capped, ctx);
   }
   abstraction::MultiwayMenuContext ctx;
   ctx.street = state.street();
   ctx.pot = state.pot();
   ctx.actor_committed = hero.street_committed;
   ctx.cover = deepest_cover(state, actor);
-  return action.multiway_menu(legal, ctx);
+  return action.multiway_menu(capped, ctx);
 }
 
 std::vector<int> public_runout_cards(const GameState& state) {

@@ -19,9 +19,11 @@
 // Usage: bigshark-subgame-nash-conv [iterations] [seed]
 //        bigshark-subgame-nash-conv --t3 [iterations] [seed]
 //        bigshark-subgame-nash-conv --t3-dl [iterations] [seed]
+//        bigshark-subgame-nash-conv --t3-dl-cap [iterations] [seed]
 //
-// --t3     : full-tree feasibility scan (2..6 seats, 10/25/100 BB)
-// --t3-dl  : depth-limited feasibility scan (same fixtures, max_streets=1)
+// --t3       : full-tree feasibility scan (2..6 seats, 10/25/100 BB)
+// --t3-dl    : depth-limited feasibility scan (same fixtures, max_streets=1)
+// --t3-dl-cap: depth-limited + raise-capped scan (max_streets=1, max_raises=1)
 //
 // This is a manual offline measurement tool, NOT a CTest.
 #include <algorithm>
@@ -511,7 +513,8 @@ int run_fixture(const std::string& label, const GameDef& def,
                 const std::vector<std::array<int, 2>>& range, const SizeSchedule& schedule,
                 std::uint64_t iterations, std::uint64_t seed, int solve_wall_seconds = 120,
                 bool skip_nash_conv = false, DepthLimit depth_limit = DepthLimit::none(),
-                const FrontierEvaluator* frontier = nullptr) {
+                const FrontierEvaluator* frontier = nullptr,
+                const ActionAbstraction* action_override = nullptr) {
   const std::size_t seat_count = def.player_count;
   const bool river_rooted = def.board_size == 5;
 
@@ -537,7 +540,9 @@ int run_fixture(const std::string& label, const GameDef& def,
   std::fflush(stdout);
 
   // Build the tree.
-  ActionAbstraction action = ActionAbstraction::declared(schedule, CoverSeeds::DeclaredOnly);
+  ActionAbstraction default_action =
+      ActionAbstraction::declared(schedule, CoverSeeds::DeclaredOnly);
+  const ActionAbstraction& action = action_override ? *action_override : default_action;
   TreeLimits tree_limits;
   std::unique_ptr<AbstractTree> tree_ptr;
   const auto build_start = std::chrono::steady_clock::now();
@@ -695,14 +700,22 @@ int main(int argc, char** argv) {
   // Same fixtures but with DepthLimit::streets(1) and EquityFrontierEvaluator.
   // Measures the tree-size reduction and solve feasibility that depth-limited
   // resolving provides for 5-6 seat games where the full tree exceeds 1 GiB.
+  //
+  // T3 depth-limited + raise-cap scan: --t3-dl-cap [iterations] [seed]
+  // Same as --t3-dl but with a raise-count cap (1 raise per street) to
+  // further reduce the branching factor for 6-seat games.
   bool t3_scan = false;
   bool t3_dl_scan = false;
+  bool t3_dl_cap_scan = false;
   int arg_index = 1;
   if (argc > 1 && std::string(argv[1]) == "--t3") {
     t3_scan = true;
     arg_index = 2;
   } else if (argc > 1 && std::string(argv[1]) == "--t3-dl") {
     t3_dl_scan = true;
+    arg_index = 2;
+  } else if (argc > 1 && std::string(argv[1]) == "--t3-dl-cap") {
+    t3_dl_cap_scan = true;
     arg_index = 2;
   }
   const std::uint64_t iterations =
@@ -753,6 +766,36 @@ int main(int argc, char** argv) {
     }
     if (failures == 0)
       std::printf("\nT3-DL scan completed.\n");
+    else
+      std::printf("\n%d fixture(s) failed.\n", failures);
+    return failures;
+  }
+
+  if (t3_dl_cap_scan) {
+    std::printf("T3-DL-CAP: depth-limited + raise-capped six-seat feasibility scan\n");
+    std::printf("  2..6 seats, 10/25/100 BB, turn-rooted, max_streets=1, max_raises=1\n");
+    std::printf("  EquityFrontierEvaluator, 30 s solve budget, no NashConv\n");
+    std::printf("  (resource/deadline measurement; not quality certification)\n");
+    const EquityFrontierEvaluator frontier;
+    auto capped_schedule = schedule;
+    ActionAbstraction action =
+        ActionAbstraction::declared(capped_schedule, CoverSeeds::DeclaredOnly);
+    action.set_max_raises_per_street(1);
+    int failures = 0;
+    for (int stack_bb : {10, 25, 100}) {
+      for (std::size_t seats = 2; seats <= 6; ++seats) {
+        failures += run_fixture(
+            std::to_string(seats) + "-seat DL-CAP turn-rooted " + std::to_string(stack_bb) + " BB",
+            make_subgame_def_np(seats, stack_bb, false), range, schedule, iterations, seed,
+            /*solve_wall_seconds=*/30,
+            /*skip_nash_conv=*/true,
+            /*depth_limit=*/DepthLimit::streets(1),
+            /*frontier=*/&frontier,
+            /*action_override=*/&action);
+      }
+    }
+    if (failures == 0)
+      std::printf("\nT3-DL-CAP scan completed.\n");
     else
       std::printf("\n%d fixture(s) failed.\n", failures);
     return failures;

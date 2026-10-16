@@ -185,9 +185,9 @@ int test_full_vs_depth_limited_comparison() {
   if (check_valid_candidate(dl_result) != 0)
     return 1;
 
-  std::printf("2-seat comparison: full=%zu nodes/%zu infosets, depth-limited=%zu nodes/%zu infosets\n",
-              full_result.nodes, full_result.information_sets,
-              dl_result.nodes, dl_result.information_sets);
+  std::printf(
+      "2-seat comparison: full=%zu nodes/%zu infosets, depth-limited=%zu nodes/%zu infosets\n",
+      full_result.nodes, full_result.information_sets, dl_result.nodes, dl_result.information_sets);
 
   // The depth-limited solve should use fewer nodes and information sets.
   CHECK(dl_result.nodes < full_result.nodes);

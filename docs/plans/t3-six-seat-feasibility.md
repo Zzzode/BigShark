@@ -39,6 +39,15 @@ infeasible and require a coarser action abstraction. See the [Depth-Limited
 Results](#depth-limited-results-rfc-0024-2026-10-15) section for the full
 matrix.
 
+**Update (2026-10-16, raise-count cap):** a per-street raise-count cap
+(`max_raises_per_street=1`) combined with depth-limited resolving makes **all
+15 fixtures feasible**, including 6-seat at every stack (10/25/100 BB). The
+cap bounds the branching factor so effectively that tree size becomes
+independent of stack depth — identical node counts across 10/25/100 BB for
+each seat count. The largest tree (6-seat, any stack) is only 9,361 nodes /
+9.1 MiB. See the [Raise-Capped Results](#raise-capped-results-2026-10-16)
+section for the full matrix.
+
 ## Measurement Setup
 
 - Harness: `engine/benchmarks/subgame_nash_conv.cpp --t3 <iterations> <seed>`.
@@ -215,20 +224,112 @@ coarser action abstraction:
    exact `EquityFrontierEvaluator` enumeration with a learned value function
    to further reduce frontier-evaluation cost.
 
+## Raise-Capped Results (2026-10-16)
+
+The raise-count cap (`ActionAbstraction::max_raises_per_street=1`) suppresses
+bet/raise actions once one full raise has occurred on the current street,
+leaving only call/fold. Combined with depth-limited resolving
+(`DepthLimit::streets(1)` + `EquityFrontierEvaluator`), the T3-DL-CAP scan
+(`--t3-dl-cap`) repeats the same 15 fixtures.
+
+| Seats | Stack | Tree nodes | Accounted | Tree cap | Solve outcome |
+| --- | --- | --- | --- | --- | --- |
+| 2 | 10 BB | 153 | 0.1 MiB | fits | complete, 100K iter, 1.0 s, 12 info sets, 100% |
+| 3 | 10 BB | 505 | 0.3 MiB | fits | complete, 100K iter, 2.8 s, 36 info sets, 100% |
+| 4 | 10 BB | 1,457 | 1.1 MiB | fits | complete, 100K iter, 7.3 s, 96 info sets, 100% |
+| 5 | 10 BB | 3,809 | 2.3 MiB | fits | complete, 100K iter, 18.2 s, 240 info sets, 100% |
+| 6 | 10 BB | 9,361 | 9.1 MiB | fits | wall-clock 30 s, 29.6K iter, 576 info sets, 100% |
+| 2 | 25 BB | 153 | 0.1 MiB | fits | complete, 100K iter, 1.1 s, 12 info sets, 100% |
+| 3 | 25 BB | 505 | 0.3 MiB | fits | complete, 100K iter, 2.9 s, 36 info sets, 100% |
+| 4 | 25 BB | 1,457 | 1.1 MiB | fits | complete, 100K iter, 7.2 s, 96 info sets, 100% |
+| 5 | 25 BB | 3,809 | 2.3 MiB | fits | complete, 100K iter, 17.9 s, 240 info sets, 100% |
+| 6 | 25 BB | 9,361 | 9.1 MiB | fits | wall-clock 30 s, 30.6K iter, 576 info sets, 100% |
+| 2 | 100 BB | 153 | 0.1 MiB | fits | complete, 100K iter, 1.0 s, 12 info sets, 100% |
+| 3 | 100 BB | 505 | 0.3 MiB | fits | complete, 100K iter, 2.9 s, 36 info sets, 100% |
+| 4 | 100 BB | 1,457 | 1.1 MiB | fits | complete, 100K iter, 7.0 s, 96 info sets, 100% |
+| 5 | 100 BB | 3,809 | 2.3 MiB | fits | complete, 100K iter, 17.7 s, 240 info sets, 100% |
+| 6 | 100 BB | 9,361 | 9.1 MiB | fits | wall-clock 30 s, 30.4K iter, 576 info sets, 100% |
+
+### Depth-Limited vs Raise-Capped Comparison
+
+| Seats | Stack | Depth-limited | Raise-capped | Reduction | Feasibility gain |
+| --- | --- | --- | --- | --- | --- |
+| 4 | 10 BB | 62,013 nodes, 36.7 MiB | 1,457 nodes, 1.1 MiB | 42.6x | already feasible |
+| 5 | 10 BB | 201,959 nodes, 146.2 MiB | 3,809 nodes, 2.3 MiB | 53.0x | already feasible |
+| 6 | 10 BB | >1 GiB (infeasible) | 9,361 nodes, 9.1 MiB | — | **infeasible → feasible** |
+| 4 | 25 BB | 203,553 nodes, 146.3 MiB | 1,457 nodes, 1.1 MiB | 139.7x | already feasible |
+| 5 | 25 BB | 1,070,634 nodes, 699.7 MiB | 3,809 nodes, 2.3 MiB | 281.1x | already feasible |
+| 6 | 25 BB | >1 GiB (infeasible) | 9,361 nodes, 9.1 MiB | — | **infeasible → feasible** |
+| 4 | 100 BB | >1 GiB (infeasible) | 1,457 nodes, 1.1 MiB | — | **infeasible → feasible** |
+| 5 | 100 BB | >1 GiB (infeasible) | 3,809 nodes, 2.3 MiB | — | **infeasible → feasible** |
+| 6 | 100 BB | >1 GiB (infeasible) | 9,361 nodes, 9.1 MiB | — | **infeasible → feasible** |
+
+### Key Findings
+
+1. **All 15 fixtures are feasible.** The raise-count cap combined with
+   depth-limited resolving eliminates the 1 GiB tree-builder cap as a
+   constraint for every measured seat count and stack depth.
+2. **Tree size is independent of stack depth.** Node counts are identical
+   across 10/25/100 BB for each seat count (e.g., 9,361 nodes for 6-seat at
+   every stack). With only one bet/raise per street, deeper stacks do not
+   create additional betting rounds, so the tree structure is determined
+   solely by the number of actors and streets.
+3. **Node count grows ~2.6x per seat** (153 → 505 → 1,457 → 3,809 → 9,361),
+   a dramatic improvement over the uncapped superlinear growth.
+4. **6-seat trees are only 9.1 MiB** — down from >1 GiB without the cap. The
+   largest tree in the raise-capped scan is smaller than the smallest
+   infeasible depth-limited tree by over 100x.
+5. **5-seat and below complete 100K iterations** within the 30 s solve
+   budget. 6-seat fixtures hit the wall-clock limit at ~30K iterations but
+   still achieve 100% action-node coverage.
+6. **All fixtures achieve 100% action-node coverage.** Every action node in
+   every tree is covered by the resulting policy.
+
+### Updated Recommendations
+
+The raise-count cap (option 1 in the original recommendations) is now
+implemented and measured. Combined with depth-limited resolving, it makes
+six-max subgame solving feasible at all measured stack depths:
+
+1. **The raise-capped + depth-limited configuration is the recommended
+   default for six-max subgames.** It produces tractable trees (≤9.1 MiB)
+   with 100% action-node coverage at every seat count and stack depth.
+2. **Solve time is the remaining constraint for 6-seat games.** The 30 s
+   wall-clock budget allows ~30K CFR iterations at 6 seats. For production
+   use, the solve budget should be increased or the iteration ceiling
+   lowered to match the available decision time.
+3. **Quality validation is the next step.** This scan measures feasibility
+   (tree construction, solve completion, coverage), not policy quality. A
+   NashConv or exploitability measurement campaign is needed before the
+   raise-capped abstraction can be certified for six-max play.
+4. **Neural network value estimator** (Phase 4, future RFC): replace the
+   exact `EquityFrontierEvaluator` enumeration with a learned value function
+   to further reduce frontier-evaluation cost.
+
 ## Impact on T4 and T5
 
-T4 (six-position preflop policies) and T5 flop/turn/river coverage cannot use
-full-tree solves at six seats under the current abstraction. They depend on
-the coarsened multiway schedule and/or depth-limited resolving recommended
-above. The 3-seat solve-constrained results also show that even where the tree
-fits, the trainer wall/information-set budgets must be sized for the actual
-seat count before a quality campaign is meaningful.
+With the raise-count cap and depth-limited resolving, six-max subgame solving
+is now feasible at all measured stack depths (10/25/100 BB). T4 (six-position
+preflop policies) and T5 (flop/turn/river coverage) can proceed using the
+raise-capped + depth-limited configuration. The remaining constraint is solve
+time at 6 seats (~30K iterations in 30 s), which should be sized for the
+available decision budget before a quality campaign. Policy quality
+(NashConv/exploitability) has not yet been measured for the raise-capped
+abstraction.
 
 ## Reproduce
 
 ```bash
 cmake --build --preset release --target bigshark-subgame-nash-conv
+
+# Full-tree scan (original T3)
 ./build/release/engine/bigshark-subgame-nash-conv --t3 100000 42
+
+# Depth-limited scan (RFC 0024)
+./build/release/engine/bigshark-subgame-nash-conv --t3-dl 100000 42
+
+# Depth-limited + raise-capped scan (2026-10-16)
+./build/release/engine/bigshark-subgame-nash-conv --t3-dl-cap 100000 42
 ```
 
 The scan writes each fixture's tree metrics, solve termination and coverage to

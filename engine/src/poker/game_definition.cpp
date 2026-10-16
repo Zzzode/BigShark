@@ -591,6 +591,7 @@ void GameState::close_street() {
     for (std::size_t p = 0; p < def_.player_count; ++p)
       players_[p].raise_rights = false;
   big_blind_option_ = false;
+  raises_this_street_ = 0;
   phase_ = street_ == Street::River ? Phase::Showdown : Phase::Deal;
 }
 
@@ -667,6 +668,7 @@ GameState GameState::after_action(std::size_t player, Action action) const {
       // rights, and cumulative short all-ins never do.
       if (increment >= next.last_full_raise_) {
         next.last_full_raise_ = increment;
+        ++next.raises_this_street_;
         for (std::size_t p = 0; p < def_.player_count; ++p) {
           if (p == player || next.players_[p].folded || next.players_[p].all_in)
             continue;
@@ -750,6 +752,7 @@ GameState GameState::after_card(int card) const {
     next.players_[p].pending = !next.players_[p].folded && !next.players_[p].all_in;
   }
   next.last_full_raise_ = def_.big_blind;
+  next.raises_this_street_ = 0;
   next.refresh_live();
   // Two seats: EITHER seat all in closes the betting round, because there is
   // nobody left to bet against. 3+ seats: the round closes only when NO
