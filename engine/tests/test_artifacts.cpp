@@ -1252,7 +1252,7 @@ static int test_roundtrip_v2(const fs::path& dir) {
     CHECK(raw.scalar_i64("SELECT root_street FROM game") == 2);  // board_size 5 -> river
     CHECK(raw.scalar_i64("SELECT terminal_depth FROM game") ==
           static_cast<std::int64_t>(TerminalDepth::River));
-    CHECK(raw.scalar_text("SELECT utility_id FROM game") == kUtilityIdentifierV1);
+    CHECK(raw.scalar_text("SELECT utility_id FROM game") == kUtilityIdentifier);
   }
 
   // Same-process lossless read.
@@ -1526,7 +1526,7 @@ static int test_roundtrip_preflop(const fs::path& dir) {
     CHECK(raw.scalar_i64("SELECT flop0 FROM game") == 0);  // stored but never read
     CHECK(raw.scalar_i64("SELECT flop1 FROM game") == 0);
     CHECK(raw.scalar_i64("SELECT flop2 FROM game") == 0);
-    CHECK(raw.scalar_text("SELECT utility_id FROM game") == kUtilityIdentifierV1);
+    CHECK(raw.scalar_text("SELECT utility_id FROM game") == kUtilityIdentifier);
     CHECK(raw.scalar_i64("SELECT COUNT(*) FROM game_seats") == 2);
     CHECK(raw.scalar_i64("SELECT COUNT(*) FROM information_states") ==
           static_cast<std::int64_t>(exported.policy.rows().size()));

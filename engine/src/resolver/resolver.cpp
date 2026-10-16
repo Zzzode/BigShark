@@ -41,7 +41,7 @@ namespace detail {
 namespace {
 
 constexpr std::string_view kAlgorithmRevision = "rfc0005-stage9-gadget-linear-rev1";
-constexpr std::string_view kUtilityIdentifier = "zero-sum-chip-net-v1";
+constexpr std::string_view kUtilityIdentifier = "zero-sum-chip-net-side-pot";
 
 // Deterministic public cache identity (RFC 0005 line 317). It never contains
 // the actual hero hand or any request sampling seed. `effective_iterations` is

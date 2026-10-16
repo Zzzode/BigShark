@@ -68,19 +68,15 @@ void validate(const GameDef& def) {
   // flop; the frontier evaluator supplies leaf values. The root may be the
   // preflop root (board_size == 0, the W4b preflop profile) or the flop
   // (board_size == 3, the flop class library). The frontier evaluator takes a
-  // 3-card flop in both cases. Flop-terminal games support 2..10 seats and
-  // require equal stacks: the frontier settles a single pot with no side pots,
-  // and side pots form only with unequal stacks.
+  // 3-card flop in both cases. Flop-terminal games support 2..10 seats with
+  // arbitrary stacks: the frontier evaluator settles per-runout pot layers,
+  // so unequal stacks and side pots are handled correctly.
   if (def.terminal == TerminalDepth::Flop) {
     require(def.player_count >= 2 && def.player_count <= kMaxUnifiedSeats,
             "flop-terminal games support 2..10 seats");
     const bool valid_root =
         (def.preflop && def.board_size == 0) || (!def.preflop && def.board_size == 3);
     require(valid_root, "a flop-terminal game must start at the preflop root or on the flop");
-    const Chips stack0 = def.stacks[0];
-    for (std::size_t p = 1; p < def.player_count; ++p)
-      require(def.stacks[p] == stack0,
-              "flop-terminal games require equal stacks (single-pot settlement)");
   }
 
   const bool heads_up = def.player_count == 2;

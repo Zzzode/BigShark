@@ -38,7 +38,8 @@ approximation ignores postflop betting"
 
 The `EquityFrontierEvaluator`
 (`engine/src/gto/equity_frontier.cpp`) values a frontier leaf as
-`equity * pot - contributed`, where `equity` is the exact showdown equity
+`expected_award - net_contribution` with side-pot-safe per-layer settlement
+(RFC 0010), where `expected_award` is the average showdown award
 after enumerating every turn/river runout. This is the value of getting
 **all-in on the flop** and running out the board with no further betting. It
 is exactly correct only for a jam/fold game. At 100 BB the postflop betting
@@ -114,7 +115,8 @@ everything needed to compute the pot and the SPR.
 (`engine/include/bs/equity_frontier.hpp`,
 `engine/src/gto/equity_frontier.cpp`) enumerates all
 `C(49-2N, 2)` turn/river combos, evaluates each live seat's 7-card hand,
-splits ties, and returns `equity * pot - contributed`. Results are cached per
+splits ties, and returns `expected_award - net_contribution` with
+side-pot-safe per-layer settlement. Results are cached per
 (flop, hands, live-set). This is exact all-in-at-flop equity.
 
 ### The preflop training pipeline
@@ -188,7 +190,8 @@ postflop signal the preflop strategy sees.
 
 ### Why the equity frontier fails at 100 BB (mechanism)
 
-1. **No postflop betting modeled.** The value is `equity * pot`, the value
+1. **No postflop betting modeled.** The value is `expected_award - net`,
+   the value
    of an all-in flop. The entire flop/turn/river betting tree is absent, so
    the preflop strategy cannot learn that a line's value depends on the
    postflop strategy it enables.

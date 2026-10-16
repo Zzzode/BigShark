@@ -5,6 +5,7 @@
 // cache (repeatability, live-set keying, cap behavior), validates the
 // rejection contract, and cross-checks the evaluator against an independently
 // coded brute-force oracle on non-trivial 3-way deals.
+#include <algorithm>
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/equity_frontier.hpp>
@@ -64,15 +65,20 @@ TerminalPayload make_ledger(std::size_t n, std::span<const bool> folded,
 }
 
 // Extracts equity fractions from the evaluator's chip-delta values:
-// equity = (value + contributed) / pot.
+// equity = (value + net) / pot, where net = contributed - refunded.
 std::vector<double> equity_from_values(std::span<const double> values,
-                                       std::span<const std::int64_t> contributed) {
+                                       std::span<const std::int64_t> contributed,
+                                       std::span<const std::int64_t> refunded = {}) {
   double pot = 0;
-  for (std::int64_t c : contributed)
-    pot += static_cast<double>(c);
+  for (std::size_t s = 0; s < contributed.size(); ++s) {
+    const auto net = contributed[s] - (s < refunded.size() ? refunded[s] : 0);
+    pot += static_cast<double>(net);
+  }
   std::vector<double> equity(values.size());
-  for (std::size_t s = 0; s < values.size(); ++s)
-    equity[s] = (values[s] + static_cast<double>(contributed[s])) / pot;
+  for (std::size_t s = 0; s < values.size(); ++s) {
+    const auto net = contributed[s] - (s < refunded.size() ? refunded[s] : 0);
+    equity[s] = (values[s] + static_cast<double>(net)) / pot;
+  }
   return equity;
 }
 
@@ -130,6 +136,120 @@ std::vector<double> oracle_equity(std::span<const int> flop,
   for (std::size_t s = 0; s < n; ++s)
     wins[s] /= static_cast<double>(runouts);
   return wins;
+}
+
+// Independent brute-force oracle for side-pot settlement: enumerates all
+// turn/river combos and settles per-runout pot layers with its own loop
+// structure (separate from equity_frontier.cpp). Uses the same hand evaluator
+// (bs::evaluate) but independently codes card blocking, runout iteration,
+// layer formation, and winner determination.
+std::vector<double> oracle_award(std::span<const int> board,
+                                 std::span<const std::array<int, 2>> hands,
+                                 const TerminalPayload& ledger) {
+  const std::size_t n = hands.size();
+
+  // Compute net contributions (G - F).
+  std::array<std::int64_t, 10> net{};
+  for (std::size_t s = 0; s < n; ++s)
+    net[s] = static_cast<std::int64_t>(ledger.seats[s].contributed) -
+             static_cast<std::int64_t>(ledger.seats[s].refunded);
+
+  // Form layers from sorted unique net contribution levels.
+  struct OracleLayer {
+    double amount = 0;
+    std::vector<std::size_t> eligible;
+  };
+  std::vector<std::int64_t> levels;
+  for (std::size_t s = 0; s < n; ++s)
+    if (net[s] != 0)
+      levels.push_back(net[s]);
+  std::sort(levels.begin(), levels.end());
+  levels.erase(std::unique(levels.begin(), levels.end()), levels.end());
+
+  std::vector<OracleLayer> layers;
+  std::int64_t prev = 0;
+  for (std::int64_t level : levels) {
+    OracleLayer layer;
+    std::size_t contributors = 0;
+    for (std::size_t s = 0; s < n; ++s) {
+      if (net[s] >= level) {
+        ++contributors;
+        if (!ledger.seats[s].folded)
+          layer.eligible.push_back(s);
+      }
+    }
+    layer.amount = static_cast<double>(level - prev) * static_cast<double>(contributors);
+    layers.push_back(std::move(layer));
+    prev = level;
+  }
+
+  // Block every dealt card (board + all hole cards, including folded seats).
+  std::array<bool, 52> dealt{};
+  for (int c : board)
+    dealt[c] = true;
+  for (const auto& h : hands) {
+    dealt[h[0]] = true;
+    dealt[h[1]] = true;
+  }
+  std::vector<int> pool;
+  for (int c = 0; c < 52; ++c)
+    if (!dealt[c])
+      pool.push_back(c);
+
+  std::vector<double> award_sum(n, 0.0);
+  std::uint64_t runouts = 0;
+
+  // Settle one runout: compute scores, then award each layer.
+  auto settle = [&](int runout1, int runout2) {
+    std::array<std::uint32_t, 10> scores{};
+    for (std::size_t s = 0; s < n; ++s) {
+      if (ledger.seats[s].folded)
+        continue;
+      int cards[7] = {hands[s][0], hands[s][1], board[0], board[1], board[2], 0, 0};
+      if (board.size() == 3) {
+        cards[5] = runout1;
+        cards[6] = runout2;
+      } else if (board.size() == 4) {
+        cards[5] = board[3];
+        cards[6] = runout1;
+      } else {
+        cards[5] = board[3];
+        cards[6] = board[4];
+      }
+      scores[s] = bs::evaluate(cards, 7).score;
+    }
+    for (const auto& layer : layers) {
+      std::uint32_t best = 0;
+      for (std::size_t s : layer.eligible)
+        if (scores[s] > best)
+          best = scores[s];
+      int tied = 0;
+      for (std::size_t s : layer.eligible)
+        if (scores[s] == best)
+          ++tied;
+      const double share = layer.amount / static_cast<double>(tied);
+      for (std::size_t s : layer.eligible)
+        if (scores[s] == best)
+          award_sum[s] += share;
+    }
+    ++runouts;
+  };
+
+  if (board.size() == 5) {
+    settle(0, 0);
+  } else if (board.size() == 4) {
+    for (std::size_t i = 0; i < pool.size(); ++i)
+      settle(pool[i], 0);
+  } else {
+    for (std::size_t i = 0; i + 1 < pool.size(); ++i)
+      for (std::size_t j = i + 1; j < pool.size(); ++j)
+        settle(pool[i], pool[j]);
+  }
+
+  std::vector<double> result(n);
+  for (std::size_t s = 0; s < n; ++s)
+    result[s] = award_sum[s] / static_cast<double>(runouts);
+  return result;
 }
 
 // --- Analytical pins -------------------------------------------------------
@@ -264,6 +384,165 @@ int test_single_live_seat() {
   CHECK_CLOSE(values[0], 4.0, 1e-9);
   CHECK_CLOSE(values[1], -2.0, 1e-9);
   CHECK_CLOSE(values[2], -2.0, 1e-9);
+  return 0;
+}
+
+// --- Side-pot tests --------------------------------------------------------
+
+// Builds a ledger with per-seat folded flags, contributed (G), and refunded (F).
+TerminalPayload make_ledger_gf(std::size_t n, std::span<const bool> folded,
+                               std::span<const std::int64_t> contributed,
+                               std::span<const std::int64_t> refunded) {
+  TerminalPayload tp;
+  tp.player_count = n;
+  for (std::size_t s = 0; s < n; ++s) {
+    tp.seats[s].folded = folded[s];
+    tp.seats[s].contributed = contributed[s];
+    tp.seats[s].refunded = refunded[s];
+  }
+  return tp;
+}
+
+// 3-way side pot: seat 0 has quads and wins both the main pot (all three
+// eligible) and the side pot (only seats 0 and 1 eligible). Seat 2 is the
+// short stack with a worse hand. Uses a river board for a deterministic
+// outcome (on a flop, quads can be outkicked if the turn/river pair a
+// higher rank).
+int test_side_pot_quads_win_both() {
+  const std::array<int, 5> board = {c2c, c2d, c2h, c3d, c5h};
+  const std::array<std::array<int, 2>, 3> hands = {{{c2s, c3c}, {cAh, cKh}, {cQc, cQd}}};
+  const std::array<bool, 3> folded = {false, false, false};
+  // Net: 100, 100, 50 → layers [50 (3 contributors), 100 (2 contributors)].
+  const std::array<std::int64_t, 3> contributed = {100, 100, 50};
+  const std::array<std::int64_t, 3> refunded = {0, 0, 0};
+  const auto ledger = make_ledger_gf(3, folded, contributed, refunded);
+
+  const EquityFrontierEvaluator eval;
+  const auto values = eval.evaluate(board, hands, ledger);
+
+  // Seat 0 (quads) wins main (150) + side (100) = 250. Utility = 250 - 100 = 150.
+  // Seat 1 wins 0. Utility = 0 - 100 = -100.
+  // Seat 2 wins 0. Utility = 0 - 50 = -50.
+  CHECK_CLOSE(values[0], 150.0, 1e-9);
+  CHECK_CLOSE(values[1], -100.0, 1e-9);
+  CHECK_CLOSE(values[2], -50.0, 1e-9);
+  return 0;
+}
+
+// 3-way side pot: the short stack (seat 2, quads) wins the main pot, while
+// the deep stack (seat 1, full house) wins the side pot. Seat 0 (trip 2s)
+// wins nothing. This verifies that different layers can have different
+// winners. Uses a river board for a deterministic outcome.
+int test_side_pot_short_wins_main_deep_wins_side() {
+  const std::array<int, 5> board = {c2c, c2d, c2h, c3d, c5h};
+  // Seat 0: A♥K♥ (trip 2s), seat 1: Q♣Q♦ (full house), seat 2: 2♠3♣ (quads).
+  const std::array<std::array<int, 2>, 3> hands = {{{cAh, cKh}, {cQc, cQd}, {c2s, c3c}}};
+  const std::array<bool, 3> folded = {false, false, false};
+  const std::array<std::int64_t, 3> contributed = {100, 100, 50};
+  const std::array<std::int64_t, 3> refunded = {0, 0, 0};
+  const auto ledger = make_ledger_gf(3, folded, contributed, refunded);
+
+  const EquityFrontierEvaluator eval;
+  const auto values = eval.evaluate(board, hands, ledger);
+
+  // Main pot (150, all eligible): seat 2 (quads) wins.
+  // Side pot (100, seats 0-1 eligible): seat 1 (full house) wins.
+  // Seat 0: award=0, utility=0-100=-100.
+  // Seat 1: award=100, utility=100-100=0.
+  // Seat 2: award=150, utility=150-50=100.
+  CHECK_CLOSE(values[0], -100.0, 1e-9);
+  CHECK_CLOSE(values[1], 0.0, 1e-9);
+  CHECK_CLOSE(values[2], 100.0, 1e-9);
+  return 0;
+}
+
+// 3-way side pot with a folded seat: seat 1 folds, leaving dead money in both
+// layers. Seat 0 (quads) wins everything. Uses a river board.
+int test_side_pot_folded_dead_money() {
+  const std::array<int, 5> board = {c2c, c2d, c2h, c3d, c5h};
+  const std::array<std::array<int, 2>, 3> hands = {{{c2s, c3c}, {cAh, cKh}, {cQc, cQd}}};
+  const std::array<bool, 3> folded = {false, true, false};
+  const std::array<std::int64_t, 3> contributed = {100, 100, 50};
+  const std::array<std::int64_t, 3> refunded = {0, 0, 0};
+  const auto ledger = make_ledger_gf(3, folded, contributed, refunded);
+
+  const EquityFrontierEvaluator eval;
+  const auto values = eval.evaluate(board, hands, ledger);
+
+  // Layers: level 50 (contributors {0,1,2}, eligible {0,2}, amount 150),
+  //         level 100 (contributors {0,1}, eligible {0}, amount 100).
+  // Seat 0 wins both: award=250, utility=250-100=150.
+  // Seat 1 (folded): award=0, utility=0-100=-100.
+  // Seat 2: award=0, utility=0-50=-50.
+  CHECK_CLOSE(values[0], 150.0, 1e-9);
+  CHECK_CLOSE(values[1], -100.0, 1e-9);
+  CHECK_CLOSE(values[2], -50.0, 1e-9);
+  return 0;
+}
+
+// Side pot on a 3-card board (flop): verify against the independent
+// brute-force oracle that settles per-runout pot layers.
+int test_side_pot_flop_oracle() {
+  const std::array<int, 3> flop = {c2c, c2d, c2h};
+  const std::array<std::array<int, 2>, 3> hands = {{{c2s, c3c}, {cAh, cKh}, {cQc, cQd}}};
+  const std::array<bool, 3> folded = {false, false, false};
+  const std::array<std::int64_t, 3> contributed = {100, 100, 50};
+  const std::array<std::int64_t, 3> refunded = {0, 0, 0};
+  const auto ledger = make_ledger_gf(3, folded, contributed, refunded);
+
+  const EquityFrontierEvaluator eval;
+  const auto values = eval.evaluate(flop, hands, ledger);
+  const auto oracle = oracle_award(flop, hands, ledger);
+
+  // Verify utility = expected_award - net for each seat.
+  for (std::size_t s = 0; s < 3; ++s) {
+    const auto net = contributed[s] - refunded[s];
+    CHECK_CLOSE(values[s], oracle[s] - static_cast<double>(net), 1e-9);
+  }
+  return 0;
+}
+
+// Side pot on a 4-card board (turn): verify against the independent oracle.
+int test_side_pot_turn_oracle() {
+  const std::array<int, 4> board = {c2c, c2d, c2h, c3d};
+  const std::array<std::array<int, 2>, 3> hands = {{{c2s, c3c}, {cAh, cKh}, {cQc, cQd}}};
+  const std::array<bool, 3> folded = {false, false, false};
+  const std::array<std::int64_t, 3> contributed = {100, 100, 50};
+  const std::array<std::int64_t, 3> refunded = {0, 0, 0};
+  const auto ledger = make_ledger_gf(3, folded, contributed, refunded);
+
+  const EquityFrontierEvaluator eval;
+  const auto values = eval.evaluate(board, hands, ledger);
+  const auto oracle = oracle_award(board, hands, ledger);
+
+  for (std::size_t s = 0; s < 3; ++s) {
+    const auto net = contributed[s] - refunded[s];
+    CHECK_CLOSE(values[s], oracle[s] - static_cast<double>(net), 1e-9);
+  }
+  return 0;
+}
+
+// Refund handling: seat 0 contributed 100 but was refunded 30 (uncalled bet),
+// so net = 70. Seat 1 contributed 70 with no refund. Both net = 70, so there
+// is a single layer. The refunded 30 is excluded from the pot. Uses a river
+// board for a deterministic outcome.
+int test_refund_excluded_from_pot() {
+  const std::array<int, 5> board = {c2c, c2d, c2h, c3d, c5h};
+  const std::array<std::array<int, 2>, 2> hands = {{{c2s, c3c}, {cAh, cKh}}};
+  const std::array<bool, 2> folded = {false, false};
+  const std::array<std::int64_t, 2> contributed = {100, 70};
+  const std::array<std::int64_t, 2> refunded = {30, 0};
+  const auto ledger = make_ledger_gf(2, folded, contributed, refunded);
+
+  const EquityFrontierEvaluator eval;
+  const auto values = eval.evaluate(board, hands, ledger);
+
+  // Net: seat 0 = 100-30 = 70, seat 1 = 70-0 = 70.
+  // Single layer: amount = 70*2 = 140.
+  // Seat 0 (quads) wins: award=140, utility=140-70=70.
+  // Seat 1: award=0, utility=0-70=-70.
+  CHECK_CLOSE(values[0], 70.0, 1e-9);
+  CHECK_CLOSE(values[1], -70.0, 1e-9);
   return 0;
 }
 
@@ -526,6 +805,18 @@ int main() {
   if (test_folded_seat_exclusion())
     return 1;
   if (test_single_live_seat())
+    return 1;
+  if (test_side_pot_quads_win_both())
+    return 1;
+  if (test_side_pot_short_wins_main_deep_wins_side())
+    return 1;
+  if (test_side_pot_folded_dead_money())
+    return 1;
+  if (test_side_pot_flop_oracle())
+    return 1;
+  if (test_side_pot_turn_oracle())
+    return 1;
+  if (test_refund_excluded_from_pot())
     return 1;
   if (test_cache_repeatability())
     return 1;

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <stdexcept>
+#include <vector>
 
 namespace bs::gto {
 
@@ -31,12 +32,13 @@ std::vector<int> EquityFrontierEvaluator::make_key(std::span<const int> board,
                                                    std::span<const std::array<int, 2>> hands,
                                                    const bs::tree::TerminalPayload& ledger) {
   // The key is: sorted board (3/4/5 cards), per-seat sorted hole cards (2
-  // each), then the live-seat set (one int per seat: 0 = folded, 1 = live).
-  // The live-set is required because the cached equity depends on which seats
-  // compete: the same (board, hands) pair can reach evaluate() with different
-  // fold patterns.
+  // each), the live-seat set (one int per seat: 0 = folded, 1 = live), and
+  // per-seat net contributions (two ints each: low/high 32 bits). The
+  // contribution suffix is required because the cached expected award
+  // depends on the pot layer structure, which changes with the contribution
+  // pattern even for the same (board, hands, live-set).
   std::vector<int> key;
-  key.reserve(board.size() + hands.size() * 2 + hands.size());
+  key.reserve(board.size() + hands.size() * 2 + hands.size() + hands.size() * 2);
 
   // Sorted board.
   std::vector<int> sorted_board(board.begin(), board.end());
@@ -55,6 +57,13 @@ std::vector<int> EquityFrontierEvaluator::make_key(std::span<const int> board,
   // Live-seat set (0 = folded, 1 = live).
   for (std::size_t s = 0; s < hands.size(); ++s)
     key.push_back(ledger.seats[s].folded ? 0 : 1);
+
+  // Per-seat net contributions (G - F), split into low/high ints.
+  for (std::size_t s = 0; s < hands.size(); ++s) {
+    const auto net = ledger.seats[s].contributed - ledger.seats[s].refunded;
+    key.push_back(static_cast<int>(net & 0xFFFFFFFFu));
+    key.push_back(static_cast<int>(net >> 32));
+  }
 
   return key;
 }
@@ -79,18 +88,57 @@ std::vector<double> EquityFrontierEvaluator::evaluate(
   if (live_count == 0)
     throw std::invalid_argument("equity frontier evaluator: no live seats at frontier");
 
+  // Compute net contributions (G - F) and form pot layers. Each layer
+  // captures the contribution increment that a subset of seats competes for.
+  // Layers are deterministic: they depend only on the ledger, not on the
+  // runout. This mirrors the layer logic in settle_contributions.
+  bs::poker::Chips net[bs::poker::kMaxUnifiedSeats]{};
+  std::vector<bs::poker::Chips> levels;
+  for (std::size_t s = 0; s < n; ++s) {
+    net[s] = ledger.seats[s].contributed - ledger.seats[s].refunded;
+    if (net[s] != 0)
+      levels.push_back(net[s]);
+  }
+  std::sort(levels.begin(), levels.end());
+  levels.erase(std::unique(levels.begin(), levels.end()), levels.end());
+
+  struct Layer {
+    bs::poker::Chips amount = 0;
+    std::vector<std::size_t> eligible;
+  };
+  std::vector<Layer> layers;
+  layers.reserve(levels.size());
+  bs::poker::Chips previous = 0;
+  for (bs::poker::Chips level : levels) {
+    Layer layer;
+    std::size_t contributors = 0;
+    for (std::size_t s = 0; s < n; ++s) {
+      if (net[s] >= level) {
+        ++contributors;
+        if (!ledger.seats[s].folded)
+          layer.eligible.push_back(s);
+      }
+    }
+    if (contributors < 2)
+      throw std::invalid_argument(
+          "equity frontier evaluator: unmatched contribution (missing refund)");
+    if (layer.eligible.empty())
+      throw std::invalid_argument("equity frontier evaluator: pot layer has no eligible winner");
+    layer.amount = (level - previous) * static_cast<bs::poker::Chips>(contributors);
+    layers.push_back(std::move(layer));
+    previous = level;
+  }
+
   const std::vector<int> key = make_key(board, hands, ledger);
 
-  // Check the cache. The value is a vector of N equity fractions.
-  // Thread safety: the cache is protected by mutex_. The equity computation
-  // (the expensive part) runs outside the lock; only the cache lookup and
-  // insert are serialized.
-  std::vector<double> equity(n, 0.0);
+  // Check the cache. The value is a vector of N expected awards (expected
+  // amount won from the pot, before subtracting net contribution).
+  std::vector<double> expected_award(n, 0.0);
   bool found = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (auto it = equity_cache_.find(key); it != equity_cache_.end()) {
-      equity = it->second;
+    if (auto it = award_cache_.find(key); it != award_cache_.end()) {
+      expected_award = it->second;
       found = true;
     }
   }
@@ -112,108 +160,79 @@ std::vector<double> EquityFrontierEvaluator::evaluate(
       if (!blocked[c])
         pool[pool_size++] = c;
 
-    std::vector<double> equity_sum(n, 0.0);
-    std::uint32_t scores[bs::poker::kMaxUnifiedSeats] = {};
+    std::vector<double> award_sum(n, 0.0);
+    std::size_t total_runouts = 0;
 
-    if (board.size() == 5) {
-      // River: no cards to enumerate. Direct showdown settlement.
-      std::uint32_t best = 0;
+    // Settle one runout: compute showdown scores for live seats, then award
+    // each layer to the best hand among its eligible seats.
+    auto settle_runout = [&](const int full_board[5]) {
+      std::uint32_t scores[bs::poker::kMaxUnifiedSeats] = {};
       for (std::size_t s = 0; s < n; ++s) {
         if (ledger.seats[s].folded)
           continue;
-        const int cards[7] = {hands[s][0], hands[s][1], board[0], board[1],
-                              board[2],    board[3],    board[4]};
+        const int cards[7] = {hands[s][0],   hands[s][1],   full_board[0], full_board[1],
+                              full_board[2], full_board[3], full_board[4]};
         scores[s] = bs::evaluate(cards, 7).score;
-        if (scores[s] > best)
-          best = scores[s];
       }
-      int tied = 0;
-      for (std::size_t s = 0; s < n; ++s)
-        if (!ledger.seats[s].folded && scores[s] == best)
-          ++tied;
-      const double share = 1.0 / static_cast<double>(tied);
-      for (std::size_t s = 0; s < n; ++s)
-        if (!ledger.seats[s].folded && scores[s] == best)
-          equity_sum[s] += share;
-      // Total is 1 (single runout).
-      for (std::size_t s = 0; s < n; ++s)
-        equity[s] = equity_sum[s];
+      for (const auto& layer : layers) {
+        std::uint32_t best = 0;
+        for (std::size_t s : layer.eligible)
+          if (scores[s] > best)
+            best = scores[s];
+        int tied = 0;
+        for (std::size_t s : layer.eligible)
+          if (scores[s] == best)
+            ++tied;
+        const double share = static_cast<double>(layer.amount) / static_cast<double>(tied);
+        for (std::size_t s : layer.eligible)
+          if (scores[s] == best)
+            award_sum[s] += share;
+      }
+      ++total_runouts;
+    };
+
+    if (board.size() == 5) {
+      // River: no cards to enumerate. Direct showdown settlement.
+      settle_runout(board.data());
     } else if (board.size() == 4) {
       // Turn: enumerate all C(pool, 1) river combos.
       for (int i = 0; i < pool_size; ++i) {
-        std::uint32_t best = 0;
-        for (std::size_t s = 0; s < n; ++s) {
-          if (ledger.seats[s].folded)
-            continue;
-          const int cards[7] = {hands[s][0], hands[s][1], board[0], board[1],
-                                board[2],    board[3],    pool[i]};
-          scores[s] = bs::evaluate(cards, 7).score;
-          if (scores[s] > best)
-            best = scores[s];
-        }
-        int tied = 0;
-        for (std::size_t s = 0; s < n; ++s)
-          if (!ledger.seats[s].folded && scores[s] == best)
-            ++tied;
-        const double share = 1.0 / static_cast<double>(tied);
-        for (std::size_t s = 0; s < n; ++s)
-          if (!ledger.seats[s].folded && scores[s] == best)
-            equity_sum[s] += share;
+        int full_board[5];
+        std::copy(board.begin(), board.end(), full_board);
+        full_board[4] = pool[i];
+        settle_runout(full_board);
       }
-      const std::size_t total = static_cast<std::size_t>(pool_size);
-      for (std::size_t s = 0; s < n; ++s)
-        equity[s] = equity_sum[s] / static_cast<double>(total);
     } else {
       // Flop (3 cards): enumerate all C(pool, 2) turn/river combos.
       for (int i = 0; i < pool_size; ++i) {
         for (int j = i + 1; j < pool_size; ++j) {
-          std::uint32_t best = 0;
-          for (std::size_t s = 0; s < n; ++s) {
-            if (ledger.seats[s].folded)
-              continue;
-            const int cards[7] = {hands[s][0], hands[s][1], board[0], board[1],
-                                  board[2],    pool[i],     pool[j]};
-            scores[s] = bs::evaluate(cards, 7).score;
-            if (scores[s] > best)
-              best = scores[s];
-          }
-          int tied = 0;
-          for (std::size_t s = 0; s < n; ++s)
-            if (!ledger.seats[s].folded && scores[s] == best)
-              ++tied;
-          const double share = 1.0 / static_cast<double>(tied);
-          for (std::size_t s = 0; s < n; ++s)
-            if (!ledger.seats[s].folded && scores[s] == best)
-              equity_sum[s] += share;
+          int full_board[5];
+          std::copy(board.begin(), board.end(), full_board);
+          full_board[3] = pool[i];
+          full_board[4] = pool[j];
+          settle_runout(full_board);
         }
       }
-      const std::size_t total =
-          static_cast<std::size_t>(pool_size) * static_cast<std::size_t>(pool_size - 1) / 2;
-      for (std::size_t s = 0; s < n; ++s)
-        equity[s] = equity_sum[s] / static_cast<double>(total);
     }
+
+    for (std::size_t s = 0; s < n; ++s)
+      expected_award[s] = award_sum[s] / static_cast<double>(total_runouts);
 
     // Insert into the cache if under the cap. Existing entries remain valid;
     // the cap only prevents unbounded growth for N-way preflop training.
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (equity_cache_.size() < cache_cap_)
-        equity_cache_.emplace(key, equity);
+      if (award_cache_.size() < cache_cap_)
+        award_cache_.emplace(key, expected_award);
     }
   }
 
-  // The pot is the sum of all seats' contributed amounts (including folded
-  // seats' dead money).
-  double pot = 0;
-  for (std::size_t s = 0; s < n; ++s)
-    pot += static_cast<double>(ledger.seats[s].contributed);
-
-  // Net chip delta: expected pot share minus own contribution. Folded seats
-  // have equity 0, so their utility is -contributed (they lose their dead
+  // Net chip delta: expected award minus net contribution. Folded seats
+  // have expected award 0, so their utility is -net (they lose their dead
   // money), which is correct.
   std::vector<double> values(n);
   for (std::size_t s = 0; s < n; ++s)
-    values[s] = equity[s] * pot - static_cast<double>(ledger.seats[s].contributed);
+    values[s] = expected_award[s] - static_cast<double>(net[s]);
   return values;
 }
 

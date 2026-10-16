@@ -1,21 +1,26 @@
-// RFC 0007 (scope extended by RFC 0010, RFC 0024): exact equity frontier
-// evaluator for flop-terminal games and depth-limited resolving, 2..10 seats.
+// RFC 0007 (scope extended by RFC 0010, RFC 0024): side-pot-safe equity
+// frontier evaluator for flop-terminal games and depth-limited resolving,
+// 2..10 seats.
 //
-// Computes each live seat's exact equity by enumerating all remaining
-// turn/river combos, then returns equity * pot - contributed as the expected
-// net chip delta. This is the "all-in" approximation: it assumes no future
-// betting, so the frontier value is the showdown equity weighted by the pot.
+// Computes each live seat's expected showdown award by enumerating all
+// remaining turn/river combos and settling per-runout pot layers (side pots)
+// using the same layer logic as settle_contributions, then returns
+// expected_award - net_contributed as the expected net chip delta. This
+// handles unequal stacks and side pots correctly: each seat competes only
+// for the pot layers its net contribution is eligible for.
+//
 // Only live seats (ledger.seats[s].folded == false) compete; folded seats
-// receive equity 0 and their chips stay in the pot.
+// receive expected award 0 and their net contribution stays in the pot as
+// dead money.
 //
 // RFC 0024 board-size behavior:
 //  - 3 cards (flop): enumerate all C(49-2N, 2) turn/river combos.
 //  - 4 cards (turn): enumerate all C(48-2N, 1) river combos.
 //  - 5 cards (river): direct showdown settlement (no cards to enumerate).
 //
-// Equity results are cached per (board, hands, live-set); the pot is
-// recomputed from the ledger each call because different betting lines
-// produce different pot sizes for the same board and deal.
+// Expected awards are cached per (board, hands, live-set, net-contributions).
+// The contribution suffix is required because the layer structure changes
+// with the contribution pattern even for the same board and deal.
 #pragma once
 
 #include <array>
@@ -45,10 +50,10 @@ class EquityFrontierEvaluator : public FrontierEvaluator {
 
  private:
   // The cache key: sorted board (3/4/5 cards), per-seat sorted hole cards
-  // (2 each), then the live-seat set (one int per seat: 0 = folded, 1 = live).
-  // The live-set is required because the cached equity depends on which seats
-  // compete: the same (board, hands) pair can reach evaluate() with different
-  // fold patterns.
+  // (2 each), the live-seat set (one int per seat: 0 = folded, 1 = live),
+  // and per-seat net contributions (two ints each: low/high 32 bits). The
+  // live-set and contribution suffix are required because the cached award
+  // depends on which seats compete and how the pot is layered.
   static std::vector<int> make_key(std::span<const int> board,
                                    std::span<const std::array<int, 2>> hands,
                                    const bs::tree::TerminalPayload& ledger);
@@ -62,7 +67,7 @@ class EquityFrontierEvaluator : public FrontierEvaluator {
 
   std::size_t cache_cap_ = kDefaultCacheCap;
   mutable std::mutex mutex_;
-  mutable std::unordered_map<std::vector<int>, std::vector<double>, KeyHash> equity_cache_;
+  mutable std::unordered_map<std::vector<int>, std::vector<double>, KeyHash> award_cache_;
 };
 
 }  // namespace bs::gto

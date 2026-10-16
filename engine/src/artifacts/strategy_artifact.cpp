@@ -1012,7 +1012,7 @@ void insert_game(dt::Db& db, const HeadsUpGame& game) {
   insert.bind_u64_chips(i++, root.contributions[0]);
   insert.bind_u64_chips(i++, root.contributions[1]);
   insert.bind_u64_chips(i++, root.pot);
-  insert.bind_text(i++, kUtilityIdentifierV1);
+  insert.bind_text(i++, kUtilityIdentifier);
   (void)insert.step("insert game");
 }
 
@@ -1429,7 +1429,7 @@ void insert_game_v2(dt::Db& db, const GameDef& game) {
   else
     insert.bind_null(i++);
   insert.bind_u64_chips(i++, game.pot);
-  insert.bind_text(i++, kUtilityIdentifierV1);
+  insert.bind_text(i++, kUtilityIdentifier);
   (void)insert.step("insert game");
 }
 
@@ -1718,7 +1718,7 @@ HeadsUpGame read_game(dt::Db& db) {
   game.root.contributions[1] = static_cast<Chips>(read_bounded_i64(query, i++, "contribution1"));
   game.root.pot = static_cast<Chips>(read_bounded_i64(query, i++, "pot"));
   const std::string_view utility = query.column_text(i++);
-  check(utility == kUtilityIdentifierV1, ArtifactErrorKind::UnsupportedVersion,
+  check(utility == kUtilityIdentifier, ArtifactErrorKind::UnsupportedVersion,
         "unsupported utility identifier: " + std::string(utility));
   check(!query.step("read game"), ArtifactErrorKind::InvalidSchema, "game table not singleton");
   // A default HeadsUpGame carries the pinned default schedule; replace it with
@@ -2269,7 +2269,7 @@ GameDef read_game_v2(dt::Db& db) {
   }
   game.pot = static_cast<Chips>(read_bounded_i64(query, i++, "pot"));
   const std::string_view utility = query.column_text(i++);
-  check(utility == kUtilityIdentifierV1, ArtifactErrorKind::UnsupportedVersion,
+  check(utility == kUtilityIdentifier, ArtifactErrorKind::UnsupportedVersion,
         "unsupported utility identifier: " + std::string(utility));
   check(!query.step("read game"), ArtifactErrorKind::InvalidSchema, "game table not singleton");
   game.variant = RulesVariant::NoLimitHoldem;

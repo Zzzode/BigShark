@@ -169,7 +169,8 @@ cards inline at the `FlopDeal` leaf.
 - Enumerates C(49-2N, 2) turn/river combos (990 for 2 seats, 903 for 3).
 - Evaluates every live seat's 7-card hand per combo, splits ties.
 - Caches equity per (flop, hands, live-set) with an exact key.
-- Returns `equity * pot - contributed` per seat.
+- Returns `expected_award - net_contribution` per seat, with side-pot-safe
+  per-layer settlement (RFC 0010).
 
 The evaluator is exact for all-in-at-flop spots. It does not model future
 betting rounds: a draw's equity is computed against a uniform runout, not
@@ -413,14 +414,16 @@ river-terminal analog of the `EquityFrontierEvaluator`:
 - **Scope:** 2..10 seats (matching the `FrontierEvaluator` contract).
 - **Leaf valuation:** at a virtual `RiverDeal` leaf, enumerate the remaining
   river cards (44-48), evaluate every live seat's hand, split ties. The leaf
-  value is `equity * pot - contributed`.
+  value is `expected_award - net_contribution` with side-pot-safe per-layer
+  settlement.
 - **Folded seats:** only live seats compete; folded seats receive equity 0
   and their contributions stay in the pot (dead money), matching the
   `EquityFrontierEvaluator` contract.
 - **Cache:** exact key per (board, hands, live-set), with a capacity cap.
-- **Single-pot settlement:** the `equity * pot - contributed` formula
-  settles a single pot. Equal stacks are required (matching the
-  `EquityFrontierEvaluator` precondition).
+- **Side-pot-safe settlement:** the evaluator forms pot layers from net
+  contributions (G − F) and awards each layer to the best eligible hand,
+  matching the `EquityFrontierEvaluator` contract (RFC 0010). Unequal stacks
+  are supported.
 
 The Phase 3 evaluator implements the `FrontierEvaluator` interface. The
 nseat trainer invokes it at `RiverDeal` leaves (a new node kind), not at

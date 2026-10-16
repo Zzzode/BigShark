@@ -4,7 +4,7 @@ subject: "Multiway Frontier Evaluation and N-Way Preflop Training"
 status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-04"
-updated: "2026-10-04"
+updated: "2026-10-17"
 owners: "engine, solver, artifact boundary, benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -105,7 +105,8 @@ heads-up only" and implementations must reject `player_count != 2`.
   `equity = (wins + 0.5 * ties) / total`.
 - Caches equity per `(flop, hands)` in an `unordered_map<uint64_t,
   array<double,2>>` keyed by a 42-bit packing (7 cards x 6 bits).
-- Returns `equity * pot - contributed` per seat.
+- Returns `expected_award - net_contribution` per seat, with side-pot-safe
+  per-layer settlement.
 
 ### Trainer gate
 
@@ -313,15 +314,17 @@ In heads-up, a fold ends the hand at a `TerminalFold` leaf, so the frontier
 is only reached with both seats live. The folded-seat path is therefore a
 multiway-only concern; the HU behavior is unchanged.
 
-**Single-pot settlement precondition:** the `equity * pot - contributed`
-formula settles a single pot with no side pots. Side pots form only when a
-player is all-in for less than another live player's contribution. With
-equal stacks (the builder's target), an all-in player commits the full
-stack and every caller matches it, so no side pot can form. To enforce this
-precondition, GameDef validation for flop-terminal games requires all seats
-to have equal stacks (see section 4). The evaluator documents this
-precondition; unequal-stack flop-terminal games are rejected at GameDef
-validation, never reaching the evaluator.
+**Side-pot-safe per-layer settlement:** the evaluator settles each runout by
+forming pot layers from net contributions (G − F) and awarding each layer to
+the best eligible hand. Each layer captures the contribution increment that a
+subset of seats competes for; a seat is eligible for a layer only if its net
+contribution reaches that layer's level and it has not folded. This mirrors
+the layer logic in `settle_contributions` and correctly handles unequal
+stacks, all-in-for-less, and folded dead money. The utility per seat is
+`expected_award[s] - net[s]`, where `expected_award` is the average award
+across all runouts and `net` is the seat's net contribution (G − F). Folded
+seats have expected award 0, so their utility is −net (they lose their dead
+money).
 
 **Runout count:** the pool is `52 - 3 - 2N` cards. For N=2: 45 cards, 990
 combos. For N=3: 43 cards, 903 combos. For N=6: 37 cards, 666 combos. For
@@ -333,17 +336,18 @@ collision-free key. The key is a `std::vector<int>` containing: the 3 flop
 cards (sorted ascending by the implementation before keying; the walk
 samples the flop in deal order), followed by all hole cards (sorted within
 seat, seats in order), followed by the live-seat set — one int per seat
-(0 = folded, 1 = live). The live-seat set is required because the cached
-equity depends on which seats compete: the same (flop, hands) pair can
-reach `evaluate()` with different fold patterns across sweeps, and a cache
-hit must not return equities computed for a different fold pattern. Use
+(0 = folded, 1 = live), followed by per-seat net contributions (two ints
+each: low/high 32 bits of G − F). The live-seat set is required because the
+cached expected award depends on which seats compete; the contribution
+suffix is required because the pot layer structure changes with the
+contribution pattern even for the same (board, hands, live-set). Use
 `std::vector<int>` as the `unordered_map` key with a custom hash (FNV-1a
 over the bytes). The map's `operator==` on vectors is exact, so a hash
-collision cannot return a wrong equity — it only degrades to a bucket
+collision cannot return a wrong award — it only degrades to a bucket
 collision resolved by equality.
 
 **Cache value:** replace `std::array<double, 2>` with `std::vector<double>`
-(N equity fractions).
+(N expected awards, before subtracting net contribution).
 
 **Cache cap:** the cache grows unboundedly for N-way preflop training (the
 joint deal space is 1,326^N, so revisits are rare). Add a capacity cap
@@ -352,11 +356,12 @@ entries; existing entries remain valid and lookups still hit. This bounds
 memory while preserving correctness. The cap is a constructor parameter
 for testability.
 
-**Pot and utility:** the pot computation already iterates
-`ledger.player_count` and sums `ledger.seats[s].contributed` — it
-generalizes to N without change. The utility is
-`equity[s] * pot - ledger.seats[s].contributed` per seat, generalized from
-2 to N return values.
+**Pot and utility:** the pot is formed from net contributions (G − F) and
+settled per-layer as described above. The utility is
+`expected_award[s] - net[s]` per seat, generalized from 2 to N return
+values. The utility identifier in the artifact manifest is
+`zero-sum-chip-net-side-pot`, reflecting the side-pot-safe per-layer
+settlement.
 
 ### 3. Blind-seat helper export
 
@@ -385,22 +390,9 @@ require(def.player_count >= 2 && def.player_count <= kMaxUnifiedSeats,
 ```
 
 The root validation (`preflop && board_size == 0` or `!preflop &&
-board_size == 3`) is unchanged.
-
-Add an equal-stack precondition for flop-terminal games. The frontier
-evaluator settles a single pot with no side pots; side pots form only when
-a player is all-in for less than another live player's contribution, which
-cannot happen with equal stacks. Reject unequal stacks at validation so the
-evaluator never sees a side-pot-shaped ledger:
-
-```cpp
-if (def.terminal == TerminalDepth::Flop) {
-  const Chips stack0 = def.stacks[0];
-  for (std::size_t s = 1; s < def.player_count; ++s)
-    require(def.stacks[s] == stack0,
-            "flop-terminal games require equal stacks (single-pot settlement)");
-}
-```
+board_size == 3`) is unchanged. Flop-terminal games accept 2..10 seats with
+arbitrary stacks; the side-pot-safe per-layer settlement (section 2)
+correctly handles unequal stacks and all-in-for-less scenarios.
 
 ### 5. Trainer gate relaxation
 
@@ -611,12 +603,15 @@ A version bump would require a migration for no benefit.
   pin equity for known scenarios (all-in with N players, split pots,
   folded-seat exclusion, single-live-seat). The folded-seat rule is
   explicit in the design (section 2) and covered by a regression test.
-- **Side-pot mis-settlement.** The `equity * pot - contributed` formula
-  settles a single pot. With unequal stacks, an all-in player could create
-  a side pot that the formula mis-settles. Mitigation: GameDef validation
-  requires equal stacks for flop-terminal games (section 4), so the
-  evaluator never sees a side-pot-shaped ledger. The precondition is
-  documented and tested.
+- **Side-pot mis-settlement.** The per-layer settlement must correctly
+  handle unequal stacks, all-in-for-less, and folded dead money. A bug in
+  layer formation or eligibility would produce wrong frontier values and a
+  wrong policy. Mitigation: the layer logic mirrors `settle_contributions`
+  and is verified by an independent brute-force oracle that settles
+  per-runout pot layers with its own loop structure. Analytical pins on
+  river boards (deterministic outcome) verify exact award amounts;
+  oracle-verified flop and turn tests verify the runout enumeration and
+  layer settlement on incomplete boards.
 - **Cache key collision.** A hash collision in the cache key could
   theoretically return a wrong equity. Mitigation: the key is a
   `std::vector<int>` with exact `operator==` comparison in the
@@ -680,7 +675,7 @@ A version bump would require a migration for no benefit.
   - Reject N < 2 and N > 10 with `std::invalid_argument`.
 - `test_game_definition.cpp`: flop-terminal games with player_count 3, 6,
   10 validate; player_count 1 and 11 reject. Flop-terminal games with
-  unequal stacks reject (single-pot settlement precondition).
+  unequal stacks validate (side-pot-safe per-layer settlement).
 - `test_solve_nseat.cpp` (or `test_nseat_trainer.cpp`): train a 3-way
   flop-terminal game; verify it completes and produces a policy. Include a
   case where one seat folds preflop and the frontier is reached with two
@@ -775,8 +770,8 @@ decision path is not changed in any stage.
   verified by unit tests.
 - The flop-terminal player-count gates in GameDef validation, the nseat
   trainer, and the artifact reader/writer accept 2..10 seats. Flop-terminal
-  games with unequal stacks are rejected (single-pot settlement
-  precondition).
+  games with unequal stacks are accepted (side-pot-safe per-layer
+  settlement).
 - The blind-seat helpers are exported from `bs::poker` and used by the
   artifact reader/writer; the published HU preflop artifact round-trips
   byte-identically.

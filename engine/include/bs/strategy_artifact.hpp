@@ -57,7 +57,7 @@ inline constexpr const char* kDefaultEngineRevision = "bigshark-cpp/rfc0005-stag
 inline constexpr const char* kNumericProfileV1 =
     "ieee754-binary64;chips<=9007199254740991;sqlite-real;key-rev1";
 inline constexpr const char* kRulesIdentifierV1 = "rfc0004-heads-up-flop-v1";
-inline constexpr const char* kUtilityIdentifierV1 = "zero-sum-chip-net-v1";
+inline constexpr const char* kUtilityIdentifier = "zero-sum-chip-net-side-pot";
 
 // RFC 0009 D3: schema v2 is the seat-generic profile. The DDL set, key grammar,
 // rules identifier, and numeric profile are all version-keyed; a v1 artifact

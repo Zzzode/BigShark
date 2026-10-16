@@ -874,8 +874,8 @@ void validate_request(const AbstractTree& tree,
         "nseat trainer requires the identity or a declared-coarse action abstraction");
   if (def.board_size < 3 || def.board_size > 5) {
     // RFC 0007 (scope extended by RFC 0010): a flop-terminal preflop root is
-    // accepted for 2..10 seats; the frontier evaluator supplies leaf values.
-    // GameDef validation enforces the equal-stack single-pot precondition.
+    // accepted for 2..10 seats; the frontier evaluator supplies leaf values
+    // with side-pot-safe per-layer settlement.
     if (def.board_size == 0 && def.preflop && def.terminal == poker::TerminalDepth::Flop) {
       // Flop-terminal preflop root: accepted for 2..10 seats.
     } else {

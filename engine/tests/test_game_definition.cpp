@@ -1233,7 +1233,7 @@ int case_flop_terminal_frontier() {
     CHECK(s.street() == Street::Flop);
   }
 
-  // RFC 0010: flop-terminal games support 2..10 seats with equal stacks.
+  // RFC 0010: flop-terminal games support 2..10 seats with arbitrary stacks.
   // A 3-seat preflop flop-terminal game is accepted.
   {
     GameDef d = def;
@@ -1249,7 +1249,9 @@ int case_flop_terminal_frontier() {
     CHECK(s.player_count() == 3);
   }
 
-  // RFC 0010: flop-terminal games require equal stacks (single-pot settlement).
+  // RFC 0010: flop-terminal games support 2..10 seats with arbitrary stacks
+  // (the frontier evaluator settles per-runout pot layers, so side pots are
+  // handled correctly).
   {
     GameDef d = def;
     d.player_count = 3;
@@ -1258,7 +1260,9 @@ int case_flop_terminal_frontier() {
     d.blinds_posted[2] = 1;
     d.blinds_posted[0] = 2;
     d.pot = 3;
-    CHECK(rejects(d));
+    const GameState s(d);
+    CHECK(s.street() == Street::Preflop);
+    CHECK(s.player_count() == 3);
   }
 
   // RFC 0010: 6-seat and 10-seat flop-terminal games validate with equal
