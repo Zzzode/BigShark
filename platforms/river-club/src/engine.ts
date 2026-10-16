@@ -355,22 +355,27 @@ export async function decide(
     ?? engineClient(roots, libraries, residentBudgetMiB);
   if (!client)
     return safeFallback(room);
-  const request = toDecisionRequest(room, {
-    ...(config.style !== undefined ? { style: config.style } : {}),
-    ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
-    ...(config.solveTimeBudgetMs !== undefined
-      ? { solveTimeBudgetMs: resolveSolveTimeBudgetMs(config.solveTimeBudgetMs) }
-      : {}),
-    ...(config.minimumGuaranteeLevel !== undefined
-      ? { minimumGuaranteeLevel: config.minimumGuaranteeLevel }
-      : {}),
-  });
-  const requestEnvelope = decisionEnvelope(request);
   try {
     // The concrete process client completes its capability handshake at the
     // end of start(); awaiting it makes capabilities available on the very
     // first decision. Structural fakes omit start().
     if (client.start) await withinDecisionDeadline(deadline, () => client.start!());
+    // The engine's internal solve deadline must not outlive the adapter's
+    // transport deadline. Cap the caller's budget by the time left after
+    // startup so native work stops before the request window expires.
+    const remainingAfterStart = Math.max(1, Math.floor(deadline - performance.now()));
+    const solveTimeBudgetMs = config.solveTimeBudgetMs !== undefined
+      ? Math.min(resolveSolveTimeBudgetMs(config.solveTimeBudgetMs), remainingAfterStart)
+      : remainingAfterStart;
+    const request = toDecisionRequest(room, {
+      ...(config.style !== undefined ? { style: config.style } : {}),
+      ...(config.heroName !== undefined ? { heroName: config.heroName } : {}),
+      solveTimeBudgetMs,
+      ...(config.minimumGuaranteeLevel !== undefined
+        ? { minimumGuaranteeLevel: config.minimumGuaranteeLevel }
+        : {}),
+    });
+    const requestEnvelope = decisionEnvelope(request);
     const envelope = await withinDecisionDeadline(deadline, remainingMs => client.request(
       requestEnvelope,
       remainingMs,

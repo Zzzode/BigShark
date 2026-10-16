@@ -156,7 +156,7 @@ test('deadline: startup completion after the monotonic deadline cannot begin an 
   assert.equal(requests, 0);
 });
 
-test('deadline: transport receives remaining time, while requested solver fields are unchanged', async t => {
+test('deadline: transport and solver budget both receive remaining time after startup', async t => {
   const timer = clock(t);
   const starting = deferred<void>();
   let budget = 0;
@@ -181,7 +181,8 @@ test('deadline: transport receives remaining time, while requested solver fields
   assert.equal(request?.protocolVersion, 3);
   assert.equal(request?.payload.case, 'decisionRequest');
   if (request?.payload.case !== 'decisionRequest') throw new Error('missing actual mapped request');
-  assert.equal(request.payload.value.options?.solveTimeBudgetMs, 1500);
+  assert.equal(request.payload.value.options?.solveTimeBudgetMs, 40,
+    'solver budget must be capped by the remaining transport time after startup');
   assert.equal(request.payload.value.options?.solverMode, 1 /* AUTOMATIC */);
 });
 
