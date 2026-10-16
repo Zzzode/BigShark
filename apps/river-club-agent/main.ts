@@ -36,6 +36,7 @@ import {
   parseRiverState,
   parseRoomsResponse,
 } from '../../platforms/river-club/src/json.js';
+import { observationLedger } from '../../platforms/river-club/src/observation.js';
 import {
   isAction,
   isRiverRoom,
@@ -212,6 +213,17 @@ function readCliError(
   return error;
 }
 
+// RFC 0022: every official CLI response that carries a room enters the
+// observation ledger before any early return, heartbeat, wait, or
+// changed-hand skip, so decision provenance reflects what was actually
+// observed instead of asserting completeness. Responses without a room are
+// ignored by the ledger and never create a gap.
+function ingestCli(stdout: string): void {
+  let value: unknown;
+  try { value = parseJson(stdout); } catch { return; }
+  observationLedger.ingest(value);
+}
+
 const denied = new Set<string>();
 async function findAndJoin(): Promise<boolean> {
   while (Date.now() < startedAt + maxMs && !existsSync(STOP)) {
@@ -245,6 +257,7 @@ async function findAndJoin(): Promise<boolean> {
     for (const r of open) {
       const buyIn = r.blinds[1] * 100;
       const res = cli(['join', r.id, '--buy-in', String(buyIn)]);
+      ingestCli(res.stdout);
       let p: RiverState | null = null;
       if (res.status === 0) {
         try { p = parseRiverState(res.stdout); } catch { /* invalid success response */ }
@@ -429,6 +442,7 @@ async function decideWithinBudget(room: RiverRoom): Promise<ExecutableDecision> 
 async function loadInitialState(): Promise<RiverState> {
   while (!stopRequested()) {
     const result = cli(['state']);
+    ingestCli(result.stdout);
     if (result.status === 0) return parseRiverState(result.stdout);
     const error = readCliError(result.stdout, result.stderr, result.status);
     const failure = selectCliFailureStep(error);
@@ -489,6 +503,7 @@ if (!s0.room) {
 
 while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) {
   const nextResult = cli(['next', '--timeout', '6000']);
+  ingestCli(nextResult.stdout);
   if (nextResult.status !== 0) {
     const error = readCliError(nextResult.stdout, nextResult.stderr, nextResult.status);
     const failure = selectCliFailureStep(error);
@@ -526,7 +541,8 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
   if (step.kind === 'heartbeat') { await sleep(200); continue; }
   if (step.kind === 'empty-table') {
     note({ event: 'empty-table-leave' });
-    cli(['leave']);
+    const emptyLeave = cli(['leave']);
+    ingestCli(emptyLeave.stdout);
     await sleep(2000);
     if (!(await pauseForApproval('empty-table'))) break;
     if (!(await findAndJoin())) break;
@@ -584,6 +600,7 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
   // Refresh snapshot right before firing: joins/leaves/chat during our window
   // bump the server revision and would otherwise make the bound action STALE.
   const refreshResult = cli(['state']);
+  ingestCli(refreshResult.stdout);
   if (refreshResult.status !== 0) {
     const error = readCliError(
       refreshResult.stdout,
@@ -628,6 +645,7 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
   const actArgs = ['act', decision.action];
   if (decision.action === 'bet' || decision.action === 'raise') actArgs.push('--amount', String(decision.amount));
   const res = cli(actArgs);
+  ingestCli(res.stdout);
   let raw: unknown = null;
   try { raw = parseJson(res.stdout); } catch {
     raw = (res.stdout || res.stderr || '').slice(0, 200);
@@ -644,6 +662,7 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
   // before the auto-fold timer kills the hand.
   if (!ok && shouldRetryAction(responseCode(raw))) {
     const retryResult = cli(['state']);
+    ingestCli(retryResult.stdout);
     let retryState: RiverState | null = null;
     if (retryResult.status === 0) {
       try { retryState = parseRiverState(retryResult.stdout || '{}'); } catch { /* */ }
@@ -657,6 +676,7 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
       const args2 = ['act', d2.action];
       if (d2.action === 'bet' || d2.action === 'raise') args2.push('--amount', String(d2.amount));
       const r2 = cli(args2);
+      ingestCli(r2.stdout);
       let raw2: unknown = null;
       try { raw2 = parseJson(r2.stdout); } catch { raw2 = r2.stdout?.slice(0, 160); }
       const ok2 = responseSucceeded(r2.status, raw2);
@@ -675,10 +695,13 @@ while (Date.now() < startedAt + maxMs && acted < maxHands && !existsSync(STOP)) 
 
 // graceful exit
 note({ event: 'stopping', acted });
-cli(['leave']);
+const leaveResult = cli(['leave']);
+ingestCli(leaveResult.stdout);
 for (let i = 0; i < 30; i++) {
   let state: RiverState;
-  try { state = parseRiverState(cli(['next', '--timeout', '1000']).stdout || '{}'); }
+  const drainResult = cli(['next', '--timeout', '1000']);
+  ingestCli(drainResult.stdout);
+  try { state = parseRiverState(drainResult.stdout || '{}'); }
   catch { await sleep(1000); continue; }
   if (state.room === null || state.room === undefined) break;
   await sleep(1000);

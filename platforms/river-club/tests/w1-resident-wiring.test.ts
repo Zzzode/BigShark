@@ -26,6 +26,7 @@ import {
   resolveSolveTimeBudgetMs,
   toDecisionRequest,
 } from '../src/mapper.js';
+import { observationLedger } from '../src/observation.js';
 import type { RiverRoom } from '../src/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -423,6 +424,18 @@ function residentRoom(): RiverRoom {
   };
 }
 
+// RFC 0022: the resident blueprint path replays from hand start and requires
+// FULL observation coverage. Simulate the runner's intake: a fresh controller
+// observes the hand from its first revision before the actionable snapshot,
+// so the ledger's provenance is honestly FULL with an accurate event count.
+function observeFixtureHand(room: RiverRoom): void {
+  observationLedger.markRestart();
+  // Hand start: revision 0, no actions, no board.
+  observationLedger.ingest({ room: { ...room, revision: 0, events: [], board: [] } });
+  // Actionable snapshot: the actions and the flop deal were observed.
+  observationLedger.ingest({ room });
+}
+
 test('real binary: a configured resident root serves the fixture flop end-to-end with its digest', async t => {
   if (!fixture) {
     t.skip('engine or fixture binary unavailable');
@@ -437,6 +450,7 @@ test('real binary: a configured resident root serves the fixture flop end-to-end
   t.after(() => client.stop());
   await client.start();
   const room = residentRoom();
+  observeFixtureHand(room);
   const decision = await decide(room, {
     style: 'tag',
     heroName: 'Hero',
@@ -465,6 +479,7 @@ test('real binary: the IMPLICIT client path serves the fixture root (singleton l
   // flopLibraries: [] suppresses auto-detection so the implicit client
   // launches with only the fixture root, not the 1,755-class library.
   const room = residentRoom();
+  observeFixtureHand(room);
   const config = {
     style: 'tag',
     heroName: 'Hero',

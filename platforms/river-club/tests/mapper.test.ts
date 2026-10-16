@@ -416,7 +416,7 @@ test('mapper: ActionEvent has potBefore and stackAfter', () => {
 
 test('mapper: observation provenance fields', () => {
   const room = makeRoom({
-    handId: 'hand-123',
+    handId: 'mapper-provenance-hand',
     revision: 42,
     events: [
       { kind: 'call', text: 'hero call 10' },
@@ -429,13 +429,28 @@ test('mapper: observation provenance fields', () => {
     pot: 40,
   });
 
+  // Without supplied provenance the mapper fails closed: the process
+  // observation ledger has no observation for this hand, so coverage is
+  // MID_HAND_ATTACH and the count is zero. FULL is never fabricated.
   const request = toDecisionRequest(room);
-  const provenance = request.state!.provenance;
+  const provenance = request.state!.provenance!;
+  assert.equal(provenance.source, ObservationSource.OFFICIAL_RESPONSE);
+  assert.equal(provenance.coverage, ObservationCoverage.MID_HAND_ATTACH);
+  assert.equal(provenance.observedEventCount, 0);
 
-  assert.equal(provenance!.source, ObservationSource.OFFICIAL_RESPONSE);
-  assert.equal(provenance!.coverage, ObservationCoverage.FULL);
-  assert.equal(provenance!.controllerEpoch, 'hand-123:42');
-  assert.equal(provenance!.observedEventCount, request.state!.transitionPath.length);
+  // Supplied provenance passes through verbatim.
+  const supplied = {
+    source: ObservationSource.OFFICIAL_RESPONSE,
+    coverage: ObservationCoverage.FULL,
+    controllerEpoch: 'runner-epoch:0:mapper-provenance-hand',
+    observedEventCount: 1,
+  };
+  const suppliedRequest = toDecisionRequest(room, { provenance: supplied });
+  const suppliedProvenance = suppliedRequest.state!.provenance!;
+  assert.equal(suppliedProvenance.source, supplied.source);
+  assert.equal(suppliedProvenance.coverage, supplied.coverage);
+  assert.equal(suppliedProvenance.controllerEpoch, supplied.controllerEpoch);
+  assert.equal(suppliedProvenance.observedEventCount, supplied.observedEventCount);
 });
 
 // ---------------------------------------------------------------------------

@@ -16,8 +16,6 @@ import {
   GuaranteeLevel,
   LayerStatus,
   LegalActionSchema,
-  ObservationCoverage,
-  ObservationSource,
   PlayerStatus,
   PlayerStateSchema,
   PotLayerSchema,
@@ -47,6 +45,7 @@ import type {
   RiverRoom,
   RiverSeat,
 } from './types.js';
+import { observationLedger, type ObservationProvenance } from './observation.js';
 
 // ---------------------------------------------------------------------------
 // Constants and helpers
@@ -835,6 +834,13 @@ export interface MapperConfig {
   solverMode?: SolverMode;
   minimumGuaranteeLevel?: GuaranteeLevelToken;
   solveTimeBudgetMs?: number;
+  /**
+   * Honest observation provenance for the hand. When omitted, the mapper
+   * reads the process observation ledger for this hand; with no ledger
+   * observation it fails closed to MID_HAND_ATTACH and never fabricates
+   * FULL coverage.
+   */
+  provenance?: ObservationProvenance;
 }
 
 /**
@@ -979,14 +985,7 @@ export function toDecisionRequest(
       transitionPath,
       legalActions,
       toCall: toChip(room.legal.call ?? 0, 'to call'),
-      provenance: {
-        source: ObservationSource.OFFICIAL_RESPONSE,
-        coverage: transitionPath.length > 0
-          ? ObservationCoverage.FULL
-          : ObservationCoverage.MID_HAND_ATTACH,
-        controllerEpoch: `${room.handId}:${room.revision}`,
-        observedEventCount: transitionPath.length,
-      },
+      provenance: config.provenance ?? observationLedger.provenance(room.handId),
     },
     options: {
       strategyProfile: config.style ?? 'tag',
