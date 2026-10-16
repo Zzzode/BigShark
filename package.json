@@ -26,7 +26,7 @@
     "check:source-policy:compiled": "node dist/tools/typescript/check-source-policy.js",
     "mutation": "npm run build:ts --silent && node dist/tools/mutation/verify.js --config tools/mutation/game-definition.json",
     "clean:ts": "node --eval \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
-    "proto:breaking": "buf breaking proto --against proto/baseline/v1.binpb --exclude-imports",
+    "proto:breaking": "buf breaking proto --against proto/baseline/v2.binpb --exclude-imports",
     "proto:check": "npm run proto:lint && npm run proto:format:check && npm run proto:breaking && npm run proto:generate && npm run proto:typecheck && npm run proto:test",
     "proto:format": "buf format -w proto",
     "proto:format:check": "buf format --diff --exit-code proto",

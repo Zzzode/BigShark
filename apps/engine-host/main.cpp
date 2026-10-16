@@ -60,6 +60,7 @@
 #include <bs/subgame_resolver.hpp>
 #include <bs/v0_protocol.hpp>
 #include <bs/v1_protocol.hpp>
+#include <bs/v2_protocol.hpp>
 #include <cctype>
 #include <charconv>
 #include <cstdint>
@@ -689,8 +690,17 @@ static int runProto(std::istream& input, std::ostream& output, bool persistent,
       return 2;
     }
 
-    const bs::v1::EnvelopeResult result =
-        services ? bs::v1::handleEnvelope(frame, *services) : bs::v1::handleEnvelope(frame);
+    // RFC 0022: route by protocol_version (field 1). The peek decodes only
+    // field 1 without parsing the payload. 0..2 -> v1 (frozen), 3 -> v2,
+    // >3 -> v2 (rejects with UNSUPPORTED_PROTOCOL), nullopt -> v1 (preserves
+    // v1's INVALID_REQUEST behavior for garbage). The same ResidentHostServices
+    // instance serves both handlers; EnvelopeResult is shared via using.
+    const std::optional<std::uint32_t> version = bs::v2::peekProtocolVersion(frame);
+    const bs::v1::EnvelopeResult result = [&]() -> bs::v1::EnvelopeResult {
+      if (version && *version == 3)
+        return services ? bs::v2::handleEnvelope(frame, *services) : bs::v2::handleEnvelope(frame);
+      return services ? bs::v1::handleEnvelope(frame, *services) : bs::v1::handleEnvelope(frame);
+    }();
     if (result.outcome != bs::v1::EnvelopeOutcome::Respond)
       return 2;
     std::string encoded;

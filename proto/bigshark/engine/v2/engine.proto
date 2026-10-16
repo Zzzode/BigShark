@@ -1,0 +1,764 @@
+syntax = "proto3";
+
+package bigshark.engine.v2;
+
+import "buf/validate/validate.proto";
+
+// ============================================================================
+// RFC 0022: Complete Cash-Hand Protocol
+//
+// V2 carries the complete contribution ledger (G/F), phase-tagged pot layers,
+// explicit rule identity, observation provenance, and capability tuples.
+// V0/V1 are frozen; v2 is an explicit opt-in selected by protocol version.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum GameVariant {
+  GAME_VARIANT_UNSPECIFIED = 0;
+  GAME_VARIANT_NLHE = 1;
+}
+
+enum BettingStructure {
+  BETTING_STRUCTURE_UNSPECIFIED = 0;
+  BETTING_STRUCTURE_NO_LIMIT = 1;
+}
+
+enum GameType {
+  GAME_TYPE_UNSPECIFIED = 0;
+  GAME_TYPE_CASH = 1;
+  GAME_TYPE_TOURNAMENT = 2;
+}
+
+enum Rank {
+  RANK_UNSPECIFIED = 0;
+  RANK_TWO = 1;
+  RANK_THREE = 2;
+  RANK_FOUR = 3;
+  RANK_FIVE = 4;
+  RANK_SIX = 5;
+  RANK_SEVEN = 6;
+  RANK_EIGHT = 7;
+  RANK_NINE = 8;
+  RANK_TEN = 9;
+  RANK_JACK = 10;
+  RANK_QUEEN = 11;
+  RANK_KING = 12;
+  RANK_ACE = 13;
+}
+
+enum Suit {
+  SUIT_UNSPECIFIED = 0;
+  SUIT_SPADES = 1;
+  SUIT_HEARTS = 2;
+  SUIT_DIAMONDS = 3;
+  SUIT_CLUBS = 4;
+}
+
+enum Street {
+  STREET_UNSPECIFIED = 0;
+  STREET_PREFLOP = 1;
+  STREET_FLOP = 2;
+  STREET_TURN = 3;
+  STREET_RIVER = 4;
+  STREET_SHOWDOWN = 5;
+}
+
+enum PlayerStatus {
+  PLAYER_STATUS_UNSPECIFIED = 0;
+  PLAYER_STATUS_ACTIVE = 1;
+  PLAYER_STATUS_FOLDED = 2;
+  PLAYER_STATUS_ALL_IN = 3;
+}
+
+enum ForcedContributionType {
+  FORCED_CONTRIBUTION_TYPE_UNSPECIFIED = 0;
+  FORCED_CONTRIBUTION_TYPE_SMALL_BLIND = 1;
+  FORCED_CONTRIBUTION_TYPE_BIG_BLIND = 2;
+  FORCED_CONTRIBUTION_TYPE_ANTE = 3;
+  FORCED_CONTRIBUTION_TYPE_BUTTON_ANTE = 4;
+  FORCED_CONTRIBUTION_TYPE_DEAD_BLIND = 5;
+  FORCED_CONTRIBUTION_TYPE_STRADDLE = 6;
+}
+
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_FOLD = 1;
+  ACTION_TYPE_CHECK = 2;
+  ACTION_TYPE_CALL = 3;
+  ACTION_TYPE_BET = 4;
+  ACTION_TYPE_RAISE = 5;
+}
+
+enum SolverMode {
+  SOLVER_MODE_UNSPECIFIED = 0;
+  SOLVER_MODE_AUTOMATIC = 1;
+  SOLVER_MODE_HEURISTIC = 2;
+  SOLVER_MODE_RIVER_LP = 3;
+  SOLVER_MODE_RIVER_DCFR = 4;
+  SOLVER_MODE_MULTISTREET_CFR = 5;
+  SOLVER_MODE_BLUEPRINT = 6;
+  SOLVER_MODE_RESOLVING = 7;
+}
+
+enum SolverSource {
+  SOLVER_SOURCE_UNSPECIFIED = 0;
+  SOLVER_SOURCE_PREFLOP_CHART = 1;
+  SOLVER_SOURCE_POSTFLOP_HEURISTIC = 2;
+  SOLVER_SOURCE_RIVER_LP = 3;
+  SOLVER_SOURCE_RIVER_DCFR = 4;
+  SOLVER_SOURCE_MULTISTREET_CFR = 5;
+  SOLVER_SOURCE_BLUEPRINT = 6;
+  SOLVER_SOURCE_RESOLVING = 7;
+}
+
+enum AmountSemantics {
+  AMOUNT_SEMANTICS_UNSPECIFIED = 0;
+  AMOUNT_SEMANTICS_TARGET_TOTAL_INCLUSIVE = 1;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_INVALID_REQUEST = 1;
+  ERROR_CODE_UNSUPPORTED_PROTOCOL = 2;
+  ERROR_CODE_UNSUPPORTED_GAME = 3;
+  ERROR_CODE_UNSUPPORTED_FEATURE = 4;
+  ERROR_CODE_NO_DECISION = 5;
+  ERROR_CODE_DEADLINE_EXCEEDED = 6;
+  ERROR_CODE_RESOURCE_EXHAUSTED = 7;
+  ERROR_CODE_INTERNAL = 8;
+  ERROR_CODE_GUARANTEE_BELOW_REQUEST = 9;
+  // V2: the supplied action history is missing actions or has ambiguous
+  // attribution. The host cannot reconstruct the hand from hand start.
+  ERROR_CODE_HISTORY_INCOMPLETE = 10;
+  // V2: the supplied action history replays to a different state than the
+  // declared current stacks, pot, or board.
+  ERROR_CODE_REPLAY_MISMATCH = 11;
+  // V2: no qualified strategy root matches the supplied game definition,
+  // rule profile, or contribution ledger.
+  ERROR_CODE_INCOMPATIBLE_ROOT = 12;
+  // V2: a legal action amount does not match any policy or abstraction row.
+  ERROR_CODE_OFF_TREE_AMOUNT = 13;
+  // V2: the declared rule profile has not been confirmed against the
+  // provider's authoritative rules.
+  ERROR_CODE_RULES_UNCONFIRMED = 14;
+  // V2: the requested utility profile is not supported.
+  ERROR_CODE_UNKNOWN_UTILITY = 15;
+}
+
+enum GuaranteeLevel {
+  GUARANTEE_LEVEL_UNSPECIFIED = 0;
+  GUARANTEE_LEVEL_OPERATIONAL_FALLBACK = 1;
+  GUARANTEE_LEVEL_APPROXIMATE = 2;
+  GUARANTEE_LEVEL_ABSTRACT_SOLVED = 3;
+  GUARANTEE_LEVEL_EXACT_SOLVED = 4;
+  GUARANTEE_LEVEL_CERTIFIED_BOUND = 5;
+}
+
+// V2: which utility model the response uses. Cash-chip EV must not become
+// tournament prize EV.
+enum UtilityProfile {
+  UTILITY_PROFILE_UNSPECIFIED = 0;
+  UTILITY_PROFILE_CASH_CHIP = 1;
+  UTILITY_PROFILE_TOURNAMENT_ICM = 2;
+}
+
+// V2: how terminal awards are computed. The native offline profile uses
+// clockwise-left-of-button for odd chips.
+enum SettlementRule {
+  SETTLEMENT_RULE_UNSPECIFIED = 0;
+  SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON = 1;
+}
+
+// V2: whether cumulative short all-ins reopen betting for an already-acted
+// player. The native offline profile never reopens on cumulative shorts.
+// TDA 2026 rule 49 reopens when the accumulated increase meets the last
+// full raise.
+enum ReopeningRule {
+  REOPENING_RULE_UNSPECIFIED = 0;
+  REOPENING_RULE_NEVER_CUMULATIVE = 1;
+  REOPENING_RULE_TDA_2026 = 2;
+}
+
+// V2: how the board runs out.
+enum RunoutRule {
+  RUNOUT_RULE_UNSPECIFIED = 0;
+  RUNOUT_RULE_SINGLE = 1;
+}
+
+// V2: the pot's current phase. During ACTION, layers are provisional (pending
+// wagers). At SETTLED, layers are finalized with rake and winners.
+enum PotPhase {
+  POT_PHASE_UNSPECIFIED = 0;
+  POT_PHASE_ACTION = 1;
+  POT_PHASE_SHOWDOWN = 2;
+  POT_PHASE_SETTLED = 3;
+}
+
+// V2: whether a pot layer is a provisional pending wager or a finalized
+// settlement layer. A sole-contributor PENDING layer is valid (an open bet
+// awaiting response); a sole-contributor FINALIZED layer is invalid (it would
+// be a refund, not a pot).
+enum LayerStatus {
+  LAYER_STATUS_UNSPECIFIED = 0;
+  LAYER_STATUS_PENDING = 1;
+  LAYER_STATUS_FINALIZED = 2;
+}
+
+// V2: how the action history was obtained and whether it is complete.
+enum ObservationSource {
+  OBSERVATION_SOURCE_UNSPECIFIED = 0;
+  // Observed from the official CLI response stream in real time.
+  OBSERVATION_SOURCE_OFFICIAL_RESPONSE = 1;
+  // Recovered from the local sessions journal after a restart.
+  OBSERVATION_SOURCE_JOURNAL_RECOVERY = 2;
+  // Supplied by the caller (e.g., a hand history converter).
+  OBSERVATION_SOURCE_SUPPLIED = 3;
+}
+
+// V2: whether the observed history covers the complete hand from start.
+enum ObservationCoverage {
+  OBSERVATION_COVERAGE_UNSPECIFIED = 0;
+  // Every action from hand start was observed.
+  OBSERVATION_COVERAGE_FULL = 1;
+  // Observation started after the hand began; the prefix is missing.
+  OBSERVATION_COVERAGE_MID_HAND_ATTACH = 2;
+  // One or more actions were missed during observation.
+  OBSERVATION_COVERAGE_GAP = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Core messages
+// ---------------------------------------------------------------------------
+
+message AmountUnit {
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 32
+  }];
+  uint32 decimal_places = 2 [(buf.validate.field).uint32.lte = 9];
+}
+
+message RakePolicy {
+  uint32 basis_points = 1 [(buf.validate.field).uint32.lte = 10000];
+  uint64 cap = 2;
+  bool no_flop_no_drop = 3;
+}
+
+message StraddlePolicy {
+  bool enabled = 1;
+  uint64 amount = 2;
+  optional uint32 seat = 3 [(buf.validate.field).uint32.lte = 9];
+}
+
+// V2: explicit rule identity. The native offline profile is the declared
+// default; provider rules must be confirmed before a different profile is
+// accepted. The dealt_seat_count selects the native rules profile (heads-up
+// at 2 seats, multiway at 3+ seats) and is fixed for the entire hand.
+message RuleProfile {
+  SettlementRule settlement = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  ReopeningRule reopening = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  RunoutRule runout = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // The original dealt-seat count. Fixed for the hand; determines whether
+  // the heads-up or multiway native rules profile applies. Must equal the
+  // number of entries in HandState.players.
+  uint32 dealt_seat_count = 4 [(buf.validate.field).uint32 = {
+    gte: 2
+    lte: 10
+  }];
+}
+
+message GameDefinition {
+  GameVariant variant = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  BettingStructure betting_structure = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  GameType game_type = 3 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  uint32 table_capacity = 4 [(buf.validate.field).uint32 = {
+    gte: 2
+    lte: 10
+  }];
+  AmountUnit amount_unit = 5 [(buf.validate.field).required = true];
+  uint64 small_blind = 6;
+  uint64 big_blind = 7 [(buf.validate.field).uint64.gt = 0];
+  uint64 ante = 8;
+  uint64 button_ante = 9;
+  optional RakePolicy rake = 10;
+  optional StraddlePolicy straddle = 11;
+  // V2: explicit rule identity. Required for v2; absent in v1.
+  RuleProfile rule_profile = 12 [(buf.validate.field).required = true];
+}
+
+message Card {
+  Rank rank = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  Suit suit = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+}
+
+// V2: per-seat state with the complete G/F contribution ledger.
+//
+// Invariant (before awards): starting_stack = stack + gross_contributed -
+// refunded. The host validates this after replaying the action history.
+// G (gross_contributed) never decreases; F (refunded) tracks uncalled bet
+// returns. Current stack already includes F.
+message PlayerState {
+  // Hand-local seat index (0..9). The stable identity for this hand;
+  // display names are not engine identities.
+  uint32 seat = 1 [(buf.validate.field).uint32.lte = 9];
+  // Optional display name. Not used for identity or attribution.
+  optional string display_name = 2 [(buf.validate.field).string.max_len = 128];
+  // Chips behind at hand start, before any blind or ante.
+  uint64 starting_stack = 3;
+  // Current stack, including all refunds (F).
+  uint64 stack = 4;
+  // Chips committed on the current street only.
+  uint64 street_committed = 5;
+  // G: gross contributed across all streets. Never decreases.
+  uint64 gross_contributed = 6;
+  // F: cumulative uncalled refunds. Stack already includes this.
+  uint64 refunded = 7;
+  PlayerStatus status = 8 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+}
+
+message ForcedContribution {
+  uint32 seat = 1 [(buf.validate.field).uint32.lte = 9];
+  ForcedContributionType type = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  uint64 amount = 3 [(buf.validate.field).uint64.gt = 0];
+}
+
+message ActionEvent {
+  uint64 sequence = 1;
+  Street street = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // Hand-local seat index of the acting player.
+  uint32 actor_seat = 3 [(buf.validate.field).uint32.lte = 9];
+  ActionType action = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // Explicit presence: a zero check/call is distinguishable from absent.
+  optional uint64 incremental_amount = 5;
+  optional uint64 target_total = 6;
+  uint64 pot_before = 7;
+  uint64 stack_after = 8;
+  bool all_in = 9;
+}
+
+// V2: a board card deal event, making street/card boundaries explicit in the
+// transition path.
+message BoardDeal {
+  Street street = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  repeated Card cards = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 3
+  }];
+}
+
+// V2: one event in the ordered public transition path. Either a player action
+// or a board card deal.
+message TransitionEvent {
+  uint64 sequence = 1;
+  oneof transition {
+    option (buf.validate.oneof).required = true;
+    ActionEvent action = 2;
+    BoardDeal board_deal = 3;
+  }
+}
+
+// V2: one contribution layer. During ACTION, layers are PENDING (provisional,
+// may change as more chips enter). At SETTLED, layers are FINALIZED with rake
+// and winners. A PENDING layer may have a single contributor (an open bet);
+// a FINALIZED layer must have at least two contributors (a sole-contributor
+// layer is a refund, not a pot).
+message PotLayer {
+  // The chip contribution level this layer covers (e.g., 100 means this
+  // layer covers contributions from 0 to 100).
+  uint64 contribution_level = 1;
+  // Total amount in this layer.
+  uint64 amount = 2 [(buf.validate.field).uint64.gt = 0];
+  // Hand-local seat indices eligible to win this layer. At least one.
+  // A single eligible winner among multiple contributors is valid (a
+  // single-eligible pot, not a refund).
+  repeated uint32 eligible_seats = 3 [(buf.validate.field).repeated = {
+    min_items: 1
+    unique: true
+    items: {
+      uint32: {lte: 9}
+    }
+  }];
+  LayerStatus status = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // Rake extracted from this layer. Only present for FINALIZED layers.
+  optional uint64 rake = 5;
+  // Winning seat indices. Only present for FINALIZED layers.
+  repeated uint32 winner_seats = 6 [(buf.validate.field).repeated = {
+    unique: true
+    items: {
+      uint32: {lte: 9}
+    }
+  }];
+}
+
+// V2: phase-tagged pot state. During ACTION, layers are provisional pending
+// wagers. At SETTLED, layers are finalized. The host must never invoke
+// terminal settlement validation on an ACTION-phase pot.
+message PotState {
+  PotPhase phase = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // Contribution layers, lowest contribution level first.
+  repeated PotLayer layers = 2;
+  // Sum of all layer amounts. The host validates this against the replayed
+  // native state.
+  uint64 pot_total = 3;
+}
+
+message LegalAction {
+  ActionType type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  optional uint64 min_target_total = 2;
+  optional uint64 max_target_total = 3;
+  bool all_in_only = 4;
+}
+
+// V2: observation provenance. Binds the action history to a controller
+// observation epoch and records coverage. An asserted completeness bit is
+// not a proof; the host validates the history by replaying it.
+message ObservationProvenance {
+  ObservationSource source = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  ObservationCoverage coverage = 2 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  // Opaque controller epoch identifier. Changes when the controller restarts
+  // or reattaches, so the host can distinguish continuous observation from
+  // recovered history.
+  string controller_epoch = 3 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Number of transition events observed. The host validates that this
+  // matches the replayed path length.
+  uint32 observed_event_count = 4;
+}
+
+message HandState {
+  GameDefinition game = 1 [(buf.validate.field).required = true];
+  string hand_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  uint64 decision_index = 3;
+  Street street = 4 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  uint32 button_seat = 5 [(buf.validate.field).uint32.lte = 9];
+  // Hand-local seat index of the hero (the player requesting a decision).
+  uint32 hero_seat = 6 [(buf.validate.field).uint32.lte = 9];
+  // All dealt seats, including folded. Must equal rule_profile.dealt_seat_count.
+  repeated PlayerState players = 7 [(buf.validate.field).repeated = {
+    min_items: 2
+    max_items: 10
+  }];
+  repeated Card hero_hole_cards = 8 [(buf.validate.field).repeated = {
+    min_items: 2
+    max_items: 2
+  }];
+  repeated Card board = 9 [(buf.validate.field).repeated.max_items = 5];
+  PotState pot = 10 [(buf.validate.field).required = true];
+  repeated ForcedContribution forced_contributions = 11;
+  // V2: ordered transition path with explicit card boundaries.
+  repeated TransitionEvent transition_path = 12;
+  repeated LegalAction legal_actions = 13 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 5
+  }];
+  uint64 to_call = 14;
+  // V2: observation provenance. Required for v2.
+  ObservationProvenance provenance = 15 [(buf.validate.field).required = true];
+}
+
+message DecisionOptions {
+  string strategy_profile = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  uint32 solve_time_budget_ms = 2 [(buf.validate.field).uint32 = {
+    gt: 0
+    lte: 120000
+  }];
+  uint64 seed = 3;
+  bool include_sampled_action = 4;
+  bool include_full_strategy = 5;
+  SolverMode solver_mode = 6 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  optional double preflop_effective_stack_bb = 7;
+  optional GuaranteeLevel minimum_guarantee = 8 [(buf.validate.field).enum = {
+    defined_only: true
+    in: [
+      1,
+      2,
+      3,
+      4,
+      5
+    ]
+  }];
+  // V2: the utility profile for this decision. Cash-chip EV must not become
+  // tournament prize EV.
+  UtilityProfile utility_profile = 9 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+}
+
+message DecisionRequest {
+  HandState state = 1 [(buf.validate.field).required = true];
+  DecisionOptions options = 2 [(buf.validate.field).required = true];
+}
+
+message ActionPolicy {
+  ActionType type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  optional uint64 target_total = 2;
+  bool all_in = 3;
+  double probability = 4 [(buf.validate.field).double = {
+    gte: 0
+    lte: 1
+  }];
+  optional sint64 expected_value = 5;
+}
+
+message SelectedAction {
+  ActionType type = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  optional uint64 target_total = 2;
+  bool all_in = 3;
+}
+
+message SolverMetadata {
+  SolverSource source = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  uint64 solve_time_us = 2;
+  optional double equity = 3 [(buf.validate.field).double = {
+    gte: 0
+    lte: 1
+  }];
+  optional double minimum_defense_frequency = 4 [(buf.validate.field).double = {
+    gte: 0
+    lte: 1
+  }];
+  optional double exploitability = 5 [(buf.validate.field).double.gte = 0];
+  bool cache_hit = 6;
+  string reason_code = 7 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 64
+  }];
+  optional string diagnostic_reason = 8 [(buf.validate.field).string.max_len = 512];
+  optional string artifact_sha256 = 9 [(buf.validate.field).string = {pattern: "^[a-f0-9]{64}$"}];
+  optional string guarantee_level = 10 [(buf.validate.field).string = {
+    in: [
+      "operational_fallback",
+      "approximate",
+      "abstract_solved",
+      "exact_solved",
+      "certified_bound"
+    ]
+  }];
+  // V2: the utility profile of the response values.
+  UtilityProfile utility_profile = 11 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+}
+
+message Strategy {
+  repeated ActionPolicy actions = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 5
+  }];
+  optional SelectedAction selected_action = 2;
+  SolverMetadata solver = 3 [(buf.validate.field).required = true];
+}
+
+message ExpandedStrategy {
+  repeated ActionPolicy actions = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 32
+  }];
+  optional SelectedAction selected_action = 2;
+  SolverMetadata solver = 3 [(buf.validate.field).required = true];
+}
+
+message FieldViolation {
+  string field_path = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 256
+  }];
+  string description = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 512
+  }];
+}
+
+message EngineError {
+  ErrorCode code = 1 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  string message = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 512
+  }];
+  bool retryable = 3;
+  repeated FieldViolation violations = 4;
+}
+
+message DecisionResponse {
+  oneof result {
+    option (buf.validate.oneof).required = true;
+    Strategy strategy = 1;
+    EngineError error = 2;
+    ExpandedStrategy expanded_strategy = 3;
+  }
+}
+
+// V2: a complete supported capability tuple. Replaces v1's independent
+// booleans, which could imply an unimplemented cross-product. Each tuple
+// describes one fully qualified combination.
+message CapabilityTuple {
+  uint32 min_dealt_players = 1 [(buf.validate.field).uint32 = {
+    gte: 2
+    lte: 10
+  }];
+  uint32 max_dealt_players = 2 [(buf.validate.field).uint32 = {
+    gte: 2
+    lte: 10
+  }];
+  uint32 min_live_players = 3 [(buf.validate.field).uint32 = {
+    gte: 2
+    lte: 10
+  }];
+  uint32 max_live_players = 4 [(buf.validate.field).uint32 = {
+    gte: 2
+    lte: 10
+  }];
+  repeated Street supported_streets = 5 [(buf.validate.field).repeated = {
+    min_items: 1
+    unique: true
+  }];
+  uint32 max_stack_bb = 6 [(buf.validate.field).uint32.gt = 0];
+  bool side_pots = 7;
+  RuleProfile rule_profile = 8 [(buf.validate.field).required = true];
+  UtilityProfile utility_profile = 9 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  ObservationCoverage required_coverage = 10 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  SolverMode solver_mode = 11 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  GuaranteeLevel max_guarantee = 12 [(buf.validate.field).enum = {
+    defined_only: true
+    not_in: 0
+  }];
+  string quality_scope = 13 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+}
+
+message GetCapabilitiesRequest {}
+
+message GetCapabilitiesResponse {
+  // Protocol versions this host supports (e.g., [0, 1, 2]).
+  repeated uint32 supported_protocol_versions = 1 [(buf.validate.field).repeated = {
+    min_items: 1
+    unique: true
+  }];
+  string engine_build_version = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+  // Complete supported capability tuples. No independent booleans.
+  repeated CapabilityTuple capabilities = 3 [(buf.validate.field).repeated = {min_items: 1}];
+  uint64 maximum_request_bytes = 4 [(buf.validate.field).uint64 = {
+    gt: 0
+    lte: 1048576
+  }];
+  uint32 maximum_solve_time_ms = 5 [(buf.validate.field).uint32.gt = 0];
+}
+
+message Envelope {
+  // Wire discriminator shared with v1's protocol_minor (same field 1).
+  // v0/v1 use 0..2; v2 uses 3. A v1 host that receives 3 returns
+  // UNSUPPORTED_PROTOCOL (v1_envelope.cpp rejects minor > 2). A v2 host
+  // dispatches 0..2 to the frozen v1 handler and 3 to v2. No autodetection.
+  uint32 protocol_version = 1;
+  string request_id = 2 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+  }];
+
+  oneof payload {
+    option (buf.validate.oneof).required = true;
+    GetCapabilitiesRequest get_capabilities_request = 10;
+    GetCapabilitiesResponse get_capabilities_response = 11;
+    DecisionRequest decision_request = 12;
+    DecisionResponse decision_response = 13;
+  }
+}

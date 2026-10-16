@@ -21,6 +21,13 @@ runner defaults to v1 (with roots); v0 NDJSON remains as the fallback
 path (see [Framed host](#framed-host), [Negotiated minor 1](#negotiated-minor-1),
 and [Negotiated minor 2](#negotiated-minor-2-rfc-0008-stage-5)).
 
+`proto/bigshark/engine/v2/engine.proto` is the authoritative v2 engine
+protocol definition (RFC 0022). It is a coherent full-state protocol with
+a G/F contribution ledger, phase-tagged pot layers, observation provenance,
+and capability tuples. The engine-host dispatches v1 and v2 by
+`protocol_version` field 1 (0–2 → v1, 3 → v2). See
+[V2 protocol](#v2-protocol-rfc-0022).
+
 ## Toolchain
 
 | Component | Pinned version | Ownership |
@@ -85,14 +92,17 @@ poker, solver, and policy APIs.
 ## Compatibility
 
 `proto/baseline/v1.binpb` is the accepted v1 descriptor baseline used only for
-Buf breaking checks. It is not an alternate schema source. The compatibility
+Buf breaking checks. It is not an alternate schema source. `proto/baseline/v2.binpb`
+is the accepted v2 descriptor baseline (RFC 0022); it includes both v1 and v2
+packages and is the active breaking-check baseline. The compatibility
 policy is:
 
 - field numbers and enum values are never reused;
 - additive fields and enum values are allowed in v1;
 - receivers preserve unknown fields;
 - unknown enum values remain representable;
-- breaking changes require package `bigshark.engine.v2`.
+- breaking changes require package `bigshark.engine.v2` (now implemented;
+  further breaking changes within v2 require a new package version).
 
 ## Verification
 
@@ -841,6 +851,143 @@ decision oneof is returned (`Strategy` or `ExpandedStrategy`), validating the
 sampled action against the FULL reported list (up to 32 entries) before
 execution, so an expanded distribution with a non-member sampled action is
 an operational error routed to `safeFallback`, never a fold.
+
+## V2 Protocol (RFC 0022)
+
+The v2 protocol is a coherent full-state engine protocol defined in
+`proto/bigshark/engine/v2/engine.proto` (package `bigshark.engine.v2`).
+It addresses v1's limitations: refunds are first-class, pot layers carry
+a PENDING/FINALIZED phase tag, observations carry provenance, and
+capabilities are expressed as complete tuples rather than independent
+booleans. RFC 0022 is the authoritative design reference.
+
+### Version discriminator
+
+The v2 envelope uses `protocol_version = 3` (field 1, uint32 varint at wire
+tag 0x08). Versions 0–2 are reserved for v0/v1. The engine-host peeks
+field 1 without a full protobuf parse (`peekProtocolVersion`) and routes:
+
+- 0, 1, 2 (or absent) → `bs::v1::handleEnvelope` (frozen, byte-identical);
+- 3 → `bs::v2::handleEnvelope`;
+- parse failure or unknown version → the v1 handler returns its own error.
+
+The v2 handler itself rejects any `protocol_version != 3` with
+`UNSUPPORTED_PROTOCOL`.
+
+### G/F contribution ledger
+
+Every `PlayerState` carries:
+
+- `starting_stack` — chips at hand start;
+- `stack` — current chips behind;
+- `gross_contributed` (G) — total chips put in pot this hand, never
+  decreases (includes refunded amounts);
+- `refunded` (F) — cumulative uncalled returns this hand.
+
+Invariant: `starting_stack = stack + gross_contributed - refunded`.
+The native `GamePlayer` already tracks G (`contributed`) and F
+(`refunded`); the v2 resident mapper validates wire G/F against the
+native replay after reconstructing the hand state. v1 rejected refunds;
+v2 validates them.
+
+### Phase-tagged pot layers
+
+`PotLayer` carries a `status` tag:
+
+- `PENDING` — provisional layer during the action phase; a sole-contributor
+  PENDING layer is valid (an open bet with no callers yet);
+- `FINALIZED` — at settlement; requires at least two contributors (a
+  sole-contributor positive layer is a refund, not a pot).
+
+`PotState` carries a `phase` (`ACTION`, `SHOWDOWN`, `SETTLED`) and
+`pot_total` (must equal the sum of layer amounts). The v2 handler accepts
+ACTION-phase decision requests; SHOWDOWN and SETTLED phases are validated
+but rejected as `UNSUPPORTED_FEATURE` for decisions (settlement reporting
+is a future extension).
+
+### Observation provenance
+
+`ObservationProvenance` on every `TransitionEvent` records:
+
+- `source` — who observed the event (closed-set enum);
+- `coverage` — whether the observation is direct or inferred;
+- `controller_epoch` — non-empty epoch identifier;
+- `observed_event_count` — must equal the transition path length.
+
+### Capability tuples
+
+`GetCapabilitiesResponse` emits `CapabilityTuple` messages replacing v1's
+independent booleans. Each tuple declares a complete supported combination:
+
+- `quality_scope` (e.g. `"hu-r1"`);
+- `min_dealt_players`, `max_dealt_players`;
+- `min_live_players`, `max_live_players`;
+- `supported_streets`;
+- `max_stack_bb`;
+- `side_pots`;
+- `rule_profile` (settlement, reopening, runout, dealt seat count);
+- `utility_profile`;
+- `required_coverage`;
+- `solver_modes`;
+- `max_guarantee`.
+
+The initial advertisement is `hu-r1` (2 dealt, 2 live, all streets, no
+side pots). `sixmax-r1` (6 dealt, 2–6 live, side pots) is defined but not
+emitted until T2–T5 complete.
+
+### No mid-street rebase
+
+v2 replays from the true preflop root through the `TransitionEvent` path
+to the actionable node in one continuous replay. v1's hand-start path
+rebases to a flop root after dealing the flop; v2 does not. Refunds are
+retained in the native state throughout.
+
+### V2 error codes
+
+V2-specific error codes (in addition to the shared set):
+
+| Code | Name | Meaning |
+| --- | --- | --- |
+| 10 | `HISTORY_INCOMPLETE` | Transition path missing or has gaps |
+| 11 | `REPLAY_MISMATCH` | Replayed state does not match declared snapshot |
+| 12 | `INCOMPATIBLE_ROOT` | No strategy root matches the game definition |
+| 13 | `OFF_TREE_AMOUNT` | Legal action amount is outside the policy |
+| 14 | `RULES_UNCONFIRMED` | Rule profile has not been confirmed |
+| 15 | `UNKNOWN_UTILITY` | Requested utility profile is not supported |
+
+### V2 implementation files
+
+| File | Purpose |
+| --- | --- |
+| `engine/include/bs/v2_protocol.hpp` | Protobuf-free public boundary: `handleEnvelope`, `peekProtocolVersion`, `EnvelopeResult` (reused from v1) |
+| `engine/src/protocol/v2_envelope.cpp` | Envelope dispatch, version check, solver-mode routing |
+| `engine/src/protocol/v2_semantic_validator.cpp` | Hand-written semantic validation (game, rules, players, pot, path, provenance, legal, options) |
+| `engine/src/protocol/v2_resident_mapper.cpp` | Wire `HandState` → native `GameState` reconstruction with G/F ledger validation |
+| `engine/src/protocol/v2_request_mapper.cpp` | Wire `DecisionRequest` → heuristic `bs::Ctx` mapping |
+| `engine/src/protocol/v2_response_mapper.cpp` | Native → wire response mappers, `errorResponse`, `buildCapabilities` |
+| `engine/src/protocol/v2_mappers.hpp` | Internal shared header (includes v2 generated protobuf) |
+| `engine/tests/test_v2_conformance.cpp` | RFC 0022 conformance vectors and envelope tests |
+
+### V2 conformance vectors
+
+Three executable test vectors (from RFC 0022) are pinned in
+`engine/tests/test_v2_conformance.cpp`:
+
+1. **Ordinary open bet** — 6-max, flop decision, hero seat 2, to_call=8.
+   Validates G/F ledger, PENDING pot layers, legal action bounds, and
+   heuristic decision through the envelope handler.
+2. **Capped call with refund** — replay verification. Validates that a
+   post-street-closure state with a refund produces `REPLAY_MISMATCH`
+   (the actionable node is past the decision point).
+3. **Side pot + pending wager** — 6-max, turn decision, hero seat 5,
+   to_call=20. Validates side-pot layer math, multi-contributor PENDING
+   layers, and heuristic decision.
+
+### V2 sampler domain
+
+The v2 sampler uses SplitMix64 with domain separator
+`0x425356322d73616d` ("BSV2-sam"), distinct from v1's
+`0x425356312d73616d` ("BSV1-sam").
 
 ## Golden Differential
 

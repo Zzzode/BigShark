@@ -1,10 +1,10 @@
 ---
 rfc: "0022"
 subject: "Complete Cash-Hand Protocol"
-status: "Draft"
+status: "Implementing"
 authors: "Codex /root"
 created: "2026-10-14"
-updated: "2026-10-14"
+updated: "2026-10-16"
 owners: "protocol, engine host, engine clients, River adapter, River runner, poker, service"
 supersedes: ""
 superseded-by: ""
@@ -326,6 +326,381 @@ be converted into a successful GTO distribution. A separately labeled legal
 operational fallback may keep the controller safe, but does not satisfy the
 six-max feature's coverage gate.
 
+### V2 IDL draft (2026-10-16)
+
+The exact v2 wire format is now drafted at
+`proto/bigshark/engine/v2/engine.proto`. It passes `buf lint` and `buf build`
+without errors. Key design decisions:
+
+**G/F ledger on PlayerState.** `PlayerState` carries `starting_stack`,
+`gross_contributed` (G, never decreases) and `refunded` (F, cumulative
+uncalled returns). The invariant `starting_stack = stack + G - F` (before
+awards) is validated by the host after replaying the transition path.
+Seat index (0..9) is the stable hand-local identity; `display_name` is
+optional and never used for attribution.
+
+**Phase-tagged pot layers.** `PotState` has a `phase` enum
+(`ACTION`/`SHOWDOWN`/`SETTLED`). `PotLayer` has a `status` enum
+(`PENDING`/`FINALIZED`), `contribution_level`, `amount`, `eligible_seats`
+(1+ items; single-eligible is valid for finalized layers), and optional
+`rake`/`winner_seats` for finalized layers only. A sole-contributor PENDING
+layer is valid (an open bet); a sole-contributor FINALIZED layer is invalid.
+The host must never invoke terminal settlement validation on an ACTION-phase
+pot.
+
+**Rule identity.** `RuleProfile` carries `settlement_rule`
+(`CLOCKWISE_LEFT_OF_BUTTON`), `reopening_rule` (`NEVER_CUMULATIVE` or
+`TDA_2026`), `runout_rule` (`SINGLE`), and `dealt_seat_count` (fixed for the
+hand, selects the native heads-up vs multiway profile). `GameDefinition`
+requires `rule_profile` in v2.
+
+**Transition path with explicit card boundaries.** `TransitionEvent` is a
+oneof of `ActionEvent` (player action) or `BoardDeal` (card deal), making
+street/card boundaries explicit. `ActionEvent` uses `actor_seat` (uint32)
+instead of v1's `actor_player_id` (string). `incremental_amount` and
+`target_total` are `optional` for explicit zero presence.
+
+**Observation provenance.** `ObservationProvenance` carries `source`
+(`OFFICIAL_RESPONSE`/`JOURNAL_RECOVERY`/`SUPPLIED`), `coverage`
+(`FULL`/`MID_HAND_ATTACH`/`GAP`), `controller_epoch` (opaque identifier),
+and `observed_event_count`. An asserted completeness bit is not a proof;
+the host validates by replaying the transition path.
+
+**Capability tuples.** `CapabilityTuple` replaces v1's independent booleans.
+Each tuple is a complete supported combination: dealt/live player ranges,
+streets, max stack, side-pot support, rule profile, utility profile, required
+coverage, solver mode, max guarantee, and quality scope.
+`GetCapabilitiesResponse` lists tuples, not booleans.
+
+**Utility-tagged responses.** `UtilityProfile` (`CASH_CHIP`/`TOURNAMENT_ICM`)
+is on both `DecisionOptions` (requested) and `SolverMetadata` (responded).
+Cash-chip EV must not become tournament prize EV.
+
+**New error codes.** `HISTORY_INCOMPLETE` (10), `REPLAY_MISMATCH` (11),
+`INCOMPATIBLE_ROOT` (12), `OFF_TREE_AMOUNT` (13), `RULES_UNCONFIRMED` (14),
+`UNKNOWN_UTILITY` (15). Each produces a typed error, never a silent fallback.
+
+**Envelope.** `protocol_version` (uint32) replaces v1's `protocol_minor`.
+V2 is selected explicitly; no autodetection or silent downgrade.
+
+Resolved open questions: exact field numbers, closed enums, presence/bounds
+semantics, phase-tagged layer wire format, provenance wire format, capability
+tuple structure, utility tagging, executable conformance vectors, and
+version-selection arguments (field 1 = 3 for v2, 0–2 reserved for v0/v1).
+Still open: provider rule confirmation and the RFC 0006 tournament-field
+gate.
+
+### Native-owned layer projection (2026-10-16)
+
+The native poker module owns all layer computation. The wire `PotLayer`
+messages are validated against the native replayed state, never used as the
+source of truth for settlement.
+
+**ACTION phase.** The host replays the transition path through `GameState`
+and derives provisional contribution levels from each seat's `contributed`
+(G) value. It validates:
+
+- `pot_total` equals `sum(G - F)` across all seats (the replayed pot).
+- Each PENDING layer's `amount` and `contribution_level` are consistent with
+  the replayed per-seat contributions (the layer boundary does not exceed
+  any live seat's G).
+- A PENDING layer may have a single contributor (an open bet awaiting
+  response); this is valid and must not trigger settlement validation.
+
+The host does NOT call `settle_contributions` during ACTION. PENDING layers
+are provisional and may change as more chips enter.
+
+**SETTLED phase.** The host calls `settle_contributions` with the replayed
+`SettlementInput` (per-seat G/F/stack, button, odd-chip rule, rake). It
+validates each FINALIZED layer against the native `PotLayer`:
+
+- `contribution_level` matches exactly.
+- `amount` matches exactly.
+- `eligible_seats` matches the native `eligible` set (mapped from player
+  indices to seat indices).
+- `rake` matches the native `rake` for that layer.
+- `winner_seats` matches the native `winners` set, including clockwise
+  ordering for tied layers.
+
+A sole-contributor FINALIZED layer is invalid: it would be a refund, not a
+pot. A sole-eligible FINALIZED layer among multiple contributors is valid (a
+single-eligible pot, not a refund).
+
+**Seat index mapping.** Wire `eligible_seats` and `winner_seats` are
+hand-local seat indices (0..9). Native `PotLayer.contributors`, `eligible`,
+and `winners` are indices into `SettlementInput.players`. The host maps
+seat indices to player indices via the `PlayerState.seat` field, which is
+the stable hand-local identity.
+
+### Observation provenance behavioral semantics (2026-10-16)
+
+The host's behavior depends on the declared `ObservationCoverage`:
+
+- **FULL**: The host replays the complete transition path from hand start
+  through native `GameState`. It validates G/F/stack/pot/board at every
+  step. If replay matches the declared current state, proceed to strategy
+  lookup/solve. If any step mismatches, return `REPLAY_MISMATCH`. The
+  `observed_event_count` must match the replayed path length.
+
+- **MID_HAND_ATTACH**: The host cannot replay from hand start. It requires
+  the caller to supply a verified root state (G/F/stack/pot at the attach
+  point) and replays from that root. If the root state is absent or
+  incomplete, return `HISTORY_INCOMPLETE`. The root state must include
+  per-seat G/F, pot layers, and board at the attach point. A later totals
+  reconciliation does not cure the missing prefix.
+
+- **GAP**: The host cannot replay through the gap. Return
+  `HISTORY_INCOMPLETE`. A higher room revision or matching final totals do
+  not prove that the missed actions were observed.
+
+- **JOURNAL_RECOVERY source**: Before using a recovered journal, the host
+  validates its ordered coverage, hand binding, and any write/parse/
+  truncation gaps. If any gap is found, treat the coverage as GAP. The
+  journal's best-effort write semantics mean that a file's existence does
+  not prove complete observation.
+
+**Controller epochs.** The `controller_epoch` is an opaque identifier that
+changes when the controller restarts or reattaches. The host uses it to
+distinguish continuous observation (same epoch, FULL coverage) from
+recovered history (different epoch or JOURNAL_RECOVERY source). The host
+does not infer completeness from epoch continuity alone; it validates the
+replay.
+
+**Restart behavior.** On controller restart, the new controller starts a
+new epoch. If it attaches mid-hand, the coverage is MID_HAND_ATTACH unless
+an authoritative complete public hand stream is available. The host must
+not reuse the previous epoch's observation as if it were continuous.
+
+### Executable conformance vectors (2026-10-16)
+
+This section defines the three required cash conformance vectors and the
+version-selection mechanism. Each vector pins literal input, intermediate
+G/F and expected pot layers so that a native replay and a cross-language
+adapter replay must agree on every value.
+
+**Version selection.** The client selects v2 by setting
+`Envelope.protocol_version = 3`. Values 0–2 are reserved for v0/v1
+(v1's `protocol_minor` negotiates 0, 1, and 2 on the same field 1).
+Using 3 avoids a discriminator collision with v1 minor 2, which is a
+live River-adapter contract. The engine-host reads field 1 before
+parsing the payload and dispatches: 0–2 to the frozen v1 handler, 3 to
+the v2 handler. There is no autodetection: the host never tries to parse
+a v1 frame as v2 or vice versa. A v2 request to a v1-only host returns
+`ERROR_CODE_UNSUPPORTED_PROTOCOL` — the v1 envelope handler rejects
+`protocol_minor > 2` with this typed error before parsing the payload
+(`v1_envelope.cpp` lines 518–526). A v1 request to a v2-capable host is
+served by the frozen v1 handler. Defaults stay v0/v1 until separate
+promotion.
+
+**Capability tuples.** The v2 `GetCapabilitiesResponse` lists complete
+supported tuples, not independent booleans. The initial v2 implementation
+advertises:
+
+| Tuple | Dealt | Live | Streets | Max BB | Side pots | Rule profile | Utility | Coverage | Solver | Guarantee |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `hu-r1` | 2 | 2 | all | 100 | no | native offline | `CASH_CHIP` | `FULL` | `MULTISTREET_CFR` | `EXACT_SOLVED` |
+| `sixmax-r1` | 6 | 2–6 | all | 100 | yes | native offline | `CASH_CHIP` | `FULL` | `RESOLVING` | `ABSTRACT_SOLVED` |
+
+The `sixmax-r1` tuple is advertised only after T2–T5 qualify the actual
+strategy. A correctly parsed state with no qualified tuple returns
+`ERROR_CODE_INCOMPATIBLE_ROOT`, not a fallback decision.
+
+The host must enforce cross-field constraints that `buf.validate` cannot
+express: `min_dealt_players ≤ max_dealt_players` and
+`min_live_players ≤ max_live_players` on every `CapabilityTuple`. A
+caller that declares an unimplemented rule profile (e.g.
+`REOPENING_RULE_TDA_2026`, which has no native implementation) receives
+`ERROR_CODE_RULES_UNCONFIRMED` or `ERROR_CODE_UNSUPPORTED_FEATURE`
+depending on whether the profile is unknown or known-but-unimplemented.
+
+**Vector conventions.** All amounts are in chips. Blinds are 1/2.
+`starting_stack = stack + G − F` must hold for every seat at every
+checkpoint (before awards). `pot_total = ΣG − ΣF` must hold at every
+checkpoint. Pot layers are ordered by `contribution_level` ascending.
+During ACTION all layers are `PENDING`; a `PENDING` layer may have a
+single eligible contributor (an open bet). A sole-contributor layer that
+survives street closure is refunded (F increases) and removed from the
+pot.
+
+#### Vector 1 — ordinary open bet before a response
+
+6-max NLHE cash, blinds 1/2, 100 BB (200 chips) stacks. Button seat 0.
+Hero seat 2 (BB).
+
+Forced contributions: seat 1 posts SB 1, seat 2 posts BB 2.
+
+Transition path:
+
+| Seq | Street | Actor | Action | Target total | Pot before | Stack after |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | PREFLOP | 3 | FOLD | — | 3 | 200 |
+| 2 | PREFLOP | 4 | FOLD | — | 3 | 200 |
+| 3 | PREFLOP | 5 | FOLD | — | 3 | 200 |
+| 4 | PREFLOP | 0 | RAISE | 6 | 3 | 194 |
+| 5 | PREFLOP | 1 | FOLD | — | 9 | 199 |
+| 6 | PREFLOP | 2 | CALL | 6 | 9 | 194 |
+| 7 | FLOP | — | BOARD_DEAL [As Kd 7c] | — | 13 | — |
+| 8 | FLOP | 2 | CHECK | — | 13 | 194 |
+| 9 | FLOP | 0 | BET | 8 | 13 | 186 |
+
+Decision point: seat 2, street FLOP, `to_call = 8`.
+
+G/F ledger:
+
+| Seat | Starting | G | F | Stack | Status |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 200 | 14 | 0 | 186 | ACTIVE |
+| 1 | 200 | 1 | 0 | 199 | FOLDED |
+| 2 | 200 | 6 | 0 | 194 | ACTIVE |
+| 3 | 200 | 0 | 0 | 200 | FOLDED |
+| 4 | 200 | 0 | 0 | 200 | FOLDED |
+| 5 | 200 | 0 | 0 | 200 | FOLDED |
+
+Pot = ΣG − ΣF = 21. Layers (ACTION, PENDING):
+
+| Layer | Contribution level | Amount | Eligible |
+| --- | --- | --- | --- |
+| 1 | 1 | 3 | [0, 2] |
+| 2 | 6 | 10 | [0, 2] |
+| 3 | 14 | 8 | [0] |
+
+Layer 3 is a single-eligible `PENDING` layer: seat 0's open bet awaiting
+response. Legal actions: FOLD, CALL(8), RAISE(min 16, max 194).
+Hero hole cards: Qh Qd.
+
+#### Vector 2 — capped call that triggers a refund on street closure
+
+6-max NLHE cash, blinds 1/2, unequal stacks. Button seat 0.
+Hero seat 3 (UTG, the bettor who receives the refund).
+
+| Seat | Starting | Role |
+| --- | --- | --- |
+| 0 | 200 | BTN |
+| 1 | 200 | SB |
+| 2 | 200 | BB |
+| 3 | 200 | UTG |
+| 4 | 30 | MP (short) |
+| 5 | 200 | CO |
+
+Transition path:
+
+| Seq | Street | Actor | Action | Target total | All-in | Pot before | Stack after |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | PREFLOP | 3 | RAISE | 6 | no | 3 | 194 |
+| 2 | PREFLOP | 4 | CALL | 6 | no | 9 | 24 |
+| 3 | PREFLOP | 5 | FOLD | — | — | 15 | 200 |
+| 4 | PREFLOP | 0 | FOLD | — | — | 15 | 200 |
+| 5 | PREFLOP | 1 | FOLD | — | — | 15 | 199 |
+| 6 | PREFLOP | 2 | CALL | 6 | no | 15 | 194 |
+| 7 | FLOP | — | BOARD_DEAL [Js Jd 4c] | — | — | 19 | — |
+| 8 | FLOP | 2 | CHECK | — | — | 19 | 194 |
+| 9 | FLOP | 3 | BET | 30 | no | 19 | 164 |
+| 10 | FLOP | 4 | CALL | 24 | yes | 49 | 0 |
+| 11 | FLOP | 2 | FOLD | — | — | 73 | 194 |
+
+Seq 10 is the capped call: seat 4 calls for 24 (all-in) but the bet is
+30. After seq 11 the street closes. Seat 3's bet of 30 was called by
+seat 4 for 24 (short by 6) and seat 2 folded. The bet is not fully
+called. The sole-contributor layer (level 36, amount 6, eligible [3]) is
+refunded to seat 3: F increases by 6.
+
+G/F ledger after refund:
+
+| Seat | Starting | G | F | Stack | Status |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 200 | 0 | 0 | 200 | FOLDED |
+| 1 | 200 | 1 | 0 | 199 | FOLDED |
+| 2 | 200 | 6 | 0 | 194 | FOLDED |
+| 3 | 200 | 36 | 6 | 170 | ACTIVE |
+| 4 | 30 | 30 | 0 | 0 | ALL_IN |
+| 5 | 200 | 0 | 0 | 200 | FOLDED |
+
+Invariant checks: seat 3: 200 = 170 + 36 − 6 ✓. Seat 4: 30 = 0 + 30 − 0
+✓. Pot = ΣG − ΣF = 73 − 6 = 67.
+
+Layers after refund (ACTION, PENDING — hand runs out board):
+
+| Layer | Contribution level | Amount | Eligible |
+| --- | --- | --- | --- |
+| 1 | 1 | 4 | [3, 4] |
+| 2 | 6 | 15 | [3, 4] |
+| 3 | 30 | 48 | [3, 4] |
+
+The refunded sole-contributor layer (level 36, amount 6) is absent from
+the pot. This is a replay/settlement verification vector: the engine
+replays the transition path, detects the sole-contributor layer at street
+closure, applies the refund, and verifies the G/F ledger and remaining
+layers. No `DecisionRequest` is emitted because the hand is heads-up with
+one player all-in; the native `sixmax_hand_ledger` test exercises this
+path through complete legal hand-start paths.
+
+#### Vector 3 — actionable node with an existing side pot plus a new pending wager
+
+Same game and stacks as vector 2. Hero seat 5 (CO).
+
+Transition path (preflop and flop differ from vector 2: seat 5 calls
+preflop, seat 2 folds on the flop):
+
+| Seq | Street | Actor | Action | Target total | All-in | Pot before | Stack after |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | PREFLOP | 3 | RAISE | 6 | no | 3 | 194 |
+| 2 | PREFLOP | 4 | CALL | 6 | no | 9 | 24 |
+| 3 | PREFLOP | 5 | CALL | 6 | no | 15 | 194 |
+| 4 | PREFLOP | 0 | FOLD | — | — | 21 | 200 |
+| 5 | PREFLOP | 1 | FOLD | — | — | 21 | 199 |
+| 6 | PREFLOP | 2 | CALL | 6 | no | 21 | 194 |
+| 7 | FLOP | — | BOARD_DEAL [As Kd 7c] | — | — | 25 | — |
+| 8 | FLOP | 2 | CHECK | — | — | 25 | 194 |
+| 9 | FLOP | 3 | BET | 30 | no | 25 | 164 |
+| 10 | FLOP | 4 | CALL | 24 | yes | 55 | 0 |
+| 11 | FLOP | 5 | CALL | 30 | no | 79 | 164 |
+| 12 | FLOP | 2 | FOLD | — | — | 109 | 194 |
+| 13 | TURN | — | BOARD_DEAL [2h] | — | — | 109 | — |
+| 14 | TURN | 3 | BET | 20 | no | 109 | 144 |
+
+Seq 10 is a capped call (seat 4 all-in for 24, bet is 30). Seat 5 calls
+the full 30 at seq 11, so the bet is fully called: no refund. The capped
+call creates a side pot: (30 − 24) × 2 = 12, eligible [3, 5].
+
+Decision point: seat 5, street TURN, `to_call = 20`.
+
+G/F ledger:
+
+| Seat | Starting | G | F | Stack | Status |
+| --- | --- | --- | --- | --- | --- |
+| 0 | 200 | 0 | 0 | 200 | FOLDED |
+| 1 | 200 | 1 | 0 | 199 | FOLDED |
+| 2 | 200 | 6 | 0 | 194 | FOLDED |
+| 3 | 200 | 56 | 0 | 144 | ACTIVE |
+| 4 | 30 | 30 | 0 | 0 | ALL_IN |
+| 5 | 200 | 36 | 0 | 164 | ACTIVE |
+
+Invariant checks: seat 3: 200 = 144 + 56 − 0 ✓. Seat 5: 200 = 164 + 36
+− 0 ✓. Pot = ΣG − ΣF = 129.
+
+Layers (ACTION, PENDING):
+
+| Layer | Contribution level | Amount | Eligible | Note |
+| --- | --- | --- | --- | --- |
+| 1 | 1 | 5 | [3, 4, 5] | main pot |
+| 2 | 6 | 20 | [3, 4, 5] | main pot |
+| 3 | 30 | 72 | [3, 4, 5] | main pot |
+| 4 | 36 | 12 | [3, 5] | side pot (seat 4 excluded) |
+| 5 | 56 | 20 | [3] | new pending wager |
+
+Layer 4 is the existing side pot from the flop capped call. Layer 5 is
+the new pending wager: seat 3's turn bet, single-eligible, awaiting seat
+5's response. Legal actions: FOLD, CALL(20), RAISE(min 40, max 164).
+Hero hole cards: Qh Qd.
+
+All three vectors are ACTION-phase. During implementation, add a
+SETTLED-phase wire vector that exercises FINALIZED layers with rake and
+winner_seats, so the cross-language conformance suite covers the
+settlement path in addition to the action path. The native
+`settle_contributions` function is already tested by
+`sixmax_hand_ledger`; the SETTLED vector extends that coverage to the
+v2 wire format.
+
 ## Dependency Rules
 
 Keep `poker <- solver <- policy/resident <- service` and
@@ -453,10 +828,25 @@ rollback specification before it is written.
 
 ## Open Questions
 
-- Exact v2 field numbers, required/presence semantics, closed enums and
-  annotated numeric/length limits are not finalized.
-- Define executable cash conformance vectors and the exact version-selection
-  arguments and capability tuples before review for implementation.
+- ~~Exact v2 field numbers, required/presence semantics, closed enums and
+  annotated numeric/length limits are not finalized.~~ **Resolved 2026-10-16:**
+  the v2 IDL is drafted at `proto/bigshark/engine/v2/engine.proto` and passes
+  `buf lint` and `buf build`. See the [V2 IDL draft](#v2-idl-draft-2026-10-16)
+  section.
+- ~~Native-owned layer projection: how the host maps wire PotLayer to native
+  PotLayer.~~ **Resolved 2026-10-16:** see the [Native-owned layer
+  projection](#native-owned-layer-projection-2026-10-16) section.
+- ~~Controller epochs, authoritative attribution/coverage, gaps and restart
+  behavior.~~ **Resolved 2026-10-16:** see the [Observation provenance
+  behavioral semantics](#observation-provenance-behavioral-semantics-2026-10-16)
+  section.
+- ~~Define executable cash conformance vectors and the exact version-selection
+  arguments and capability tuples before review for implementation.~~
+  **Resolved 2026-10-16:** see the [Executable conformance
+  vectors](#executable-conformance-vectors-2026-10-16) section. Version
+  selection is `Envelope.protocol_version = 3` (0–2 reserved for v0/v1
+  to avoid the v1 minor-2 discriminator collision) with no autodetection;
+  the initial capability tuples are `hu-r1` and `sixmax-r1`.
 - Establish which official public fields/transitions can prove full-history
   completeness and which cases require additional authoritative public data.
 - Confirm River settlement/rake/ante/reopening/runout rules from authoritative
@@ -489,7 +879,30 @@ rollback specification before it is written.
 
 ## Decision
 
-Pending independent approval-agent review.
+Author agent: Codex /root (Claude session)
+Approved by: independent approval agent a2537065e953cd9ce
+Decision date: 2026-10-16
+Review outcome: Approved
+Reviewed scope: Full RFC text, v2 proto IDL, v1 proto compatibility, native
+settlement and game-definition types, live-callers and dispatch evidence,
+conformance vector arithmetic (independently verified by script), RFC
+process and review standard.
+Review summary: First review returned Changes Requested with one blocking
+finding (Envelope field-1 discriminator collision with v1 minor 2, a live
+River-adapter contract). Fixed by reserving 0–2 for v0/v1 and selecting v2
+with `protocol_version = 3`; the v1 host's typed `UNSUPPORTED_PROTOCOL`
+path for minor > 2 was verified at `v1_envelope.cpp:518-526`. All seven
+non-blocking observations resolved (PotLayer comment, index entries, buf
+lint/build, CapabilityTuple min≤max host validation, TDA_2026 typed-error
+path, SETTLED-phase wire vector commitment, untracked proto acknowledged).
+All four P1/P2 Initial Design Checkpoint findings are addressed at the
+wire/behavioral/vector level; residuals are external dependencies
+(provider completeness proof, provider rule confirmation, RFC 0006
+tournament gate, T2 artifact identity). Conformance vector arithmetic
+independently verified: all three vectors pass. Remaining risks: provider
+data and rules are external (design fails closed); whole-hand replay
+decision-time cost needs benchmark measurement; `sixmax-r1` is gated on
+T2–T5, so wire approval is not feature completion.
 
 ## Initial Design Checkpoint
 
@@ -515,3 +928,27 @@ approval. Material findings before Proposed:
 The reviewer confirmed the official TDA comparative citation independently;
 it is not a River rule declaration. No v2 IDL, host/client, provider observer,
 native rule migration or artifact change has been implemented from this draft.
+
+**Progress update (2026-10-16):**
+
+- P1, pending wager versus terminal layer: the v2 IDL now specifies exact
+  field/enums (`PotLayer.status`, `PotState.phase`), the native-owned
+  layer projection (see [Native-owned layer
+  projection](#native-owned-layer-projection-2026-10-16)), and three
+  executable conformance vectors covering an open bet, a capped-call
+  refund and a side-pot-plus-pending-wager node (see [Executable
+  conformance vectors](#executable-conformance-vectors-2026-10-16)).
+  This finding is addressed at the wire, behavioral and vector level.
+- P1, provenance trust boundary: the v2 IDL now specifies
+  `ObservationProvenance` with source/coverage/epoch, and the behavioral
+  semantics define host behavior for each coverage value (see [Observation
+  provenance behavioral
+  semantics](#observation-provenance-behavioral-semantics-2026-10-16)).
+  This finding is addressed at the wire and behavioral level; provider
+  data completeness proof remains open.
+- P1, provider/native/artifact rule identity: the v2 IDL now specifies
+  `RuleProfile` with settlement/reopening/runout identity. Provider rule
+  confirmation and native differential coverage remain open.
+- P2, cash/ICM and capability combinations: the v2 IDL now specifies
+  `UtilityProfile` and `CapabilityTuple`. The RFC 0006 tournament-field
+  gate remains open.

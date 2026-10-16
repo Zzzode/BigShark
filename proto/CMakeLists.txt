@@ -60,6 +60,8 @@ set(BIGSHARK_PROTO_TOOLCHAIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/toolchain-js")
 set(BIGSHARK_PROTO_GENERATED_FILES
   "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v1/engine.pb.cc"
   "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v1/engine.pb.h"
+  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v2/engine.pb.cc"
+  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v2/engine.pb.h"
   "${BIGSHARK_PROTO_GENERATED_DIR}/buf/validate/validate.pb.cc"
   "${BIGSHARK_PROTO_GENERATED_DIR}/buf/validate/validate.pb.h"
 )
@@ -74,6 +76,7 @@ add_custom_command(
           --template "${CMAKE_CURRENT_BINARY_DIR}/buf.gen.yaml"
   DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/bigshark/engine/v1/engine.proto"
+    "${CMAKE_CURRENT_SOURCE_DIR}/bigshark/engine/v2/engine.proto"
     "${CMAKE_CURRENT_SOURCE_DIR}/buf.yaml"
     "${CMAKE_CURRENT_SOURCE_DIR}/buf.lock"
     "${CMAKE_CURRENT_SOURCE_DIR}/buf.gen.cmake.yaml.in"
@@ -91,6 +94,7 @@ add_custom_target(protobuf-generate DEPENDS ${BIGSHARK_PROTO_GENERATED_FILES})
 
 add_library(bigshark_protocol STATIC
   "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v1/engine.pb.cc"
+  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v2/engine.pb.cc"
   "${BIGSHARK_PROTO_GENERATED_DIR}/buf/validate/validate.pb.cc"
 )
 add_dependencies(bigshark_protocol protobuf-generate)
@@ -144,6 +148,39 @@ target_link_libraries(bigshark_v1_protocol
 )
 if(BIGSHARK_ENABLE_SANITIZERS)
   target_compile_options(bigshark_v1_protocol PRIVATE
+    -fsanitize=address,undefined
+    -fno-omit-frame-pointer
+  )
+endif()
+
+# RFC 0022 v2 framed Protobuf engine protocol. The v2 handler reuses the v1
+# frame codec (via the bigshark_v1_protocol PUBLIC link) and host services
+# interface, but has its own envelope dispatch, semantic validator, resident
+# mapper (no mid-street rebase, G/F ledger), and response mapper (capability
+# tuples). Generated v2 Protobuf headers stay PRIVATE.
+add_library(bigshark_v2_protocol STATIC
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v2_semantic_validator.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v2_resident_mapper.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v2_response_mapper.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v2_request_mapper.cpp"
+  "${BIGSHARK_ENGINE_DIR}/src/protocol/v2_envelope.cpp"
+)
+target_compile_features(bigshark_v2_protocol PUBLIC cxx_std_23)
+target_compile_options(bigshark_v2_protocol PRIVATE
+  -Wall -Wextra -Wno-unused-parameter
+)
+target_compile_options(bigshark_v2_protocol PRIVATE -Werror=switch)
+target_include_directories(bigshark_v2_protocol
+  PUBLIC  "${BIGSHARK_ENGINE_DIR}/include"
+  PRIVATE "${BIGSHARK_ENGINE_DIR}/src"
+)
+target_link_libraries(bigshark_v2_protocol
+  PUBLIC  bigshark_v1_protocol
+  PRIVATE bigshark_protocol
+  PRIVATE bigshark_resident
+)
+if(BIGSHARK_ENABLE_SANITIZERS)
+  target_compile_options(bigshark_v2_protocol PRIVATE
     -fsanitize=address,undefined
     -fno-omit-frame-pointer
   )
@@ -333,6 +370,27 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME ${v1_test} COMMAND test_${v1_test})
   endforeach()
+
+  # RFC 0022 v2 conformance vector tests: the three executable vectors from
+  # the RFC (ordinary open bet, capped call with refund, side pot + pending
+  # wager), plus version dispatch, capabilities, and error mapping.
+  add_executable(test_v2_conformance
+    "${BIGSHARK_ENGINE_DIR}/tests/test_v2_conformance.cpp"
+  )
+  target_compile_features(test_v2_conformance PRIVATE cxx_std_23)
+  target_compile_options(test_v2_conformance PRIVATE -Wall -Wextra)
+  target_include_directories(test_v2_conformance PRIVATE "${BIGSHARK_ENGINE_DIR}/src")
+  target_link_libraries(test_v2_conformance PRIVATE
+    bigshark_v2_protocol bigshark_protocol
+  )
+  if(BIGSHARK_ENABLE_SANITIZERS)
+    target_compile_options(test_v2_conformance PRIVATE
+      -fsanitize=address,undefined
+      -fno-omit-frame-pointer
+    )
+    target_link_options(test_v2_conformance PRIVATE -fsanitize=address,undefined)
+  endif()
+  add_test(NAME v2_conformance COMMAND test_v2_conformance)
 
   # Offline tool that publishes a tiny complete postflop blueprint artifact
   # for the real-binary minor-1 matrix tests. It prints the artifact path,

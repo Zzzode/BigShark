@@ -35,7 +35,7 @@ their own RFC.
 | [0019](0019-nseat-preflop-reconstruction.md) | N-Seat Preflop Reconstruction | Implemented | Protocol, tests |
 | [0020](0020-folded-root-policy-identity.md) | Folded-Root Policy Identity | Implemented | Resident, resolver, tests |
 | [0021](0021-nseat-cross-street-reconstruction.md) | N-Seat Cross-Street Reconstruction | Implemented | Protocol, tests |
-| [0022](0022-complete-cash-hand-protocol.md) | Complete Cash-Hand Protocol | Draft | Protocol, host, clients, River adapter/runner, poker, service |
+| [0022](0022-complete-cash-hand-protocol.md) | Complete Cash-Hand Protocol | Accepted | Protocol, host, clients, River adapter/runner, poker, service |
 | [0023](0023-artifact-startup-and-decision-deadlines.md) | Artifact Startup and Decision Deadlines | Implemented | Node framed client, River adapter, River runner, integration tests |
 | [0024](0024-depth-limited-resolving.md) | Depth-Limited Resolving with Value Estimation | Implemented | Engine resolver, engine tree, engine solver, engine benchmarks |
 

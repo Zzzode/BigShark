@@ -12,7 +12,7 @@ integration, and development documentation.
 | Architecture | [System overview](architecture/system-overview.md) | Current | Components, boundaries, data flow, and runtime safety |
 | Design | [GTO engine](design/gto-engine.md) | Current | Implemented decision logic, solvers, range tracking, RFC 0005 strategy artifacts, and limitations |
 | Reference | [Engine protocol](reference/engine-protocol.md) | Current | NDJSON request and response contract used by the C++ process |
-| Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | Implemented v1 IDL, pinned generation, compatibility baseline, and conformance vectors |
+| Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | Implemented v1 and v2 IDL, pinned generation, compatibility baseline, and conformance vectors |
 | Integration | [River Club](integrations/river-club.md) | Current | River Club adapter, state machine, and operational mapping |
 | Development | [Build and test](development/build-and-test.md) | Current | CMake presets, formatting, tests, sanitizers, and release publishing |
 | Development | [Benchmarking](development/benchmarking.md) | Current | Reproducible solver-quality fixtures, metrics, and thresholds |
@@ -39,7 +39,7 @@ integration, and development documentation.
 | RFC | [RFC 0019: N-seat preflop reconstruction](rfcs/0019-nseat-preflop-reconstruction.md) | Implemented | Exact minor-2 multiway replay; an internal prerequisite, not six-max GTO completion |
 | RFC | [RFC 0020: Folded-root policy identity](rfcs/0020-folded-root-policy-identity.md) | Implemented | Reject a different root live set before resident or direct resolver lookup |
 | RFC | [RFC 0021: N-seat cross-street reconstruction](rfcs/0021-nseat-cross-street-reconstruction.md) | Implemented | Replay supplied hand history into the true flop root; public provenance and complete six-max remain open |
-| RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Draft | Coherent v2 ledger, public observations and rule identity; exact wire and provider gates remain open |
+| RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Implementing | Coherent v2 ledger, public observations and rule identity; provider gates remain open |
 | RFC | [RFC 0023: Artifact startup and decision deadlines](rfcs/0023-artifact-startup-and-decision-deadlines.md) | Implemented | Root-aware startup allowance and bounded active waits; no six-max quality claim |
 | RFC | [RFC 0024: Depth-limited resolving](rfcs/0024-depth-limited-resolving.md) | Implemented | Street-boundary value estimation for scalable subgame solving; enabling architecture for six-max |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
