@@ -2,12 +2,20 @@
 //
 // Builds representative 2-seat, 3-seat, and 4-seat, turn-rooted and
 // river-rooted River-terminal subgames, solves with CFR (train_nseat), and
-// computes an exact NashConv by enumerating every card-compatible joint deal
-// and every legal river card. Chance nodes are enumerated exactly (the river
-// chance is bounded at 44 cards for 2 seats, 42 for 3, 40 for 4), so the only
+// computes NashConv by enumerating every card-compatible joint deal and every
+// legal river card. Chance nodes are enumerated exactly (the river chance is
+// bounded at 44 cards for 2 seats, 42 for 3, 40 for 4), so the only
 // approximation is the CFR policy itself. Reports tree size, solve time,
 // coverage, and exploitability at N iterations, plus a uniform-policy
 // baseline.
+//
+// The best response is information-set-consistent: joint deals are grouped by
+// the traverser's own holding (which, with the public history, defines the
+// information set), and ONE action is chosen per group, pooling all opponent
+// holdings. This matches the exact_best_response_utility algorithm in
+// engine/src/stage6/exact_oracle.cpp. The previous per-deal walker (which
+// maximized separately under fixed joint private cards) was an omniscient
+// upper bound, not a best response, and has been replaced.
 //
 // The fixture is a flop check-through on 2c 3d 7h that reaches the turn Js
 // (and optionally the river 9c), with 10 BB behind and a 1 BB pot per seat.
@@ -20,10 +28,12 @@
 //        bigshark-subgame-nash-conv --t3 [iterations] [seed]
 //        bigshark-subgame-nash-conv --t3-dl [iterations] [seed]
 //        bigshark-subgame-nash-conv --t3-dl-cap [iterations] [seed]
+//        bigshark-subgame-nash-conv --t3-dl-cap-nc [iterations] [seed]
 //
-// --t3       : full-tree feasibility scan (2..6 seats, 10/25/100 BB)
-// --t3-dl    : depth-limited feasibility scan (same fixtures, max_streets=1)
-// --t3-dl-cap: depth-limited + raise-capped scan (max_streets=1, max_raises=1)
+// --t3        : full-tree feasibility scan (2..6 seats, 10/25/100 BB)
+// --t3-dl     : depth-limited feasibility scan (same fixtures, max_streets=1)
+// --t3-dl-cap  : depth-limited + raise-capped scan (max_streets=1, max_raises=1)
+// --t3-dl-cap-nc: same as --t3-dl-cap but with NashConv quality measurement
 //
 // This is a manual offline measurement tool, NOT a CTest.
 #include <algorithm>
@@ -40,6 +50,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <map>
 #include <memory>
@@ -282,6 +293,7 @@ struct NashConvWalker {
   std::size_t traverser = 0;
   bool best_response = false;
   std::size_t fallbacks = 0;
+  const FrontierEvaluator* frontier = nullptr;  // RFC 0024: depth-limited trees
 
   std::vector<double> policy_probs(std::size_t actor, std::size_t node_index,
                                    const std::vector<Action>& menu,
@@ -317,6 +329,17 @@ struct NashConvWalker {
       for (std::size_t i = 0; i < payload.live_count; ++i)
         live[i] = holes[payload.live_order[i]];
       return static_cast<double>(state.settle_showdown(live).chip_utility[traverser]);
+    }
+
+    if (node.kind == NodeKind::TerminalFrontier) {
+      if (!frontier)
+        throw std::runtime_error("nash-conv walker: TerminalFrontier without frontier evaluator");
+      const auto& payload = tree.terminal(node.terminal);
+      const auto board = std::vector<int>(state.board().begin(), state.board().end());
+      std::vector<std::array<int, 2>> hands(holes.size());
+      for (std::size_t i = 0; i < holes.size(); ++i)
+        hands[i] = holes[i];
+      return frontier->evaluate(board, hands, payload)[traverser];
     }
 
     if (node.is_chance()) {
@@ -371,27 +394,25 @@ struct NashConvResult {
 
 // Recursive N-way joint-deal enumerator. For each card-compatible assignment
 // of one hand per LIVE seat, walks the tree once per live seat for strategy
-// value and once for best-response value. Folded seats carry a placeholder
+// value only. Best response values are computed separately by the pooled
+// walker (information-set-consistent). Folded seats carry a placeholder
 // {-1, -1} — their cards are dead and do not block live seats' hands.
 // Accumulates into the output sums.
 void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
                            const std::vector<std::array<int, 2>>& range, const GameState& root,
                            const std::array<bool, kMaxUnifiedSeats>& folded, std::size_t seat_count,
                            std::size_t current_seat, std::vector<std::array<int, 2>>& holes,
-                           std::vector<double>& strategy_sum, std::vector<double>& br_sum,
-                           std::size_t& joint_deals, std::size_t& total_fallbacks) {
+                           std::vector<double>& strategy_sum, std::size_t& joint_deals,
+                           std::size_t& total_fallbacks, const FrontierEvaluator* frontier = nullptr) {
   if (current_seat == seat_count) {
     ++joint_deals;
     for (std::size_t p = 0; p < seat_count; ++p) {
       if (folded[p])
         continue;  // folded seat: no strategy, no best response
-      NashConvWalker walker{tree, policy, p, /*best_response=*/false};
+      NashConvWalker walker{tree, policy, p, /*best_response=*/false, /*fallbacks=*/0, frontier};
       const double sv = walker.walk(root, tree.root_index(), holes);
-      NashConvWalker br_walker{tree, policy, p, /*best_response=*/true};
-      const double bv = br_walker.walk(root, tree.root_index(), holes);
       strategy_sum[p] += sv;
-      br_sum[p] += bv;
-      total_fallbacks += walker.fallbacks + br_walker.fallbacks;
+      total_fallbacks += walker.fallbacks;
     }
     return;
   }
@@ -399,7 +420,7 @@ void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
     // Folded seat: push a placeholder, skip collision check and enumeration.
     holes.push_back({-1, -1});
     enumerate_joint_deals(tree, policy, range, root, folded, seat_count, current_seat + 1, holes,
-                          strategy_sum, br_sum, joint_deals, total_fallbacks);
+                          strategy_sum, joint_deals, total_fallbacks, frontier);
     holes.pop_back();
     return;
   }
@@ -416,14 +437,20 @@ void enumerate_joint_deals(const AbstractTree& tree, const NSeatPolicy* policy,
     if (!collides) {
       holes.push_back(h);
       enumerate_joint_deals(tree, policy, range, root, folded, seat_count, current_seat + 1, holes,
-                            strategy_sum, br_sum, joint_deals, total_fallbacks);
+                            strategy_sum, joint_deals, total_fallbacks, frontier);
       holes.pop_back();
     }
   }
 }
 
+// Forward declaration: information-set-consistent best response (defined below).
+double compute_pooled_br_value(const AbstractTree& tree, const NSeatPolicy* policy,
+                               const std::vector<std::array<int, 2>>& range, const GameDef& def,
+                               std::size_t traverser, const FrontierEvaluator* frontier);
+
 NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* policy,
-                                 const std::vector<std::array<int, 2>>& range, const GameDef& def) {
+                                 const std::vector<std::array<int, 2>>& range, const GameDef& def,
+                                 const FrontierEvaluator* frontier = nullptr) {
   const GameState root(def);
   const double bb = static_cast<double>(def.big_blind);
   const std::size_t seat_count = def.player_count;
@@ -437,14 +464,13 @@ NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* po
   }
 
   std::vector<double> strategy_sum(seat_count, 0.0);
-  std::vector<double> br_sum(seat_count, 0.0);
   std::size_t joint_deals = 0;
   std::size_t total_fallbacks = 0;
   std::vector<std::array<int, 2>> holes;
   holes.reserve(seat_count);
 
   enumerate_joint_deals(tree, policy, live_range, root, def.folded, seat_count, 0, holes,
-                        strategy_sum, br_sum, joint_deals, total_fallbacks);
+                        strategy_sum, joint_deals, total_fallbacks, frontier);
 
   NashConvResult result;
   result.strategy_value.resize(seat_count);
@@ -460,12 +486,271 @@ NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* po
     }
     ++live_seats;
     result.strategy_value[p] = strategy_sum[p] / static_cast<double>(joint_deals);
-    result.br_value[p] = br_sum[p] / static_cast<double>(joint_deals);
+    // Information-set-consistent best response: pool joint deals by the
+    // traverser's own holding and choose one action per information set.
+    result.br_value[p] = compute_pooled_br_value(tree, policy, live_range, def, p, frontier);
     result.nash_conv += result.br_value[p] - result.strategy_value[p];
   }
   result.exploitability = result.nash_conv / static_cast<double>(live_seats);
   result.exploitability_bb = result.exploitability / bb;
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Information-set-consistent best response (pooled walk)
+// ---------------------------------------------------------------------------
+//
+// The per-deal walker above chooses the best action separately for each joint
+// deal, allowing the traverser to condition on opponents' unrevealed cards.
+// That is an omniscient upper bound, not a best response. The pooled walk
+// below groups joint deals by the traverser's OWN holding (which, together
+// with the public history, defines the information set) and chooses ONE
+// action per group, pooling all opponent holdings. This matches the
+// exact_best_response_utility algorithm in engine/src/stage6/exact_oracle.cpp.
+
+struct BRView {
+  std::vector<std::array<int, 2>> holes;
+  double reach = 0.0;  // probability of reaching this public node
+};
+
+struct PooledValue {
+  double value = 0.0;  // unnormalized sum of reach-weighted traverser utility
+  double mass = 0.0;   // total reach mass accumulated
+};
+
+// Pooled best-response walk for ONE traverser holding shared by every view.
+// At traverser action nodes, tries each menu action and picks the one with the
+// best POOLED value (one action for the whole information set). At opponent
+// action nodes, branches on each action with per-view policy probabilities.
+// At chance nodes, splits each view's reach over available runout cards.
+// At terminals, accumulates per-view utility weighted by reach.
+PooledValue pooled_br_walk(const GameState& state, std::size_t node_index,
+                           std::vector<BRView> views, const AbstractTree& tree,
+                           const NSeatPolicy* policy, std::size_t traverser,
+                           const FrontierEvaluator* frontier) {
+  PooledValue out;
+  std::vector<BRView*> live;
+  for (BRView& v : views)
+    if (v.reach > 0.0)
+      live.push_back(&v);
+  if (live.empty())
+    return out;
+
+  const auto& node = tree.node(node_index);
+
+  if (node.kind == NodeKind::TerminalFold) {
+    const double util = static_cast<double>(tree.terminal(node.terminal).chip_utility[traverser]);
+    for (BRView* v : live) {
+      out.mass += v->reach;
+      out.value += v->reach * util;
+    }
+    return out;
+  }
+
+  if (node.kind == NodeKind::TerminalShowdown) {
+    const auto& payload = tree.terminal(node.terminal);
+    for (BRView* v : live) {
+      std::vector<std::array<int, 2>> live_holes(payload.live_count);
+      for (std::size_t i = 0; i < payload.live_count; ++i)
+        live_holes[i] = v->holes[payload.live_order[i]];
+      const double util =
+          static_cast<double>(state.settle_showdown(live_holes).chip_utility[traverser]);
+      out.mass += v->reach;
+      out.value += v->reach * util;
+    }
+    return out;
+  }
+
+  if (node.kind == NodeKind::TerminalFrontier) {
+    if (!frontier)
+      throw std::runtime_error("pooled-br: TerminalFrontier leaf without frontier evaluator");
+    const auto& payload = tree.terminal(node.terminal);
+    const auto board = std::vector<int>(state.board().begin(), state.board().end());
+    for (BRView* v : live) {
+      std::vector<std::array<int, 2>> hands(v->holes.size());
+      for (std::size_t i = 0; i < v->holes.size(); ++i)
+        hands[i] = v->holes[i];
+      const auto utils = frontier->evaluate(board, hands, payload);
+      out.mass += v->reach;
+      out.value += v->reach * utils[traverser];
+    }
+    return out;
+  }
+
+  if (node.is_chance()) {
+    // Precompute per-view used masks and available counts once.
+    std::vector<std::array<bool, 52>> view_used(live.size());
+    std::vector<std::size_t> view_avail(live.size());
+    for (std::size_t i = 0; i < live.size(); ++i) {
+      std::array<bool, 52> used{};
+      for (int c : state.board())
+        used[c] = true;
+      for (const auto& h : live[i]->holes) {
+        if (h[0] >= 0)
+          used[h[0]] = true;
+        if (h[1] >= 0)
+          used[h[1]] = true;
+      }
+      std::size_t avail = 0;
+      for (int c = 0; c < 52; ++c)
+        if (!used[c])
+          ++avail;
+      if (avail == 0)
+        throw std::runtime_error("pooled-br: chance node with no available card");
+      view_used[i] = used;
+      view_avail[i] = avail;
+    }
+    for (int card = 0; card < 52; ++card) {
+      std::vector<BRView> children;
+      children.reserve(live.size());
+      for (std::size_t i = 0; i < live.size(); ++i) {
+        if (view_used[i][card])
+          continue;
+        children.push_back({live[i]->holes, live[i]->reach / static_cast<double>(view_avail[i])});
+      }
+      if (children.empty())
+        continue;
+      const std::size_t ordinal = board_only_ordinal(state, card);
+      if (ordinal >= node.children.size())
+        throw std::runtime_error("pooled-br: chance ordinal out of range");
+      PooledValue child = pooled_br_walk(state.after_card(card), node.children[ordinal],
+                                         std::move(children), tree, policy, traverser, frontier);
+      out.value += child.value;
+      out.mass += child.mass;
+    }
+    return out;
+  }
+
+  if (!node.is_action())
+    throw std::runtime_error("pooled-br: unexpected node kind");
+
+  const std::size_t actor = *state.actor();
+  const auto& menu = node.actions;
+  const auto board = std::vector<int>(state.board().begin(), state.board().end());
+
+  if (actor == traverser) {
+    // One action for the whole information set. Try each menu action and
+    // pick the one with the best pooled traverser value.
+    bool have_best = false;
+    PooledValue best;
+    for (std::size_t a = 0; a < menu.size(); ++a) {
+      std::vector<BRView> children;
+      children.reserve(live.size());
+      for (BRView* v : live)
+        children.push_back({v->holes, v->reach});  // fixed action, reach unchanged
+      PooledValue child = pooled_br_walk(state.after_action(actor, menu[a]), node.children[a],
+                                         std::move(children), tree, policy, traverser, frontier);
+      if (!have_best || child.value > best.value) {
+        best = std::move(child);
+        have_best = true;
+      }
+    }
+    return best;
+  }
+
+  // Opponent node: branch on each action, multiply each view's reach by the
+  // policy probability (which depends on the opponent's own hole cards).
+  for (std::size_t a = 0; a < menu.size(); ++a) {
+    std::vector<BRView> children;
+    children.reserve(live.size());
+    for (BRView* v : live) {
+      // Get policy probability for this opponent action.
+      const auto bucket =
+          static_cast<std::uint32_t>(card_bucket(kNSeatCardKind, v->holes[actor], board));
+      const NSeatInformationKey key{bucket, static_cast<std::uint64_t>(node_index)};
+      double prob = 0.0;
+      if (policy) {
+        const auto it = policy->rows().find(key);
+        if (it != policy->rows().end()) {
+          const auto& row = it->second;
+          if (row.actions == menu && a < row.probabilities.size())
+            prob = row.probabilities[a];
+        }
+      } else {
+        prob = 1.0 / static_cast<double>(menu.size());
+      }
+      if (prob > 0.0)
+        children.push_back({v->holes, v->reach * prob});
+    }
+    if (children.empty())
+      continue;
+    PooledValue child = pooled_br_walk(state.after_action(actor, menu[a]), node.children[a],
+                                       std::move(children), tree, policy, traverser, frontier);
+    out.value += child.value;
+    out.mass += child.mass;
+  }
+  return out;
+}
+
+// Collect all card-compatible joint deals into a flat vector.
+std::vector<std::vector<std::array<int, 2>>> collect_joint_deals(
+    const std::vector<std::array<int, 2>>& range, std::size_t seat_count,
+    const std::array<bool, kMaxUnifiedSeats>& folded) {
+  std::vector<std::vector<std::array<int, 2>>> deals;
+  std::vector<std::array<int, 2>> holes;
+  holes.reserve(seat_count);
+  std::function<void(std::size_t)> recurse = [&](std::size_t current_seat) {
+    if (current_seat == seat_count) {
+      deals.push_back(holes);
+      return;
+    }
+    if (folded[current_seat]) {
+      holes.push_back({-1, -1});
+      recurse(current_seat + 1);
+      holes.pop_back();
+      return;
+    }
+    for (const auto& h : range) {
+      bool collides = false;
+      for (std::size_t s = 0; s < current_seat; ++s) {
+        if (folded[s])
+          continue;
+        if (hands_collide(h, holes[s])) {
+          collides = true;
+          break;
+        }
+      }
+      if (!collides) {
+        holes.push_back(h);
+        recurse(current_seat + 1);
+        holes.pop_back();
+      }
+    }
+  };
+  recurse(0);
+  return deals;
+}
+
+// Compute the information-set-consistent best response value for one traverser.
+// Groups joint deals by the traverser's own holding, then walks each group
+// with the pooled walker. Returns the normalized best response value.
+double compute_pooled_br_value(const AbstractTree& tree, const NSeatPolicy* policy,
+                               const std::vector<std::array<int, 2>>& range, const GameDef& def,
+                               std::size_t traverser, const FrontierEvaluator* frontier) {
+  const GameState root(def);
+  const auto deals = collect_joint_deals(range, def.player_count, def.folded);
+  if (deals.empty())
+    return 0.0;
+
+  // Group deals by the traverser's own holding.
+  std::map<std::pair<int, int>, std::vector<BRView>> groups;
+  for (const auto& holes : deals) {
+    const auto& own = holes[traverser];
+    groups[{std::min(own[0], own[1]), std::max(own[0], own[1])}].push_back({holes, 1.0});
+  }
+
+  double total_value = 0.0;
+  double total_mass = 0.0;
+  for (auto& [key, views] : groups) {
+    (void)key;
+    PooledValue g = pooled_br_walk(root, tree.root_index(), std::move(views), tree, policy,
+                                   traverser, frontier);
+    total_value += g.value;
+    total_mass += g.mass;
+  }
+  if (total_mass <= 0.0)
+    return 0.0;
+  return total_value / total_mass;
 }
 
 // ---------------------------------------------------------------------------
@@ -659,9 +944,9 @@ int run_fixture(const std::string& label, const GameDef& def,
     std::printf("\nNashConv: skipped (feasibility scan)\n");
     return 0;
   }
-  std::printf("\nNashConv (exact enumeration):\n");
+  std::printf("\nNashConv (information-set-consistent BR):\n");
   std::fflush(stdout);
-  const auto cfr_result = compute_nash_conv(tree, &train_result.policy, range, def);
+  const auto cfr_result = compute_nash_conv(tree, &train_result.policy, range, def, frontier);
   std::printf("  joint deals:  %zu\n", cfr_result.joint_deals);
   std::printf("  fallbacks:    %zu\n", cfr_result.fallbacks);
   for (std::size_t p = 0; p < seat_count; ++p) {
@@ -674,7 +959,7 @@ int run_fixture(const std::string& label, const GameDef& def,
               cfr_result.exploitability_bb);
 
   // NashConv: uniform baseline.
-  const auto uniform_result = compute_nash_conv(tree, nullptr, range, def);
+  const auto uniform_result = compute_nash_conv(tree, nullptr, range, def, frontier);
   std::printf("\n  Uniform NashConv:       %.2f chips\n", uniform_result.nash_conv);
   std::printf("  Uniform Exploitability: %.2f chips (%.3f BB)\n", uniform_result.exploitability,
               uniform_result.exploitability_bb);
@@ -707,6 +992,7 @@ int main(int argc, char** argv) {
   bool t3_scan = false;
   bool t3_dl_scan = false;
   bool t3_dl_cap_scan = false;
+  bool t3_dl_cap_nc_scan = false;
   int arg_index = 1;
   if (argc > 1 && std::string(argv[1]) == "--t3") {
     t3_scan = true;
@@ -716,6 +1002,9 @@ int main(int argc, char** argv) {
     arg_index = 2;
   } else if (argc > 1 && std::string(argv[1]) == "--t3-dl-cap") {
     t3_dl_cap_scan = true;
+    arg_index = 2;
+  } else if (argc > 1 && std::string(argv[1]) == "--t3-dl-cap-nc") {
+    t3_dl_cap_nc_scan = true;
     arg_index = 2;
   }
   const std::uint64_t iterations =
@@ -796,6 +1085,36 @@ int main(int argc, char** argv) {
     }
     if (failures == 0)
       std::printf("\nT3-DL-CAP scan completed.\n");
+    else
+      std::printf("\n%d fixture(s) failed.\n", failures);
+    return failures;
+  }
+
+  if (t3_dl_cap_nc_scan) {
+    std::printf("T3-DL-CAP-NC: depth-limited + raise-capped quality scan\n");
+    std::printf("  2..6 seats, 10/25/100 BB, turn-rooted, max_streets=1, max_raises=1\n");
+    std::printf("  EquityFrontierEvaluator, 60 s solve budget, NashConv (pooled BR)\n");
+    const EquityFrontierEvaluator frontier;
+    auto capped_schedule = schedule;
+    ActionAbstraction action =
+        ActionAbstraction::declared(capped_schedule, CoverSeeds::DeclaredOnly);
+    action.set_max_raises_per_street(1);
+    int failures = 0;
+    for (int stack_bb : {10, 25, 100}) {
+      for (std::size_t seats = 2; seats <= 6; ++seats) {
+        failures += run_fixture(
+            std::to_string(seats) + "-seat DL-CAP-NC turn-rooted " + std::to_string(stack_bb) +
+                " BB",
+            make_subgame_def_np(seats, stack_bb, false), range, schedule, iterations, seed,
+            /*solve_wall_seconds=*/60,
+            /*skip_nash_conv=*/false,
+            /*depth_limit=*/DepthLimit::streets(1),
+            /*frontier=*/&frontier,
+            /*action_override=*/&action);
+      }
+    }
+    if (failures == 0)
+      std::printf("\nT3-DL-CAP-NC scan completed.\n");
     else
       std::printf("\n%d fixture(s) failed.\n", failures);
     return failures;
