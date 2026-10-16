@@ -68,10 +68,10 @@ available public pot-layer eligibility, including single-eligible layers.
 | ID | Owning modules | Required internal outcome | Dependencies | Status |
 | --- | --- | --- | --- | --- |
 | T0 | Protocol, solver, product documentation | Whole-feature rules/support matrix, public-data audit, independently reviewed quality/latency/coverage acceptance; no weakened labels | None | In Progress: gaps audited; quality reference/threshold still to be specified |
-| T1a | v1 protocol and native tests | Exact minor-2 N-seat preflop replay; frozen minor-0/1 compatibility | RFC 0019 approval | Implementing |
+| T1a | v1 protocol and native tests | Exact minor-2 N-seat preflop replay; frozen minor-0/1 compatibility | RFC 0019 approval | Complete: RFC 0019 implemented, N-seat preflop replay and minor-0/1/2 compatibility tests pass in release |
 | T1b | Protocol, River adapter; resident/resolver identity prerequisites | Complete public preflop-to-postflop ledger, folded/dealt status and trusted actor history | T0, T1a, RFCs 0020/0021/0022; follow-up contract approval | In Progress: supplied-history replay and root identity passed release; provider observations/v2 design Draft; full sanitizer gates open |
 | T2 | Poker utility, protocol, frontier, artifacts | Unequal-stack and side-pot-safe state/utility/identity; no imaginary `pot / n` contributions | T0, T1b; RFC 0006 follow-up approval | In Progress: 18 complete native ledger baselines passed focused release/ASan; v2/rule/utility/artifact gates remain open |
-| T3 | Solver, abstraction, native benchmarks | Independent six-seat quality and normal-stack resource/deadline measurements before scaling | T0 | In Progress: [feasibility measured](t3-six-seat-feasibility.md); current abstraction infeasible for 5+ seats, coarser multiway schedule/depth-limited solve required before T4/T5 |
+| T3 | Solver, abstraction, native benchmarks | Independent six-seat quality and normal-stack resource/deadline measurements before scaling | T0 | In Progress: [feasibility measured](t3-six-seat-feasibility.md); raise-cap + depth-limited resolving makes all 15 fixtures feasible (2..6 seats × 10/25/100 BB); quality gate (NashConv/exploitability) still required |
 | T4 | Solver, resident, artifacts | Six-position preflop policies with matching multiplayer continuation values and immutable provenance | T1a, T2, T3 | Pending |
 | T5 | Range propagation, resolver, resident | Action-conditioned 2..6-live-player flop/turn/river strategy coverage preserving dealt-seat identity | T1b, T2, T3, T4 | Pending |
 | T6 | Resolver, service, protocol, Node client, River runner | Off-tree handling and receipt-to-action budget including construction/lookup/solve; accurate source and fallback reports | T1b, T2, T5 | In Progress: RFC 0023 startup/deadline repair; off-tree/native-work and complete latency gates remain open |
@@ -141,9 +141,17 @@ exceed the trainer byte cap at 10 BB and the builder cap at 25+ BB, and
 3-seat solves are trainer-cap constrained at 100 BB. Only 2-seat solves
 complete at all stacks. The [T3 report](t3-six-seat-feasibility.md) records
 the full matrix, growth analysis and the recommended coarser multiway
-schedule / depth-limited resolving direction. T3 stays In Progress: this is
-resource/deadline evidence, not the independent quality gate the
-qualification proposal requires.
+schedule / depth-limited resolving direction.
+
+On 2026-10-15 depth-limited resolving (RFC 0024) extended feasibility to
+5 seats at 10/25 BB and 4 seats at 25 BB. On 2026-10-16 a per-street
+raise-count cap (`max_raises_per_street=1`) combined with depth-limited
+resolving made **all 15 fixtures feasible**, including 6-seat at every
+stack depth. The largest tree (6-seat, any stack) is only 9,361 nodes /
+9.1 MiB, down from >1 GiB. Tree size is independent of stack depth with
+the cap. All fixtures achieve 100% action-node coverage. T3 stays In
+Progress: this is resource/deadline evidence, not the independent quality
+gate the qualification proposal requires.
 
 ## Operational Boundaries
 
