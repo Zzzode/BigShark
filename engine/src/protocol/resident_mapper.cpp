@@ -115,7 +115,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
         forced.type() != pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND)
       return fail(ReplayMiss::UnsupportedFeature);
 
-  // ---- Player mapping: sort by seat, map seat -> actor index ---------------
+  // ---- Player mapping: sort by seat, rotate so button is actor 0 -----------
   std::vector<const pv2::PlayerState*> bySeat;
   for (const pv2::PlayerState& player : state.players())
     bySeat.push_back(&player);
@@ -126,21 +126,30 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
     if (bySeat[i - 1]->seat() == bySeat[i]->seat())
       return fail(ReplayMiss::ReplayMismatch);
 
-  // actorPlayer[actor_index] = wire PlayerState pointer
+  // Resolve button to actor index in seat-sorted order.
+  std::optional<std::size_t> rootButton;
+  for (std::size_t i = 0; i < seat_count; ++i)
+    if (bySeat[i]->seat() == state.button_seat())
+      rootButton = i;
+  if (!rootButton)
+    return fail(ReplayMiss::ReplayMismatch);
+
+  // Rotate actor indices so the button is always at index 0. Resident
+  // blueprints are trained with button=0; the game is rotationally symmetric
+  // with respect to the button, so this preserves strategy identity while
+  // allowing any physical button position to match the blueprint.
+  std::rotate(bySeat.begin(), bySeat.begin() + static_cast<std::ptrdiff_t>(*rootButton),
+              bySeat.end());
+
+  // actorPlayer[actor_index] = wire PlayerState pointer (button-first order)
   const std::vector<const pv2::PlayerState*> actorPlayer = bySeat;
 
-  // seatToActor[wire_seat] = actor_index
+  // seatToActor[wire_seat] = actor_index (button-first order)
   std::unordered_map<std::uint32_t, std::size_t> seatToActor;
   for (std::size_t i = 0; i < seat_count; ++i)
     seatToActor[actorPlayer[i]->seat()] = i;
 
-  // Resolve button to actor index.
-  std::optional<std::size_t> rootButton;
-  for (std::size_t i = 0; i < seat_count; ++i)
-    if (actorPlayer[i]->seat() == state.button_seat())
-      rootButton = i;
-  if (!rootButton)
-    return fail(ReplayMiss::ReplayMismatch);
+  rootButton = 0;
 
   // Resolve hero to actor index.
   {
@@ -482,38 +491,45 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
         return fail(ReplayMiss::ReplayMismatch);
     }
 
-    // ---- Filter history to postflop actions for a flop-rooted root ----------
-    // The resident blueprint tree starts at the flop; preflop actions happened
-    // before the root and are not in the blueprint's tree. replay_public_path
-    // replays only the root-relative public path, so preflop events must be
-    // excluded from the history. The Street enum orders Flop=0, Turn=1,
-    // River=2, Preflop=3, so preflop is the highest value, not the lowest.
-    out.history.erase(std::remove_if(out.history.begin(), out.history.end(),
-                                     [](const poker::PublicAction& a) {
-                                       return a.street == poker::Street::Preflop;
-                                     }),
-                      out.history.end());
+    if (state.street() == pv2::STREET_PREFLOP) {
+      // ---- Preflop decision: hand-start root for blueprint identity --------
+      // The preflop blueprint's root is the hand-start state (starting stacks,
+      // zero contributions, blinds-only pot, no board). Build the GameState
+      // from rootDef so same_root() matches the blueprint identity. The
+      // history carries the observed preflop actions from the root to the
+      // decision point; replay_public_path replays them against the blueprint
+      // tree to reach the actionable node.
+      GameState rootState(rootDef);
+      out.state = std::move(rootState);
+    } else {
+      // ---- Postflop decision: flop-rooted GameState ------------------------
+      // The flop library's root is the flop state. Preflop actions are already
+      // reflected in the flop-rooted stacks/contributions/folded flags, so
+      // they are excluded from the history. The Street enum orders Flop=0,
+      // Turn=1, River=2, Preflop=3, so preflop is the highest value.
+      out.history.erase(std::remove_if(out.history.begin(), out.history.end(),
+                                       [](const poker::PublicAction& a) {
+                                         return a.street == poker::Street::Preflop;
+                                       }),
+                        out.history.end());
 
-    // ---- Build a flop-rooted GameDef for root identity matching -------------
-    // The preflop GameDef carries starting stacks; resident blueprint roots
-    // store the CURRENT stacks at the flop decision point. Rebuild the root
-    // from the replayed state so same_root() matches the fixture identity.
-    GameDef flopDef{};
-    flopDef.player_count = seat_count;
-    flopDef.button = *rootButton;
-    flopDef.big_blind = bigBlind;
-    flopDef.preflop = false;
-    flopDef.board_size = 3;
-    flopDef.board = {cursor.board()[0], cursor.board()[1], cursor.board()[2]};
-    flopDef.pot = cursor.pot();
-    flopDef.terminal = rootDef.terminal;
-    for (std::size_t a = 0; a < seat_count; ++a) {
-      flopDef.stacks[a] = cursor.players()[a].stack;
-      flopDef.contributions[a] = cursor.players()[a].contributed;
-      flopDef.folded[a] = cursor.players()[a].folded;
+      GameDef flopDef{};
+      flopDef.player_count = seat_count;
+      flopDef.button = *rootButton;
+      flopDef.big_blind = bigBlind;
+      flopDef.preflop = false;
+      flopDef.board_size = 3;
+      flopDef.board = {cursor.board()[0], cursor.board()[1], cursor.board()[2]};
+      flopDef.pot = cursor.pot();
+      flopDef.terminal = rootDef.terminal;
+      for (std::size_t a = 0; a < seat_count; ++a) {
+        flopDef.stacks[a] = cursor.players()[a].stack;
+        flopDef.contributions[a] = cursor.players()[a].contributed;
+        flopDef.folded[a] = cursor.players()[a].folded;
+      }
+      GameState flopState(flopDef);
+      out.state = std::move(flopState);
     }
-    GameState flopState(flopDef);
-    out.state = std::move(flopState);
     out.hero_cards = heroCards;
     miss = ReplayMiss::None;
     return true;

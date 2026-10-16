@@ -46,11 +46,17 @@ TrainingLimits fastLimits() {
 // Deeper SPR root chosen so the default sizing schedule produces six root
 // actions (check plus bet totals 5,7,15,30,40), which proves the minor-1
 // distribution is not truncated to the minor-0 five-entry cap.
+//
+// Button is 0 to match the resident mapper convention: the mapper rotates
+// actor indices so the button is always at index 0 before root matching.
+// Actor 0 is the button (SB postflop OOP); actor 1 is the BB (postflop IP).
+// The ranges are swapped relative to the old button=1 layout so the game
+// is strategy-equivalent under the actor rotation.
 HeadsUpGame fixtureGame() {
   HeadsUpGame game;
-  game.root = {{card("2c"), card("3d"), card("7h")}, {40, 40}, {10, 10}, 20, 5, 1};
-  game.ranges[0] = {{{card("As"), card("Ks")}, 2}, {{card("Qh"), card("Jh")}, 3}};
-  game.ranges[1] = {{{card("Ac"), card("Kc")}, 5}, {{card("Qd"), card("Jd")}, 7}};
+  game.root = {{card("2c"), card("3d"), card("7h")}, {40, 40}, {10, 10}, 20, 5, 0};
+  game.ranges[0] = {{{card("Ac"), card("Kc")}, 5}, {{card("Qd"), card("Jd")}, 7}};
+  game.ranges[1] = {{{card("As"), card("Ks")}, 2}, {{card("Qh"), card("Jh")}, 3}};
   game.fixed_runout = {card("9h"), card("8s")};
   for (auto& range : game.ranges)
     for (auto& hand : range)
@@ -111,9 +117,9 @@ int main(int argc, char** argv) {
   std::printf(
       "{\"path\":\"%s\",\"sha256\":\"%s\","
       "\"root\":{\"flop\":[\"2c\",\"3d\",\"7h\"],\"stacks\":[40,40],"
-      "\"contributions\":[10,10],\"pot\":20,\"bigBlind\":5,\"button\":1},"
-      "\"ranges\":[[[\"As\",\"Ks\"],[\"Qh\",\"Jh\"]],"
-      "[[\"Ac\",\"Kc\"],[\"Qd\",\"Jd\"]]],"
+      "\"contributions\":[10,10],\"pot\":20,\"bigBlind\":5,\"button\":0},"
+      "\"ranges\":[[[\"Ac\",\"Kc\"],[\"Qd\",\"Jd\"]],"
+      "[[\"As\",\"Ks\"],[\"Qh\",\"Jh\"]]],"
       "\"runout\":[\"9h\",\"8s\"],\"rootActionCount\":%zu}\n",
       policyPath.string().c_str(), published.sha256_hex.c_str(), rootActions.size());
   return 0;

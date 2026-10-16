@@ -459,22 +459,65 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
 
   // RFC 0012 Phase 3: lazy mode. Create lightweight records from the shared
   // game identity and the spec's canonical board, without opening any SQLite
-  // artifact. Classes are loaded on demand into the LRU cache.
+  // artifact. Classes are loaded on demand into the LRU cache. Specs without
+  // a canonical board (e.g., the preflop profile) carry their own GameDef and
+  // are probed for their identity, then also loaded on demand.
+  const std::vector<SupportedRootSpec>* specs_to_load = &specs;
+  std::vector<SupportedRootSpec> eager_specs;
   if (options.lazy_cache_capacity > 0 && options.shared_game_def) {
     set.lazy_cache_ = std::make_unique<LazyCache>();
     set.lazy_cache_->capacity = options.lazy_cache_capacity;
 
     for (const SupportedRootSpec& spec : specs) {
+      if (!spec.canonical_board) {
+        // Non-flop-library specs (e.g., the preflop profile) have their own
+        // GameDef. Probe for identity (fast, no policy rows) and set up lazy
+        // loading so the full artifact is read on demand.
+        Record record;
+        record.result.path = spec.path;
+        try {
+          if (!spec.expected_sha256)
+            throw std::invalid_argument(
+                "supported root requires a pinned SHA-256 digest; unpinned artifacts are not "
+                "resident");
+          artifacts::ArtifactProbe probe = artifacts::probe_artifact(
+              spec.path,
+              artifacts::LoadOptions{artifacts::kDefaultMaxArtifactBytes, spec.expected_sha256});
+          record.result.sha256_hex = probe.sha256_hex;
+          if (probe.game_def) {
+            record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
+            record.game.action_id = abstraction::AbstractionId{
+                probe.manifest.abstraction_name, probe.manifest.abstraction_version,
+                probe.manifest.abstraction_parameters, probe.manifest.abstraction_digest};
+          } else {
+            record.game = solver::to_unified_game(probe.game);
+          }
+          record.card_abstraction = probe.manifest.card_abstraction;
+          record.lazy = true;
+          record.lazy_path = spec.path;
+          record.lazy_sha256 = spec.expected_sha256;
+          record.advertised = true;
+          record.result.status = RootStatus::Advertised;
+          record.result.information_sets = static_cast<std::size_t>(probe.information_sets);
+          record.result.probability_count = static_cast<std::size_t>(probe.action_count);
+          record.result.resident_bytes = 0;  // not loaded yet
+        } catch (const std::exception& error) {
+          record.result.status = RootStatus::LoadFailed;
+          record.result.detail = error.what();
+        }
+        if (results)
+          results->push_back(record.result);
+        set.records_.push_back(std::move(record));
+        continue;
+      }
       Record record;
       record.result.path = spec.path;
 
       // Set up the game identity from the shared game def.
       record.game.def = *options.shared_game_def;
-      if (spec.canonical_board) {
-        record.game.def.board = {(*spec.canonical_board)[0], (*spec.canonical_board)[1],
-                                 (*spec.canonical_board)[2], 0, 0};
-        record.game.def.board_size = 3;
-      }
+      record.game.def.board = {(*spec.canonical_board)[0], (*spec.canonical_board)[1],
+                               (*spec.canonical_board)[2], 0, 0};
+      record.game.def.board_size = 3;
       record.game.sizes = options.shared_sizes;
       record.card_abstraction = abstraction::suit_canonicalization_id();
       record.lazy = true;
@@ -488,14 +531,16 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
         results->push_back(record.result);
       set.records_.push_back(std::move(record));
     }
-    return set;
+    if (eager_specs.empty())
+      return set;
+    specs_to_load = &eager_specs;
   }
 
-  // Eager mode (current behavior): probe, load, and build a ResidentIndex
-  // for every spec at startup.
+  // Eager mode: probe, load, and build a ResidentIndex
+  // for every remaining spec at startup.
   std::size_t used_bytes = 0;
 
-  for (const SupportedRootSpec& spec : specs) {
+  for (const SupportedRootSpec& spec : *specs_to_load) {
     Record record;
     record.result.path = spec.path;
 

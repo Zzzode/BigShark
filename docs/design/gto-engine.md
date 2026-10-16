@@ -298,6 +298,17 @@ Explicit heuristic/legacy paths retain their chart behavior. No six-seat
 production artifact or complete six-max GTO qualification is established by
 this internal prerequisite; see the complete six-max delivery register.
 
+The resident mapper rotates actor indices so the button is always at index 0,
+matching blueprint root identity for any physical button position. Resident
+blueprints are trained with button=0; the game is rotationally symmetric with
+respect to the button, so this preserves strategy identity. For preflop
+decisions the mapper builds a hand-start root GameState (starting stacks, zero
+contributions, blinds-only pot, no board); for postflop decisions it builds a
+flop-rooted GameState with preflop actions filtered from the history. In lazy
+mode, non-flop-library specs (e.g., the preflop profile) are probed for their
+own GameDef at startup and set up for on-demand loading, instead of inheriting
+the flop library's shared game definition.
+
 RFC 0021 additionally uses this same hand-start replay for minor-2 multiway
 postflop requests containing supplied preflop actions. A River-terminal replay
 reaches the complete flop and rebases to the real button, dealt-seat indices,
@@ -772,8 +783,10 @@ decision path are unaffected.
 Policy-root matching is a normalized identity shared by resident selection
 and the terminal resolver's `same_root`: ordered flop, stacks, matched
 contributions, per-seat root folded flags, pot, big blind, and button.
-It retains the existing terminal-depth and canonical-flop normalization,
-not the full `same_game_def` predicate. RFC 0020 compares root definitions,
+The resident mapper rotates actor indices so the button is always at index 0
+before root matching, so the button field is always 0 in both the query and
+the blueprint. It retains the existing terminal-depth and canonical-flop
+normalization, not the full `same_game_def` predicate. RFC 0020 compares root definitions,
 not current-node folds: a fold explained by history after the same root still
 matches. A differently folded root must miss; existing persisted roots do not
 encode nonzero root folded flags. This guard does not provide folded-root

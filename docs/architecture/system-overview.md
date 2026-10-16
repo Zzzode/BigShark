@@ -26,9 +26,12 @@ from the true hand-start root (no mid-street rebase) and validates the
 declared G/F ledger and pot state against the native replay. Capability
 tuples (`hu-r1`) are advertised; `sixmax-r1` is gated on T2–T5 completion.
 The resident layer serves blueprint decisions (flop-rooted, turn-rooted,
-river-rooted, and heads-up preflop), with terminal-only resolving on an
-AUTOMATIC blueprint miss and a labeled operational fallback
-(check/call/fold) when the resolver also misses.
+river-rooted, and preflop). The resident mapper rotates actor indices so
+the button is always at index 0, matching blueprint root identity for any
+physical button position. Preflop decisions build a hand-start root
+GameState; postflop decisions build a flop-rooted GameState. Terminal-only
+resolving runs on an AUTOMATIC blueprint miss, with a labeled operational
+fallback (check/call/fold) when the resolver also misses.
 
 ## Runtime Components
 
@@ -133,11 +136,12 @@ cash-hand protocol.
 
 The live engine is a hybrid poker decision engine:
 
-- Preflop: approximate 6-max, 100 BB charts; a trained heads-up preflop
-  profile (flop-terminal, full-range 100 BB with exact all-in-at-flop equity)
-  is published as an artifact and wired into the live decision path
-  through the resident layer (heads-up only; other table sizes and stack
-  depths fall back to the charts or operational fallback).
+- Preflop: a trained 6-max preflop profile (flop-terminal, full-range
+  100 BB) is published as an artifact and served through the resident
+  layer. The resident mapper rotates actor indices so the button is at
+  index 0, matching the blueprint root for any physical button position.
+  Other table sizes and stack depths fall back to the charts or
+  operational fallback.
 - Flop and turn: deterministic Monte Carlo equity plus heuristics;
   resident blueprint libraries serve flop-rooted decisions at the
   `approximate` guarantee level when a configured root matches.

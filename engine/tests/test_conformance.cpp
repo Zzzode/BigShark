@@ -658,6 +658,88 @@ void testMissingRequestId() {
         "missing request_id error code");
 }
 
+// ===========================================================================
+// Button rotation + preflop root — 3-seat preflop with button at seat 2.
+// Verifies that the resident mapper rotates actor indices so the button is
+// always at index 0, and that preflop decisions build a hand-start root
+// GameState (not a flop-rooted one) for blueprint identity matching.
+// ===========================================================================
+
+pv2::DecisionRequest buttonRotationRequest() {
+  pv2::DecisionRequest request;
+  pv2::HandState* state = request.mutable_state();
+  setGameDefinition(state, 3, 1, 2, 3);
+  state->set_hand_id("rotation-hand");
+  state->set_decision_index(1);
+  state->set_street(pv2::STREET_PREFLOP);
+  state->set_button_seat(2);
+  state->set_hero_seat(1);
+
+  // Players: seat 0 = SB, seat 1 = BB (hero), seat 2 = button.
+  addPlayer(state, 0, 200, 199, 1, 1, 0, pv2::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 1, 200, 198, 2, 2, 0, pv2::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 2, 200, 194, 6, 6, 0, pv2::PLAYER_STATUS_ACTIVE);
+
+  // Hero hole cards: As Ks.
+  *state->add_hero_hole_cards() = card(pv2::RANK_ACE, pv2::SUIT_SPADES);
+  *state->add_hero_hole_cards() = card(pv2::RANK_KING, pv2::SUIT_SPADES);
+
+  // Pot: 9 (1 + 2 + 6).
+  state->mutable_pot()->set_pot_total(9);
+
+  // Forced contributions: SB at seat 0, BB at seat 1.
+  addForced(state, 0, pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
+  addForced(state, 1, pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
+
+  // Transition path: button raises to 6, SB folds.
+  addAction(state, 1, pv2::STREET_PREFLOP, 2, pv2::ACTION_TYPE_RAISE, 3, 194, false, 6);
+  addAction(state, 2, pv2::STREET_PREFLOP, 0, pv2::ACTION_TYPE_FOLD, 9, 199);
+
+  // Legal actions: FOLD, CALL(4), RAISE(min 10, max 200).
+  addLegal(state, pv2::ACTION_TYPE_FOLD);
+  addLegal(state, pv2::ACTION_TYPE_CALL);
+  addLegal(state, pv2::ACTION_TYPE_RAISE, 10, 200);
+  state->set_to_call(4);
+
+  setProvenance(state, 2);
+  setOptions(&request, pv2::SOLVER_MODE_HEURISTIC);
+  return request;
+}
+
+void testButtonRotation() {
+  pv2::DecisionRequest request = buttonRotationRequest();
+  bs::ReconstructedState recon;
+  ReplayMiss miss = ReplayMiss::None;
+  const bool ok = bs::reconstructHandState(request, recon, miss);
+  check(ok, "button rotation reconstruction succeeds");
+  check(miss == ReplayMiss::None, "button rotation no replay miss");
+  check(recon.state.has_value(), "button rotation reconstructed state present");
+  // After rotation: actor 0 = seat 2 (button), actor 1 = seat 0 (SB),
+  // actor 2 = seat 1 (BB/hero).
+  check(recon.hero_actor == 2, "button rotation hero at actor 2");
+  if (recon.state.has_value()) {
+    const auto& def = recon.state->def();
+    const auto& players = recon.state->players();
+    check(def.player_count == 3, "button rotation 3 players");
+    check(def.button == 0, "button rotation button at 0");
+    check(def.board_size == 0, "button rotation preflop board_size 0");
+    check(def.pot == 3, "button rotation blinds pot 3");
+    // Preflop root: starting stacks, zero contributions, no folds.
+    check(def.stacks[0] == 200 && def.stacks[1] == 200 && def.stacks[2] == 200,
+          "button rotation starting stacks 200");
+    check(def.contributions[0] == 0 && def.contributions[1] == 0 && def.contributions[2] == 0,
+          "button rotation zero contributions");
+    // Players after blind posting: button 200, SB 199, BB 198.
+    check(players[0].stack == 200, "button rotation actor 0 (button) stack 200");
+    check(players[1].stack == 199, "button rotation actor 1 (SB) stack 199");
+    check(players[2].stack == 198, "button rotation actor 2 (BB) stack 198");
+    check(players[1].contributed == 1, "button rotation actor 1 contributed 1");
+    check(players[2].contributed == 2, "button rotation actor 2 contributed 2");
+  }
+  // History should contain the 2 preflop actions (not filtered for preflop).
+  check(recon.history.size() == 2, "button rotation history has 2 preflop actions");
+}
+
 }  // namespace
 
 int main() {
@@ -668,6 +750,7 @@ int main() {
   testVector3();
   testUnsupportedProtocol();
   testMissingRequestId();
+  testButtonRotation();
 
   if (failures > 0) {
     std::fprintf(stderr, "%d test(s) failed\n", failures);
