@@ -208,6 +208,26 @@ void check_memory_budget(std::size_t parallel) {
   }
 }
 
+// Remove only incomplete artifacts (SQLite .tmp files and manifest fragments)
+// after a worker failure. Completed .db and checkpoint files are preserved so
+// the build can resume with --resume. This is critical for long parallel builds
+// where a single worker crash would otherwise destroy hours of progress.
+void cleanup_incomplete_artifacts(const std::filesystem::path& out_dir) {
+  std::error_code ec;
+  if (!std::filesystem::is_directory(out_dir, ec))
+    return;
+  for (const auto& entry : std::filesystem::directory_iterator(out_dir, ec)) {
+    const std::string name = entry.path().filename().string();
+    // Remove SQLite temporary files (.bs-policy-*.tmp, *.tmp-journal).
+    if (name.rfind(".bs-policy-", 0) == 0)
+      std::filesystem::remove(entry.path(), ec);
+    // Remove manifest fragments (they are regenerated on resume).
+    if (name.rfind("manifest-part-", 0) == 0 && name.size() > 5 &&
+        name.substr(name.size() - 5) == ".json")
+      std::filesystem::remove(entry.path(), ec);
+  }
+}
+
 // Remove every published class artifact, checkpoint, and manifest fragment for
 // a failed build, mirroring the serial builder's catch-block cleanup.
 void cleanup_failed_build(const std::filesystem::path& out_dir, std::size_t class_count) {
@@ -328,7 +348,12 @@ int run_parallel(const Args& args) {
   }
 
   if (any_failed) {
-    cleanup_failed_build(args.out_dir, args.class_count);
+    // Preserve completed .db and checkpoint files so the build can resume
+    // with --resume. Only remove incomplete artifacts (.tmp, fragments).
+    cleanup_incomplete_artifacts(args.out_dir);
+    std::fprintf(stderr,
+                 "worker failure: completed class artifacts preserved. "
+                 "Restart with --resume to continue.\n");
     return 1;
   }
 
