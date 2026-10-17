@@ -88,8 +88,13 @@ flowchart LR
    by solver_mode to the service, blueprint, resolving, or heuristic paths.
    On the resident path, the policy layer first looks up a blueprint in
    `bigshark_resident`; on an AUTOMATIC blueprint miss the bounded
-   terminal-only resolver runs; if the resolver also misses, a labeled
-   operational fallback (check/call/fold) is served.
+   terminal-only resolver runs; if the node is turn/river the blueprint-
+   derived subgame resolver runs next; if the node is on the flop the
+   flop-rooted depth-limited resolver (RFC 0025) runs with uniform priors;
+   if all resolver paths miss, a labeled operational fallback
+   (check/call/fold) is served. Off-tree action lines are tolerated: the
+   blueprint replay stops at the first off-tree action and uniform priors
+   are used for post-off-tree seats.
 5. The River adapter verifies that the action and amount remain legal.
 6. The runner refreshes the server snapshot immediately before submission.
 7. River Club validates the hand ID, revision, action, and amount atomically.
@@ -149,8 +154,11 @@ The live engine is a hybrid poker decision engine:
   bounded DCFR; resident blueprints serve river-rooted decisions at the
   `certified_bound` guarantee level.
 - Terminal-only resolving: on an AUTOMATIC blueprint miss, the
-  bounded terminal-only resolver runs; if it also misses, a labeled
-  operational fallback (check/call/fold) is served.
+  bounded terminal-only resolver runs; if it also misses, the turn/river
+  subgame resolver (blueprint-derived or uniform-prior) runs; if the node
+  is on the flop, the flop-rooted depth-limited resolver (RFC 0025) runs
+  with uniform priors and the equity frontier evaluator; if all resolver
+  paths miss, a labeled operational fallback (check/call/fold) is served.
 - Engine-served practice tier: the practice simulator forwards bot
   decisions to the engine via framed Protobuf.
 - Experimental multi-street CFR: offline and test-only.

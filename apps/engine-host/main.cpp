@@ -50,6 +50,7 @@
 
 #include <array>
 #include <bs/decision.hpp>
+#include <bs/equity_frontier.hpp>
 #include <bs/protocol.hpp>
 #include <bs/resident_policy.hpp>
 #include <bs/service.hpp>
@@ -121,6 +122,11 @@ class ResidentHostServices final : public bs::HostServices {
     subgame_uniform_enabled_ = true;
     if (const char* env = std::getenv("BIGSHARK_SUBGAME_UNIFORM"))
       subgame_uniform_enabled_ = (std::string_view(env) != "0");
+    // RFC 0025: the equity frontier evaluator values TerminalFrontier leaves
+    // in depth-limited subgames. It is required for resolve_flop (flop-rooted
+    // depth-limited resolving) and is always available; the
+    // BIGSHARK_SUBGAME_UNIFORM flag gates whether resolve_flop is attempted.
+    subgame_resolver_.set_frontier_evaluator(&frontier_evaluator_);
   }
 
   bool blueprintAdvertised() const noexcept override { return set_.advertised_roots() > 0; }
@@ -183,6 +189,26 @@ class ResidentHostServices final : public bs::HostServices {
           limits.time = std::chrono::milliseconds(std::max<std::uint32_t>(deadline_ms, 1));
           limits.public_seed = 0;  // no artifact digest; deterministic seed
           subgame_scratch_ = subgame_resolver_.resolve_uniform(state, history, limits);
+          if (subgame_scratch_.status == bs::resolver::SubgameResolveStatus::Solved) {
+            const auto key = bs::solver::make_information_key(*state.actor(), hero_cards,
+                                                              state.board(), history);
+            const auto found = subgame_scratch_.candidate.find(key);
+            if (found != subgame_scratch_.candidate.end()) {
+              result.outcome = bs::ResolveOutcome::Approximate;
+              result.miss = bs::BlueprintMiss::None;
+              result.row.size = found->second.probabilities.size();
+              result.row.actions = found->second.actions.data();
+              result.row.probabilities = found->second.probabilities.data();
+              result.row.artifact_sha256 = {};
+              result.row.diagnostic = bs::resolver::kSubgameResolveToken;
+              return result;
+            }
+          }
+          // RFC 0025: flop-rooted depth-limited resolving. resolve_uniform
+          // returns Ineligible for flop nodes (board_size == 3); resolve_flop
+          // builds a depth-limited subgame rooted at the flop with uniform
+          // priors, max_raises_per_street=1, and the equity frontier evaluator.
+          subgame_scratch_ = subgame_resolver_.resolve_flop(state, history, limits);
           if (subgame_scratch_.status == bs::resolver::SubgameResolveStatus::Solved) {
             const auto key = bs::solver::make_information_key(*state.actor(), hero_cards,
                                                               state.board(), history);
@@ -288,6 +314,34 @@ class ResidentHostServices final : public bs::HostServices {
                 std::chrono::milliseconds(std::max<std::uint32_t>(deadline_ms, 1));
             subgame_limits.public_seed = publicSeed(*source, state, history);
             subgame_scratch_ = subgame_resolver_.resolve(state, history, *source, subgame_limits);
+            if (subgame_scratch_.status == bs::resolver::SubgameResolveStatus::Solved) {
+              const auto key = bs::solver::make_information_key(*state.actor(), hero_cards,
+                                                                state.board(), history);
+              const auto found = subgame_scratch_.candidate.find(key);
+              if (found != subgame_scratch_.candidate.end()) {
+                result.outcome = bs::ResolveOutcome::Approximate;
+                result.miss = bs::BlueprintMiss::None;
+                result.row.size = found->second.probabilities.size();
+                result.row.actions = found->second.actions.data();
+                result.row.probabilities = found->second.probabilities.data();
+                result.row.artifact_sha256 = source->artifact_digest();
+                result.row.diagnostic = bs::resolver::kSubgameResolveToken;
+                return result;
+              }
+            }
+          }
+          // RFC 0025: flop-rooted depth-limited resolving. The blueprint-
+          // derived subgame resolver returns Ineligible for flop nodes
+          // (board_size == 3); resolve_flop builds a depth-limited subgame
+          // rooted at the flop with uniform priors (the blueprint cannot
+          // supply ranges after an off-tree action), max_raises_per_street=1,
+          // and the equity frontier evaluator. Gated by BIGSHARK_SUBGAME_UNIFORM
+          // because it uses uniform priors.
+          if (subgame_uniform_enabled_) {
+            bs::resolver::ResolveLimits flop_limits;
+            flop_limits.time = std::chrono::milliseconds(std::max<std::uint32_t>(deadline_ms, 1));
+            flop_limits.public_seed = publicSeed(*source, state, history);
+            subgame_scratch_ = subgame_resolver_.resolve_flop(state, history, flop_limits);
             if (subgame_scratch_.status == bs::resolver::SubgameResolveStatus::Solved) {
               const auto key = bs::solver::make_information_key(*state.actor(), hero_cards,
                                                                 state.board(), history);
@@ -414,6 +468,9 @@ class ResidentHostServices final : public bs::HostServices {
   // BIGSHARK_SUBGAME_UNIFORM=0. When set, a nullopt resolver_source
   // triggers resolve_uniform instead of an immediate Unsupported.
   bool subgame_uniform_enabled_ = true;
+  // RFC 0025: equity frontier evaluator for depth-limited resolving. Values
+  // TerminalFrontier leaves in flop-rooted subgames (resolve_flop).
+  bs::gto::EquityFrontierEvaluator frontier_evaluator_;
   mutable bs::resolver::SubgameResolver subgame_resolver_;
   mutable bs::resolver::SubgameResolveResult subgame_scratch_;
 };

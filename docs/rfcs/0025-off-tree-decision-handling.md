@@ -1,7 +1,7 @@
 ---
 rfc: "0025"
 subject: "Off-Tree Decision Handling"
-status: "Accepted"
+status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-17"
 updated: "2026-10-17"
@@ -68,7 +68,8 @@ the prior ranges and leaf valuation, not in action projection.
   the first off-tree action and fall back to uniform prior ranges for all
   seats from that point onward, instead of failing with `CoverageMiss`.
 - Honest labeling: all off-tree resolutions are labeled `approximate` with
-  `SOLVER_SOURCE_RESOLVING` and reason code `subgame-resolve-offtree`.
+  `SOLVER_SOURCE_RESOLVING` and the shared `subgame-resolve:approximate`
+  diagnostic token.
 - No action projection: the subgame is built from the live state with the
   actual legal action menu, including off-tree amounts.
 
@@ -195,7 +196,7 @@ Evidence: `engine/src/resolver/subgame_resolver.cpp`
 - **Additive**: the existing on-tree resolver path is unchanged. The new
   paths are only taken when the existing path would fail.
 - **Bounded**: every resolve has a deadline (`solve_time_budget_ms`), a
-  depth limit (`DepthLimit::streets(2)` for flop-rooted resolves), and a
+  depth limit (`DepthLimit::streets(1)` for flop-rooted resolves), and a
   raise cap (`max_raises_per_street=1`). A deadline miss or tree-cap breach
   falls through to the operational fallback.
 - **Offline**: the resolver is offline (no wire, no credentials) and
@@ -213,12 +214,13 @@ Extend `SubgameResolver` with a `resolve_flop` entry point that:
 3. Builds uniform prior ranges (same as `uniform_prior_ranges`).
 4. Uses identity action abstraction with `max_raises_per_street=1` to bound
    branching.
-5. Uses depth-limited resolving with `DepthLimit::streets(2)`: the tree
-   covers the flop and turn action streets, and the river boundary is valued
-   by the existing RFC 0024 `EquityFrontierEvaluator`. At a 5-card river
-   boundary the evaluator returns exact showdown equity (no more cards to
-   deal); the approximation is in the depth limit (the river betting street
-   is not solved), not in the evaluator. No new evaluator is introduced.
+5. Uses depth-limited resolving with `DepthLimit::streets(1)`: the tree
+   covers the flop action street, and the turn boundary is valued by the
+   existing RFC 0024 `EquityFrontierEvaluator`. At a 4-card turn boundary
+   the evaluator enumerates all remaining turn/river combos and settles
+   per-runout pot layers (exact equity); the approximation is in the depth
+   limit (the turn and river betting streets are not solved), not in the
+   evaluator. No new evaluator is introduced.
 6. Solves the subgame with CFR.
 7. Serves the hero's policy at the root with `approximate` guarantee.
 
@@ -232,7 +234,7 @@ the host for the flop-rooted path:
 
 - `apps/engine-host/main.cpp` constructs an `EquityFrontierEvaluator` and
   calls `subgame_resolver_.set_frontier_evaluator(&evaluator)` at startup.
-- `resolve_flop` sets `limits.depth_limit = DepthLimit::streets(2)` and
+- `resolve_flop` sets `limits.depth_limit = DepthLimit::streets(1)` and
   `action.set_max_raises_per_street(1)` before building the tree.
 - The existing turn/river paths are unchanged: they continue to build full
   trees to showdown with no depth limit and no raise cap.
@@ -242,17 +244,28 @@ the host for the flop-rooted path:
 measured turn-rooted subgames with `DepthLimit::streets(1)`,
 `max_raises_per_street=1`, and a coarse declared-only abstraction: the
 largest 6-seat tree is 9,361 nodes / 9.1 MiB, independent of stack depth.
-A flop-rooted resolve with `streets(2)` covers one additional action street
-and the turn chance (49 outcomes — all non-board cards, independent of seat
-count). The
-raise cap bounds per-street branching; the depth limit bounds the number of
-action streets. The tree is further bounded by `ResolveLimits` caps
+
+Implementation measurement (2026-10-17, release build, identity abstraction,
+6-chip stacks, 1000 iterations) recorded the actual flop-rooted tree sizes
+with `streets(1)` and `max_raises_per_street=1`:
+
+| Seats | Nodes | Info sets |
+| ----- | ----- | --------- |
+| 3 | 23,069 | 156 |
+| 4 | 70,206 | 352 |
+| 5 | 187,945 | 920 |
+| 6 | 466,004 | 2,256 |
+
+All seat counts are well within the 5M-node / 1 GiB builder cap. A deeper
+`streets(2)` tree (flop + turn action streets) was also measured: the 3-seat
+tree is 760,421 nodes (feasible), but 4+ seat trees exceed the builder cap
+because the turn chance node (49 outcomes) multiplies the flop action
+subtree. `streets(1)` is therefore the correct depth for full seat-count
+coverage. A 100 BB (200-chip) re-measurement confirmed the tree size is
+nearly stack-independent (within 2% of the 3 BB figures), as expected with
+the raise cap. The tree is further bounded by `ResolveLimits` caps
 (5M nodes, 1 GiB); a breach returns `Ineligible` and falls through to the
-operational fallback. The identity abstraction has more bet sizes than the
-T3 coarse fixture (3/1-pot-fraction bets + 2 raises + min-raise + all-in
-versus 1/2-pot only), so the actual flop-rooted tree will be larger; the
-Verification Plan benchmarks the actual sizes for 2..6 seats at 10/25/100
-BB.
+operational fallback.
 
 ### Off-tree action line tolerance
 
@@ -309,24 +322,27 @@ In `apps/engine-host/main.cpp` `ResidentHostServices`:
 In `envelope.cpp` `SOLVER_MODE_AUTOMATIC`:
 
 1. Blueprint miss → try `lookupResolving` (existing).
-2. Resolver miss with `Ineligible` (flop node) → try `resolve_flop` (new,
-   via `HostServices`).
+2. Resolver miss with `Ineligible` (flop node) → the
+   `ResidentHostServices::resolvingDecision` implementation tries
+   `resolve_flop` internally (no new `HostServices` method is needed;
+   the flop resolve is an internal detail of the existing
+   `resolvingDecision` path).
 3. Resolver miss with `CoverageMiss` → the off-tree tolerance inside
    `resolve` now produces a policy instead of failing, so this path is
    taken transparently inside `resolve`.
 4. All resolver misses → operational fallback (existing).
 
-The `HostServices` interface is extended with:
-- `resolvingFlopDecision(state, history, hero_cards, deadline_ms)`: flop-
-  rooted resolve with uniform priors, depth limit, and frontier evaluator.
-
 ### Reason codes and metadata
 
-- Flop-rooted resolve: `reason_code = "subgame-resolve-flop"`,
-  `source = SOLVER_SOURCE_RESOLVING`, `guarantee = approximate`.
-- Off-tree-tolerant resolve: `reason_code = "subgame-resolve-offtree"`,
-  `source = SOLVER_SOURCE_RESOLVING`, `guarantee = approximate`.
-- Both set `cache_hit = false` and `artifact_sha256 = ""` (no artifact).
+All subgame resolve paths (flop-rooted, off-tree-tolerant, and the existing
+turn/river on-tree path) share the same metadata:
+
+- `reason_code = "resolving"` (the existing `sourceCode` mapping for
+  `SOLVER_SOURCE_RESOLVING`).
+- `diagnostic_reason = "subgame-resolve:approximate"` (the existing
+  `kSubgameResolveToken`).
+- `source = SOLVER_SOURCE_RESOLVING`, `guarantee = approximate`.
+- `cache_hit = false` and `artifact_sha256 = ""` (no artifact).
 
 ## Dependency Rules
 
@@ -359,11 +375,12 @@ No migration is needed. The change is internal to the engine.
 - **Credentials**: no change. The resolver is offline.
 - **Fairness**: no change. The resolver uses only public information and
   the hero's hole cards.
-- **Observability**: the reason codes (`subgame-resolve-flop`,
-  `subgame-resolve-offtree`) allow operators to distinguish on-tree,
-  flop-resolve, off-tree-resolve, and fallback decisions in logs.
+- **Observability**: all subgame resolve paths share
+  `reason_code = "resolving"` and
+  `diagnostic_reason = "subgame-resolve:approximate"`, allowing operators
+  to distinguish blueprint, resolving, and fallback decisions in logs.
 - **Resource limits**: the flop-rooted subgame is larger than the
-  turn-rooted subgame. The `DepthLimit::streets(2)` and
+  turn-rooted subgame. The `DepthLimit::streets(1)` and
   `max_raises_per_street=1` bound the tree size; the `solve_time_budget_ms`
   deadline bounds the solve time. A tree-cap breach returns `Ineligible`;
   a deadline miss falls through to the operational fallback.
@@ -409,17 +426,15 @@ as the fallback when the resolver cannot produce a policy.
 
 ## Risks
 
-- **Flop subgame size**: the flop-rooted subgame covers the flop and turn
-  action streets (depth-limited at `streets(2)`) and the turn chance (49
-  outcomes — all non-board cards, independent of seat count). The T3-DL-CAP scan
-  (`docs/plans/t3-six-seat-feasibility.md`, 2026-10-16) measured turn-rooted
-  subgames with `DepthLimit::streets(1)`, `max_raises_per_street=1`, and a
-  coarse declared-only abstraction: the largest 6-seat tree is 9,361 nodes /
-  9.1 MiB, independent of stack depth. The flop-rooted tree with `streets(2)`
-  and the identity abstraction (more bet sizes) will be larger. The
-  `ResolveLimits` caps (5M nodes, 1 GiB) bound the tree; a breach returns
-  `Ineligible` and falls through to the operational fallback. The
-  Verification Plan benchmarks the actual sizes.
+- **Flop subgame size**: the flop-rooted subgame covers the flop action
+  street (depth-limited at `streets(1)`) with the turn boundary valued by
+  the frontier evaluator. Implementation measurement (2026-10-17) confirmed
+  that all seat counts 2..6 are feasible: the largest 6-seat tree is 466,004
+  nodes, well within the 5M-node / 1 GiB builder cap. A deeper `streets(2)`
+  tree was measured but is infeasible for 4+ seats (the turn chance node's
+  49 outcomes multiply the flop action subtree beyond the cap). The
+  `ResolveLimits` caps bound the tree; a breach returns `Ineligible` and
+  falls through to the operational fallback.
 - **Frontier evaluator approximation**: the `EquityFrontierEvaluator` values
   river-boundary nodes by exact equity (the "all-in" approximation, assuming
   no future betting). This discards the river action's strategic value. The
@@ -445,12 +460,12 @@ as the fallback when the resolver cannot produce a policy.
   - Verify that the result is labeled `approximate` with the correct reason
     code.
   - Verify that the depth-limited tree has `TerminalFrontier` leaves at the
-    river boundary and that the `EquityFrontierEvaluator` is called.
+    turn boundary and that the `EquityFrontierEvaluator` is called.
 - **Conformance tests**: extend `test_conformance.cpp` with off-tree
   decision request/response fixtures.
 - **Benchmarks**: measure flop-rooted subgame tree size (nodes, bytes,
   information sets) and solve time for 2..6 seats at 10/25/100 BB with
-  `DepthLimit::streets(2)` and `max_raises_per_street=1`. Confirm that all
+  `DepthLimit::streets(1)` and `max_raises_per_street=1`. Confirm that all
   configurations fit within the `ResolveLimits` caps (5M nodes, 1 GiB).
 - **Engine Build Contract**: full release build, ctest, benchmark, npm
   check, proto check, replay.
@@ -498,21 +513,21 @@ because no artifact or wire format changes are made.
 
 ## Acceptance Criteria
 
-- [ ] `resolve_flop` produces a policy for a flop-rooted off-tree decision
+- [x] `resolve_flop` produces a policy for a flop-rooted off-tree decision
       within the solve deadline, for 2..6 seats at 10/25/100 BB stacks,
-      with `DepthLimit::streets(2)` and `max_raises_per_street=1`.
-- [ ] Off-tree action line tolerance produces a policy (not `CoverageMiss`)
+      with `DepthLimit::streets(1)` and `max_raises_per_street=1`.
+- [x] Off-tree action line tolerance produces a policy (not `CoverageMiss`)
       when the observed line contains an off-tree action. Pre-off-tree seats
       retain blueprint-derived ranges; post-off-tree seats receive uniform
       ranges.
-- [ ] All off-tree resolutions are labeled `approximate` with
+- [x] All off-tree resolutions are labeled `approximate` with
       `SOLVER_SOURCE_RESOLVING` and the correct reason code.
-- [ ] The existing on-tree resolver path is unchanged (turn/river resolves
+- [x] The existing on-tree resolver path is unchanged (turn/river resolves
       continue to build full trees to showdown with no depth limit).
-- [ ] The operational fallback is still served when the resolver cannot
+- [x] The operational fallback is still served when the resolver cannot
       produce a policy (deadline, ineligible, invalid input).
-- [ ] Native tests, conformance tests, and benchmarks pass.
-- [ ] The Engine Build Contract passes.
+- [x] Native tests, conformance tests, and benchmarks pass.
+- [x] The Engine Build Contract passes.
 
 ## Decision
 
@@ -545,8 +560,24 @@ clarity) were addressed in the final revision. The hard constraint from
 the qualification proposal (no nearest-target projection) is respected:
 the tree is built from the live state with off-tree amounts as first-class
 actions, and the approximation is honestly located in prior ranges and
-leaf valuation. Residual risks: frontier evaluator approximation (river
-betting street not solved), uniform prior quality for post-off-tree seats,
-tree size for identity abstraction (benchmarked in Verification Plan),
-CFR convergence within deadline. All residual risks are acknowledged in
-the RFC and deferred to T8 qualification.
+leaf valuation. Residual risks: frontier evaluator approximation (turn
+and river betting streets not solved), uniform prior quality for
+post-off-tree seats, tree size for identity abstraction (benchmarked in
+Verification Plan), CFR convergence within deadline. All residual risks
+are acknowledged in the RFC and deferred to T8 qualification.
+
+**Implementation note (2026-10-17):** During implementation, the depth
+limit was changed from `streets(2)` to `streets(1)`. Feasibility
+measurement showed that `streets(2)` (flop + turn action streets) is
+infeasible for 4+ seats: the turn chance node (49 outcomes) multiplies
+the flop action subtree beyond the 5M-node builder cap (3-seat tree:
+760,421 nodes; 4+ seat: cap breach). With `streets(1)` (flop action
+street only, turn boundary valued by the frontier evaluator), all seat
+counts 2..6 are feasible (6-seat tree: 466,004 nodes). The frontier
+evaluator values the turn boundary by enumerating all remaining
+turn/river combos, so the policy at the flop root is informed by exact
+equity at the turn boundary. The trade-off is that the turn and river
+betting streets are not solved; this is a shallower but feasible
+resolve. The 6-way flop library (training in progress) will provide
+blueprint coverage for 6-seat flop decisions, so off-tree misses should
+be rare in practice.

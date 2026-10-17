@@ -139,6 +139,16 @@ std::vector<std::vector<solver::WeightedHand>> SubgameResolver::derive_prior_ran
     }
   }
 
+  // RFC 0025: off-tree action line tolerance. Track which seats were
+  // successfully replayed through the blueprint. When the first off-tree
+  // action is encountered (missing blueprint row or action not in the row's
+  // menu), stop the blueprint replay but continue the GameState replay to
+  // reach the turn root. Seats replayed before the off-tree action retain
+  // their blueprint-derived ranges; all seats from the off-tree action
+  // onward receive uniform priors after the replay.
+  std::array<bool, poker::kMaxUnifiedSeats> replayed{};
+  bool off_tree = false;
+
   // Replay the flop action line from the flop root, accumulating per-seat
   // prefix reach. GameState is historyless, so the observed path arrives as a
   // PublicAction span; the blueprint row at each cursor is keyed by the
@@ -172,26 +182,38 @@ std::vector<std::vector<solver::WeightedHand>> SubgameResolver::derive_prior_ran
       }
 
       const std::size_t actor = event.seat;
-      const std::span<const poker::PublicAction> prefix(flop_history.data(), i);
-      for (const auto& [cards, reach] : prefix_reach[actor]) {
-        if (reach == 0)
-          continue;
-        const auto view = blueprint.row(cursor, prefix, actor, cards);
-        if (!view) {
-          status = SubgameResolveStatus::CoverageMiss;
-          return {};
+      if (!off_tree) {
+        const std::span<const poker::PublicAction> prefix(flop_history.data(), i);
+        for (const auto& [cards, reach] : prefix_reach[actor]) {
+          if (reach == 0)
+            continue;
+          const auto view = blueprint.row(cursor, prefix, actor, cards);
+          if (!view) {
+            // RFC 0025: prefix contamination — a previous off-tree action
+            // poisoned the information key. Stop the blueprint replay.
+            off_tree = true;
+            break;
+          }
+          if (view->size == 0 || view->actions == nullptr || view->probabilities == nullptr) {
+            off_tree = true;
+            break;
+          }
+          const double probability = action_probability(*view, event.action);
+          if (probability < 0) {
+            // RFC 0025: off-tree action — the observed action is not in the
+            // blueprint row's menu. Stop the blueprint replay.
+            off_tree = true;
+            break;
+          }
+          prefix_reach[actor].find(cards)->second *= probability;
         }
-        if (view->size == 0 || view->actions == nullptr || view->probabilities == nullptr) {
-          status = SubgameResolveStatus::CoverageMiss;
-          return {};
-        }
-        const double probability = action_probability(*view, event.action);
-        if (probability < 0) {
-          status = SubgameResolveStatus::CoverageMiss;
-          return {};
-        }
-        prefix_reach[actor].find(cards)->second *= probability;
+        if (!off_tree)
+          replayed[actor] = true;
       }
+      // RFC 0025: any seat that acts at or after the first off-tree action
+      // receives uniform priors, even if it was replayed successfully before.
+      if (off_tree)
+        replayed[actor] = false;
       cursor = cursor.after_action(actor, event.action);
     }
     // Deal the turn card if the cursor is still in a Deal phase.
@@ -234,6 +256,18 @@ std::vector<std::vector<solver::WeightedHand>> SubgameResolver::derive_prior_ran
     if (ranges[p].empty()) {
       status = SubgameResolveStatus::CoverageMiss;
       return {};
+    }
+  }
+
+  // RFC 0025: for seats that were not replayed (off-tree seat and all seats
+  // after it), replace the blueprint-derived range with a uniform prior.
+  // The blueprint cannot tell us the ranges after an off-tree action, so
+  // uniform priors are the honest fallback.
+  if (off_tree) {
+    const auto uniform = uniform_prior_ranges(turn_board, seat_count);
+    for (std::size_t p = 0; p < seat_count; ++p) {
+      if (!replayed[p])
+        ranges[p] = uniform[p];
     }
   }
 
@@ -410,6 +444,78 @@ SubgameResolveResult SubgameResolver::resolve_uniform(const poker::GameState& no
   // The candidate is always extracted at the tree root (no river walk).
   solve_rooted_subgame(subgame_def, action, prior_ranges, board, history, hero,
                        /*walk_to_river=*/false, limits, result);
+  return result;
+}
+
+SubgameResolveResult SubgameResolver::resolve_flop(const poker::GameState& node,
+                                                   std::span<const poker::PublicAction> history,
+                                                   const ResolveLimits& limits) const {
+  SubgameResolveResult result;
+
+  // RFC 0025: the frontier evaluator is required for depth-limited resolving.
+  // Without it the TerminalFrontier leaves created by the depth limit have no
+  // valuation, so the trainer cannot produce a policy.
+  if (frontier_ == nullptr) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+
+  // The node must be an action node on the flop (board_size = 3).
+  if (node.phase() != poker::Phase::Action || !node.actor()) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+  const auto board = node.board();
+  if (board.size() != 3) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+
+  // Supports 2..10 seats.
+  const std::size_t seats = node.player_count();
+  if (seats < 2 || seats > poker::kMaxUnifiedSeats) {
+    result.status = SubgameResolveStatus::Ineligible;
+    return result;
+  }
+
+  const std::size_t hero = *node.actor();
+
+  // Build uniform prior ranges (same range for every seat). The blueprint
+  // cannot supply ranges after an off-tree action, so uniform priors are the
+  // honest fallback.
+  const std::vector<int> board_vec(board.begin(), board.end());
+  const auto prior_ranges = uniform_prior_ranges(board_vec, seats);
+
+  // Build the subgame def directly from the live node state. This carries
+  // the live street_committed, raise_rights, and last_full_raise, so the root
+  // opens at the decision point with the correct fold/call/raise menu.
+  poker::GameDef subgame_def;
+  try {
+    subgame_def = build_subgame_def_from_node(node, hero);
+    poker::validate(subgame_def);
+  } catch (const std::exception&) {
+    result.status = SubgameResolveStatus::InvalidInput;
+    return result;
+  }
+
+  // Identity action abstraction with max_raises_per_street=1 (RFC 0025). The
+  // raise cap bounds the branching factor so 5-6 seat depth-limited trees
+  // stay within the builder cap.
+  abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity();
+  action.set_max_raises_per_street(1);
+
+  // Depth-limited resolving: streets(1) gives the flop action street, with
+  // the turn boundary valued by the frontier evaluator. This keeps the tree
+  // feasible for all seat counts (2..10): the 6-seat tree is ~466K nodes,
+  // well under the 5M builder cap. A deeper streets(2) tree (flop + turn
+  // action streets) is infeasible for 4+ seats because the turn chance node
+  // (49 outcomes) multiplies the flop action subtree.
+  ResolveLimits depth_limits = limits;
+  depth_limits.depth_limit = tree::DepthLimit::streets(1);
+
+  // The candidate is always extracted at the tree root (no river walk).
+  solve_rooted_subgame(subgame_def, action, prior_ranges, board, history, hero,
+                       /*walk_to_river=*/false, depth_limits, result);
   return result;
 }
 

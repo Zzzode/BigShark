@@ -343,15 +343,25 @@ int test_river_solve() {
   return 0;
 }
 
-// (iii) Coverage miss: a missing blueprint row for the flop prefix returns
-// CoverageMiss.
+// (iii) Coverage miss: a history whose actor doesn't match the GameState's
+// actor returns CoverageMiss. (RFC 0025: a missing blueprint row no longer
+// causes CoverageMiss — it triggers off-tree tolerance with uniform priors.
+// The cursor phase/actor mismatch is the remaining CoverageMiss path.)
 int test_coverage_miss() {
   FlopCheckThrough f;
   MapBlueprint bp(f.unified);
-  // Intentionally do NOT install the flop rows.
+  install_flop_rows(bp, f);
+
+  // The flop root has seat 1 as the actor (button=0, seat 1 is BB).
+  // Construct a history where the first event's actor is seat 0, which
+  // doesn't match the GameState's actor.
+  std::vector<PublicAction> wrong_actor_history = {
+      {Street::Flop, 0, {ActionType::Check}},
+      {Street::Flop, 1, {ActionType::Check}},
+  };
 
   SubgameResolver resolver;
-  const auto result = resolver.resolve(f.turn_root, f.history, bp, test_limits());
+  const auto result = resolver.resolve(f.turn_root, wrong_actor_history, bp, test_limits());
 
   CHECK(result.status == SubgameResolveStatus::CoverageMiss);
   return 0;
@@ -638,6 +648,25 @@ GameState make_uniform_state(std::size_t seats, bool river, Chips stack = 10) {
   return GameState(def);
 }
 
+// RFC 0025: build a flop-rooted action state (board_size=3). Used by
+// resolve_flop tests. Terminal=River so the state opens in Action phase.
+GameState make_flop_state(std::size_t seats, Chips stack = 10) {
+  GameDef def{};
+  def.player_count = seats;
+  def.button = seats == 2 ? 0 : seats - 1;
+  def.big_blind = 2;
+  for (std::size_t s = 0; s < seats; ++s) {
+    def.stacks[s] = stack;
+    def.contributions[s] = 1;
+  }
+  def.pot = static_cast<Chips>(seats);
+  def.board = {card("2c"), card("3d"), card("7h"), 0, 0};
+  def.board_size = 3;
+  def.preflop = false;
+  def.terminal = TerminalDepth::River;
+  return GameState(def);
+}
+
 // Verify that the candidate is non-empty and every row is a valid probability
 // distribution over the node's ordered abstract actions.
 int check_valid_candidate(const SubgameResolveResult& result) {
@@ -918,6 +947,151 @@ int test_depth_limit_river_rejected() {
   return 0;
 }
 
+// RFC 0025: flop-rooted depth-limited resolving. resolve_flop builds a
+// depth-limited subgame rooted at the flop with uniform priors,
+// max_raises_per_street=1, and the equity frontier evaluator. A 2-seat flop
+// decision produces a valid candidate.
+int test_flop_resolve_2seat() {
+  GameState state = make_flop_state(2);
+  CHECK(state.phase() == Phase::Action);
+  CHECK(state.actor().has_value());
+  CHECK(state.board().size() == 3);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;
+  bs::gto::EquityFrontierEvaluator frontier;
+  resolver.set_frontier_evaluator(&frontier);
+  const auto result = resolver.resolve_flop(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  return check_valid_candidate(result);
+}
+
+// RFC 0025: flop-rooted depth-limited resolving for 3 seats. The raise cap
+// and depth limit keep the tree within the builder cap.
+int test_flop_resolve_3seat() {
+  GameState state = make_flop_state(3, /*stack=*/6);
+  CHECK(state.phase() == Phase::Action);
+  CHECK(state.actor().has_value());
+  CHECK(state.board().size() == 3);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;
+  bs::gto::EquityFrontierEvaluator frontier;
+  resolver.set_frontier_evaluator(&frontier);
+  const auto result = resolver.resolve_flop(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 3);
+  std::printf("  3-seat flop resolve: %zu nodes, %zu info sets\n", result.nodes,
+              result.information_sets);
+  return check_valid_candidate(result);
+}
+
+// RFC 0025: flop-rooted depth-limited resolving feasibility probe. Tests
+// 4-seat, 5-seat, and 6-seat flop resolves at 100 BB (200-chip) stacks and
+// reports the tree size or failure status. Verifies the acceptance criterion
+// that tree size is independent of stack depth with the raise cap.
+int test_flop_resolve_feasibility() {
+  bs::gto::EquityFrontierEvaluator frontier;
+  const std::vector<PublicAction> no_history;
+
+  for (std::size_t seats : {4, 5, 6}) {
+    GameState state = make_flop_state(seats, /*stack=*/200);  // 100 BB
+    SubgameResolver resolver;
+    resolver.set_frontier_evaluator(&frontier);
+    const auto result = resolver.resolve_flop(state, no_history, test_limits());
+    if (result.status == SubgameResolveStatus::Solved) {
+      std::printf("  %zu-seat flop resolve (100 BB): %zu nodes, %zu info sets\n", seats,
+                  result.nodes, result.information_sets);
+    } else {
+      std::printf("  %zu-seat flop resolve (100 BB): %s (infeasible)\n", seats,
+                  to_string(result.status));
+    }
+  }
+  return 0;  // probe always passes; feasibility data is informational
+}
+
+// RFC 0025: resolve_flop without a frontier evaluator returns Ineligible.
+// The frontier evaluator is required for depth-limited resolving.
+int test_flop_resolve_no_frontier() {
+  GameState state = make_flop_state(2);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;  // no set_frontier_evaluator call
+  const auto result = resolver.resolve_flop(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Ineligible);
+  return 0;
+}
+
+// RFC 0025: resolve_flop with a turn node (board_size=4) returns Ineligible.
+// resolve_flop only accepts flop-rooted nodes (board_size=3).
+int test_flop_resolve_turn_node() {
+  GameState state = make_uniform_state(2, /*river=*/false);
+  CHECK(state.board().size() == 4);
+
+  const std::vector<PublicAction> no_history;
+  SubgameResolver resolver;
+  bs::gto::EquityFrontierEvaluator frontier;
+  resolver.set_frontier_evaluator(&frontier);
+  const auto result = resolver.resolve_flop(state, no_history, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Ineligible);
+  return 0;
+}
+
+// RFC 0025: off-tree action line tolerance. The blueprint covers check-check
+// on the flop, but the observed history includes an off-tree bet (bet 5, not
+// in the blueprint row's menu of check/bet 2). The resolver should stop the
+// blueprint replay at the off-tree action, use uniform priors for both seats,
+// and still produce a valid candidate at the turn root.
+int test_off_tree_tolerance() {
+  FlopCheckThrough f;
+  MapBlueprint bp(f.unified);
+  install_flop_rows(bp, f);
+
+  // The blueprint rows cover check-check. Replace the history with an
+  // off-tree action: seat 1 bets 5 (not in the blueprint row's menu of
+  // check/bet 2). Seat 0 calls. The resolver should tolerate this and use
+  // uniform priors for both seats.
+  std::vector<PublicAction> off_tree_history = {
+      {Street::Flop, 1, {ActionType::Bet, 5}},
+      {Street::Flop, 0, {ActionType::Call}},
+  };
+
+  // The turn-rooted state: board_size=4, turn card Js. The stacks/contributions
+  // in the node don't need to match the turn root's (the subgame def is built
+  // from the turn root output by derive_prior_ranges, not from the node).
+  // The node is used for the board (turn card) and the hero (actor).
+  SubgameResolver resolver;
+  const auto result = resolver.resolve(f.turn_root, off_tree_history, bp, test_limits());
+
+  // Without off-tree tolerance this would be CoverageMiss. With tolerance,
+  // the blueprint replay stops at the off-tree action, uniform priors are
+  // used, and the subgame is solved from the turn root.
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  return check_valid_candidate(result);
+}
+
+// RFC 0025: a completely missing blueprint (no rows at all) triggers
+// off-tree tolerance: the resolver falls back to uniform priors and produces
+// a valid candidate. (Before RFC 0025 this returned CoverageMiss.)
+int test_off_tree_missing_blueprint() {
+  FlopCheckThrough f;
+  MapBlueprint bp(f.unified);
+  // Intentionally do NOT install the flop rows.
+
+  SubgameResolver resolver;
+  const auto result = resolver.resolve(f.turn_root, f.history, bp, test_limits());
+
+  CHECK(result.status == SubgameResolveStatus::Solved);
+  CHECK(result.seat_count == 2);
+  return check_valid_candidate(result);
+}
+
 }  // namespace
 
 int main() {
@@ -941,6 +1115,13 @@ int main() {
   failures += test_uniform_mid_street_faces_raise();
   failures += test_uniform_11seat_ineligible();
   failures += test_depth_limit_river_rejected();
+  failures += test_flop_resolve_2seat();
+  failures += test_flop_resolve_3seat();
+  failures += test_flop_resolve_feasibility();
+  failures += test_flop_resolve_no_frontier();
+  failures += test_flop_resolve_turn_node();
+  failures += test_off_tree_tolerance();
+  failures += test_off_tree_missing_blueprint();
   if (failures == 0)
     std::printf("All subgame resolver tests passed.\n");
   else

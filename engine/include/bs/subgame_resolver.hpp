@@ -140,6 +140,18 @@ class SubgameResolver {
                                        std::span<const poker::PublicAction> history,
                                        const ResolveLimits& limits) const;
 
+  // RFC 0025: flop-rooted depth-limited resolution. When the blueprint misses
+  // on the flop (off-tree amount) and the turn/river resolver cannot handle
+  // the board size, this builds a depth-limited subgame rooted at the flop
+  // state. Uses uniform prior ranges, identity action abstraction with
+  // max_raises_per_street=1, and DepthLimit::streets(1) (flop action street,
+  // turn boundary valued by the frontier evaluator). The frontier evaluator
+  // must be set via set_frontier_evaluator before calling this method.
+  // Supports 2..10 seats.
+  SubgameResolveResult resolve_flop(const poker::GameState& node,
+                                    std::span<const poker::PublicAction> history,
+                                    const ResolveLimits& limits) const;
+
  private:
   // Build the River-terminal GameDef for the subgame rooted at the turn state.
   // The subgame is a standalone game: stacks and pot come from the current

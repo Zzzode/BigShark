@@ -38,7 +38,7 @@ their own RFC.
 | [0022](0022-complete-cash-hand-protocol.md) | Complete Cash-Hand Protocol | Accepted | Protocol, host, clients, River adapter/runner, poker, service |
 | [0023](0023-artifact-startup-and-decision-deadlines.md) | Artifact Startup and Decision Deadlines | Implemented | Node framed client, River adapter, River runner, integration tests |
 | [0024](0024-depth-limited-resolving.md) | Depth-Limited Resolving with Value Estimation | Implemented | Engine resolver, engine tree, engine solver, engine benchmarks |
-| [0025](0025-off-tree-decision-handling.md) | Off-Tree Decision Handling | Accepted | Engine resolver, engine solver, engine protocol |
+| [0025](0025-off-tree-decision-handling.md) | Off-Tree Decision Handling | Implemented | Engine resolver, engine solver, engine protocol |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.
