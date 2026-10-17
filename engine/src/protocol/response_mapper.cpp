@@ -360,7 +360,7 @@ pv2::DecisionResponse mapOperationalFallbackResponse(const pv2::DecisionRequest&
   }
 
   pv2::SolverMetadata* metadata = expanded->mutable_solver();
-  metadata->set_source(pv2::SOLVER_SOURCE_UNSPECIFIED);
+  metadata->set_source(pv2::SOLVER_SOURCE_OPERATIONAL_FALLBACK);
   metadata->set_solve_time_us(0);
   metadata->set_cache_hit(false);
   metadata->set_reason_code("operational-fallback");

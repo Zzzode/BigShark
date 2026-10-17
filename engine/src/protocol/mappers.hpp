@@ -128,7 +128,8 @@ pv2::DecisionResponse mapResolvedResponse(const pv2::DecisionRequest& request,
                                           const BlueprintRow& row, ResolveOutcome outcome);
 
 // Maps the AUTOMATIC operational fallback (check, else call, else fold) into
-// an ExpandedStrategy tagged operational_fallback with an UNSPECIFIED source.
+// an ExpandedStrategy tagged operational_fallback with an OPERATIONAL_FALLBACK
+// source.
 pv2::DecisionResponse mapOperationalFallbackResponse(const pv2::DecisionRequest& request,
                                                      const bs::Decision& decision);
 

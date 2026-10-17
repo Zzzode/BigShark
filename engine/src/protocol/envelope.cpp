@@ -161,6 +161,29 @@ ResolveResult lookupResolving(const HostServices& services, const ReconstructedS
   return services.resolvingDecision(*recon.state, recon.history, recon.hero_cards, {}, deadline_ms);
 }
 
+// Constructs the operational fallback decision: check if legal, otherwise
+// call if legal, otherwise fold. This is the labeled fallback served when
+// both the blueprint and the resolver miss.
+bs::Decision operationalFallbackDecision(const pv2::DecisionRequest& request) {
+  bs::Decision decision;
+  decision.reason = "operational-fallback";
+  bool canCheck = false;
+  bool canCall = false;
+  for (const pv2::LegalAction& legal : request.state().legal_actions()) {
+    if (legal.type() == pv2::ACTION_TYPE_CHECK)
+      canCheck = true;
+    else if (legal.type() == pv2::ACTION_TYPE_CALL)
+      canCall = true;
+  }
+  if (canCheck)
+    decision.action = "check";
+  else if (canCall)
+    decision.action = "call";
+  else
+    decision.action = "fold";
+  return decision;
+}
+
 pv2::ErrorCode mapMissToError(BlueprintMiss miss) {
   switch (miss) {
     case BlueprintMiss::None:
@@ -327,15 +350,26 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
       }
 
       case pv2::SOLVER_MODE_AUTOMATIC: {
-        // Try blueprint first; on miss, fall through to the heuristic.
+        // Blueprint first; on miss, the terminal-only resolver; if the
+        // resolver also misses, the labeled operational fallback.
         const BlueprintLookup lookup = lookupBlueprint(services, recon);
         if (lookup.hit) {
           pv2::DecisionResponse response = mapBlueprintResponse(request, lookup.row);
           stampSolveTime(response, decisionStart);
           return respondWithDecision(requestId, std::move(response));
         }
-        // Fall through to heuristic.
-        [[fallthrough]];
+        const ResolveResult resolve =
+            lookupResolving(services, recon, request.options().solve_time_budget_ms());
+        if (resolve.outcome != ResolveOutcome::Unsupported) {
+          pv2::DecisionResponse response =
+              mapResolvedResponse(request, resolve.row, resolve.outcome);
+          stampSolveTime(response, decisionStart);
+          return respondWithDecision(requestId, std::move(response));
+        }
+        pv2::DecisionResponse response =
+            mapOperationalFallbackResponse(request, operationalFallbackDecision(request));
+        stampSolveTime(response, decisionStart);
+        return respondWithDecision(requestId, std::move(response));
       }
 
       case pv2::SOLVER_MODE_HEURISTIC: {
