@@ -96,14 +96,18 @@ bool retryableFor(pv2::ErrorCode code) {
   }
 }
 
-EnvelopeResult respondWithDecision(const std::string& requestId,
-                                   const pv2::DecisionResponse& response) {
+// Pass by value and Swap into the envelope: the RepeatedField copy
+// constructor triggers an ASan CHECK failure in protobuf's container
+// annotations (AnnotateSize). With C++17 guaranteed copy elision, prvalues
+// are constructed directly in the parameter; std::move call sites use the
+// noexcept move constructor. Swap moves internal pointers without copying.
+EnvelopeResult respondWithDecision(const std::string& requestId, pv2::DecisionResponse response) {
   EnvelopeResult result;
   result.outcome = EnvelopeOutcome::Respond;
   pv2::Envelope envelope;
   envelope.set_protocol_version(3);
   envelope.set_request_id(requestId);
-  *envelope.mutable_decision_response() = response;
+  envelope.mutable_decision_response()->Swap(&response);
   result.response = envelope.SerializeAsString();
   return result;
 }
@@ -129,13 +133,13 @@ void stampSolveTime(pv2::DecisionResponse& response, std::chrono::steady_clock::
 }
 
 EnvelopeResult respondWithCapabilities(const std::string& requestId,
-                                       const pv2::GetCapabilitiesResponse& response) {
+                                       pv2::GetCapabilitiesResponse response) {
   EnvelopeResult result;
   result.outcome = EnvelopeOutcome::Respond;
   pv2::Envelope envelope;
   envelope.set_protocol_version(3);
   envelope.set_request_id(requestId);
-  *envelope.mutable_get_capabilities_response() = response;
+  envelope.mutable_get_capabilities_response()->Swap(&response);
   result.response = envelope.SerializeAsString();
   return result;
 }
