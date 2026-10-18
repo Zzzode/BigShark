@@ -136,6 +136,11 @@ int main(int argc, char* argv[]) {
     input.rows = &policy.rows();
     if (!policy.ranges().empty())
       input.range = &policy.ranges()[0];
+    // RFC 0026: pin the shared abstraction digests so the packed file
+    // self-describes the bucketing and action identity it was trained under.
+    input.action_abstraction_digest = policy.action_id().digest;
+    if (policy.card_id().has_value())
+      input.card_abstraction_digest = policy.card_id()->digest;
     return input;
   };
 

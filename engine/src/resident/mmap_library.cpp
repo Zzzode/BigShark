@@ -1,8 +1,14 @@
-// RFC 0012 Phase 2: consolidated mmap-friendly flop class library format.
+// RFC 0026: bucket-deduplicated consolidated mmap-friendly flop class
+// library format ("BSFLIB02").
 //
 // This file implements the pack function (offline tool path) and the
-// MmapLibrary class (read-only mmap view). The binary layout is documented
-// in engine/include/bs/mmap_library.hpp.
+// MmapLibrary class (read-only mmap view). N-seat training seals rows under
+// (card_bucket(kNSeatCardKind, holding, board), tree node); the SQLite
+// publish path copies one sealed row onto every concrete holding of the
+// bucket. The packer reverses that copy, storing one row per (public node,
+// trained bucket); the resident projects a concrete holding to its bucket at
+// lookup time. Strategy output is bitwise identical and size is independent
+// of the training range width.
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -12,18 +18,22 @@
 #include <array>
 #include <bs/abstraction.hpp>
 #include <bs/mmap_library.hpp>
-#include <bs/range.hpp>        // comboIndex
-#include <bs/seat_policy.hpp>  // SeatPolicyRow (full definition for packing)
+#include <bs/nseat_trainer.hpp>  // kNSeatCardKind
+#include <bs/range.hpp>          // comboIndex
+#include <bs/seat_policy.hpp>    // SeatPolicyRow (full definition for packing)
 #include <bs/strategy_artifact.hpp>
 #include <bs/unified_game.hpp>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -32,8 +42,8 @@
 namespace bs::resident {
 namespace {
 
-constexpr char kMagic[8] = {'B', 'S', 'F', 'L', 'I', 'B', '0', '1'};
-constexpr std::uint32_t kVersion = 1;
+constexpr char kMagic[8] = {'B', 'S', 'F', 'L', 'I', 'B', '0', '2'};
+constexpr std::uint32_t kVersion = 2;
 constexpr std::size_t kPageSize = 4096;
 constexpr std::size_t kMaxSeats = 10;  // poker::kMaxUnifiedSeats
 
@@ -153,22 +163,76 @@ std::uint8_t codebook_type_to_u8(ProbabilityLayout layout) {
   return 0;  // unreachable
 }
 
-// Per-class intermediate data built during the first pass of pack.
+// Per-class grouped data built during the pack pass. Concrete rows are
+// collapsed to (public node, trained bucket): all concrete holdings the
+// trainer sealed under one card bucket at one public node share one run.
 struct ClassBuildData {
   std::uint32_t class_id = 0;
   std::array<int, 3> canonical_board{};
-  struct RowEntry {
-    std::uint64_t hash = 0;
-    std::array<std::uint8_t, 512> compact_key{};
-    std::size_t compact_size = 0;
-    const solver::SeatPolicyRow* row = nullptr;
+
+  struct BucketRun {
+    std::uint16_t bucket = 0;
+    std::vector<std::uint64_t> prob_bits;  // bit pattern per menu action
   };
-  std::vector<RowEntry> rows;
+  struct Node {
+    std::uint64_t hash = 0;
+    std::vector<poker::Action> menu;
+    // Trained bucket runs at this node, keyed by bucket id (sorted on write).
+    std::map<std::uint16_t, BucketRun> runs;
+  };
+
+  std::map<std::uint64_t, std::size_t> node_by_hash;
+  std::vector<Node> nodes;  // sorted by hash before write
   // Distinct probability bit patterns → codebook index (sorted by bits).
   std::map<std::uint64_t, std::uint16_t> codebook_index;
   ProbabilityLayout layout = ProbabilityLayout::Doubles;
   const std::vector<solver::WeightedHand>* range = nullptr;
+  std::optional<std::uint64_t> card_digest;
+  std::optional<std::uint64_t> action_digest;
 };
+
+// Split a concrete compact key (ResidentIndex::compact_information_key output,
+// layout [seat][own0][own1][board_size][board...][5 bytes per action]) into the
+// public compact key ([seat][board_size][board...][actions], no own cards),
+// the holding, and the board span. Returns false on a malformed key.
+struct ParsedConcreteKey {
+  std::array<int, 2> own{};
+  std::array<int, 5> board{};
+  std::size_t board_size = 0;
+  std::vector<std::uint8_t> public_key;
+};
+
+bool parse_concrete_key(std::span<const std::uint8_t> key, ParsedConcreteKey& out) {
+  if (key.size() < 4)
+    return false;
+  const std::size_t board_size = key[3];
+  if (board_size != 0 && board_size != 3 && board_size != 4 && board_size != 5)
+    return false;
+  if (key.size() < 4 + board_size)
+    return false;
+  const std::size_t action_bytes = key.size() - 4 - board_size;
+  if (action_bytes % 5 != 0)
+    return false;
+  out.own = {static_cast<int>(key[1]), static_cast<int>(key[2])};
+  out.board_size = board_size;
+  for (std::size_t i = 0; i < board_size; ++i)
+    out.board[i] = key[4 + i];
+  out.public_key.clear();
+  out.public_key.reserve(2 + board_size + action_bytes);
+  out.public_key.push_back(key[0]);  // seat
+  out.public_key.push_back(static_cast<std::uint8_t>(board_size));
+  out.public_key.insert(out.public_key.end(), key.begin() + 4, key.begin() + 4 + board_size);
+  out.public_key.insert(out.public_key.end(), key.begin() + 4 + board_size, key.end());
+  return true;
+}
+
+// Legal bucket range for the compiled-in n-seat card kind: Preflop169 values
+// 0..168 at an empty board; postflop it falls back to CategoryTiersV1 1..9.
+bool bucket_in_range(std::size_t board_size, std::uint32_t bucket) {
+  if (board_size == 0)
+    return bucket <= 168;
+  return bucket >= 1 && bucket <= 9;
+}
 
 // Encode a canonical board as a u64 key for the board→class_id map.
 std::uint64_t board_key(const std::array<int, 3>& board) {
@@ -185,445 +249,332 @@ void pack_binary_library(const std::filesystem::path& path, const solver::Unifie
     throw std::invalid_argument("pack_binary_library: no classes to pack");
   if (game.def.player_count < 2 || game.def.player_count > kMaxSeats)
     throw std::invalid_argument("pack_binary_library: player_count out of range");
-
-  // Phase 1: compute per-class data (compact keys, hashes, codebooks).
-  std::vector<ClassBuildData> build_data;
-  build_data.reserve(classes.size());
-
-  for (const PackClassInput& input : classes) {
-    if (!input.rows)
-      throw std::invalid_argument("pack_binary_library: class " + std::to_string(input.class_id) +
-                                  " has null rows");
-    if (input.rows->empty())
-      throw std::invalid_argument("pack_binary_library: class " + std::to_string(input.class_id) +
-                                  " has no rows");
-
-    ClassBuildData data;
-    data.class_id = input.class_id;
-    data.canonical_board = input.canonical_board;
-    data.range = input.range;
-
-    for (const auto& [key, row] : *input.rows) {
-      if (row.actions.size() != row.probabilities.size() ||
-          row.actions.size() > kMaxResidentActions)
-        throw std::invalid_argument("pack_binary_library: malformed row in class " +
-                                    std::to_string(input.class_id));
-
-      ClassBuildData::RowEntry entry;
-      entry.row = &row;
-      entry.compact_size = ResidentIndex::compact_information_key(
-          std::span<const std::uint64_t>(key.data(), key.size()),
-          std::span<std::uint8_t>(entry.compact_key.data(), entry.compact_key.size()));
-      if (entry.compact_size == 0)
-        throw std::invalid_argument("pack_binary_library: key cannot be compacted in class " +
-                                    std::to_string(input.class_id));
-      entry.hash =
-          hash_key_64(std::span<const std::uint8_t>(entry.compact_key.data(), entry.compact_size));
-      data.rows.push_back(std::move(entry));
-
-      for (double probability : row.probabilities) {
-        std::uint64_t bits;
-        std::memcpy(&bits, &probability, sizeof(bits));
-        data.codebook_index.emplace(bits, 0);
-      }
-    }
-
-    // Sort rows by hash for binary search.
-    std::sort(data.rows.begin(), data.rows.end(),
-              [](const ClassBuildData::RowEntry& a, const ClassBuildData::RowEntry& b) {
-                return a.hash < b.hash;
-              });
-
-    // Choose the class's probability layout.
-    data.layout = data.codebook_index.size() <= 256     ? ProbabilityLayout::Codebook8
-                  : data.codebook_index.size() <= 65536 ? ProbabilityLayout::Codebook16
-                                                        : ProbabilityLayout::Doubles;
-
-    build_data.push_back(std::move(data));
-  }
-
-  // Phase 2: choose the file-level layout (worst case across all classes).
-  ProbabilityLayout file_layout = ProbabilityLayout::Codebook8;
-  for (const ClassBuildData& data : build_data) {
-    if (data.layout == ProbabilityLayout::Doubles) {
-      file_layout = ProbabilityLayout::Doubles;
-      break;
-    }
-    if (data.layout == ProbabilityLayout::Codebook16)
-      file_layout = ProbabilityLayout::Codebook16;
-  }
-
-  // Assign codebook indices (sorted bit-pattern order).
-  for (ClassBuildData& data : build_data) {
-    if (data.layout != ProbabilityLayout::Doubles) {
-      std::uint16_t index = 0;
-      for (auto& [bits, slot] : data.codebook_index)
-        slot = index++;
-    }
-  }
-
-  // Phase 3: build the file image.
-  std::vector<std::uint8_t> buf;
-
-  // Compute the sizes section size.
-  std::size_t sizes_bytes = 0;
-  for (const auto& street : game.sizes) {
-    sizes_bytes += 2;  // bets_count + raises_count
-    sizes_bytes += street.bets.size() * 16;
-    sizes_bytes += street.raises.size() * 16;
-  }
-
-  // Header layout:
-  //   0:  magic char[8]
-  //   8:  version u32
-  //   12: class_count u32
-  //   16: codebook_type u8
-  //   17: player_count u8
-  //   18: button u8
-  //   19: terminal_depth u8
-  //   20: reserved u8[4]
-  //   24: big_blind u64
-  //   32: pot u64
-  //   40: stacks u64[10]  (80 bytes)
-  //   120: contributions u64[10]  (80 bytes)
-  //   200: sizes (variable)
-  //   after sizes: class_offsets u64[class_count]
-  const std::size_t header_fixed = 200 + sizes_bytes;
-  const std::size_t class_offsets_pos = header_fixed;
-  const std::size_t header_total =
-      align_up(header_fixed + build_data.size() * sizeof(std::uint64_t), kPageSize);
-
-  buf.reserve(header_total + build_data.size() * kPageSize);
-
-  // Write the header (class_offsets are patched later).
-  buf.insert(buf.end(), kMagic, kMagic + 8);
-  write_u32(buf, kVersion);
-  write_u32(buf, static_cast<std::uint32_t>(build_data.size()));
-  write_u8(buf, codebook_type_to_u8(file_layout));
-  write_u8(buf, static_cast<std::uint8_t>(game.def.player_count));
-  write_u8(buf, static_cast<std::uint8_t>(game.def.button));
-  write_u8(buf, game.def.terminal == poker::TerminalDepth::Flop ? 0 : 1);
-  // reserved u8[4]
-  for (int i = 0; i < 4; ++i)
-    write_u8(buf, 0);
-  write_u64(buf, game.def.big_blind);
-  write_u64(buf, game.def.pot);
-  for (std::size_t i = 0; i < kMaxSeats; ++i)
-    write_u64(buf, game.def.stacks[i]);
-  for (std::size_t i = 0; i < kMaxSeats; ++i)
-    write_u64(buf, game.def.contributions[i]);
-  // Sizes.
-  for (const auto& street : game.sizes) {
-    write_u8(buf, static_cast<std::uint8_t>(street.bets.size()));
-    write_u8(buf, static_cast<std::uint8_t>(street.raises.size()));
-    for (const auto& frac : street.bets)
-      write_fraction(buf, frac);
-    for (const auto& frac : street.raises)
-      write_fraction(buf, frac);
-  }
-  // Placeholder class_offsets (patched after sections are laid out).
-  const std::size_t class_offsets_start = buf.size();
-  for (std::size_t i = 0; i < build_data.size(); ++i)
-    write_u64(buf, 0);
-  // Pad to the first page boundary.
-  buf.resize(header_total, 0);
-
-  // Write each class section.
-  std::vector<std::uint64_t> section_offsets;
-  section_offsets.reserve(build_data.size());
-
-  for (const ClassBuildData& data : build_data) {
-    const std::size_t section_start = buf.size();
-    section_offsets.push_back(section_start);
-
-    const std::uint32_t info_set_count = static_cast<std::uint32_t>(data.rows.size());
-    std::uint32_t action_count = 0;
-    for (const auto& entry : data.rows)
-      action_count += static_cast<std::uint32_t>(entry.row->actions.size());
-
-    const std::uint32_t codebook_size =
-        (file_layout == ProbabilityLayout::Doubles)
-            ? 0u
-            : static_cast<std::uint32_t>(data.codebook_index.size());
-    const std::uint16_t range_count =
-        data.range ? static_cast<std::uint16_t>(data.range->size()) : 0;
-
-    // Fixed section header (24 bytes).
-    write_u32(buf, data.class_id);
-    write_u8(buf, static_cast<std::uint8_t>(data.canonical_board[0]));
-    write_u8(buf, static_cast<std::uint8_t>(data.canonical_board[1]));
-    write_u8(buf, static_cast<std::uint8_t>(data.canonical_board[2]));
-    write_u8(buf, 0);  // reserved
-    write_u32(buf, info_set_count);
-    write_u32(buf, action_count);
-    write_u32(buf, codebook_size);
-    write_u16(buf, range_count);
-    write_u8(buf, 0);  // reserved2
-    write_u8(buf, 0);
-
-    // Range entries: [u64 combo_index, f64 weight] * range_count.
-    if (data.range) {
-      for (const solver::WeightedHand& hand : *data.range) {
-        write_u64(buf, static_cast<std::uint64_t>(bs::comboIndex(hand.cards[0], hand.cards[1])));
-        write_f64(buf, hand.weight);
-      }
-    }
-
-    // Codebook: f64[codebook_size] (sorted bit-pattern order).
-    if (codebook_size > 0) {
-      for (const auto& [bits, slot] : data.codebook_index) {
-        double probability;
-        std::memcpy(&probability, &bits, sizeof(probability));
-        write_f64(buf, probability);
-      }
-    }
-
-    // Hashes: u64[info_set_count] (sorted ascending).
-    for (const auto& entry : data.rows)
-      write_u64(buf, entry.hash);
-
-    // Row offsets: u32[info_set_count] (prefix sum of action counts).
-    {
-      std::uint32_t offset = 0;
-      for (const auto& entry : data.rows) {
-        write_u32(buf, offset);
-        offset += static_cast<std::uint32_t>(entry.row->actions.size());
-      }
-    }
-
-    // Action counts: u16[info_set_count].
-    for (const auto& entry : data.rows)
-      write_u16(buf, static_cast<std::uint16_t>(entry.row->actions.size()));
-
-    // Actions: CompactAction[action_count] (3 bytes each, packed).
-    for (const auto& entry : data.rows) {
-      for (const poker::Action& action : entry.row->actions) {
-        if (action.target_total > 0xffff)
-          throw std::invalid_argument("pack_binary_library: action target exceeds uint16 range");
-        write_u8(buf, static_cast<std::uint8_t>(action.type));
-        write_u16(buf, static_cast<std::uint16_t>(action.target_total));
-      }
-    }
-
-    // Probability storage.
-    if (file_layout == ProbabilityLayout::Codebook8) {
-      for (const auto& entry : data.rows)
-        for (double probability : entry.row->probabilities) {
-          std::uint64_t bits;
-          std::memcpy(&bits, &probability, sizeof(bits));
-          write_u8(buf, data.codebook_index.at(bits));
-        }
-    } else if (file_layout == ProbabilityLayout::Codebook16) {
-      // Align to 2 bytes for u16 access.
-      if (buf.size() % 2 != 0)
-        write_u8(buf, 0);
-      for (const auto& entry : data.rows)
-        for (double probability : entry.row->probabilities) {
-          std::uint64_t bits;
-          std::memcpy(&bits, &probability, sizeof(bits));
-          write_u16(buf, data.codebook_index.at(bits));
-        }
-    } else {
-      // Doubles: align to 8 bytes for f64 access.
-      while (buf.size() % 8 != 0)
-        write_u8(buf, 0);
-      for (const auto& entry : data.rows)
-        for (double probability : entry.row->probabilities)
-          write_f64(buf, probability);
-    }
-
-    // Pad to the next page boundary.
-    buf.resize(align_up(buf.size(), kPageSize), 0);
-  }
-
-  // Patch class_offsets in the header.
-  for (std::size_t i = 0; i < section_offsets.size(); ++i) {
-    const std::size_t pos = class_offsets_pos + i * sizeof(std::uint64_t);
-    const std::uint64_t offset = section_offsets[i];
-    for (int b = 0; b < 8; ++b)
-      buf[pos + b] = static_cast<std::uint8_t>((offset >> (b * 8)) & 0xffu);
-  }
-
-  // Write the file.
-  {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out)
-      throw std::runtime_error("pack_binary_library: cannot open " + path.string() + " for write");
-    out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
-    if (!out)
-      throw std::runtime_error("pack_binary_library: write failed for " + path.string());
-  }
-
-  // Compute and write the SHA-256 sidecar.
-  const std::string hex = artifacts::sha256_file_hex(path);
-  const std::filesystem::path sidecar = path.string() + ".sha256";
-  {
-    std::ofstream out(sidecar, std::ios::binary | std::ios::trunc);
-    if (!out)
-      throw std::runtime_error("pack_binary_library: cannot open " + sidecar.string() +
-                               " for write");
-    out << hex << "  " << path.filename().string() << "\n";
-    if (!out)
-      throw std::runtime_error("pack_binary_library: write failed for " + sidecar.string());
-  }
+  // One implementation: the streaming writer holds one class resident at a
+  // time. The borrowed PackClassInput pointers stay valid for the call.
+  PackClassSupplier supplier = [&](std::size_t index) { return classes[index]; };
+  pack_binary_library_streaming(path, game, classes.size(), supplier);
 }
 
 // ---------------------------------------------------------------------------
-// Streaming pack (RFC 0012 Phase 2 follow-up: OOM fix for large libraries)
+// Streaming bucket-deduplicated pack (RFC 0026)
 // ---------------------------------------------------------------------------
 
 namespace {
 
-// Survey pass: count distinct probability bit patterns for one class. This is
-// much lighter than build_class_data — no compact keys, hashes, or sorting.
-std::size_t survey_codebook_size(const PackClassInput& input) {
-  if (!input.rows || input.rows->empty())
-    throw std::invalid_argument("pack_binary_library_streaming: class " +
-                                std::to_string(input.class_id) + " has no rows");
-  std::map<std::uint64_t, std::uint16_t> bits;
-  for (const auto& [key, row] : *input.rows) {
-    if (row.actions.size() != row.probabilities.size() || row.actions.size() > kMaxResidentActions)
-      throw std::invalid_argument("pack_binary_library_streaming: malformed row in class " +
-                                  std::to_string(input.class_id));
-    for (double probability : row.probabilities) {
-      std::uint64_t bit_pattern;
-      std::memcpy(&bit_pattern, &probability, sizeof(bit_pattern));
-      bits.emplace(bit_pattern, 0);
-    }
+// Validate the shared abstraction digests against the running cross-class
+// state. Digests are optional in synthetic test inputs; once any class
+// supplies them every class must supply identical values.
+void reconcile_digests(const PackClassInput& input, bool& have, std::uint64_t& card_digest,
+                       std::uint64_t& action_digest) {
+  if (!input.card_abstraction_digest.has_value() && !input.action_abstraction_digest.has_value()) {
+    if (have)
+      throw std::runtime_error("pack: class " + std::to_string(input.class_id) +
+                               " omits abstraction digests that earlier classes supplied");
+    return;
   }
-  return bits.size();
+  if (!input.card_abstraction_digest.has_value() || !input.action_abstraction_digest.has_value())
+    throw std::runtime_error("pack: class " + std::to_string(input.class_id) +
+                             " supplies only one of the two abstraction digests");
+  if (!have) {
+    have = true;
+    card_digest = *input.card_abstraction_digest;
+    action_digest = *input.action_abstraction_digest;
+    return;
+  }
+  if (*input.card_abstraction_digest != card_digest ||
+      *input.action_abstraction_digest != action_digest)
+    throw std::runtime_error("pack: class " + std::to_string(input.class_id) +
+                             " abstraction digest differs from earlier classes");
 }
 
-// Full build for one class: compact keys, hashes, sorted rows, codebook.
+std::uint8_t prob_entry_width(ProbabilityLayout layout) {
+  switch (layout) {
+    case ProbabilityLayout::Codebook8:
+      return 1;
+    case ProbabilityLayout::Codebook16:
+      return 2;
+    case ProbabilityLayout::Doubles:
+      return 8;
+  }
+  return 8;  // unreachable
+}
+
+// Collapse one class's concrete rows into (public node, trained bucket) runs,
+// asserting the losslessness invariants (RFC 0026 G2/G4):
+//   * every concrete row at a node shares that node's single action menu;
+//   * every concrete row sealing the same (node, bucket) is bitwise identical.
 ClassBuildData build_class_data(const PackClassInput& input) {
   ClassBuildData data;
   data.class_id = input.class_id;
   data.canonical_board = input.canonical_board;
   data.range = input.range;
+  data.card_digest = input.card_abstraction_digest;
+  data.action_digest = input.action_abstraction_digest;
 
   for (const auto& [key, row] : *input.rows) {
-    ClassBuildData::RowEntry entry;
-    entry.row = &row;
-    entry.compact_size = ResidentIndex::compact_information_key(
-        std::span<const std::uint64_t>(key.data(), key.size()),
-        std::span<std::uint8_t>(entry.compact_key.data(), entry.compact_key.size()));
-    if (entry.compact_size == 0)
-      throw std::invalid_argument("pack_binary_library_streaming: key cannot be compacted in " +
-                                  std::to_string(input.class_id));
-    entry.hash =
-        hash_key_64(std::span<const std::uint8_t>(entry.compact_key.data(), entry.compact_size));
-    data.rows.push_back(std::move(entry));
+    if (row.actions.size() != row.probabilities.size() || row.actions.empty() ||
+        row.actions.size() > kMaxResidentActions)
+      throw std::invalid_argument("pack: malformed row in class " + std::to_string(input.class_id));
 
+    std::array<std::uint8_t, 512> compact{};
+    const std::size_t compact_size = ResidentIndex::compact_information_key(
+        std::span<const std::uint64_t>(key.data(), key.size()),
+        std::span<std::uint8_t>(compact.data(), compact.size()));
+    if (compact_size == 0)
+      throw std::invalid_argument("pack: key cannot be compacted in class " +
+                                  std::to_string(input.class_id));
+    ParsedConcreteKey parsed;
+    if (!parse_concrete_key(std::span<const std::uint8_t>(compact.data(), compact_size), parsed))
+      throw std::invalid_argument("pack: unparseable compact key in class " +
+                                  std::to_string(input.class_id));
+    const std::uint64_t node_hash = hash_key_64(
+        std::span<const std::uint8_t>(parsed.public_key.data(), parsed.public_key.size()));
+    const std::array<int, 2> hole{parsed.own[0], parsed.own[1]};
+    const std::span<const int> board(parsed.board.data(), parsed.board_size);
+    const std::uint32_t bucket32 = abstraction::card_bucket(solver::kNSeatCardKind, hole, board);
+    if (!bucket_in_range(parsed.board_size, bucket32))
+      throw std::runtime_error("pack: bucket " + std::to_string(bucket32) + " outside the " +
+                               (parsed.board_size == 0 ? "Preflop169 0..168" : "category 1..9") +
+                               " range in class " + std::to_string(input.class_id));
+    const std::uint16_t bucket = static_cast<std::uint16_t>(bucket32);
+
+    ClassBuildData::Node* node = nullptr;
+    if (auto it = data.node_by_hash.find(node_hash); it != data.node_by_hash.end()) {
+      node = &data.nodes[it->second];
+      if (node->menu.size() != row.actions.size())
+        throw std::runtime_error("pack: cross-bucket menu length mismatch in class " +
+                                 std::to_string(input.class_id));
+      for (std::size_t i = 0; i < row.actions.size(); ++i)
+        if (node->menu[i].type != row.actions[i].type ||
+            node->menu[i].target_total != row.actions[i].target_total)
+          throw std::runtime_error("pack: cross-bucket action menu mismatch (class " +
+                                   std::to_string(input.class_id) + ", bucket " +
+                                   std::to_string(bucket) + ")");
+    } else {
+      ClassBuildData::Node fresh;
+      fresh.hash = node_hash;
+      fresh.menu = row.actions;
+      data.node_by_hash.emplace(node_hash, data.nodes.size());
+      data.nodes.push_back(std::move(fresh));
+      node = &data.nodes.back();
+    }
+
+    std::vector<std::uint64_t> bits;
+    bits.reserve(row.probabilities.size());
     for (double probability : row.probabilities) {
-      std::uint64_t bits;
-      std::memcpy(&bits, &probability, sizeof(bits));
-      data.codebook_index.emplace(bits, 0);
+      std::uint64_t pattern;
+      std::memcpy(&pattern, &probability, sizeof(pattern));
+      bits.push_back(pattern);
+      data.codebook_index.emplace(pattern, 0);
+    }
+
+    if (auto existing = node->runs.find(bucket); existing != node->runs.end()) {
+      if (existing->second.prob_bits != bits)
+        throw std::runtime_error(
+            "pack: non-identical strategy sealed under the same bucket (class " +
+            std::to_string(input.class_id) + ", node hash " + std::to_string(node_hash) +
+            ", bucket " + std::to_string(bucket) + ")");
+    } else {
+      node->runs.emplace(bucket, ClassBuildData::BucketRun{bucket, std::move(bits)});
     }
   }
 
-  std::sort(data.rows.begin(), data.rows.end(),
-            [](const ClassBuildData::RowEntry& a, const ClassBuildData::RowEntry& b) {
-              return a.hash < b.hash;
-            });
+  std::sort(
+      data.nodes.begin(), data.nodes.end(),
+      [](const ClassBuildData::Node& a, const ClassBuildData::Node& b) { return a.hash < b.hash; });
+  // Detect 64-bit node-hash collisions within the class (distinct public keys
+  // hashing equal) — the writer cannot represent two nodes by one hash.
+  for (std::size_t i = 1; i < data.nodes.size(); ++i)
+    if (data.nodes[i - 1].hash == data.nodes[i].hash)
+      throw std::runtime_error("pack: node-hash collision in class " +
+                               std::to_string(input.class_id));
 
-  data.layout = data.codebook_index.size() <= 256     ? ProbabilityLayout::Codebook8
-                : data.codebook_index.size() <= 65536 ? ProbabilityLayout::Codebook16
-                                                      : ProbabilityLayout::Doubles;
-  if (data.layout != ProbabilityLayout::Doubles) {
-    std::uint16_t index = 0;
-    for (auto& [bits, slot] : data.codebook_index)
-      slot = index++;
-  }
+  // Indices into the codebook are assigned by write_class_section under the
+  // file-level layout, where the value capacity is known.
   return data;
 }
 
-// Write one class section into buf (does not pad — caller pads).
-void write_class_section(std::vector<std::uint8_t>& buf, const ClassBuildData& data,
-                         ProbabilityLayout file_layout) {
-  const std::uint32_t info_set_count = static_cast<std::uint32_t>(data.rows.size());
-  std::uint32_t action_count = 0;
-  for (const auto& entry : data.rows)
-    action_count += static_cast<std::uint32_t>(entry.row->actions.size());
+// Thrown by a codebook-indexed pass when a class has more distinct
+// probability values than the layout can index; the caller reruns the full
+// pass with Doubles.
+struct CodebookTooLarge : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
 
+// Write one class section. Offsets in bucket rows are section-relative byte
+// offsets into the probs region (caller patches the probs base).
+void write_class_section(std::vector<std::uint8_t>& buf, const ClassBuildData& data,
+                         ProbabilityLayout file_layout, std::uint64_t card_digest,
+                         std::uint64_t action_digest) {
+  (void)card_digest;
+  (void)action_digest;  // digests live in the file header, not per class
+  const std::uint32_t node_count = static_cast<std::uint32_t>(data.nodes.size());
+  std::uint32_t total_menu_actions = 0;
+  std::uint32_t total_bucket_rows = 0;
+  for (const auto& node : data.nodes) {
+    total_menu_actions += static_cast<std::uint32_t>(node.menu.size());
+    total_bucket_rows += static_cast<std::uint32_t>(node.runs.size());
+  }
+  const std::uint8_t width = prob_entry_width(file_layout);
+  const std::uint32_t total_prob_entries = [&] {
+    std::uint32_t n = 0;
+    for (const auto& node : data.nodes)
+      for (const auto& [bucket, run] : node.runs)
+        n += static_cast<std::uint32_t>(run.prob_bits.size());
+    return n;
+  }();
   const std::uint32_t codebook_size = (file_layout == ProbabilityLayout::Doubles)
                                           ? 0u
                                           : static_cast<std::uint32_t>(data.codebook_index.size());
+  if (file_layout == ProbabilityLayout::Codebook8 && codebook_size > 256)
+    throw CodebookTooLarge("pack: class " + std::to_string(data.class_id) +
+                           " has > 256 distinct probabilities for Codebook8");
+  if (file_layout == ProbabilityLayout::Codebook16 && codebook_size > 65536)
+    throw CodebookTooLarge("pack: class " + std::to_string(data.class_id) +
+                           " has > 65536 distinct probabilities for Codebook16");
   const std::uint16_t range_count = data.range ? static_cast<std::uint16_t>(data.range->size()) : 0;
 
+  // Assign codebook indices in bit-pattern (map) order for this layout.
+  std::map<std::uint64_t, std::uint16_t> local_index;
+  if (file_layout != ProbabilityLayout::Doubles) {
+    std::uint16_t idx = 0;
+    for (auto& [pattern, slot] : data.codebook_index)
+      local_index[pattern] = idx++;
+  }
+
+  // Fixed section header (40 bytes).
   write_u32(buf, data.class_id);
   write_u8(buf, static_cast<std::uint8_t>(data.canonical_board[0]));
   write_u8(buf, static_cast<std::uint8_t>(data.canonical_board[1]));
   write_u8(buf, static_cast<std::uint8_t>(data.canonical_board[2]));
-  write_u8(buf, 0);  // reserved
-  write_u32(buf, info_set_count);
-  write_u32(buf, action_count);
-  write_u32(buf, codebook_size);
+  write_u8(buf, 0);  // pad to the u32 node_count at offset 8
+  write_u32(buf, node_count);
   write_u16(buf, range_count);
-  write_u8(buf, 0);  // reserved2
+  write_u16(buf, 0);  // padding to offset 16
+  write_u32(buf, total_menu_actions);
+  write_u32(buf, total_bucket_rows);
+  write_u32(buf, total_prob_entries);
+  write_u32(buf, codebook_size);
+  write_u8(buf, 0);  // reserved2 u8[4]
   write_u8(buf, 0);
+  write_u8(buf, 0);
+  write_u8(buf, 0);
+  while (buf.size() % 8 != 0)
+    write_u8(buf, 0);  // pad to the 8-aligned range_entries offset (40)
 
+  // Range entries (offset 40, already 8-aligned).
   if (data.range) {
     for (const solver::WeightedHand& hand : *data.range) {
       write_u64(buf, static_cast<std::uint64_t>(bs::comboIndex(hand.cards[0], hand.cards[1])));
       write_f64(buf, hand.weight);
     }
   }
+  while (buf.size() % 8 != 0)
+    write_u8(buf, 0);
 
-  if (codebook_size > 0) {
-    for (const auto& [bits, slot] : data.codebook_index) {
+  // Codebook f64[codebook_size] (8-aligned).
+  if (codebook_size > 0)
+    for (const auto& [pattern, slot] : data.codebook_index) {
       double probability;
-      std::memcpy(&probability, &bits, sizeof(probability));
+      std::memcpy(&probability, &pattern, sizeof(probability));
       write_f64(buf, probability);
     }
+
+  // Fixed-stride node columns.
+  for (const auto& node : data.nodes)
+    write_u64(buf, node.hash);
+
+  // node_actions_offset is the SECTION-RELATIVE byte offset of each node's
+  // menu, so its base is known now: after the bucket rows. Patch the offsets
+  // column once the actions_blob start is computed.
+  const std::size_t actions_col_pos = buf.size();
+  std::uint32_t menu_cursor = 0;
+  for (const auto& node : data.nodes) {
+    write_u32(buf, menu_cursor * 3);  // placeholder: blob-relative, patched
+    menu_cursor += static_cast<std::uint32_t>(node.menu.size());
   }
+  for (const auto& node : data.nodes)
+    write_u16(buf, static_cast<std::uint16_t>(node.menu.size()));
+  if (node_count % 2 != 0)
+    write_u16(buf, 0);  // pad to a u32 column
 
-  for (const auto& entry : data.rows)
-    write_u64(buf, entry.hash);
+  std::uint32_t bucket_cursor = 0;
+  for (const auto& node : data.nodes) {
+    write_u32(buf, bucket_cursor);  // first bucket_rows index
+    bucket_cursor += static_cast<std::uint32_t>(node.runs.size());
+  }
+  for (const auto& node : data.nodes)
+    write_u16(buf, static_cast<std::uint16_t>(node.runs.size()));
+  while (buf.size() % 8 != 0)
+    write_u8(buf, 0);
+  const std::size_t buckets_start = buf.size();
 
-  {
-    std::uint32_t offset = 0;
-    for (const auto& entry : data.rows) {
-      write_u32(buf, offset);
-      offset += static_cast<std::uint32_t>(entry.row->actions.size());
+  // actions_blob follows bucket_rows; probs follows actions. Compute the
+  // section-relative probs start so bucket rows can name their prob offsets.
+  const std::size_t actions_bytes = static_cast<std::size_t>(total_menu_actions) * 3;
+  const std::size_t probs_unaligned =
+      buckets_start + static_cast<std::size_t>(total_bucket_rows) * 8 + actions_bytes;
+  const std::size_t probs_start = [&] {
+    std::size_t p = probs_unaligned;
+    if (file_layout == ProbabilityLayout::Codebook16)
+      p = (p + 1) & ~std::size_t{1};
+    else if (file_layout == ProbabilityLayout::Doubles)
+      p = (p + 7) & ~std::size_t{7};
+    return p;
+  }();
+
+  // bucket_rows (sorted by bucket within each node; node order is hash order).
+  std::uint32_t prob_entry_cursor = 0;
+  for (const auto& node : data.nodes) {
+    for (const auto& [bucket, run] : node.runs) {
+      write_u16(buf, bucket);
+      write_u16(buf, 0);  // reserved
+      write_u32(buf, static_cast<std::uint32_t>(
+                         probs_start + static_cast<std::size_t>(prob_entry_cursor) * width));
+      prob_entry_cursor += static_cast<std::uint32_t>(run.prob_bits.size());
     }
   }
 
-  for (const auto& entry : data.rows)
-    write_u16(buf, static_cast<std::uint16_t>(entry.row->actions.size()));
+  // Patch node_actions_offset to be section-relative (actions blob base plus
+  // the node's blob-relative position).
+  const std::size_t actions_blob_start =
+      buckets_start + static_cast<std::size_t>(total_bucket_rows) * 8;
+  {
+    std::uint32_t run_bytes = 0;
+    for (const auto& node : data.nodes) {
+      const std::uint32_t abs_off = static_cast<std::uint32_t>(actions_blob_start + run_bytes);
+      for (int b = 0; b < 4; ++b)
+        buf[actions_col_pos + (&node - data.nodes.data()) * 4 + b] =
+            static_cast<std::uint8_t>((abs_off >> (b * 8)) & 0xffu);
+      run_bytes += static_cast<std::uint32_t>(node.menu.size()) * 3;
+    }
+  }
 
-  for (const auto& entry : data.rows) {
-    for (const poker::Action& action : entry.row->actions) {
+  // actions_blob.
+  for (const auto& node : data.nodes)
+    for (const poker::Action& action : node.menu) {
       if (action.target_total > 0xffff)
-        throw std::invalid_argument(
-            "pack_binary_library_streaming: action target exceeds uint16 range");
+        throw std::invalid_argument("pack: action target exceeds uint16 range");
       write_u8(buf, static_cast<std::uint8_t>(action.type));
       write_u16(buf, static_cast<std::uint16_t>(action.target_total));
     }
-  }
+  while (buf.size() < probs_start)
+    write_u8(buf, 0);
 
-  if (file_layout == ProbabilityLayout::Codebook8) {
-    for (const auto& entry : data.rows)
-      for (double probability : entry.row->probabilities) {
-        std::uint64_t bits;
-        std::memcpy(&bits, &probability, sizeof(bits));
-        write_u8(buf, data.codebook_index.at(bits));
+  // probs: one menu-length run per bucket row, node-major bucket order.
+  for (const auto& node : data.nodes)
+    for (const auto& [bucket, run] : node.runs)
+      for (std::uint64_t pattern : run.prob_bits) {
+        if (file_layout == ProbabilityLayout::Codebook8) {
+          write_u8(buf, local_index.at(pattern));
+        } else if (file_layout == ProbabilityLayout::Codebook16) {
+          write_u16(buf, local_index.at(pattern));
+        } else {
+          double probability;
+          std::memcpy(&probability, &pattern, sizeof(probability));
+          write_f64(buf, probability);
+        }
       }
-  } else if (file_layout == ProbabilityLayout::Codebook16) {
-    if (buf.size() % 2 != 0)
-      write_u8(buf, 0);
-    for (const auto& entry : data.rows)
-      for (double probability : entry.row->probabilities) {
-        std::uint64_t bits;
-        std::memcpy(&bits, &probability, sizeof(bits));
-        write_u16(buf, data.codebook_index.at(bits));
-      }
-  } else {
-    while (buf.size() % 8 != 0)
-      write_u8(buf, 0);
-    for (const auto& entry : data.rows)
-      for (double probability : entry.row->probabilities)
-        write_f64(buf, probability);
-  }
 }
 
 }  // namespace
@@ -636,130 +587,165 @@ void pack_binary_library_streaming(const std::filesystem::path& path,
   if (game.def.player_count < 2 || game.def.player_count > kMaxSeats)
     throw std::invalid_argument("pack_binary_library_streaming: player_count out of range");
 
-  // Pass 1: survey codebook sizes to choose the file-level layout.
-  std::vector<std::size_t> codebook_sizes(class_count);
-  for (std::size_t i = 0; i < class_count; ++i)
-    codebook_sizes[i] = survey_codebook_size(supplier(i));
-
-  ProbabilityLayout file_layout = ProbabilityLayout::Codebook8;
-  for (std::size_t size : codebook_sizes) {
-    if (size > 65536) {
-      file_layout = ProbabilityLayout::Doubles;
-      break;
-    }
-    if (size > 256)
-      file_layout = ProbabilityLayout::Codebook16;
-  }
-
-  // Compute header layout.
+  // Header layout (fixed prefix is 216 bytes before the variable sizes):
+  //   0 magic[8], 8 version u32, 12 class_count u32,
+  //   16 codebook_type u8, 17 player_count u8, 18 button u8,
+  //   19 terminal_depth u8, 20 card_bucket_kind u8, 21 reserved u8[3],
+  //   24 big_blind u64, 32 pot u64,
+  //   40 stacks u64[10], 120 contributions u64[10],
+  //   200 card_digest u64, 208 action_digest u64, 216 sizes (variable),
+  //   after sizes: class_offsets u64[class_count].
   std::size_t sizes_bytes = 0;
   for (const auto& street : game.sizes) {
     sizes_bytes += 2;
     sizes_bytes += street.bets.size() * 16;
     sizes_bytes += street.raises.size() * 16;
   }
-  const std::size_t header_fixed = 200 + sizes_bytes;
+  constexpr std::size_t kHeaderFixed = 216;
+  const std::size_t header_fixed = kHeaderFixed + sizes_bytes;
   const std::size_t class_offsets_pos = header_fixed;
   const std::size_t header_total =
       align_up(header_fixed + class_count * sizeof(std::uint64_t), kPageSize);
 
-  // Open the file and write the placeholder header.
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out)
-    throw std::runtime_error("pack_binary_library_streaming: cannot open " + path.string() +
-                             " for write");
+  const std::uint8_t bucket_kind_u8 = static_cast<std::uint8_t>(
+      static_cast<std::underlying_type_t<abstraction::CardBucketKind>>(solver::kNSeatCardKind));
 
-  {
-    std::vector<std::uint8_t> header;
-    header.reserve(header_total);
-    header.insert(header.end(), kMagic, kMagic + 8);
-    write_u32(header, kVersion);
-    write_u32(header, static_cast<std::uint32_t>(class_count));
-    write_u8(header, codebook_type_to_u8(file_layout));
-    write_u8(header, static_cast<std::uint8_t>(game.def.player_count));
-    write_u8(header, static_cast<std::uint8_t>(game.def.button));
-    write_u8(header, game.def.terminal == poker::TerminalDepth::Flop ? 0 : 1);
-    for (int i = 0; i < 4; ++i)
-      write_u8(header, 0);
-    write_u64(header, game.def.big_blind);
-    write_u64(header, game.def.pot);
-    for (std::size_t i = 0; i < kMaxSeats; ++i)
-      write_u64(header, game.def.stacks[i]);
-    for (std::size_t i = 0; i < kMaxSeats; ++i)
-      write_u64(header, game.def.contributions[i]);
-    for (const auto& street : game.sizes) {
-      write_u8(header, static_cast<std::uint8_t>(street.bets.size()));
-      write_u8(header, static_cast<std::uint8_t>(street.raises.size()));
-      for (const auto& frac : street.bets)
-        write_fraction(header, frac);
-      for (const auto& frac : street.raises)
-        write_fraction(header, frac);
-    }
-    for (std::size_t i = 0; i < class_count; ++i)
+  // One write pass under `layout`. Returns true on success; a class with more
+  // distinct probabilities than the layout can index makes it return false so
+  // the caller can rerun with a wider layout (the truncated file is removed).
+  // Cross-class abstraction digests are reconciled as classes are read.
+  auto run_pass = [&](ProbabilityLayout layout) -> bool {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+      throw std::runtime_error("pack_binary_library_streaming: cannot open " + path.string() +
+                               " for write");
+    struct PartialCleanup {
+      std::ofstream& out;
+      std::filesystem::path path;
+      bool armed = true;
+      ~PartialCleanup() {
+        if (!armed)
+          return;
+        out.close();
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        std::filesystem::remove(std::filesystem::path(path.string() + ".sha256"), ec);
+      }
+    } cleanup{out, path};
+
+    {
+      std::vector<std::uint8_t> header;
+      header.reserve(header_total);
+      header.insert(header.end(), kMagic, kMagic + 8);
+      write_u32(header, kVersion);
+      write_u32(header, static_cast<std::uint32_t>(class_count));
+      write_u8(header, codebook_type_to_u8(layout));
+      write_u8(header, static_cast<std::uint8_t>(game.def.player_count));
+      write_u8(header, static_cast<std::uint8_t>(game.def.button));
+      write_u8(header, game.def.terminal == poker::TerminalDepth::Flop ? 0 : 1);
+      write_u8(header, bucket_kind_u8);
+      for (int i = 0; i < 3; ++i)
+        write_u8(header, 0);
+      write_u64(header, game.def.big_blind);
+      write_u64(header, game.def.pot);
+      for (std::size_t i = 0; i < kMaxSeats; ++i)
+        write_u64(header, game.def.stacks[i]);
+      for (std::size_t i = 0; i < kMaxSeats; ++i)
+        write_u64(header, game.def.contributions[i]);
+      // Digests are reconciled during the pass and patched with the offsets.
       write_u64(header, 0);
-    header.resize(header_total, 0);
-    out.write(reinterpret_cast<const char*>(header.data()),
-              static_cast<std::streamsize>(header.size()));
-    if (!out)
-      throw std::runtime_error("pack_binary_library_streaming: header write failed for " +
-                               path.string());
-  }
-
-  // Pass 2: build and write each class section.
-  std::vector<std::uint64_t> section_offsets(class_count);
-  for (std::size_t i = 0; i < class_count; ++i) {
-    ClassBuildData data = build_class_data(supplier(i));
-    section_offsets[i] = static_cast<std::uint64_t>(out.tellp());
-
-    std::vector<std::uint8_t> section;
-    write_class_section(section, data, file_layout);
-    out.write(reinterpret_cast<const char*>(section.data()),
-              static_cast<std::streamsize>(section.size()));
-    if (!out)
-      throw std::runtime_error("pack_binary_library_streaming: section write failed for " +
-                               path.string());
-
-    // Pad to the next page boundary.
-    const std::size_t current = static_cast<std::size_t>(out.tellp());
-    const std::size_t aligned = align_up(current, kPageSize);
-    if (aligned > current) {
-      const std::vector<std::uint8_t> padding(aligned - current, 0);
-      out.write(reinterpret_cast<const char*>(padding.data()),
-                static_cast<std::streamsize>(padding.size()));
+      write_u64(header, 0);
+      for (const auto& street : game.sizes) {
+        write_u8(header, static_cast<std::uint8_t>(street.bets.size()));
+        write_u8(header, static_cast<std::uint8_t>(street.raises.size()));
+        for (const auto& frac : street.bets)
+          write_fraction(header, frac);
+        for (const auto& frac : street.raises)
+          write_fraction(header, frac);
+      }
+      for (std::size_t i = 0; i < class_count; ++i)
+        write_u64(header, 0);
+      header.resize(header_total, 0);
+      out.write(reinterpret_cast<const char*>(header.data()),
+                static_cast<std::streamsize>(header.size()));
       if (!out)
-        throw std::runtime_error("pack_binary_library_streaming: padding write failed for " +
-                                 path.string());
+        throw std::runtime_error("pack_binary_library_streaming: header write failed");
     }
-  }
 
-  // Patch class_offsets in the header.
-  out.seekp(static_cast<std::streamoff>(class_offsets_pos));
-  for (std::uint64_t offset : section_offsets) {
-    std::uint8_t bytes[8];
-    for (int b = 0; b < 8; ++b)
-      bytes[b] = static_cast<std::uint8_t>((offset >> (b * 8)) & 0xffu);
-    out.write(reinterpret_cast<const char*>(bytes), 8);
-  }
-  if (!out)
-    throw std::runtime_error("pack_binary_library_streaming: header patch failed for " +
-                             path.string());
-  out.close();
+    bool have_digests = false;
+    std::uint64_t card_digest = 0;
+    std::uint64_t action_digest = 0;
+    std::vector<std::uint64_t> section_offsets(class_count);
+    for (std::size_t i = 0; i < class_count; ++i) {
+      const PackClassInput input = supplier(i);
+      reconcile_digests(input, have_digests, card_digest, action_digest);
+      ClassBuildData data = build_class_data(input);
+      section_offsets[i] = static_cast<std::uint64_t>(out.tellp());
+      try {
+        std::vector<std::uint8_t> section;
+        write_class_section(section, data, layout, card_digest, action_digest);
+        out.write(reinterpret_cast<const char*>(section.data()),
+                  static_cast<std::streamsize>(section.size()));
+      } catch (const CodebookTooLarge&) {
+        return false;  // rerun under a wider layout
+      }
+      if (!out)
+        throw std::runtime_error("pack_binary_library_streaming: section write failed");
+      const std::size_t current = static_cast<std::size_t>(out.tellp());
+      const std::size_t aligned = align_up(current, kPageSize);
+      if (aligned > current) {
+        const std::vector<std::uint8_t> padding(aligned - current, 0);
+        out.write(reinterpret_cast<const char*>(padding.data()),
+                  static_cast<std::streamsize>(padding.size()));
+        if (!out)
+          throw std::runtime_error("pack_binary_library_streaming: padding write failed");
+      }
+    }
 
-  // Compute and write the SHA-256 sidecar.
-  const std::string hex = artifacts::sha256_file_hex(path);
-  const std::filesystem::path sidecar = path.string() + ".sha256";
-  {
+    // Patch class offsets and digests into the header.
+    auto patch_u64 = [&](std::size_t pos, std::uint64_t value) {
+      out.seekp(static_cast<std::streamoff>(pos));
+      std::uint8_t bytes[8];
+      for (int b = 0; b < 8; ++b)
+        bytes[b] = static_cast<std::uint8_t>((value >> (b * 8)) & 0xffu);
+      out.write(reinterpret_cast<const char*>(bytes), 8);
+    };
+    for (std::size_t i = 0; i < class_count; ++i)
+      patch_u64(class_offsets_pos + i * 8, section_offsets[i]);
+    if (have_digests) {
+      patch_u64(200, card_digest);
+      patch_u64(208, action_digest);
+    }
+    if (!out)
+      throw std::runtime_error("pack_binary_library_streaming: header patch failed");
+    out.close();
+
+    const std::string hex = artifacts::sha256_file_hex(path);
+    const std::filesystem::path sidecar = path.string() + ".sha256";
     std::ofstream sidecar_out(sidecar, std::ios::binary | std::ios::trunc);
     if (!sidecar_out)
-      throw std::runtime_error("pack_binary_library_streaming: cannot open " + sidecar.string() +
-                               " for write");
+      throw std::runtime_error("pack_binary_library_streaming: cannot open " + sidecar.string());
     sidecar_out << hex << "  " << path.filename().string() << "\n";
     if (!sidecar_out)
-      throw std::runtime_error("pack_binary_library_streaming: write failed for " +
-                               sidecar.string());
+      throw std::runtime_error("pack_binary_library_streaming: sidecar write failed");
+    cleanup.armed = false;
+    return true;
+  };
+
+  // Single-pass default: Codebook16 indexes up to 65,535 distinct probability
+  // values per class, which every flop class stays well under; this avoids the
+  // old survey pass that read every artifact twice. Only a class exceeding the
+  // cap triggers a second pass, under exact Doubles.
+  if (!run_pass(ProbabilityLayout::Codebook16)) {
+    std::fprintf(stderr, "pack: class exceeded the Codebook16 cap; rerunning with exact doubles\n");
+    if (!run_pass(ProbabilityLayout::Doubles))
+      throw std::runtime_error("pack_binary_library_streaming: Doubles pass unexpectedly failed");
   }
 }
 
+// ---------------------------------------------------------------------------
+// MmapLibrary
+// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // MmapLibrary
 // ---------------------------------------------------------------------------
@@ -772,25 +758,43 @@ struct MmapLibrary::Impl {
   // Parsed header.
   std::uint32_t class_count = 0;
   ProbabilityLayout codebook_type = ProbabilityLayout::Doubles;
+  std::uint8_t card_bucket_kind = 0;
+  std::uint64_t card_digest = 0;
+  std::uint64_t action_digest = 0;
   solver::UnifiedGame game;
   std::string sha256_hex;
 
-  // Parsed class sections.
+  // One bucket row: bucket id plus a section-relative byte offset into probs.
+  // Matches the on-disk 8-byte BucketEntry (u16 bucket, u16 reserved, u32).
+#pragma pack(push, 1)
+  struct BucketRecord {
+    std::uint16_t bucket = 0;
+    std::uint16_t reserved = 0;
+    std::uint32_t prob_offset = 0;
+  };
+#pragma pack(pop)
+  static_assert(sizeof(BucketRecord) == 8);
+  // Parsed class section. All column pointers reference the mmap region.
   struct ClassInfo {
     std::uint32_t class_id = 0;
     std::array<int, 3> canonical_board{};
-    std::uint32_t info_set_count = 0;
-    std::uint32_t action_count = 0;
-    // Pointers into the mmap region.
-    const std::uint64_t* hashes = nullptr;
-    const std::uint32_t* row_offsets = nullptr;
-    const std::uint16_t* action_counts = nullptr;
-    const CompactAction* actions = nullptr;
+    const std::uint8_t* section_base = nullptr;  // for section-relative offsets
+    std::uint32_t node_count = 0;
+    std::uint32_t total_menu_actions = 0;
+    std::uint32_t total_bucket_rows = 0;
+    std::uint32_t total_prob_entries = 0;
+    std::uint32_t codebook_size = 0;
+    const std::uint64_t* node_hash = nullptr;
+    const std::uint32_t* node_actions_offset = nullptr;
+    const std::uint16_t* node_actions_count = nullptr;
+    const std::uint32_t* node_bucket_start = nullptr;
+    const std::uint16_t* node_bucket_count = nullptr;
+    const BucketRecord* bucket_rows = nullptr;  // total_bucket_rows records
+    const CompactAction* actions = nullptr;     // actions_blob base
     const std::uint8_t* prob_indices_8 = nullptr;
     const std::uint16_t* prob_indices_16 = nullptr;
     const double* probabilities = nullptr;
     const double* codebook = nullptr;
-    // Copied from mmap (small: 40 combos × 16 bytes).
     std::vector<solver::WeightedHand> range;
   };
   std::vector<ClassInfo> classes;
@@ -916,6 +920,17 @@ void MmapLibrary::open(const std::filesystem::path& path, bool verify_sha256) {
   const std::uint8_t player_count = read_u8(base + 17);
   const std::uint8_t button = read_u8(base + 18);
   const std::uint8_t terminal_depth = read_u8(base + 19);
+  impl_->card_bucket_kind = read_u8(base + 20);
+  if (impl_->card_bucket_kind !=
+      static_cast<std::uint8_t>(
+          static_cast<std::underlying_type_t<abstraction::CardBucketKind>>(solver::kNSeatCardKind)))
+    throw std::runtime_error(
+        "mmap library: card bucket kind does not match the compiled engine in " + path.string());
+  impl_->card_digest = read_u64(base + 200);
+  impl_->action_digest = read_u64(base + 208);
+  // Cross-check against the resident's loaded policy identity at the build
+  // site via card_abstraction_digest()/action_abstraction_digest() accessors;
+  // open() itself validates the compiled bucket kind.
 
   // Build the shared game identity.
   impl_->game.def.player_count = player_count;
@@ -931,9 +946,9 @@ void MmapLibrary::open(const std::filesystem::path& path, bool verify_sha256) {
   impl_->game.def.board = {0, 0, 0, 0, 0};
   impl_->game.def.board_size = 0;
 
-  // Parse sizes.
+  // Parse sizes (v2 header: sizes begin at offset 216 after the two digests).
   {
-    const std::uint8_t* p = base + 200;
+    const std::uint8_t* p = base + 216;
     for (std::size_t street = 0; street < 4; ++street) {
       const std::uint8_t bets_count = read_u8(p);
       const std::uint8_t raises_count = read_u8(p + 1);
@@ -953,11 +968,11 @@ void MmapLibrary::open(const std::filesystem::path& path, bool verify_sha256) {
   }
 
   // Parse class offsets and class sections. The sizes section starts at
-  // offset 200; its total byte length is recomputed by walking the four
+  // offset 216; its total byte length is recomputed by walking the four
   // street entries (2-byte header + 16 bytes per fraction).
   std::size_t sizes_bytes = 0;
   {
-    const std::uint8_t* p = base + 200;
+    const std::uint8_t* p = base + 216;
     for (std::size_t street = 0; street < 4; ++street) {
       const std::uint8_t bets_count = read_u8(p);
       const std::uint8_t raises_count = read_u8(p + 1);
@@ -968,7 +983,7 @@ void MmapLibrary::open(const std::filesystem::path& path, bool verify_sha256) {
     }
   }
 
-  const std::size_t class_offsets_pos = 200 + sizes_bytes;
+  const std::size_t class_offsets_pos = 216 + sizes_bytes;
   const std::uint8_t* offsets_ptr = base + class_offsets_pos;
 
   impl_->classes.reserve(impl_->class_count);
@@ -976,67 +991,105 @@ void MmapLibrary::open(const std::filesystem::path& path, bool verify_sha256) {
     const std::uint64_t section_offset = read_u64(offsets_ptr + i * 8);
     if (section_offset >= impl_->size)
       throw std::runtime_error("mmap library: class section offset out of bounds");
+    // Sections are page-aligned and ordered; bound each parse by the next
+    // section start (or the file end) so every offset is range-checked.
+    const std::uint64_t next_offset = (i + 1 < impl_->class_count)
+                                          ? read_u64(offsets_ptr + (i + 1) * 8)
+                                          : static_cast<std::uint64_t>(impl_->size);
+    if (next_offset <= section_offset || next_offset > impl_->size)
+      throw std::runtime_error("mmap library: class section bounds invalid");
     const std::uint8_t* sec = base + section_offset;
+    const std::uint8_t* sec_end = base + next_offset;
+    auto in_bounds = [&](const std::uint8_t* p, std::size_t bytes) {
+      return p >= sec && p <= sec_end && p + bytes <= sec_end;
+    };
 
     Impl::ClassInfo info;
+    info.section_base = sec;
     info.class_id = read_u32(sec);
     info.canonical_board = {static_cast<int>(read_u8(sec + 4)), static_cast<int>(read_u8(sec + 5)),
                             static_cast<int>(read_u8(sec + 6))};
-    info.info_set_count = read_u32(sec + 8);
-    info.action_count = read_u32(sec + 12);
-    const std::uint32_t codebook_size = read_u32(sec + 16);
-    const std::uint16_t range_count = read_u16(sec + 20);
+    info.node_count = read_u32(sec + 8);
+    const std::uint16_t range_count = read_u16(sec + 12);
+    info.total_menu_actions = read_u32(sec + 16);
+    info.total_bucket_rows = read_u32(sec + 20);
+    info.total_prob_entries = read_u32(sec + 24);
+    info.codebook_size = read_u32(sec + 28);
 
-    // Range entries start at offset 24.
-    const std::uint8_t* p = sec + 24;
+    // Walk a section-relative byte cursor; section starts are 4096-aligned,
+    // so relative and absolute alignments agree.
+    std::size_t o = 40;
+    auto at = [&](std::size_t rel) -> const std::uint8_t* {
+      if (rel >= static_cast<std::size_t>(sec_end - sec))
+        throw std::runtime_error(
+            "mmap library: section offset out of bounds (rel=" + std::to_string(rel) +
+            " sec_len=" + std::to_string(sec_end - sec) + " class=" + std::to_string(i) + ")");
+      return sec + rel;
+    };
     info.range.reserve(range_count);
     for (std::uint16_t r = 0; r < range_count; ++r) {
-      const std::uint64_t combo_idx = read_u64(p);
-      const double weight = read_f64(p + 8);
-      const auto cards = bs::comboCards(static_cast<int>(combo_idx));
-      info.range.push_back(solver::WeightedHand{cards, weight});
-      p += 16;
+      const std::uint64_t combo_idx = read_u64(at(o));
+      const double weight = read_f64(at(o) + 8);
+      info.range.push_back(
+          solver::WeightedHand{bs::comboCards(static_cast<int>(combo_idx)), weight});
+      o += 16;
+    }
+    o = (o + 7) & ~std::size_t{7};  // pad to codebook f64 region
+
+    if (info.codebook_size > 0) {
+      info.codebook = reinterpret_cast<const double*>(at(o));
+      o += static_cast<std::size_t>(info.codebook_size) * 8;
     }
 
-    // Codebook.
-    if (codebook_size > 0) {
-      info.codebook = reinterpret_cast<const double*>(p);
-      p += codebook_size * 8;
+    info.node_hash = reinterpret_cast<const std::uint64_t*>(at(o));
+    o += static_cast<std::size_t>(info.node_count) * 8;
+    info.node_actions_offset = reinterpret_cast<const std::uint32_t*>(at(o));
+    o += static_cast<std::size_t>(info.node_count) * 4;
+    info.node_actions_count = reinterpret_cast<const std::uint16_t*>(at(o));
+    o += static_cast<std::size_t>(info.node_count) * 2;
+    o = (o + 3) & ~std::size_t{3};  // pad to the u32 bucket-start column
+    info.node_bucket_start = reinterpret_cast<const std::uint32_t*>(at(o));
+    o += static_cast<std::size_t>(info.node_count) * 4;
+    info.node_bucket_count = reinterpret_cast<const std::uint16_t*>(at(o));
+    const std::uint16_t* node_bucket_count = info.node_bucket_count;
+    o += static_cast<std::size_t>(info.node_count) * 2;
+    o = (o + 7) & ~std::size_t{7};  // pad to bucket rows (8-byte records)
+
+    info.bucket_rows = reinterpret_cast<const Impl::BucketRecord*>(at(o));
+    o += static_cast<std::size_t>(info.total_bucket_rows) * 8;
+    info.actions = reinterpret_cast<const CompactAction*>(at(o));
+    o += static_cast<std::size_t>(info.total_menu_actions) * 3;
+
+    // Cross-check the declared counters before trusting any offset.
+    std::uint32_t menu_sum = 0;
+    std::uint32_t bucket_sum = 0;
+    std::uint32_t prob_sum = 0;
+    for (std::uint32_t n = 0; n < info.node_count; ++n) {
+      menu_sum += info.node_actions_count[n];
+      bucket_sum += node_bucket_count[n];
+      prob_sum += static_cast<std::uint32_t>(info.node_actions_count[n]) * node_bucket_count[n];
+      if (info.node_bucket_start[n] > info.total_bucket_rows ||
+          static_cast<std::uint64_t>(info.node_bucket_start[n]) + node_bucket_count[n] >
+              info.total_bucket_rows)
+        throw std::runtime_error("mmap library: node bucket slice out of bounds");
     }
+    if (menu_sum != info.total_menu_actions || bucket_sum != info.total_bucket_rows ||
+        prob_sum != info.total_prob_entries)
+      throw std::runtime_error("mmap library: section counter cross-check failed");
 
-    // Hashes.
-    info.hashes = reinterpret_cast<const std::uint64_t*>(p);
-    p += info.info_set_count * 8;
-
-    // Row offsets.
-    info.row_offsets = reinterpret_cast<const std::uint32_t*>(p);
-    p += info.info_set_count * 4;
-
-    // Action counts.
-    info.action_counts = reinterpret_cast<const std::uint16_t*>(p);
-    p += info.info_set_count * 2;
-
-    // Actions (CompactAction is packed, 1-byte alignment).
-    info.actions = reinterpret_cast<const CompactAction*>(p);
-    p += info.action_count * 3;
-
-    // Probability storage.
-    if (impl_->codebook_type == ProbabilityLayout::Codebook8) {
-      info.prob_indices_8 = p;
-    } else if (impl_->codebook_type == ProbabilityLayout::Codebook16) {
-      // Align to 2 bytes.
-      const auto addr = reinterpret_cast<std::uintptr_t>(p);
-      if (addr % 2 != 0)
-        ++p;
-      info.prob_indices_16 = reinterpret_cast<const std::uint16_t*>(p);
-    } else {
-      // Doubles: align to 8 bytes.
-      const auto addr = reinterpret_cast<std::uintptr_t>(p);
-      const std::size_t misalign = addr % 8;
-      if (misalign != 0)
-        p += (8 - misalign);
-      info.probabilities = reinterpret_cast<const double*>(p);
-    }
+    const std::size_t width = prob_entry_width(impl_->codebook_type);
+    o = (width == 1) ? o : (o + width - 1) & ~(width - 1);
+    if (o + static_cast<std::size_t>(info.total_prob_entries) * width >
+        static_cast<std::size_t>(sec_end - sec))
+      throw std::runtime_error("mmap library: probability region out of bounds");
+    const std::uint8_t* probs = sec + o;
+    info.prob_indices_8 = (impl_->codebook_type == ProbabilityLayout::Codebook8) ? probs : nullptr;
+    info.prob_indices_16 = (impl_->codebook_type == ProbabilityLayout::Codebook16)
+                               ? reinterpret_cast<const std::uint16_t*>(probs)
+                               : nullptr;
+    info.probabilities = (impl_->codebook_type == ProbabilityLayout::Doubles)
+                             ? reinterpret_cast<const double*>(probs)
+                             : nullptr;
 
     impl_->classes.push_back(std::move(info));
   }
@@ -1049,60 +1102,75 @@ void MmapLibrary::open(const std::filesystem::path& path, bool verify_sha256) {
   }
 }
 
-bool MmapLibrary::find(std::uint32_t class_id, std::span<const std::uint8_t> compact_key,
-                       CompactRowView& out) const {
+bool MmapLibrary::find_bucket(std::uint32_t class_id,
+                              std::span<const std::uint8_t> public_compact_key,
+                              std::uint16_t bucket, CompactRowView& out) const {
   const auto it = impl_->class_id_map.find(class_id);
   if (it == impl_->class_id_map.end())
     return false;
   const Impl::ClassInfo& info = impl_->classes[it->second];
 
-  const std::uint64_t target_hash = hash_key_64(compact_key);
+  const std::uint64_t target_hash = hash_key_64(public_compact_key);
 
-  // Binary search over the sorted hashes.
+  // First binary search: sorted node hashes.
   std::size_t lo = 0;
-  std::size_t hi = info.info_set_count;
+  std::size_t hi = info.node_count;
   while (lo < hi) {
     const std::size_t mid = lo + (hi - lo) / 2;
-    const std::uint64_t mid_hash = info.hashes[mid];
+    const std::uint64_t mid_hash = info.node_hash[mid];
     if (mid_hash < target_hash)
       lo = mid + 1;
     else
       hi = mid;
   }
-  if (lo >= info.info_set_count || info.hashes[lo] != target_hash)
+  if (lo >= info.node_count || info.node_hash[lo] != target_hash)
+    return false;  // unknown public node
+
+  const std::uint32_t bucket_start = info.node_bucket_start[lo];
+  const std::uint16_t bucket_count = info.node_bucket_count[lo];
+  if (bucket_count == 0)
     return false;
 
-  // Verify the full compact key (hash collisions are possible).
-  // The compact key is not stored in the binary format (only the hash), so
-  // a hash collision would return the wrong row. The 64-bit hash makes this
-  // negligibly unlikely, but the ResidentIndex path verifies the full key.
-  // For the mmap path, we rely on the 64-bit hash's collision resistance.
-  // TODO: store compact keys in the binary format for full-key verification.
+  // Second binary search: bucket id within the node's contiguous slice.
+  const Impl::BucketRecord* rows = info.bucket_rows + bucket_start;
+  std::size_t blo = 0;
+  std::size_t bhi = bucket_count;
+  while (blo < bhi) {
+    const std::size_t mid = blo + (bhi - blo) / 2;
+    if (rows[mid].bucket < bucket)
+      blo = mid + 1;
+    else
+      bhi = mid;
+  }
+  if (blo >= bucket_count || rows[blo].bucket != bucket)
+    return false;  // node exists but this holding's bucket was never trained
 
-  const std::uint32_t row_offset = info.row_offsets[lo];
-  const std::uint16_t action_count = info.action_counts[lo];
+  const std::uint32_t menu_byte_offset = info.node_actions_offset[lo];
+  const std::uint16_t action_count = info.node_actions_count[lo];
+  const std::uint32_t prob_byte_offset = rows[blo].prob_offset;
 
   out.count = action_count;
-  out.actions = info.actions + row_offset;
+  out.actions = reinterpret_cast<const CompactAction*>(info.section_base + menu_byte_offset);
   out.prob_layout = impl_->codebook_type;
+  const std::uint8_t* prob_ptr = info.section_base + prob_byte_offset;
   switch (impl_->codebook_type) {
     case ProbabilityLayout::Codebook8:
       out.codebook = info.codebook;
-      out.probability_indices = info.prob_indices_8 + row_offset;
+      out.probability_indices = prob_ptr;
       out.probability_indices_16 = nullptr;
       out.probabilities = nullptr;
       break;
     case ProbabilityLayout::Codebook16:
       out.codebook = info.codebook;
       out.probability_indices = nullptr;
-      out.probability_indices_16 = info.prob_indices_16 + row_offset;
+      out.probability_indices_16 = reinterpret_cast<const std::uint16_t*>(prob_ptr);
       out.probabilities = nullptr;
       break;
     case ProbabilityLayout::Doubles:
       out.codebook = nullptr;
       out.probability_indices = nullptr;
       out.probability_indices_16 = nullptr;
-      out.probabilities = info.probabilities + row_offset;
+      out.probabilities = reinterpret_cast<const double*>(prob_ptr);
       break;
   }
   return true;
@@ -1127,12 +1195,28 @@ const std::array<int, 3>& MmapLibrary::canonical_board(std::uint32_t class_id) c
   return impl_->find_class(class_id).canonical_board;
 }
 
-std::size_t MmapLibrary::info_set_count(std::uint32_t class_id) const {
-  return impl_->find_class(class_id).info_set_count;
+std::size_t MmapLibrary::node_count(std::uint32_t class_id) const {
+  return impl_->find_class(class_id).node_count;
 }
 
-std::size_t MmapLibrary::action_count(std::uint32_t class_id) const {
-  return impl_->find_class(class_id).action_count;
+std::size_t MmapLibrary::bucket_row_count(std::uint32_t class_id) const {
+  return impl_->find_class(class_id).total_bucket_rows;
+}
+
+std::size_t MmapLibrary::menu_action_count(std::uint32_t class_id) const {
+  return impl_->find_class(class_id).total_menu_actions;
+}
+
+std::uint8_t MmapLibrary::card_bucket_kind() const noexcept {
+  return impl_->card_bucket_kind;
+}
+
+std::uint64_t MmapLibrary::card_abstraction_digest() const noexcept {
+  return impl_->card_digest;
+}
+
+std::uint64_t MmapLibrary::action_abstraction_digest() const noexcept {
+  return impl_->action_digest;
 }
 
 const solver::UnifiedGame& MmapLibrary::game() const noexcept {

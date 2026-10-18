@@ -373,12 +373,15 @@ const ResidentPolicySet::LazyEntry* ResidentPolicySet::ensure_lazy_loaded(
   }
 }
 
-// Row lookup dispatcher: mmap → MmapLibrary::find, lazy → LRU cache,
+// Row lookup dispatcher: mmap → MmapLibrary::find_bucket, lazy → LRU cache,
 // eager → ResidentIndex::find.
 bool ResidentPolicySet::find_row(const Record& record, std::span<const std::uint8_t> compact_key,
                                  CompactRowView& out) const {
+  // BSFLIB02 stores public-node/bucket rows, not concrete-combo rows, so a raw
+  // concrete compact key cannot resolve an mmap record; callers must use
+  // find_row_words for that backend. This path serves lazy/eager records.
   if (record.mmap_library)
-    return record.mmap_library->find(record.mmap_class_id, compact_key, out);
+    return false;
   if (record.lazy) {
     const LazyEntry* entry = ensure_lazy_loaded(record);
     if (!entry)
@@ -386,6 +389,56 @@ bool ResidentPolicySet::find_row(const Record& record, std::span<const std::uint
     return entry->index.find(compact_key, out);
   }
   return record.index.find(compact_key, out);
+}
+
+// RFC 0026 bucket-aware dispatcher from information key words.
+bool ResidentPolicySet::find_row_words(const Record& record, std::span<const std::uint64_t> key,
+                                       CompactRowView& out) const {
+  if (record.mmap_library) {
+    if (key.size() < 4)
+      return false;
+    const std::size_t board_size = static_cast<std::size_t>(key[3]);
+    if (board_size != 0 && board_size != 3 && board_size != 4 && board_size != 5)
+      return false;
+    if (key.size() < 4 + board_size)
+      return false;
+    // Public compact key: seat, board_size, board, then 5 bytes per action
+    // (street, seat, type, target u16) — the compact encoding minus own cards.
+    std::array<std::uint8_t, 512> public_key{};
+    std::size_t n = 0;
+    auto put = [&](std::uint64_t v) { public_key[n++] = static_cast<std::uint8_t>(v); };
+    put(key[0]);
+    put(static_cast<std::uint64_t>(board_size));
+    for (std::size_t i = 0; i < board_size; ++i)
+      put(key[4 + i]);
+    for (std::size_t w = 4 + board_size; w + 3 < key.size(); w += 4) {
+      if (key[w] > 3 || key[w + 1] > 9 || key[w + 2] > 4 || key[w + 3] > 0xffff)
+        return false;
+      put(key[w]);
+      put(key[w + 1]);
+      put(key[w + 2]);
+      put(key[w + 3] & 0xffu);
+      put((key[w + 3] >> 8) & 0xffu);
+    }
+    const std::array<int, 2> hole{static_cast<int>(key[1]), static_cast<int>(key[2])};
+    std::array<int, 5> board{};
+    for (std::size_t i = 0; i < board_size; ++i)
+      board[i] = static_cast<int>(key[4 + i]);
+    const std::uint32_t bucket = abstraction::card_bucket(
+        solver::kNSeatCardKind, hole, std::span<const int>(board.data(), board_size));
+    if (bucket > 0xffff)
+      return false;
+    return record.mmap_library->find_bucket(record.mmap_class_id,
+                                            std::span<const std::uint8_t>(public_key.data(), n),
+                                            static_cast<std::uint16_t>(bucket), out);
+  }
+  // Lazy/eager: compact the full concrete key and use the resident index.
+  std::array<std::uint8_t, 512> compact{};
+  const std::size_t compact_size = ResidentIndex::compact_information_key(
+      key, std::span<std::uint8_t>(compact.data(), compact.size()));
+  if (compact_size == 0)
+    return false;
+  return find_row(record, std::span<const std::uint8_t>(compact.data(), compact_size), out);
 }
 
 // Game accessor: lazy records load on demand; mmap/eager return the
@@ -432,8 +485,11 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
       record.result.path = *options.binary_library_path;
       record.result.sha256_hex = lib_ptr->sha256_hex();
       record.result.status = RootStatus::Advertised;
-      record.result.information_sets = lib_ptr->info_set_count(class_id);
-      record.result.probability_count = lib_ptr->action_count(class_id);
+      // RFC 0026 semantics: these counts are distinct node-bucket rows and
+      // menu-action totals, not the concrete info-set/action counts a SQLite
+      // artifact reports.
+      record.result.information_sets = lib_ptr->bucket_row_count(class_id);
+      record.result.probability_count = lib_ptr->menu_action_count(class_id);
       record.result.resident_bytes = 0;  // mmap uses no resident heap
 
       // Set up the game identity: shared fields from the library header,
@@ -827,13 +883,9 @@ MissReason read_action_probabilities(const ResidentPolicySet& set,
     std::array<int, 2> own{cards[0], cards[1]};
     if (!fill_key(scratch, actor, own, prefix_board, prefix))
       return MissReason::OffTree;
-    if (!compact_scratch_key(scratch))
-      return MissReason::OffTree;
     CompactRowView row;
-    if (!set.find_row(
-            record,
-            std::span<const std::uint8_t>(scratch.compact_key.data(), scratch.compact_key_size),
-            row))
+    if (!set.find_row_words(
+            record, std::span<const std::uint64_t>(scratch.key.data(), scratch.key_size), row))
       return MissReason::MissingHistory;
     std::size_t action_index = 0;
     if (!locate_action(row, event.action, action_index))
@@ -1041,12 +1093,9 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   const std::span<const int> canon_board(canon_board_buf.data(), canon_board_size);
   if (!fill_key(scratch, *state.actor(), canon_hero, canon_board, history))
     return miss_answer(MissReason::OffTree);
-  if (!compact_scratch_key(scratch))
-    return miss_answer(MissReason::OffTree);
   CompactRowView compact;
-  if (!find_row(record,
-                std::span<const std::uint8_t>(scratch.compact_key.data(), scratch.compact_key_size),
-                compact))
+  if (!find_row_words(record, std::span<const std::uint64_t>(scratch.key.data(), scratch.key_size),
+                      compact))
     return miss_answer(MissReason::UntrainedCombo);
   // Failure-safe private conditioning: even with a trained row, never return a
   // blueprint row for a hero combination whose reach along the OBSERVED public
@@ -1148,15 +1197,11 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
     const solver::InformationKey key = solver::make_information_key(
         player, canon_cards, std::span<const int>(canon_board_buf.data(), canon_board_size),
         history);
-    // Compact the information key for the compact index.
-    const std::size_t compact_size = ResidentIndex::compact_information_key(
-        std::span<const std::uint64_t>(key.data(), key.size()),
-        std::span<std::uint8_t>(compact_key_.data(), compact_key_.size()));
-    if (compact_size == 0)
-      return std::nullopt;
+    // RFC 0026: dispatch by key words — the mmap library projects to the
+    // holding's card bucket; the resident index compacts the concrete key.
     CompactRowView compact;
-    if (!set_->find_row(*record_, std::span<const std::uint8_t>(compact_key_.data(), compact_size),
-                        compact))
+    if (!set_->find_row_words(*record_, std::span<const std::uint64_t>(key.data(), key.size()),
+                              compact))
       return std::nullopt;
     // Expand compact actions into the mutable scratch so the resolver sees
     // poker::Action. Probabilities are deferred from the codebook (or the

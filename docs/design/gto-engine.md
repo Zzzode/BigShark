@@ -1126,21 +1126,51 @@ late output is refused. This preserves startup reuse without weakening policy
 checks or claiming that native construction/cancellation and complete six-max
 receipt-to-action costs are qualified.
 
-**Consolidated binary format (RFC 0012 Phase 2).** The offline
-`bigshark-flop-library-pack` tool converts a directory of schema-v3 SQLite
-class files into a single mmap-friendly binary file (`library.bin`). The
-binary layout is a 512-byte header (magic `BSFLIB01`, version, class count,
-codebook type, per-class offsets) followed by 4096-byte-aligned class
-sections. Each section stores sorted 64-bit FNV-1a hashes (enabling binary
-search with zero slot overhead), per-row action arrays, and the probability
-codebook (Codebook8, Codebook16, or Doubles — the same compression the
-resident index uses). A `library.bin.sha256` sidecar file records the
-checksum. The `MmapLibrary` class (`include/bs/mmap_library.hpp`) opens the
-file, mmaps it read-only (`PROT_READ, MAP_PRIVATE`), and serves lookups via
-binary search over the sorted hashes. The `CompactRowView`'s existing
-`codebook` pointer is set to the mmap'd codebook address. `MmapLibrary` is
-immutable and thread-safe after `open`; multiple processes can mmap the same
-file and share physical pages.
+**Bucket-deduplicated binary format (RFC 0026, supersedes the RFC 0012
+Phase 2 layout).** The offline `bigshark-flop-library-pack` tool converts a
+directory of schema-v3 SQLite class files into a single mmap-friendly file
+(`library.bin`, magic `BSFLIB02`). N-seat training seals rows under
+`(card_bucket(kNSeatCardKind, holding, board), tree node)`; the SQLite
+publish path copies each sealed row onto every concrete holding of that
+bucket. The packer reverses the copy and stores, per class, only:
+
+- fixed-stride sorted node columns (`node_hash` u64, menu offset/count,
+  bucket slice start/count);
+- one flat sorted `BucketEntry` table (`bucket_id`, probability-run offset);
+- one action menu per public node;
+- per-bucket probability runs against a per-class codebook (Codebook8/16
+  indices or exact Doubles);
+- the declared range and the card/action abstraction digests plus the
+  compiled card-bucket-kind ordinal in the file header.
+
+The resident computes `card_bucket(kind, hero_cards, canonical_board)` at
+lookup time and resolves `(public-node hash, bucket)` with two binary
+searches; a present node with no trained bucket is a miss with the same
+meaning as the exporter skipping an unreached category. The three resident
+call sites (hero decision, subgame resolver blueprint, and the
+up-to-1,326-combo public-belief replay loop) dispatch through
+`ResidentPolicySet::find_row_words`; the replay builds the public key once
+per observed action and evaluates only the bucket per combo. Lookups are
+zero-allocation against the mmap region; `MmapLibrary` is immutable and
+thread-safe after `open`.
+
+Measured (2026-10-18): the six-way flop library packs from **334 GB of
+SQLite artifacts to 107.93 MB** across 1,745 classes (~3,100x), with size
+independent of the training-range width (rows scale with public nodes ×
+distinct sealed buckets, not concrete combos). The packer is single-pass
+(Codebook16 by default; a class exceeding its 65,535 distinct-value cap
+triggers one exact-Doubles rewrite), streaming one artifact at a time so
+peak memory stays bounded by one class. It fails loudly if two concrete rows
+sealed under one `(node, bucket)` are ever non-identical, or if cross-class
+game identity/digests disagree. The `bigshark-flop-library-verify-pack` tool
+exhaustively reloads every SQLite class and asserts bitwise menu/
+probability equivalence plus exact miss semantics against the `.bin`;
+`library.bin.sha256` records the file checksum.
+
+The earlier `BSFLIB01` layout (one resident row per concrete combo, with
+only probability *values* codebook-deduplicated) and its reader/writer were
+removed in the same change; existing `.bin` files are regenerated from the
+canonical SQLite artifacts.
 
 Full-file SHA-256 verification at open time is opt-in via
 `ResidentOptions::verify_binary_library` (engine-host flag `--verify-binary`).
@@ -1153,13 +1183,10 @@ Measured (2026-10-07): 2 BB library (421 MB `.bin`, 1,755 classes) loads in
 header parse) and independent of file size; the 25 BB library (27 GB on disk)
 is expected to load in under 1 second without verification.
 
-The pack tool uses a streaming writer (`pack_binary_library_streaming`) that
-loads one SQLite artifact at a time in two passes — a lightweight survey pass
-that counts distinct probability bit patterns (to choose the file-level
-codebook layout), and a write pass that builds the full class data and
-appends the section to the file. Peak memory is ~200 MB (one class) rather
-than ~98 GB (all classes); the original all-in-memory approach was OOM-killed
-on the 25 BB library. Both variants produce byte-identical output.
+The pack tool uses a streaming single-pass writer
+(`pack_binary_library_streaming`) that loads one SQLite artifact at a time;
+peak memory is bounded by the largest single class (~200 MB for the six-way
+artifacts) rather than the whole library.
 
 The engine host's `--flop-library` flag accepts either a directory (SQLite,
 current behavior) or a `.bin` file (mmap). Auto-detection is by file

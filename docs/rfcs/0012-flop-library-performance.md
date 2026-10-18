@@ -277,7 +277,12 @@ introduced.
 schema-v3 SQLite class files into a single binary file, and a `MmapLibrary`
 class in the resident layer that reads it.
 
-**Binary file layout**:
+**Binary file layout** — historical record: the `BSFLIB01` layout below was
+replaced by the bucket-deduplicated `BSFLIB02` layout in
+[RFC 0026](0026-bucket-deduplicated-flop-library-format.md), which supersedes
+this RFC's Phase 2 binary format (parallel training, lazy loading, and the
+SQLite canonical format remain in force). The v1 reader/writer were removed
+and existing libraries repacked.
 
 ```
 ┌──────────────────────────────────────────────────┐

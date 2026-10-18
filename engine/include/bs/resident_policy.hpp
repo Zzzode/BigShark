@@ -319,6 +319,13 @@ class ResidentPolicySet {
   // ResidentBlueprintSource) can dispatch through it.
   bool find_row(const Record& record, std::span<const std::uint8_t> compact_key,
                 CompactRowView& out) const;
+  // RFC 0026: dispatch from the canonical information KEY WORDS
+  // (make_information_key layout: actor, own0, own1, board_size, board,
+  // action words). An mmap (bucket-deduplicated) record derives the public
+  // compact key and the holding's card bucket and calls find_bucket; lazy
+  // and eager records compact the full key and use the ResidentIndex.
+  bool find_row_words(const Record& record, std::span<const std::uint64_t> key,
+                      CompactRowView& out) const;
   // RFC 0012 Phase 3: game accessor. Lazy records load on demand; mmap/eager
   // records return the pre-built game. Public so file-local helpers can
   // access the game identity for belief computation.

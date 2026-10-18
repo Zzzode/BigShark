@@ -501,6 +501,30 @@ target_link_libraries(bigshark-flop-library-pack PRIVATE
   bigshark_artifacts
 )
 
+# RFC 0026 AC2: exhaustive SQLite -> BSFLIB02 equivalence verifier. Manual
+# target, NOT a CTest (operates on large on-disk artifact libraries).
+add_executable(bigshark-flop-library-verify-pack
+  benchmarks/flop_library_verify_pack.cpp
+)
+target_link_libraries(bigshark-flop-library-verify-pack PRIVATE
+  bigshark_resident
+  bigshark_artifacts
+)
+target_include_directories(bigshark-flop-library-verify-pack PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# RFC 0026 AC4: cold-open and bucket-lookup microbenchmark. Manual target.
+add_executable(bigshark-mmap-cold-open-bench
+  benchmarks/mmap_cold_open_bench.cpp
+)
+target_link_libraries(bigshark-mmap-cold-open-bench PRIVATE
+  bigshark_resident
+)
+target_include_directories(bigshark-mmap-cold-open-bench PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 # RFC 0009 W4b: offline preflop profile builder. Trains a full-range (1,326
 # combos/seat) heads-up preflop flop-terminal profile at a declared stack
 # depth and publishes a schema-v2 artifact. Manual target, NOT a CTest.
