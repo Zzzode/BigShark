@@ -98,6 +98,24 @@ class IllegalPolicy final : public BehaviorPolicy {
   }
 };
 
+// Deterministic fold policy: fold when facing a wager, check otherwise. The
+// "always-fold baseline" of the information-restriction negative control.
+class FoldPolicy final : public BehaviorPolicy {
+ public:
+  std::vector<PolicyAction> distribution(const GameState& state, std::size_t, HoleCards,
+                                         const PolicyContext&) const override {
+    const LegalActions legal = state.legal();
+    poker::Action a;
+    if (legal.check)
+      a = {poker::ActionType::Check, 0};
+    else
+      a = {poker::ActionType::Fold, 0};
+    if (!legal.contains(a))
+      throw std::runtime_error("fold policy produced an illegal action");
+    return {{a, 1.0}};
+  }
+};
+
 GameDef preflop_def(std::size_t n, Chips bb, Chips stack) {
   GameDef def{};
   def.player_count = n;
@@ -623,6 +641,118 @@ void test_pooled_br_does_not_peek() {
         "omniscient bound is STRICTLY above the pooled best response (no card peeking)");
 }
 
+// Qualification proposal required information-restriction negative control.
+// The responder (responder_seat) holds one FIXED hand on a fully dealt river
+// board and faces an all-in fold/call decision; the opponent is equally likely
+// to hold a hand that wins or a hand that loses, indistinguishable from the
+// responder's seat.  Chip accounting is the proposal's fixture scaled by 2 so
+// the river lead (2) is a legal full raise at big_blind 2:
+//
+//                        fold      call
+//   strong opponent      -2        -4   (opponent's trip nines win)
+//   weak opponent        -2        +4   (responder's pair of threes wins)
+//
+// A legal information-set response is ONE action for both worlds.  Folding is
+// worth -2; calling pools to (-4 + 4)/2 = 0, so the pooled best response calls
+// with value 0.  A hidden-information-dependent response would fold in the
+// strong world and call in the weak one, averaging (-2 + 4)/2 = 1 — illegal at
+// this information set, exactly what exact_best_response_utility must refuse.
+// Against the always-fold baseline (-2) the legal gain is 2; the omniscient
+// (world-wise) calculation reports 3.  Divide by 2 to recover the proposal's
+// exact figures (-1/-2 vs -1/+2; BR 0; world-wise 0.5; gains 1 vs 1.5).
+void run_information_restriction_fixture(std::size_t responder_seat) {
+  using bs::solver::MultiwayWeightedHand;
+  GameDef def{};
+  def.player_count = 2;
+  def.button = 0;
+  def.big_blind = 2;
+  // Rainbow unpaired board: no flush, and no hand below a pair improves.
+  def.board = {card("2c"), card("5h"), card("9d"), card("Kc"), card("4s")};
+  def.board_size = 5;
+  const std::size_t opp = 1 - responder_seat;
+  // Before the river both seats had matched 2; the opponent led for 2 more on
+  // the river (raise rights exhausted, so the responder's menu is fold/call),
+  // and the responder faces calling 2.
+  def.contributions[responder_seat] = 2;
+  def.contributions[opp] = 4;
+  def.stacks[responder_seat] = 100;
+  def.stacks[opp] = 100;
+  def.pot = 6;
+  def.street_committed[responder_seat] = 0;
+  def.street_committed[opp] = 2;
+  def.last_full_raise = 2;
+  def.raise_rights[responder_seat] = false;
+  def.raise_rights[opp] = false;
+
+  // Sanity: the responder is the root actor with exactly fold/call.
+  GameState root(def);
+  check(*root.actor() == responder_seat, "negative control: responder is root actor");
+  const LegalActions legal = root.legal();
+  check(!legal.aggressive.has_value(), "negative control: all-in lead offers no raise");
+  check(legal.call, "negative control: calling is legal");
+
+  auto h = [&](const char* a, const char* b) {
+    return MultiwayWeightedHand{{card(a), card(b)}, 1.0};
+  };
+  std::vector<std::vector<MultiwayWeightedHand>> ranges(2);
+  // The responder's information is IDENTICAL in both worlds: one fixed hand.
+  ranges[responder_seat] = {h("3h", "3d")};  // pair of threes
+  // Two equally likely, indistinguishable opponent worlds.
+  ranges[opp] = {
+      h("9h", "9s"),  // strong: trip nines (board 9d) beats pair of threes
+      h("Ah", "Qh"),  // weak: ace high loses to pair of threes
+  };
+
+  FoldPolicy fold;
+  CheckCallPolicy check_call;
+  std::vector<const BehaviorPolicy*> profile(2);
+  profile[responder_seat] = &fold;
+  profile[opp] = &check_call;
+
+  // Always-fold baseline: -2 in every world.
+  OracleCounts pc;
+  const auto baseline = exact_oracle_utility(def, ranges, profile, &pc);
+  check(std::abs(baseline[responder_seat] - (-2.0)) < 1e-9,
+        "negative control: always-fold baseline is -2");
+
+  // The legal pooled best response must call: pooled value 0, strictly above
+  // folding's -2.  A pooled oracle that peeked would report 1 instead.
+  OracleCounts bc;
+  const auto br = exact_best_response_utility(def, ranges, profile, responder_seat, &bc);
+  check(std::abs(br[responder_seat] - 0.0) < 1e-9,
+        "negative control: pooled BR calls, value 0 (worlds pooled, not peeked)");
+
+  // The omniscient per-deal deviation is the named illegal answer, 1.
+  OracleCounts oc;
+  const auto omni = exact_omniscient_deviation_utility(def, ranges, profile, responder_seat, &oc);
+  check(std::abs(omni[responder_seat] - 1.0) < 1e-9,
+        "negative control: world-wise (omniscient) value is 1");
+  check(omni[responder_seat] - br[responder_seat] > 0.5 - 1e-9,
+        "negative control: omniscient 1 exceeds pooled 0 by the pinned 0.5 units");
+
+  // Gains against the -2 baseline, in 2x chip units: legal 2 vs erroneous 3
+  // (= proposal units 1 vs 1.5).
+  const double legal_gain = br[responder_seat] - baseline[responder_seat];
+  const double worldwise_gain = omni[responder_seat] - baseline[responder_seat];
+  check(std::abs(legal_gain - 2.0) < 1e-9, "negative control: legal gain is 2 chips (1 unit)");
+  check(std::abs(worldwise_gain - 3.0) < 1e-9,
+        "negative control: world-wise gain is 3 chips (1.5 units)");
+  check(std::abs(util_sum(br, 2)) < 1e-7, "negative control: BR vector stays zero-sum");
+
+  std::printf(
+      "[negative-control] responder=seat%zu baseline=%.1f pooledBR=%.1f "
+      "omniscient=%.1f legalGain=%.1f worldwiseGain=%.1f (units: /2)\n",
+      responder_seat, baseline[responder_seat], br[responder_seat], omni[responder_seat],
+      legal_gain, worldwise_gain);
+}
+
+void test_information_restriction_negative_control() {
+  // Both seat orientations must produce the identical pinned answer (the
+  // restriction is on the responder's information, not its seat label).
+  run_information_restriction_fixture(0);
+  run_information_restriction_fixture(1);
+}
+
 }  // namespace
 
 int main() {
@@ -640,6 +770,7 @@ int main() {
   test_oracle_rejects_nan();
   test_exact_best_response_gain();
   test_pooled_br_does_not_peek();
+  test_information_restriction_negative_control();
   if (failures) {
     std::fprintf(stderr, "STAGE6 SIMULATOR/ORACLE TESTS FAILED: %d\n", failures);
     return 1;

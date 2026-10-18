@@ -133,9 +133,12 @@ std::vector<double> direct_showdown_utility(std::span<const int> board,
   return values;
 }
 
-// Legal runout cards: {0..51} minus the board and every live seat's hole
-// cards. Folded seats carry a placeholder {-1, -1} — their cards are dead
-// and must not block the runout deck.
+// Legal runout cards: {0..51} minus the board and every known hole card.
+// Folded seats carry the {-1,-1} sentinel and are skipped: under the uniform
+// unconditioned fold-range model their two unknown cards are exchangeable
+// with the runout, so the marginal runout distribution is uniform over the
+// cards not fixed to the board or live seats (see collect_joint_deals for the
+// symmetry proof).  Do not use this shortcut with a conditioned fold-range.
 std::vector<int> legal_runout_cards(const GameState& state,
                                     const std::vector<std::array<int, 2>>& holes) {
   std::array<bool, 52> used{};
@@ -318,101 +321,6 @@ std::vector<std::array<int, 2>> make_representative_range() {
   range.push_back(hand("9c", "8c"));  // 98s
   return range;
 }
-
-// ---------------------------------------------------------------------------
-// NashConv walker
-// ---------------------------------------------------------------------------
-
-struct NashConvWalker {
-  const AbstractTree& tree;
-  const NSeatPolicy* policy = nullptr;  // null = uniform baseline
-  std::size_t traverser = 0;
-  bool best_response = false;
-  std::size_t fallbacks = 0;
-  const FrontierEvaluator* frontier = nullptr;  // RFC 0024: depth-limited trees
-
-  std::vector<double> policy_probs(std::size_t actor, std::size_t node_index,
-                                   const std::vector<Action>& menu,
-                                   const std::array<int, 2>& hole_cards,
-                                   const std::vector<int>& board) {
-    if (!policy) {
-      return std::vector<double>(menu.size(), 1.0 / static_cast<double>(menu.size()));
-    }
-    const auto bucket = static_cast<std::uint32_t>(card_bucket(kNSeatCardKind, hole_cards, board));
-    const NSeatInformationKey key{bucket, static_cast<std::uint64_t>(node_index)};
-    const auto it = policy->rows().find(key);
-    if (it != policy->rows().end()) {
-      const auto& row = it->second;
-      if (row.actions != menu)
-        throw std::runtime_error("subgame-nash-conv: row menu drifted from tree node");
-      return row.probabilities;
-    }
-    ++fallbacks;
-    // Match the trainer's own uniform fallback for unvisited rows.
-    return std::vector<double>(menu.size(), 1.0 / static_cast<double>(menu.size()));
-  }
-
-  double walk(const GameState& state, std::size_t node_index,
-              const std::vector<std::array<int, 2>>& holes) {
-    const auto& node = tree.node(node_index);
-
-    if (node.kind == NodeKind::TerminalFold)
-      return static_cast<double>(tree.terminal(node.terminal).chip_utility[traverser]);
-
-    if (node.kind == NodeKind::TerminalShowdown) {
-      const auto& payload = tree.terminal(node.terminal);
-      std::vector<std::array<int, 2>> live(payload.live_count);
-      for (std::size_t i = 0; i < payload.live_count; ++i)
-        live[i] = holes[payload.live_order[i]];
-      return static_cast<double>(state.settle_showdown(live).chip_utility[traverser]);
-    }
-
-    if (node.kind == NodeKind::TerminalFrontier) {
-      if (!frontier)
-        throw std::runtime_error("nash-conv walker: TerminalFrontier without frontier evaluator");
-      const auto& payload = tree.terminal(node.terminal);
-      const auto board = std::vector<int>(state.board().begin(), state.board().end());
-      std::vector<std::array<int, 2>> hands(holes.size());
-      for (std::size_t i = 0; i < holes.size(); ++i)
-        hands[i] = holes[i];
-      return frontier->evaluate(board, hands, payload)[traverser];
-    }
-
-    if (node.is_chance()) {
-      const auto legal = legal_runout_cards(state, holes);
-      double total = 0.0;
-      for (int c : legal) {
-        const std::size_t ordinal = board_only_ordinal(state, c);
-        if (ordinal >= node.children.size())
-          throw std::runtime_error("subgame-nash-conv: chance ordinal out of range");
-        total += walk(state.after_card(c), node.children[ordinal], holes);
-      }
-      return total / static_cast<double>(legal.size());
-    }
-
-    if (!node.is_action())
-      throw std::runtime_error("subgame-nash-conv: unexpected node kind");
-
-    const std::size_t actor = *state.actor();
-    const auto& menu = node.actions;
-    const auto board = std::vector<int>(state.board().begin(), state.board().end());
-    const auto probs = policy_probs(actor, node_index, menu, holes[actor], board);
-
-    if (best_response && actor == traverser) {
-      double best = -std::numeric_limits<double>::infinity();
-      for (std::size_t a = 0; a < menu.size(); ++a) {
-        best = std::max(best, walk(state.after_action(actor, menu[a]), node.children[a], holes));
-      }
-      return best;
-    }
-
-    double total = 0.0;
-    for (std::size_t a = 0; a < menu.size(); ++a) {
-      total += probs[a] * walk(state.after_action(actor, menu[a]), node.children[a], holes);
-    }
-    return total;
-  }
-};
 
 // ---------------------------------------------------------------------------
 // NashConv computation over all card-compatible joint deals (N-way)
@@ -855,7 +763,18 @@ PooledValue pooled_br_walk(const GameState& state, std::size_t node_index,
   return out;
 }
 
-// Collect all card-compatible joint deals into a flat vector.
+// Collect all card-compatible joint deals into a flat vector.  Folded seats
+// carry a {-1,-1} sentinel: their hole cards are unknown and are NOT
+// enumerated here.  This is an explicit analytic marginalization under the
+// uniform unconditioned fold-range model, not an omission.  Symmetry proof:
+// after fixing the board and every live seat's holes, the R remaining cards
+// are exchangeable between the folded seat's (unknown) two cards and every
+// runout position — C(R-k,2) / [C(R,2)·prod_j(R-2-j)] = 1/[R·(R-1)…] — so
+// each runout sequence has the same marginal probability it would have if
+// the folded seat were never dealt.  legal_runout_cards() realizes that
+// marginal by skipping the sentinel.  A conditioned fold-range breaks the
+// symmetry and requires explicit enumeration of the folded seat's range;
+// that model is not used by these fixtures.
 std::vector<std::vector<std::array<int, 2>>> collect_joint_deals(
     const std::vector<std::array<int, 2>>& range, std::size_t seat_count,
     const std::array<bool, kMaxUnifiedSeats>& folded) {

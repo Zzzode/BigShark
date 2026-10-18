@@ -16,6 +16,7 @@
 #include <bs/prng.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace bs::solver {
@@ -97,5 +98,72 @@ std::size_t sample_joint_deal(const JointDealTable& table,
 MultiwayDeal sample_scalable_joint_deal(
     const std::vector<std::vector<MultiwayWeightedHand>>& ranges, const std::vector<int>& board,
     SplitMix64& rng, std::size_t max_attempts = 100000, std::size_t* attempts_out = nullptr);
+
+// Diagnostics reported by JointDealDealer construction, so a harness can tell
+// which sampling regime a game fell into instead of guessing.
+struct JointDealDealerDiagnostics {
+  // True when the exact joint support was enumerated (rejection was too
+  // unreliable); false when plain rejection sampling is used.
+  bool enumerated = false;
+  // Number of deals in the enumerated table (0 on the rejection path).
+  std::size_t exact_deal_count = 0;
+  // Rejection probes run and proposals accepted during the construction probe.
+  std::size_t probe_attempts = 0;
+  std::size_t probe_successes = 0;
+  // Approximate resident size of the enumerated table in bytes (0 on the
+  // rejection path), for caller byte-budget accounting.
+  std::size_t table_bytes = 0;
+};
+
+// Adaptive joint dealer for a FIXED (ranges, board) game. Construction probes
+// the rejection sampler's acceptance rate once:
+//
+//   * High acceptance (>= a threshold over many probes): every later draw uses
+//     the unbounded-memory rejection path — a 100k-attempt budget then has a
+//     per-draw failure probability that is astronomically small.
+//   * Low acceptance (narrow ranges, board blocks most range cards — e.g. six
+//     seats sharing 16 high cards on a three-high-card flop): rejection would
+//     burn its whole budget on a substantial fraction of draws, so the exact
+//     joint support is enumerated ONCE and later draws are exact cumulative
+//     picks. In this regime the support is correspondingly small; enumeration
+//     is capped, and a game whose support exceeds the cap falls back to the
+//     rejection path with a larger attempt budget.
+//
+// Both regimes draw from the IDENTICAL product-conditional distribution
+// enumerate_joint_deals defines; the choice is only about how the draw is
+// realized. The dealer is immutable after construction and safe to share
+// read-only across threads (each draw takes its own PRNG reference).
+class JointDealDealer {
+ public:
+  JointDealDealer(const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
+                  const std::vector<int>& board, SplitMix64& probe_rng,
+                  JointDealDealerDiagnostics* diagnostics = nullptr);
+
+  // Draws one joint deal. Same exceptions as the two underlying paths
+  // (std::invalid_argument for malformed ranges; std::runtime_error only in the
+  // astronomically unlikely rejection-budget exhaustion case).
+  MultiwayDeal sample(SplitMix64& rng) const;
+
+  bool enumerated() const noexcept { return static_cast<bool>(table_); }
+  std::size_t exact_deal_count() const noexcept { return table_ ? table_->deals.size() : 0; }
+
+ private:
+  struct Marginal {
+    std::vector<std::array<int, 2>> combos;
+    std::vector<double> weights;
+    std::vector<double> cumulative;
+  };
+
+  // One rejection proposal round. Returns true and fills `out` on acceptance.
+  bool propose(SplitMix64& rng, std::vector<std::array<int, 2>>& out) const;
+
+  std::vector<Marginal> marginals_;
+  std::size_t rejection_attempts_ = 100000;
+  // Exact-table mode.
+  // deal_cumulative_[i] is the sum of normalized weights up to and including
+  // deal i, so an upper_bound pick on it selects one deal.
+  std::optional<JointDealTable> table_;
+  std::vector<double> deal_cumulative_;
+};
 
 }  // namespace bs::solver

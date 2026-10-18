@@ -59,6 +59,12 @@ struct LibraryManifest {
   // shaped its tree; the cap is not part of the AbstractionId digest.
   std::uint8_t max_raises_per_street = 0;
   std::vector<ClassEntry> classes;
+  // Canonical boards geometrically undealable for this (range, seat_count):
+  // the board leaves too few range cards to give every seat a distinct hand
+  // (e.g. KsQsJs against a J+ premium range). Such classes have no legal
+  // joint-deal stream under ANY sampler, so they are excluded rather than
+  // failed; recorded explicitly so coverage is never silently underclaimed.
+  std::vector<std::array<int, 3>> undealable_boards;
   // Honest measurements.
   std::size_t class_count = 0;       // classes in this library
   std::size_t total_classes = 0;     // 1,755
@@ -77,6 +83,17 @@ std::size_t count_covered_flops(const std::vector<std::array<int, 3>>& covered);
 // The declared first-library range: a fixed set of premium holdings used for
 // every seat. Board-overlapping combos are filtered per class at build time.
 std::vector<solver::WeightedHand> declared_library_range();
+
+// Whether `seat_count` seats can each be dealt a distinct non-conflicting
+// two-card combo from `range` after removing the three board cards. Exact
+// bounded depth-first edge packing over the board-filtered range graph
+// (returns true if and only if `seat_count` pairwise vertex-disjoint combos
+// exist). A false result means the class is geometrically undealable for this
+// (range, seat count) and cannot be sampled or trained under any joint dealer
+// — such classes are excluded from the build and listed in the manifest, not
+// failed.
+bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
+                       const std::vector<solver::WeightedHand>& range);
 
 // Build a class library: train and publish a schema-v3 artifact for each of
 // the first `class_count` canonical classes (by board-id order). Writes
@@ -136,6 +153,10 @@ void build_library_worker(const std::filesystem::path& out_dir, std::size_t work
 // class index, recomputes covered_flops and storage_bytes from the on-disk
 // artifacts (counted, not trusted from the fragments), and writes
 // `manifest.json`. Throws if a fragment or class artifact is missing.
+// Classes the workers skipped as already-published carry no digest: an
+// existing manifest.json (immutable published artifacts) supplies their
+// records in O(classes) parsing instead of re-hashing the whole library;
+// artifacts with no prior record are probed individually.
 LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const BuildParams& params);
 
 // RFC 0012 Phase 4: expand a trainer result's raw (bucket, node) table into

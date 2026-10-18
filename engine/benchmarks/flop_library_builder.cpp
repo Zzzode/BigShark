@@ -262,6 +262,10 @@ int run_parallel(const Args& args) {
   const bs::flop_library::BuildParams params = make_params(args);
   // The parent must reject old raw state before spawning workers: the existing
   // worker-failure cleanup removes checkpoint and policy files from this dir.
+  // A torn checkpoint from a SIGKILL/crash (bad SQLite header, failed
+  // validation) is discarded with its journal so the class retrains, matching
+  // the in-worker preflight; only a structurally valid but incompatible
+  // checkpoint is a hard refusal.
   if (params.resume) {
     for (std::size_t index = 0; index < params.class_count; ++index) {
       char stem[64];
@@ -269,7 +273,25 @@ int run_parallel(const Args& args) {
       const auto path = args.out_dir / stem;
       if (!std::filesystem::exists(path))
         continue;
-      const auto checkpoint = bs::artifacts::load_checkpoint(path);
+      bs::artifacts::CheckpointTrainingState checkpoint;
+      bool corrupt = false;
+      try {
+        checkpoint = bs::artifacts::load_checkpoint(path);
+      } catch (const bs::artifacts::ArtifactError&) {
+        corrupt = true;
+      } catch (const std::runtime_error&) {
+        corrupt = true;
+      }
+      if (corrupt) {
+        std::error_code ec;
+        std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
+                     path.string().c_str());
+        std::filesystem::remove(path, ec);
+        std::filesystem::remove(path.string() + "-journal", ec);
+        std::filesystem::remove(path.string() + "-wal", ec);
+        std::filesystem::remove(path.string() + "-shm", ec);
+        continue;
+      }
       if (checkpoint.algorithm_revision != bs::artifacts::kDefaultAlgorithmRevisionV2) {
         std::fprintf(stderr,
                      "incompatible checkpoint algorithm; refusing resume without modifying %s\n",

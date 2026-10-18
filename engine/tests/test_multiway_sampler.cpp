@@ -591,6 +591,98 @@ int test_scalable_filters_board_and_counts_attempts() {
 
 }  // namespace
 
+// The flop-library declared range (AA/KK/QQ/JJ/AK, 40 combos on 16 high
+// cards) made the plain rejection dealer burn its budget on high-card flops:
+// six seats need 12 distinct cards out of a pool the board can shrink to 13.
+// The adaptive dealer must switch to the exact table there and keep using
+// rejection on an ordinary board. Both paths draw from the identical
+// product-conditional distribution, which the empirical frequencies verify.
+int test_adaptive_dealer_regimes_and_distribution() {
+  Range range;
+  static const int kPairRanks[] = {12, 11, 10, 9};
+  for (int r : kPairRanks)
+    for (int s0 = 0; s0 < 4; ++s0)
+      for (int s1 = s0 + 1; s1 < 4; ++s1)
+        range.push_back({{r * 4 + s0, r * 4 + s1}, 1.0});
+  for (int s = 0; s < 4; ++s) {
+    range.push_back({{11 * 4 + s, 12 * 4 + s}, 1.0});
+    for (int o = 0; o < 4; ++o)
+      if (o != s)
+        range.push_back({{11 * 4 + o, 12 * 4 + s}, 1.0});
+  }
+  CHECK(range.size() == 40);
+  std::vector<Range> ranges(6, range);
+
+  // Ordinary board (three low cards): rejection path.
+  {
+    SplitMix64 probe(7);
+    JointDealDealerDiagnostics diag;
+    JointDealDealer dealer(ranges, {card("2c"), card("3d"), card("7h")}, probe, &diag);
+    CHECK(!dealer.enumerated());
+    CHECK(diag.probe_successes >= 30);
+
+    const JointDealTable exact =
+        enumerate_joint_deals(ranges, {card("2c"), card("3d"), card("7h")});
+    // Empirical deal frequencies must track the exact distribution.
+    std::map<std::string, std::size_t> counts;
+    SplitMix64 draw(11);
+    constexpr std::size_t kN = 40000;
+    for (std::size_t i = 0; i < kN; ++i) {
+      const MultiwayDeal d = dealer.sample(draw);
+      counts[deal_key(d)]++;
+      CHECK(d.hands.size() == 6);
+    }
+    double worst = 0.0;
+    for (const MultiwayDeal& d : exact.deals) {
+      const double expected = static_cast<double>(kN) * d.weight;
+      if (expected < 5.0)
+        continue;  // chi-square-style tail skip for rare deals
+      const double got = static_cast<double>(counts[deal_key(d)]);
+      worst = std::max(worst, std::abs(got - expected) / std::sqrt(expected));
+    }
+    CHECK(worst < 5.0);  // 5-sigma tolerance over the sampled support
+  }
+
+  // High-card board (As Ks Qs block three range cards): exact-table path.
+  {
+    const std::vector<int> board = {card("As"), card("Ks"), card("Qs")};
+    SplitMix64 probe(7);
+    JointDealDealerDiagnostics diag;
+    JointDealDealer dealer(ranges, board, probe, &diag);
+    CHECK(dealer.enumerated());
+    CHECK(diag.exact_deal_count == dealer.exact_deal_count());
+    CHECK(diag.exact_deal_count < 200000);  // the narrow support stays small
+
+    const JointDealTable exact = enumerate_joint_deals(ranges, board);
+    CHECK(exact.deals.size() == dealer.exact_deal_count());
+    std::map<std::string, std::size_t> counts;
+    SplitMix64 draw(23);
+    constexpr std::size_t kN = 3000000;
+    for (std::size_t i = 0; i < kN; ++i) {
+      const MultiwayDeal d = dealer.sample(draw);
+      counts[deal_key(d)]++;
+      for (const auto& hand : d.hands)
+        for (int c : hand) {
+          CHECK(c != card("As"));
+          CHECK(c != card("Ks"));
+          CHECK(c != card("Qs"));
+        }
+    }
+    // With ~31 expected samples per deal every enumerated deal is hit, and
+    // frequencies stay within 6 sigma of the uniform mean.
+    const double mean = static_cast<double>(kN) / static_cast<double>(exact.deals.size());
+    CHECK(counts.size() == exact.deals.size());
+    for (const MultiwayDeal& d : exact.deals) {
+      const auto found = counts.find(deal_key(d));
+      CHECK(found != counts.end());
+      const double got = static_cast<double>(found->second);
+      CHECK(std::abs(got - mean) / std::sqrt(mean) < 6.0);
+    }
+  }
+
+  return 0;
+}
+
 int main() {
   try {
     CHECK(test_enumeration_matches_hand_derived_support() == 0);
@@ -607,6 +699,7 @@ int main() {
     CHECK(test_scalable_uniform_control_preserves_marginals() == 0);
     CHECK(test_scalable_detects_last_seat_renormalization() == 0);
     CHECK(test_scalable_filters_board_and_counts_attempts() == 0);
+    CHECK(test_adaptive_dealer_regimes_and_distribution() == 0);
   } catch (const std::exception& error) {
     std::printf("Unexpected sampler exception: %s\n", error.what());
     return 1;

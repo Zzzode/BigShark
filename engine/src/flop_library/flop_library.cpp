@@ -20,8 +20,10 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -293,18 +295,110 @@ solver::NSeatTrainerLimits trainer_limits() {
 constexpr std::uint64_t kCheckpointInterval = 256;
 
 // Refuse incompatible resume files before entering any failure-cleanup scope.
+// A checkpoint left torn by a SIGKILL/crash mid-write (bad SQLite header,
+// failed integrity check, or stale rollback journal) is not a usable warm
+// start: remove it together with its journal so the class trains from
+// scratch rather than aborting the whole resume. A structurally valid
+// checkpoint with an incompatible algorithm revision is still a hard error.
 void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_count, bool resume) {
   if (!resume)
     return;
   for (std::size_t index = 0; index < class_count; ++index) {
     const auto path = out_dir / (class_stem(index) + "-checkpoint.db");
-    if (!std::filesystem::exists(path))
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec))
       continue;
-    const auto checkpoint = artifacts::load_checkpoint(path);
+    artifacts::CheckpointTrainingState checkpoint;
+    bool corrupt = false;
+    try {
+      checkpoint = artifacts::load_checkpoint(path);
+    } catch (const artifacts::ArtifactError&) {
+      corrupt = true;
+    } catch (const std::runtime_error&) {
+      // load_checkpoint validates schema and content; any failure means the
+      // warm-start state is unusable.
+      corrupt = true;
+    }
+    if (corrupt) {
+      std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
+                   path.string().c_str());
+      std::filesystem::remove(path, ec);
+      std::filesystem::remove(std::filesystem::path(path.string() + "-journal"), ec);
+      std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), ec);
+      std::filesystem::remove(std::filesystem::path(path.string() + "-shm"), ec);
+      continue;
+    }
     if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2)
       throw std::runtime_error(
           "incompatible checkpoint algorithm; refusing resume without modifying " + path.string());
   }
+}
+
+// Exact search for `needed` pairwise vertex-disjoint edges in a small graph
+// (at most 40 range combos over the 52-card pool; the library asks for at most
+// 10 seats). A greedy packing is NOT exact on arbitrary graphs (it underpacks
+// K2,2-like structures), and a general Edmonds blossom is needless at this
+// size, so a bounded DFS assigns one edge per seat and prunes on card
+// conflicts. The first solution returns immediately on every dense feasible
+// board; an infeasible board exhausts the small search in microseconds.
+bool find_disjoint_edges(const std::vector<std::array<int, 2>>& edges, std::size_t seat,
+                         std::size_t needed, std::array<bool, 52>& used) {
+  if (seat == needed)
+    return true;
+  for (const std::array<int, 2>& edge : edges) {
+    if (used[edge[0]] || used[edge[1]])
+      continue;
+    used[edge[0]] = true;
+    used[edge[1]] = true;
+    if (find_disjoint_edges(edges, seat + 1, needed, used))
+      return true;
+    used[edge[0]] = false;
+    used[edge[1]] = false;
+  }
+  return false;
+}
+
+// Geometric feasibility: can `seat_count` seats each be dealt a distinct
+// two-card combo from the board-filtered range with no shared card? A greedy
+// packing is not exact on arbitrary range graphs (it underpacks K2,2-like
+// structures), so this runs the exact bounded DFS above.
+//
+// Returns false only when the board leaves too few usable cards for
+// `seat_count` disjoint combos. Such a class has no legal joint-deal stream
+// under ANY sampler and is excluded from the library rather than crashing the
+// build (e.g. KsQsJs against a J+ range removes three of the sixteen range
+// cards and no six-seat deal exists).
+bool class_is_dealable_impl(const std::array<int, 3>& board, std::size_t seat_count,
+                            const std::vector<solver::WeightedHand>& range) {
+  std::array<bool, 52> on_board{};
+  for (int c : board)
+    on_board[c] = true;
+  std::vector<std::array<int, 2>> edges;
+  edges.reserve(range.size());
+  for (const solver::WeightedHand& h : range) {
+    if (h.weight == 0.0)
+      continue;
+    if (on_board[h.cards[0]] || on_board[h.cards[1]])
+      continue;
+    edges.push_back(h.cards);
+  }
+  // Cardinality short-circuit: 2*seat_count distinct usable cards are needed.
+  std::array<bool, 52> usable{};
+  std::size_t usable_cards = 0;
+  for (const std::array<int, 2>& e : edges) {
+    if (!usable[e[0]]) {
+      usable[e[0]] = true;
+      ++usable_cards;
+    }
+    if (!usable[e[1]]) {
+      usable[e[1]] = true;
+      ++usable_cards;
+    }
+  }
+  if (usable_cards < 2 * seat_count)
+    return false;
+  std::array<bool, 52> used{};
+  return find_disjoint_edges(edges, 0, seat_count, used);
 }
 
 // Train one class and publish its artifact. Shared by the serial builder and
@@ -426,6 +520,36 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
   // The checkpoint is mutable training state; the immutable published policy
   // is the library artifact.
   std::filesystem::remove(checkpoint_path, ec);
+  return entry;
+}
+
+// Lightweight record for a class whose immutable policy artifact was published
+// by an earlier build. We deliberately do NOT open/probe the artifact here:
+// 16 workers probing hundreds of ~260 MB files each saturates the disk for
+// tens of minutes before training starts. Only the SQLite header is checked
+// (16 bytes, cheap) to catch a grossly truncated file early. The merge phase
+// probes each record exactly once, sequentially, to fill the digest and row
+// counts. A corrupt PUBLISHED artifact therefore surfaces at merge, not as a
+// silent retrain.
+ClassEntry entry_from_published(const std::filesystem::path& out_dir, std::size_t class_index,
+                                const std::array<int, 3>& board) {
+  const std::filesystem::path policy_path = out_dir / (class_stem(class_index) + ".db");
+  std::FILE* f = std::fopen(policy_path.string().c_str(), "rb");
+  if (!f)
+    throw std::runtime_error("published class artifact vanished during resume: " +
+                             policy_path.string());
+  char magic[16]{};
+  const std::size_t got = std::fread(magic, 1, sizeof(magic), f);
+  std::fclose(f);
+  static constexpr char kSqliteMagic[] = "SQLite format 3";
+  if (got != sizeof(magic) || std::memcmp(magic, kSqliteMagic, 15) != 0)
+    throw std::runtime_error("published class artifact is not a SQLite database: " +
+                             policy_path.string());
+  ClassEntry entry;
+  entry.canonical_board = board;
+  entry.artifact_name = policy_path.filename().string();
+  // Empty digest/counts: the serial builder or merge_fragments fills them,
+  // reusing the prior manifest when one exists and probing only as a fallback.
   return entry;
 }
 
@@ -649,7 +773,68 @@ std::vector<FragmentClass> read_fragment(const std::filesystem::path& path) {
   return parser.parse();
 }
 
+// Build an artifact_name -> ClassEntry index from an existing manifest.json.
+// A resume over already-published classes would otherwise re-hash every
+// multi-hundred-MB artifact to relearn its digest and row counts (hours of
+// sequential I/O on a full library); published artifacts are immutable
+// (publish_policy refuses overwrite), so a prior manifest written by THIS
+// builder is authoritative. Returns an empty map when no manifest exists;
+// throws when one exists but cannot be parsed (a torn manifest must never be
+// silently ignored). The canonical board is cross-checked at every use site.
+std::map<std::string, ClassEntry> read_manifest_index(const std::filesystem::path& out_dir) {
+  std::map<std::string, ClassEntry> index;
+  const std::filesystem::path path = out_dir / "manifest.json";
+  std::error_code ec;
+  if (!std::filesystem::exists(path, ec))
+    return index;
+  std::ifstream in(path);
+  if (!in)
+    throw std::runtime_error("cannot open existing manifest: " + path.string());
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  // The manifest's top-level shape (object with a "classes" array) is exactly
+  // what the fragment parser already scans; manifest class objects simply
+  // omit the "index" field.
+  for (const FragmentClass& fc : FragmentParser(ss.str()).parse()) {
+    if (!fc.entry.sha256_hex.empty())
+      index.emplace(fc.entry.artifact_name, fc.entry);
+  }
+  if (index.empty())
+    throw std::runtime_error("existing manifest carries no class records: " + path.string());
+  return index;
+}
+
+// Fill an entry whose digest/counts were not produced by this run (the class
+// was already published and skipped) from the prior manifest index when it
+// matches; otherwise probe the artifact. Returns true when the prior
+// manifest supplied the record.
+bool fill_published_entry(ClassEntry& entry,
+                          const std::map<std::string, ClassEntry>& manifest_index,
+                          const std::filesystem::path& artifact_path) {
+  if (!entry.sha256_hex.empty())
+    return false;
+  const auto it = manifest_index.find(entry.artifact_name);
+  if (it != manifest_index.end() && it->second.canonical_board == entry.canonical_board) {
+    entry.sha256_hex = it->second.sha256_hex;
+    entry.stored_rows = it->second.stored_rows;
+    entry.completed_iterations = it->second.completed_iterations;
+    entry.information_sets = it->second.information_sets;
+    return true;
+  }
+  const artifacts::ArtifactProbe probe = artifacts::probe_artifact(artifact_path);
+  entry.sha256_hex = probe.sha256_hex;
+  entry.stored_rows = probe.manifest.information_sets;
+  entry.completed_iterations = probe.manifest.completed_iterations;
+  entry.information_sets = probe.manifest.information_sets;
+  return false;
+}
+
 }  // namespace
+
+bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
+                       const std::vector<solver::WeightedHand>& range) {
+  return class_is_dealable_impl(board, seat_count, range);
+}
 
 std::map<solver::InformationKey, artifacts::TrainingWeights> export_seat_training_rows(
     const solver::NSeatTrainingResult& trained, const tree::AbstractTree& tree) {
@@ -784,9 +969,30 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   std::vector<std::array<int, 3>> covered;
   covered.reserve(class_count);
 
+  // Prior-manifest index so resuming a complete library does not re-hash
+  // every published artifact (see read_manifest_index).
+  const std::map<std::string, ClassEntry> manifest_index =
+      resume ? read_manifest_index(out_dir) : std::map<std::string, ClassEntry>{};
+
   try {
     for (std::size_t i = 0; i < class_count; ++i) {
-      ClassEntry entry = train_one_class(out_dir, i, classes[i], params, card_id);
+      if (!class_is_dealable(classes[i], player_count, range)) {
+        manifest.undealable_boards.push_back(classes[i]);
+        std::printf("class %zu: undealable for %zu seats (board blocks the range); excluded\n", i,
+                    player_count);
+        continue;
+      }
+      const std::filesystem::path policy_path = out_dir / (class_stem(i) + ".db");
+      ClassEntry entry;
+      if (resume && std::filesystem::exists(policy_path, ec)) {
+        // Published by an earlier build: skip training (publish refuses
+        // overwrite); reuse the prior manifest digest when available, and
+        // only hash the artifact when no prior record exists.
+        entry = entry_from_published(out_dir, i, classes[i]);
+        fill_published_entry(entry, manifest_index, policy_path);
+      } else {
+        entry = train_one_class(out_dir, i, classes[i], params, card_id);
+      }
       manifest.classes.push_back(entry);
       manifest.storage_bytes += [&] {
         std::error_code e2;
@@ -815,6 +1021,9 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   manifest.covered_flops = count_covered_flops(covered);
 
   write_manifest(manifest, out_dir);
+  if (!manifest.undealable_boards.empty())
+    std::printf("[build] %zu class(es) undealable and excluded\n",
+                manifest.undealable_boards.size());
   return manifest;
 }
 
@@ -848,6 +1057,16 @@ void build_library_worker(const std::filesystem::path& out_dir, std::size_t work
 
   std::vector<FragmentClass> fragment;
   for (std::size_t i = worker_id; i < params.class_count; i += parallel) {
+    if (!class_is_dealable(classes[i], params.player_count, params.range))
+      continue;  // undealable class: recorded as a coverage exclusion by merge
+    const std::filesystem::path policy_path = out_dir / (class_stem(i) + ".db");
+    std::error_code ec;
+    if (params.resume && std::filesystem::exists(policy_path, ec)) {
+      // Published in an earlier build: rebuild the fragment record from the
+      // immutable artifact instead of retraining (publish refuses overwrite).
+      fragment.push_back({i, entry_from_published(out_dir, i, classes[i])});
+      continue;
+    }
     ClassEntry entry = train_one_class(out_dir, i, classes[i], params, card_id);
     fragment.push_back({i, entry});
   }
@@ -872,17 +1091,28 @@ LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const Buil
     all.insert(all.end(), std::make_move_iterator(part.begin()),
                std::make_move_iterator(part.end()));
   }
-  if (all.size() != params.class_count)
+  // Geometrically undealable classes (board blocks the range so not every seat
+  // can be dealt a hand) are skipped by every worker and must be the exact
+  // difference between requested classes and fragment records.
+  std::vector<std::array<int, 3>> undealable;
+  for (std::size_t i = 0; i < params.class_count; ++i) {
+    if (!class_is_dealable(classes[i], params.player_count, params.range))
+      undealable.push_back(classes[i]);
+  }
+  if (all.size() + undealable.size() != params.class_count)
     throw std::runtime_error("merge: expected " + std::to_string(params.class_count) +
-                             " class records across fragments, found " +
-                             std::to_string(all.size()));
+                             " class records (" + std::to_string(undealable.size()) +
+                             " undealable), found " + std::to_string(all.size()));
 
-  // Sort by class index and verify contiguity.
-  std::sort(all.begin(), all.end(),
-            [](const FragmentClass& a, const FragmentClass& b) { return a.index < b.index; });
-  for (std::size_t i = 0; i < all.size(); ++i) {
-    if (all[i].index != i)
-      throw std::runtime_error("merge: fragment class indices are not contiguous from zero");
+  // Sort by class index; every fragment index must name a dealable class.
+  std::sort(all.begin(), all.end(), [](const FragmentClass& lhs, const FragmentClass& rhs) {
+    return lhs.index < rhs.index;
+  });
+  std::set<std::array<int, 3>> undealable_set{undealable.begin(), undealable.end()};
+  for (const FragmentClass& record : all) {
+    if (record.index >= params.class_count || undealable_set.count(classes[record.index]))
+      throw std::runtime_error("merge: fragment names an out-of-range or undealable class " +
+                               std::to_string(record.index));
   }
 
   LibraryManifest manifest;
@@ -900,11 +1130,24 @@ LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const Buil
 
   std::vector<std::array<int, 3>> covered;
   covered.reserve(all.size());
-  for (const FragmentClass& fc : all) {
+  // Prior-manifest index so resuming an already-merged complete library does
+  // not re-hash the whole library on every `--resume` (the workers leave
+  // digests empty for classes they skipped as published).
+  const std::map<std::string, ClassEntry> manifest_index = read_manifest_index(out_dir);
+  std::size_t reused_records = 0;
+  std::size_t probed_records = 0;
+  for (FragmentClass& fc : all) {
     const std::filesystem::path artifact_path = out_dir / fc.entry.artifact_name;
     std::error_code ec;
     if (!std::filesystem::exists(artifact_path, ec))
       throw std::runtime_error("merge: missing class artifact " + fc.entry.artifact_name);
+    // Records produced by this run carry a digest; skipped published classes
+    // reuse the prior manifest record when it names the same canonical board,
+    // and are probed only when no trustworthy prior record exists.
+    if (fill_published_entry(fc.entry, manifest_index, artifact_path))
+      ++reused_records;
+    else if (fc.entry.sha256_hex.empty())
+      ++probed_records;
     manifest.classes.push_back(fc.entry);
     manifest.storage_bytes += std::filesystem::file_size(artifact_path, ec);
     if (ec)
@@ -912,7 +1155,11 @@ LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const Buil
                                ec.message());
     covered.push_back(fc.entry.canonical_board);
   }
+  if (reused_records > 0 || probed_records > 0)
+    std::printf("[merge] reused %zu records from existing manifest; probed %zu artifacts\n",
+                reused_records, probed_records);
 
+  manifest.undealable_boards = undealable;
   manifest.class_count = manifest.classes.size();
   manifest.covered_flops = count_covered_flops(covered);
 
@@ -969,6 +1216,12 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
     out << "    }" << (i + 1 < manifest.classes.size() ? "," : "") << "\n";
   }
   out << "  ],\n";
+  out << "  \"undealable_boards\": [";
+  for (std::size_t i = 0; i < manifest.undealable_boards.size(); ++i) {
+    const auto& b = manifest.undealable_boards[i];
+    out << (i ? ", [" : "[") << b[0] << ", " << b[1] << ", " << b[2] << "]";
+  }
+  out << "],\n";
   out << "  \"class_count\": " << manifest.class_count << ",\n";
   out << "  \"total_classes\": " << manifest.total_classes << ",\n";
   out << "  \"covered_flops\": " << manifest.covered_flops << ",\n";

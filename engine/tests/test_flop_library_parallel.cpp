@@ -133,6 +133,93 @@ bool test_resume_matches_fresh(const fs::path& dir) {
   return true;
 }
 
+bool test_resume_skips_published_classes(const fs::path& dir) {
+  // A second resume over a directory where every class is already PUBLISHED
+  // must skip training for all of them (publish refuses to overwrite) and
+  // rebuild the manifest from the existing artifacts. This is the crash
+  // window between the final publish and the fragment/merge write.
+  const auto range = bs::flop_library::declared_library_range();
+  const std::size_t class_count = 3;
+  const std::uint64_t iterations = 64;
+  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips contribution = 2;
+  const std::size_t player_count = 2;
+  const std::uint64_t seed = 20261017;
+
+  const fs::path lib_dir = dir / "resume-published";
+  fs::create_directories(lib_dir);
+  const bs::flop_library::LibraryManifest first = bs::flop_library::build_library(
+      lib_dir, class_count, iterations, seed, stack, contribution, range, player_count);
+  CHECK(first.class_count == class_count);
+  for (std::size_t i = 0; i < class_count; ++i) {
+    char stem[16];
+    std::snprintf(stem, sizeof(stem), "class-%04zu.db", i);
+    CHECK(fs::exists(lib_dir / stem));
+  }
+
+  // Second build with resume=true: every class artifact exists, so workers
+  // skip training and merge re-probes the digests.
+  const bs::flop_library::LibraryManifest second = bs::flop_library::build_library(
+      lib_dir, class_count, iterations, seed, stack, contribution, range, player_count,
+      bs::abstraction::ActionAbstraction::identity(), true);
+  CHECK(second.class_count == class_count);
+  for (std::size_t i = 0; i < class_count; ++i) {
+    CHECK(second.classes[i].sha256_hex == first.classes[i].sha256_hex);
+    CHECK(second.classes[i].stored_rows == first.classes[i].stored_rows);
+    CHECK(second.classes[i].completed_iterations == iterations);
+    char stem[16];
+    std::snprintf(stem, sizeof(stem), "class-%04zu.db", i);
+    CHECK(bs::artifacts::sha256_file_hex(lib_dir / stem) == first.classes[i].sha256_hex);
+  }
+  return true;
+}
+
+bool test_merge_reuses_prior_manifest(const fs::path& dir) {
+  // After a complete serial build wrote manifest.json, a parallel worker
+  // resume over the same directory must fill the skipped classes' digest and
+  // counts from the existing manifest (merge_fragments / read_manifest_index)
+  // rather than probing every artifact, and produce identical records.
+  const auto range = bs::flop_library::declared_library_range();
+  const std::size_t class_count = 4;
+  const std::uint64_t iterations = 16;
+  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips contribution = 2;
+  const std::size_t player_count = 2;
+  const std::uint64_t seed = 20261017;
+
+  const fs::path lib_dir = dir / "merge-manifest-reuse";
+  fs::create_directories(lib_dir);
+  const bs::flop_library::LibraryManifest first = bs::flop_library::build_library(
+      lib_dir, class_count, iterations, seed, stack, contribution, range, player_count);
+
+  bs::flop_library::BuildParams params;
+  params.class_count = class_count;
+  params.iterations_per_class = iterations;
+  params.seed = seed;
+  params.stack = stack;
+  params.contribution = contribution;
+  params.range = range;
+  params.player_count = player_count;
+  params.resume = true;
+  const std::size_t parallel = 4;
+  for (std::size_t w = 0; w < parallel; ++w)
+    bs::flop_library::build_library_worker(lib_dir, w, parallel, params);
+  const bs::flop_library::LibraryManifest merged =
+      bs::flop_library::merge_fragments(lib_dir, params);
+
+  CHECK(merged.class_count == class_count);
+  for (std::size_t i = 0; i < class_count; ++i) {
+    CHECK(merged.classes[i].sha256_hex == first.classes[i].sha256_hex);
+    CHECK(merged.classes[i].stored_rows == first.classes[i].stored_rows);
+    CHECK(merged.classes[i].information_sets == first.classes[i].information_sets);
+    CHECK(merged.classes[i].completed_iterations == first.classes[i].completed_iterations);
+    CHECK(merged.classes[i].canonical_board == first.classes[i].canonical_board);
+  }
+  CHECK(merged.storage_bytes == first.storage_bytes);
+  CHECK(merged.covered_flops == first.covered_flops);
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -144,6 +231,8 @@ int main() {
   bool ok = true;
   ok = test_parallel_matches_serial(dir) && ok;
   ok = test_resume_matches_fresh(dir) && ok;
+  ok = test_resume_skips_published_classes(dir) && ok;
+  ok = test_merge_reuses_prior_manifest(dir) && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {

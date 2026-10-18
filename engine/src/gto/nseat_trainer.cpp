@@ -614,14 +614,12 @@ double walk(SweepContext& ctx, const GameState& state, std::size_t node_index, d
 // Samples this sweep's world (one joint deal over the per-seat ranges,
 // conditioned on the rooted board) and runs the traverser's walk from the
 // tree's root state.
-void run_sweep(const AbstractTree& tree,
-               const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
-               const std::vector<int>& root_board, std::size_t traverser,
-               NSeatTraversalStreams& streams, const RawTable& profile, DeltaStorage& storage,
-               std::atomic<std::size_t>& visits, const NSeatTrainerLimits& limits,
-               const gto::FrontierEvaluator* frontier) {
-  const MultiwayDeal deal = sample_scalable_joint_deal(ranges, root_board, streams.joint_deal);
-  if (deal.hands.size() != ranges.size())
+void run_sweep(const AbstractTree& tree, const JointDealDealer& dealer, std::size_t seat_count,
+               std::size_t traverser, NSeatTraversalStreams& streams, const RawTable& profile,
+               DeltaStorage& storage, std::atomic<std::size_t>& visits,
+               const NSeatTrainerLimits& limits, const gto::FrontierEvaluator* frontier) {
+  const MultiwayDeal deal = dealer.sample(streams.joint_deal);
+  if (deal.hands.size() != seat_count)
     throw std::runtime_error("nseat trainer joint deal has the wrong seat count");
   // Stack buffer: at most 10 seats.
   std::array<std::array<int, 2>, 10> holes_buf{};
@@ -683,14 +681,15 @@ void walk_average(SweepContext& ctx, const GameState& state, std::size_t index,
   }
 }
 
-void run_average(const AbstractTree& tree,
-                 const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
-                 const std::vector<int>& board, const RawTable& profile, DeltaStorage& storage,
-                 std::uint64_t seed, std::uint64_t sample, std::atomic<std::size_t>& visits,
+void run_average(const AbstractTree& tree, const JointDealDealer& dealer, std::size_t seat_count,
+                 const RawTable& profile, DeltaStorage& storage, std::uint64_t seed,
+                 std::uint64_t sample, std::atomic<std::size_t>& visits,
                  const NSeatTrainerLimits& limits) {
   auto deal_rng = derive_nseat_stream(seed, NSeatStreamPurpose::AverageJointDeal, sample, 0);
   auto card_rng = derive_nseat_stream(seed, NSeatStreamPurpose::AverageChanceCard, sample, 0);
-  const auto deal = sample_scalable_joint_deal(ranges, board, deal_rng);
+  const MultiwayDeal deal = dealer.sample(deal_rng);
+  if (deal.hands.size() != seat_count)
+    throw std::runtime_error("nseat trainer average deal has the wrong seat count");
   SweepContext ctx;
   ctx.tree = &tree;
   ctx.holes = deal.hands;
@@ -979,6 +978,20 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
   const auto sampler_ranges = to_sampler_ranges(ranges, seats);
   const std::vector<int> board(tree.def().board.begin(),
                                tree.def().board.begin() + tree.def().board_size);
+
+  // Adaptive joint dealer: rejection on high-acceptance games, exact table on
+  // narrow ranges (six-seat flop classes whose board blocks most range cards
+  // otherwise burn the plain rejection budget). The table is immutable and
+  // shared read-only across worker threads.
+  auto dealer_probe_rng = derive_nseat_stream(seed, NSeatStreamPurpose::JointDeal, 0, seats + 1);
+  JointDealDealerDiagnostics dealer_diag;
+  JointDealDealer dealer(sampler_ranges, board, dealer_probe_rng, &dealer_diag);
+  if (dealer_diag.enumerated)
+    budget.reserve(dealer_diag.table_bytes);
+  if (dealer.enumerated())
+    std::printf("[nseat] joint dealer: exact table, %zu deals (%.1f MiB), probe %zu/%zu\n",
+                dealer.exact_deal_count(), dealer_diag.table_bytes / (1024.0 * 1024.0),
+                dealer_diag.probe_successes, dealer_diag.probe_attempts);
   if (initial) {
     if (initial->rows.size() > limits.max_information_sets)
       throw nseat_training_exhausted("nseat warm start exceeds the information-set cap");
@@ -1011,10 +1024,9 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
           derive_nseat_stream(seed, NSeatStreamPurpose::JointDeal, sample, seat),
           derive_nseat_stream(seed, NSeatStreamPurpose::OpponentAction, sample, seat),
           derive_nseat_stream(seed, NSeatStreamPurpose::ChanceCard, sample, seat)};
-      run_sweep(tree, sampler_ranges, board, seat, streams, table, *stores[slot], visits, limits,
-                frontier);
+      run_sweep(tree, dealer, seats, seat, streams, table, *stores[slot], visits, limits, frontier);
     }
-    run_average(tree, sampler_ranges, board, table, *stores[slot], seed, sample, visits, limits);
+    run_average(tree, dealer, seats, table, *stores[slot], seed, sample, visits, limits);
   };
   const auto wall_start = std::chrono::steady_clock::now();
   std::unique_ptr<EpochWorkers> cohort;
@@ -1117,7 +1129,9 @@ void debug_run_one_nseat_sweep(const AbstractTree& tree,
   }
   auto delta = std::make_unique<DeltaStorage>(budget);
   std::atomic<std::size_t> visits{0};
-  run_sweep(tree, sampler_ranges, board, traverser, streams, rows, *delta, visits, limits,
+  SplitMix64 probe_rng(0x5eed5eedULL ^ tree.def().player_count);
+  JointDealDealer dealer(sampler_ranges, board, probe_rng);
+  run_sweep(tree, dealer, tree.def().player_count, traverser, streams, rows, *delta, visits, limits,
             frontier);
   std::array<std::unique_ptr<DeltaStorage>, 1> stores{std::move(delta)};
   reduce_batch(rows, stores, 1, budget);

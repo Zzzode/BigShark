@@ -41,12 +41,12 @@ trainer, subgame resolver, native tests, and local artifact manifests.
 | Actor attribution can guess on incomplete River text | `platforms/river-club/src/v1-mapper.ts` compatibility attribution | Precise six-seat replay needs reliable public identity/history, not inferred actors |
 | Complete provider ledger/history not guaranteed | Official local `docs/SKILL.md` omits old events; `RiverEvent` has kind/text, not authoritative actor/sequence/street/amount; OpenAPI room is generic | Public cross-snapshot accounting needs explicit completeness; midway attach, lost actions, ambiguous names and rounded amounts cannot be guessed |
 | No-root resolving entry gated | Host resolver advertisement requires resident roots | The uniform-no-blueprint implementation does not automatically imply executable no-root support |
-| Engine practice restricted to heads-up | `engine/benchmarks/practice_simulator.cpp` count gate and single bot injection | No six-player production-engine whole-hand practice acceptance entry |
+| ~~Engine practice restricted to heads-up~~ | `engine/benchmarks/practice_simulator.cpp` count gate and single bot injection | **Resolved 2026-10-17:** T7 complete — 2..10-seat CLI with EngineProcess sharing one host across all bot seats; 6-seat engine-served hands verified |
 
 Existing native mapper/validator/minor2/resolving tests passed 4/4; the River
 differential suite passed 17/17, including a declared side-pot fallback. Native
 practice tests passed for six-seat easy/medium policies, not six-seat GTO.
-The current engine practice CLI rejected six seats with exit 2.
+The engine practice CLI now accepts 2..10 seats with engine-served bots (T7).
 
 The official-data audit found no guaranteed hand-start stack, gross/refund
 ledger, or complete historical action stream. Optional River `pots` can carry
@@ -67,15 +67,15 @@ available public pot-layer eligibility, including single-eligible layers.
 
 | ID | Owning modules | Required internal outcome | Dependencies | Status |
 | --- | --- | --- | --- | --- |
-| T0 | Protocol, solver, product documentation | Whole-feature rules/support matrix, public-data audit, independently reviewed quality/latency/coverage acceptance; no weakened labels | None | In Progress: gaps audited; quality reference/threshold still to be specified |
+| T0 | Protocol, solver, product documentation | Whole-feature rules/support matrix, public-data audit, independently reviewed quality/latency/coverage acceptance; no weakened labels | None | In Progress: gaps audited; [threshold proposal](sixmax-gto-thresholds.md) approved by second independent review 2026-10-17 (epsilon_seat=0.05 BB/hand, epsilon_sum=0.15 BB/hand, delta_regression=0.01 BB/hand, family-wise 95% CI, error budget 40% of epsilon_seat); 12 editorial fixes applied; thresholds frozen pending campaign execution |
 | T1a | v1 protocol and native tests | Exact minor-2 N-seat preflop replay; frozen minor-0/1 compatibility | RFC 0019 approval | Complete: RFC 0019 implemented, N-seat preflop replay and minor-0/1/2 compatibility tests pass in release |
 | T1b | Protocol, River adapter; resident/resolver identity prerequisites | Complete public preflop-to-postflop ledger, folded/dealt status and trusted actor history | T0, T1a, RFCs 0020/0021/0022; follow-up contract approval | In Progress: v2 client/mapper/runner implemented (protocol v3, capabilities handshake, G/F ledger, pot layers, transition path, observation provenance); honest observation provenance via intake ledger implemented (118/118 Node tests pass); supplied-history replay and root identity passed release; RFC 0022 v2 wire/behavioral/vector design Accepted 2026-10-16; protobuf+ASan RepeatedField copy fix committed (Swap instead of copy-assign, closes conformance and node ASan failures); ASan suite re-running with fix |
 | T2 | Poker utility, protocol, frontier, artifacts | Unequal-stack and side-pot-safe state/utility/identity; no imaginary `pot / n` contributions | T0, T1b; RFC 0006 follow-up approval | In Progress: side-pot-safe per-layer frontier settlement implemented (RFC 0010 update, independently approved); equal-stack guard removed; utility identifier replaced; 18 native ledger baselines passed focused release/ASan; RFC 0022 v2 wire design Accepted 2026-10-16; six-seat preflop profile trained (1.0 GB, 100K iterations, 100 BB, raise-cap=1); six-seat flop library trained (8 classes, 1.9 GB, 1000 iter/class) |
 | T3 | Solver, abstraction, native benchmarks | Independent six-seat quality and normal-stack resource/deadline measurements before scaling | T0 | In Progress: [feasibility + quality measured](t3-six-seat-feasibility.md); raise-cap + depth-limited resolving makes all 15 fixtures feasible; pooled-BR NashConv optimized (fixed-size BRView, multi-traverser walker, OpenMP, direct showdown); 100K-iteration quality campaign: 0.02-0.15 BB exploitability across 2-6 seats, 58-98% reduction vs uniform, 5-6 seat games near-equilibrium at ~0.02 BB; full 15-fixture scan <6 min at 1K iter, ~8 min at 100K iter |
 | T4 | Solver, resident, artifacts | Six-position preflop policies with matching multiplayer continuation values and immutable provenance | T1a, T2, T3 | In Progress: N-seat continuation-range export (2..10 seats) with recursive joint-deal enumeration and card-mask filtering; --raise-cap flag wired in both offline builders and recorded in manifests; 2/3/6-seat range tests pass; 6-seat pipeline verified; full 100K-iteration six-seat profile trained (6,424-node tree, 519,168 info sets, 4,073,472 stored rows, 1.0 GB artifact, 430s training, 584s pipeline, 6.4 GB peak RSS, SHA-256 e3d77d55); six-seat flop library trained (8 classes, 1.9 GB) |
-| T5 | Range propagation, resolver, resident | Action-conditioned 2..6-live-player flop/turn/river strategy coverage preserving dealt-seat identity | T1b, T2, T3, T4 | In Progress: 1,755-class 6-way flop library training in progress (16 workers, 1000 iter/class, 100 BB, raise-cap=1, identity abstraction); ~880/1,755 classes published (~50%); turn/river strategy remain open |
+| T5 | Range propagation, resolver, resident | Action-conditioned 2..6-live-player flop/turn/river strategy coverage preserving dealt-seat identity | T1b, T2, T3, T4 | In Progress: the six-way flop library is COMPLETE at 1,745 trained classes plus 10 geometrically undealable JQKA-high classes (=1,755; 21,972/22,100 concrete flops, 99.42%, 334 GB, manifest written 2026-10-18); RFC 0026 bucket-deduplicated BSFLIB02 packed format Accepted and implemented (writer/reader/resident dispatch/tests), packing the completed library to validate the sub-GB size target; turn/river strategy remain open |
 | T6 | Resolver, service, protocol, Node client, River runner | Off-tree handling and receipt-to-action budget including construction/lookup/solve; accurate source and fallback reports | T1b, T2, T5 | In Progress: RFC 0023 startup/deadline repair; solve-budget alignment fixed; receipt-to-action latency measurement implemented (envelope handler stamps solve_time_us on all successful decision paths); AUTOMATIC mode now tries resolver then operational fallback on blueprint miss (was falling through to heuristic); RFC 0025 off-tree decision handling Implemented (flop-rooted depth-limited resolving + off-tree action line tolerance; resolve_flop and off-tree tolerance implemented, native tests passing, Engine Build Contract passing) |
-| T7 | Practice leaf and engine process client | All five bot seats served by the same host through complete six-seat, rotating-position hands | T1a, T1b, T2; additive CLI approval | Pending |
+| T7 | Practice leaf and engine process client | All five bot seats served by the same host through complete six-seat, rotating-position hands | T1a, T1b, T2; additive CLI approval | Complete: interactive CLI (`bigshark-practice`) with 2..10-seat support; EngineProcess spawns `bigshark-engine --serve-proto` and shares one host across all bot seats; EngineServedPolicy converts GameState/HandLog to v2 DecisionRequest (G/F ledger, pot layers, transition path with board cards and call amounts, forced contributions, provenance); first-decision MID_HAND_ATTACH fallback; 96/100 engine-served decisions in 5-hand 6-seat test; Engine Build Contract 75/75 passing |
 | T8 | All owning modules, native/Node acceptance | Complete support matrix, independent quality evidence, all positions/streets/resources/variants, immutable release and rollback validation | All earlier tasks | Pending |
 
 The work register is not a second strategy implementation or new runtime
@@ -152,6 +152,63 @@ stack depth. The largest tree (6-seat, any stack) is only 9,361 nodes /
 the cap. All fixtures achieve 100% action-node coverage. T3 stays In
 Progress: this is resource/deadline evidence, not the independent quality
 gate the qualification proposal requires.
+
+On 2026-10-17 a read-only audit of the qualification measurement code
+confirmed `exact_oracle_utility` pools opponent worlds correctly at the
+information-set level (one action per own-holding group, counterfactual reach
+excluding the traverser, folded cards retained as runout blockers) and
+`br_estimator.cpp` uses disjoint learn/confirm seeds, freezes before confirm,
+CRN-pairs runouts, and reports per-replica summed gains. Three remediation
+items landed the same day: (1) the defective per-deal `NashConvWalker` in
+`subgame_nash_conv.cpp` (dead since the pooled walk landed 2026-10-16) was
+deleted; (2) the folded-seat `{-1,-1}` runout sentinel is now documented as an
+explicit analytic marginalization under the uniform unconditioned fold-range
+model with an exchangeability proof (a conditioned fold-range still requires
+explicit range enumeration and is not used by these fixtures); (3) the
+qualification proposal's exact information-restriction negative control was
+added to the native oracle test (`test_information_restriction_negative_control`,
+fold/call payoffs -2/-4 vs -2/+4 = the proposal's -1/-2 vs -1/+1 at 2x chip
+scale: pooled BR 0, world-wise 1, gains 2 vs 3), pinned under both seat
+orientations. The six-dealt-player and conditioned-fold-range extensions of
+the control remain open.
+
+Also on 2026-10-17 the flop-library training run surfaced two independent
+resume/dealing defects and both were fixed: (1) the scalable rejection joint
+dealer burned its 100k-attempt budget on ~140 high-card flop classes where six
+seats must draw 12 distinct cards from the 16-card premium range after the
+board blocks three of them (acceptance ~2e-5). A new `JointDealDealer`
+probes acceptance once per fixed (ranges, board) game and uses plain rejection
+on high-acceptance games but enumerates the exact support and cumulative-picks
+on narrow games — the exact table is correspondingly small precisely where
+rejection failed, with a 2M-deal cap and enlarged rejection fallback. The
+nseat trainer now constructs one dealer per training run, shared read-only
+across worker threads; both regimes draw from the identical
+product-conditional distribution, verified distributionally by
+`test_adaptive_dealer_regimes_and_distribution`. (2) Worker SIGKILLs left
+torn `-checkpoint.db` files (bad SQLite header / stale rollback journal) that
+made every later `--resume` abort before spawning workers; both the builder
+parent and the in-worker preflight now discard a checkpoint that fails to
+load/validate (plus its journal/wal/shm) and retrain the class, while a valid
+checkpoint with an incompatible algorithm revision remains a hard error.
+
+Three further flop-library fixes landed the same evening: (3) eight canonical
+classes are geometrically undealable for six seats against the J+ premium
+range (the board leaves no six pairwise vertex-disjoint combos, e.g.
+KsQsJs-type boards). An exact bounded depth-first edge packing
+(`class_is_dealable`) decides this at worker startup; undealable classes are
+skipped and recorded in the manifest's `undealable_boards`, and
+`merge_fragments` enforces `built + undealable == class_count`. A first
+resume run still crashed on the undealable class because the builder binary
+predated the skip — building only unit-test targets does not relink the
+builder, so the builder must be rebuilt before every `--resume` after a
+library/builder source change. (4) Resuming over already-published classes
+made merge re-hash every multi-hundred-MB artifact to relearn immutable
+digests (hours of sequential I/O). `merge_fragments` and the serial builder
+now fill skipped-class records from the existing `manifest.json`
+(artifact-immutable, canonical board cross-checked) and probe only classes
+with no prior record; `test_merge_reuses_prior_manifest` pins the behavior.
+(5) The resume/merge path's stale Edmonds-blossom comments and an obsolete
+forward-declaration shim were removed; the matcher is the exact DFS above.
 
 ## Operational Boundaries
 

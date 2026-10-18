@@ -93,6 +93,25 @@ bool test_coverage() {
   return true;
 }
 
+bool test_class_dealability() {
+  const auto range = bs::flop_library::declared_library_range();
+  auto card = [](const char* name) { return bs::cardId(std::string(name)); };
+  // Six seats need 12 distinct range cards. Three board cards all inside the
+  // 16-card J+ range leave 13 cards, but the remaining combos cannot form six
+  // disjoint pairs on these pinned boards (verified against exact joint-deal
+  // enumeration): undealable for six seats.
+  CHECK(!bs::flop_library::class_is_dealable({card("Ks"), card("Qs"), card("Js")}, 6, range));
+  CHECK(!bs::flop_library::class_is_dealable({card("Kc"), card("Qc"), card("Jc")}, 6, range));
+  // Ordinary and high-but-feasible boards are dealable.
+  CHECK(bs::flop_library::class_is_dealable({card("2c"), card("3d"), card("7h")}, 6, range));
+  CHECK(bs::flop_library::class_is_dealable({card("As"), card("Ks"), card("Qs")}, 6, range));
+  CHECK(bs::flop_library::class_is_dealable({card("As"), card("Kd"), card("Th")}, 6, range));
+  // Monotonicity in seat count: what six seats cannot deal, two can on the
+  // pinned three-high board (13 cards easily yield two disjoint combos).
+  CHECK(bs::flop_library::class_is_dealable({card("Ks"), card("Qs"), card("Js")}, 2, range));
+  return true;
+}
+
 bool test_build_library(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   // Shallow stacks (4 behind, 2 in per seat, pot 4) keep the tree small.
@@ -217,6 +236,7 @@ int main() {
   ok = test_enumerate_classes() && ok;
   ok = test_declared_range() && ok;
   ok = test_coverage() && ok;
+  ok = test_class_dealability() && ok;
   ok = test_build_library(dir) && ok;
   ok = test_build_library_coarse(dir / "coarse") && ok;
   ok = test_build_library_raise_cap(dir / "raise-cap") && ok;

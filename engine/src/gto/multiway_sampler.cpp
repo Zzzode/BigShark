@@ -9,6 +9,17 @@
 namespace bs::solver {
 namespace {
 
+// Adaptive-dealer tuning. With ~30 observed successes over 20k probes the
+// true acceptance rate is ~0.0015 even on the conservative side, so a 100k
+// rejection budget has per-draw failure probability below e^-100. Below the
+// threshold the exact support is enumerated instead; the cap keeps a
+// borderline support bounded (a game beyond the cap has a decent acceptance
+// rate by construction and uses the enlarged rejection budget).
+constexpr std::size_t kDealerProbeAttempts = 20000;
+constexpr std::size_t kDealerProbeThreshold = 30;
+constexpr std::size_t kDealerEnumCap = 2000000;
+constexpr std::size_t kDealerFallbackAttempts = 10000000;
+
 void require(bool condition, const char* message) {
   if (!condition)
     throw std::invalid_argument(message);
@@ -244,6 +255,135 @@ MultiwayDeal sample_scalable_joint_deal(
     return deal;
   }
   throw std::runtime_error("scalable joint dealing exceeded its rejection budget");
+}
+
+JointDealDealer::JointDealDealer(const std::vector<std::vector<MultiwayWeightedHand>>& ranges,
+                                 const std::vector<int>& board, SplitMix64& probe_rng,
+                                 JointDealDealerDiagnostics* diagnostics) {
+  require(!ranges.empty(), "at least one seat range is required");
+  std::array<bool, 52> board_used{};
+  for (int card : board) {
+    require(card >= 0 && card < 52, "board card outside the deck");
+    require(!board_used[card], "duplicate board card");
+    board_used[card] = true;
+  }
+
+  // Board-filtered per-seat marginal cumulative-weight tables.
+  marginals_.resize(ranges.size());
+  for (std::size_t seat = 0; seat < ranges.size(); ++seat) {
+    require(!ranges[seat].empty(), "seat range must not be empty");
+    Marginal& m = marginals_[seat];
+    m.combos.reserve(ranges[seat].size());
+    m.weights.reserve(ranges[seat].size());
+    m.cumulative.reserve(ranges[seat].size());
+    double running = 0.0;
+    for (const MultiwayWeightedHand& hand : ranges[seat]) {
+      const double weight = checked_weight(hand);
+      if (weight == 0)
+        continue;
+      if (board_used[hand.cards[0]] || board_used[hand.cards[1]])
+        continue;
+      m.combos.push_back(hand.cards);
+      m.weights.push_back(weight);
+      running += weight;
+      require(std::isfinite(running) && running > 0.0, "seat marginal has no positive weight");
+      m.cumulative.push_back(running);
+    }
+    require(!m.combos.empty(), "seat range has no combo compatible with the board");
+  }
+
+  // Probe the rejection acceptance rate.
+  std::size_t successes = 0;
+  std::vector<std::array<int, 2>> proposal;
+  proposal.reserve(ranges.size());
+  for (std::size_t attempt = 0; attempt < kDealerProbeAttempts; ++attempt) {
+    proposal.clear();
+    if (propose(probe_rng, proposal))
+      ++successes;
+  }
+
+  if (diagnostics) {
+    diagnostics->probe_attempts = kDealerProbeAttempts;
+    diagnostics->probe_successes = successes;
+  }
+
+  if (successes >= kDealerProbeThreshold) {
+    // High acceptance: rejection with the standard budget is effectively
+    // guaranteed to succeed on every draw.
+    rejection_attempts_ = 100000;
+    return;
+  }
+
+  // Low acceptance: enumerate the exact support. It is correspondingly small
+  // (the accepted fraction of a fixed product of marginals), so this is the
+  // cheap regime precisely where rejection was failing.
+  JointDealTable exact = enumerate_joint_deals(ranges, board);
+  if (exact.deals.size() > kDealerEnumCap) {
+    // Borderline support: acceptance is actually decent enough for a large
+    // rejection budget to be safe; do not resident the oversized table.
+    rejection_attempts_ = kDealerFallbackAttempts;
+    return;
+  }
+
+  std::vector<double> cumulative;
+  cumulative.reserve(exact.deals.size());
+  double running = 0.0;
+  for (const MultiwayDeal& deal : exact.deals) {
+    running += deal.weight;  // enumerate_joint_deals normalizes weights to sum 1
+    cumulative.push_back(running);
+  }
+  deal_cumulative_ = std::move(cumulative);
+  table_ = std::move(exact);
+
+  if (diagnostics) {
+    diagnostics->enumerated = true;
+    diagnostics->exact_deal_count = table_->deals.size();
+    diagnostics->table_bytes =
+        table_->deals.size() * (sizeof(MultiwayDeal) + ranges.size() * sizeof(std::array<int, 2>));
+  }
+}
+
+bool JointDealDealer::propose(SplitMix64& rng, std::vector<std::array<int, 2>>& out) const {
+  const auto unit = [&rng] {
+    return static_cast<double>(rng.next_u64() >> 11) * (1.0 / 9007199254740992.0);
+  };
+  for (const Marginal& m : marginals_) {
+    const double target = unit() * m.cumulative.back();
+    auto it = std::upper_bound(m.cumulative.begin(), m.cumulative.end(), target);
+    const std::size_t choice = static_cast<std::size_t>(std::distance(m.cumulative.begin(), it));
+    const std::array<int, 2> candidate = m.combos[choice];
+    for (const auto& chosen : out)
+      for (int card : chosen)
+        if (card == candidate[0] || card == candidate[1])
+          return false;
+    out.push_back(candidate);
+  }
+  return true;
+}
+
+MultiwayDeal JointDealDealer::sample(SplitMix64& rng) const {
+  if (table_) {
+    const double unit = static_cast<double>(rng.next_u64() >> 11) * (1.0 / 9007199254740992.0);
+    auto it = std::upper_bound(deal_cumulative_.begin(), deal_cumulative_.end(),
+                               unit * deal_cumulative_.back());
+    const std::size_t index = static_cast<std::size_t>(std::distance(deal_cumulative_.begin(), it));
+    if (index >= table_->deals.size())
+      throw std::runtime_error("joint deal dealer: cumulative pick out of range");
+    return table_->deals[index];
+  }
+
+  std::vector<std::array<int, 2>> proposal;
+  proposal.reserve(marginals_.size());
+  for (std::size_t attempt = 0; attempt < rejection_attempts_; ++attempt) {
+    proposal.clear();
+    if (!propose(rng, proposal))
+      continue;
+    MultiwayDeal deal;
+    deal.hands = std::move(proposal);
+    deal.weight = 1.0;
+    return deal;
+  }
+  throw std::runtime_error("joint deal dealer exceeded its rejection budget");
 }
 
 }  // namespace bs::solver

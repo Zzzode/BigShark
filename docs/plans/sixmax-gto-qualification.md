@@ -173,7 +173,9 @@ independent standard must specify and justify:
 Pilot runs may choose variance estimates, sample counts and affordable search
 budgets, but not move pass thresholds to accommodate the candidate. Every
 threshold and its rationale must be frozen by an independent reviewer before
-qualification training/evaluation. Until the guarantee-to-evidence relation,
+qualification training/evaluation. The [threshold proposal](sixmax-gto-thresholds.md)
+specifies the numerical values and error budgets; it remains Proposed until
+independent review is complete. Until the guarantee-to-evidence relation,
 thresholds and actual resource budget are resolved, this proposal remains
 Proposed and cannot sign off the complete feature.
 

@@ -7,6 +7,8 @@
 // heads-up vs multiway layout, a fold never reveals hole cards, an illegal
 // human action is rejected rather than clamped, bad configuration throws, and
 // a fixed seed reproduces the identical hand sequence.
+#include <bs/practice/engine_process.hpp>
+#include <bs/practice/engine_served_policy.hpp>
 #include <bs/stage6/practice_table.hpp>
 #include <cmath>
 #include <cstdio>
@@ -429,6 +431,78 @@ void test_engine_tier_with_injected_policy() {
   check(true, "engine tier with injected policy completes hands");
 }
 
+// T7: EngineProcess start/stop and capabilities handshake with a real engine
+// binary. Skipped gracefully when the binary is absent.
+void test_engine_process_handshake() {
+  bs::practice::EngineProcessConfig ec;
+  ec.engine_path = "bin/bigshark-engine";
+  ec.timeout_ms = 10000;
+  bs::practice::EngineProcess proc(ec);
+  if (!proc.start()) {
+    std::printf("SKIP: engine process handshake (binary unavailable: %s)\n",
+                proc.last_error().c_str());
+    return;
+  }
+  check(proc.running(), "engine process is running after start");
+  // The handshake succeeding implies capabilities were received and parsed.
+  proc.stop();
+  check(!proc.running(), "engine process is stopped after stop()");
+}
+
+// T7: Six-seat engine-served practice. Spawns one EngineProcess shared across
+// five bot seats, injects EngineServedPolicy for each, and verifies that full
+// hands complete and stay zero-sum. Skipped gracefully when the binary is
+// absent.
+void test_six_seat_engine_tier() {
+  bs::practice::EngineProcessConfig ec;
+  ec.engine_path = "bin/bigshark-engine";
+  ec.timeout_ms = 30000;
+  ec.solve_budget_ms = 500;
+  bs::practice::EngineProcess proc(ec);
+  if (!proc.start()) {
+    std::printf("SKIP: six-seat engine tier (binary unavailable: %s)\n", proc.last_error().c_str());
+    return;
+  }
+
+  PracticeConfig cfg;
+  cfg.seats = 6;
+  cfg.human_seat = 0;
+  cfg.big_blind = 2;
+  cfg.starting_stack = 200;
+  cfg.difficulty = PracticeDifficulty::Engine;
+  cfg.rng_seed = 42;
+  PracticeTable table(cfg, passive_human);
+
+  // Inject an EngineServedPolicy for each bot seat.
+  std::vector<bs::practice::EngineServedPolicy*> policies;
+  for (std::size_t s = 1; s < 6; ++s) {
+    auto policy = std::make_unique<bs::practice::EngineServedPolicy>(proc, s, 500);
+    policies.push_back(policy.get());
+    table.set_bot(s, std::move(policy));
+  }
+
+  Recorder rec;
+  for (std::size_t h = 0; h < 5; ++h) {
+    const std::array<double, 10> u = table.play_hand(&rec);
+    check(std::abs(sum_n(u, 6)) < 1e-9, "six-seat engine-tier hand stays zero-sum");
+    rec.hand_boundary();
+  }
+  check(table.hands_played() == 5, "six-seat engine tier completed all hands");
+
+  // At least some decisions should have been served by the engine (not all
+  // fallbacks).
+  std::size_t total_served = 0;
+  std::size_t total_fallbacks = 0;
+  for (const auto* p : policies) {
+    total_served += p->decisions_served();
+    total_fallbacks += p->fallbacks();
+  }
+  check(total_served > 0, "engine served at least one bot decision");
+  if (total_fallbacks > 0)
+    std::printf("NOTE: %zu engine fallbacks (of %zu decisions)\n", total_fallbacks,
+                total_served + total_fallbacks);
+}
+
 }  // namespace
 
 int main() {
@@ -442,6 +516,8 @@ int main() {
   test_engine_tier_requires_set_bot();
   test_set_bot_rejects_bad_arguments();
   test_engine_tier_with_injected_policy();
+  test_engine_process_handshake();
+  test_six_seat_engine_tier();
   if (failures) {
     std::printf("STAGE 6 PRACTICE TABLE FAILED: %d\n", failures);
     return 1;

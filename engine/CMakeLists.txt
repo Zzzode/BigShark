@@ -720,6 +720,26 @@ target_link_libraries(bigshark_practice
   PRIVATE bigshark_poker
 )
 
+# T7: engine-host-backed practice policy. Spawns the engine host and serves
+# bot decisions through the v2 framed-protocol pipeline. Kept separate from
+# bigshark_practice so the offline core never links the protocol or service.
+add_library(bigshark_practice_engine STATIC
+  src/practice/engine_process.cpp
+  src/practice/engine_served_policy.cpp
+)
+target_include_directories(bigshark_practice_engine
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_practice_engine
+  PUBLIC  bigshark_practice
+  PRIVATE bigshark_engine_protocol
+  PRIVATE bigshark_protocol
+)
+
+# T7: interactive practice CLI.
+add_executable(bigshark-practice benchmarks/practice_simulator.cpp)
+target_link_libraries(bigshark-practice PRIVATE bigshark_practice_engine)
+
 if(BUILD_TESTING)
   add_executable(test_eval tests/test_eval.cpp)
   target_link_libraries(test_eval PRIVATE bigshark_poker)
@@ -766,8 +786,10 @@ if(BUILD_TESTING)
   # RFC 0008 stage 6: the offline single-human practice table core, driven by
   # a scripted HumanAgent (full-hand completion, zero-sum, button/blind
   # layout, fold privacy, illegal-action rejection, seed reproducibility).
+  # T7: also covers the engine-host-backed tier (EngineProcess handshake and
+  # six-seat engine-served practice).
   add_executable(test_stage6_practice tests/test_stage6_practice.cpp)
-  target_link_libraries(test_stage6_practice PRIVATE bigshark_practice)
+  target_link_libraries(test_stage6_practice PRIVATE bigshark_practice_engine)
   add_test(NAME stage6_practice COMMAND test_stage6_practice)
 
   # RFC 0008 stage 6 R12 step 5: two-phase learn/confirm Monte Carlo
