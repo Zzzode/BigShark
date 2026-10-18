@@ -84,6 +84,12 @@ std::size_t count_covered_flops(const std::vector<std::array<int, 3>>& covered);
 // every seat. Board-overlapping combos are filtered per class at build time.
 std::vector<solver::WeightedHand> declared_library_range();
 
+// The full preflop range: all 1,326 unordered hole-card combos at unit
+// weight. Board-overlapping combos are filtered per class at build time. The
+// trainer still seals rows under the declared card buckets, but the wider
+// range gives every bucket realistic reach and opponent support.
+std::vector<solver::WeightedHand> declared_full_library_range();
+
 // Whether `seat_count` seats can each be dealt a distinct non-conflicting
 // two-card combo from `range` after removing the three board cards. Exact
 // bounded depth-first edge packing over the board-filtered range graph

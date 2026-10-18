@@ -63,6 +63,7 @@ struct Args {
   bs::poker::Chips stack = 4;
   bs::poker::Chips contribution = 2;
   bool coarse = false;
+  bool full_range = false;  // 1,326 combos/seat instead of the 40-combo premium range
   std::size_t parallel = 1;
   bool resume = false;
   std::uint8_t raise_cap = 0;
@@ -84,7 +85,8 @@ struct Args {
                "options:\n"
                "  --parallel N  train with N forked workers      (default 1)\n"
                "  --resume      warm-start from per-class checkpoints\n"
-               "  --raise-cap N cap raises per street, 0 = no cap (default 0)\n",
+               "  --raise-cap N cap raises per street, 0 = no cap (default 0)\n"
+               "  --range S     'premium' 40 combos/seat (default) or 'full' 1,326\n",
                prog);
   std::exit(2);
 }
@@ -113,6 +115,18 @@ Args parse_args(int argc, char** argv) {
         std::exit(2);
       }
       args.raise_cap = static_cast<std::uint8_t>(cap);
+    } else if (arg == "--range") {
+      if (i + 1 >= argc)
+        usage(argv[0]);
+      const std::string value = argv[++i];
+      if (value == "full")
+        args.full_range = true;
+      else if (value == "premium")
+        args.full_range = false;
+      else {
+        std::fprintf(stderr, "--range must be 'premium' or 'full'\n");
+        std::exit(2);
+      }
     } else if (arg == "--worker-id") {
       if (i + 1 >= argc)
         usage(argv[0]);
@@ -160,7 +174,8 @@ bs::flop_library::BuildParams make_params(const Args& args) {
   params.seed = 20261002;
   params.stack = args.stack;
   params.contribution = args.contribution;
-  params.range = bs::flop_library::declared_library_range();
+  params.range = args.full_range ? bs::flop_library::declared_full_library_range()
+                                 : bs::flop_library::declared_library_range();
   params.player_count = args.player_count;
   params.action = args.coarse ? bs::abstraction::ActionAbstraction::declared(
                                     bs::abstraction::default_size_schedule(),
@@ -332,6 +347,8 @@ int run_parallel(const Args& args) {
       ::execl(exe.c_str(), exe.c_str(), "--worker-id", wid.c_str(), "--parallel", par.c_str(),
               args.out_dir.string().c_str(), cc.c_str(), it.c_str(), pc.c_str(), st.c_str(),
               ct.c_str(), abstraction, "--raise-cap", cap.c_str(),
+              args.full_range ? "--range" : (const char*)nullptr,
+              args.full_range ? "full" : (const char*)nullptr,
               args.resume ? "--resume" : nullptr, nullptr);
       // exec failed.
       std::perror("execl");

@@ -908,6 +908,15 @@ std::vector<solver::WeightedHand> declared_library_range() {
   return range;
 }
 
+std::vector<solver::WeightedHand> declared_full_library_range() {
+  std::vector<solver::WeightedHand> range;
+  range.reserve(1326);
+  for (int c0 = 0; c0 < 52; ++c0)
+    for (int c1 = c0 + 1; c1 < 52; ++c1)
+      range.push_back({{c0, c1}, 1.0});
+  return range;
+}
+
 LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips stack, poker::Chips contribution,
