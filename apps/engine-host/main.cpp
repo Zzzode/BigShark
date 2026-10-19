@@ -525,17 +525,128 @@ std::optional<std::size_t> collectResidentBudget(int argc, char** argv) {
   return budget_bytes;
 }
 
-// RFC 0012 Phase 2: scan --flop-library arguments for a .bin file. Returns
-// the first match; the mmap path in ResidentPolicySet::build handles it.
-std::optional<std::filesystem::path> collectBinaryLibraryPath(int argc, char** argv) {
+// RFC 0012 Phase 2 / RFC 0027: resolve the one source that is a binary
+// library. A `--flop-library <file.bin>` argument names one directly; a
+// `--flop-library <dir>` names one when its manifest has a `library_bin`
+// field. Returns nullopt when no source is binary, and reports an error when
+// the launch mixes a binary library with any other source (another binary, a
+// SQLite flop directory, or a --resident-root) because ResidentPolicySet
+// would silently drop everything but the binary library.
+std::optional<std::filesystem::path> collectBinaryLibraryPath(int argc, char** argv,
+                                                              std::string& error) {
+  std::optional<std::filesystem::path> binary;
+  std::size_t source_count = 0;
+  bool has_resident_root = false;
   for (int i = 1; i < argc; ++i) {
-    if (std::string_view(argv[i]) != "--flop-library" || i + 1 >= argc)
+    const std::string_view argument = argv[i];
+    if (argument == "--resident-root") {
+      has_resident_root = true;
+      continue;
+    }
+    if (argument != "--flop-library" || i + 1 >= argc)
       continue;
     const std::filesystem::path path = argv[++i];
-    if (path.extension() == ".bin")
-      return path;
+    ++source_count;
+    if (path.extension() == ".bin") {
+      if (binary && *binary != path) {
+        error = "multiple binary libraries: " + binary->string() + " and " + path.string();
+        return std::nullopt;
+      }
+      binary = path;
+      continue;
+    }
+    // A directory whose manifest names library.bin is a binary source.
+    std::error_code ec;
+    const std::filesystem::path manifest = path / "manifest.json";
+    if (!std::filesystem::exists(manifest, ec))
+      continue;
+    std::ifstream in(manifest, std::ios::binary);
+    if (!in)
+      continue;
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    yyjson_doc* doc = yyjson_read(content.data(), content.size(), 0);
+    if (!doc)
+      continue;
+    struct DocGuard {
+      yyjson_doc* d;
+      ~DocGuard() { yyjson_doc_free(d); }
+    } guard{doc};
+    yyjson_val* root = yyjson_doc_get_root(doc);
+    yyjson_val* bin_val = yyjson_is_obj(root) ? yyjson_obj_get(root, "library_bin") : nullptr;
+    if (!yyjson_is_str(bin_val) || yyjson_get_len(bin_val) == 0)
+      continue;
+    const std::string name = yyjson_get_str(bin_val);
+    if (name == "." || name == ".." || name.find_first_of("/\\") != std::string::npos) {
+      error = "flop-library: library_bin must be a bare filename: " + path.string();
+      return std::nullopt;
+    }
+    if (binary && binary->parent_path() != path) {
+      error = "multiple binary libraries: " + binary->string() + " and " + (path / name).string();
+      return std::nullopt;
+    }
+    binary = path / name;
   }
-  return std::nullopt;
+  if (!binary)
+    return std::nullopt;
+  if (source_count > 1 || has_resident_root) {
+    error =
+        "a binary flop library cannot be combined with other resident sources "
+        "(flop directory, second binary library, or --resident-root): " +
+        binary->string();
+    return std::nullopt;
+  }
+  return binary;
+}
+
+// RFC 0027: verify a directory-resolved binary library at startup. The
+// manifest's digest must equal the sidecar, and the file hash must equal both.
+// An explicitly passed <file.bin> keeps its documented sidecar-only default
+// (--verify-binary opts into the full hash).
+bool verify_pinned_binary_library(const std::filesystem::path& bin_path) {
+  const std::filesystem::path manifest_path = bin_path.parent_path() / "manifest.json";
+  std::error_code ec;
+  if (!std::filesystem::exists(manifest_path, ec))
+    return true;  // explicit .bin argument: no manifest to cross-check
+  std::ifstream in(manifest_path, std::ios::binary);
+  if (!in) {
+    std::cerr << "flop-library: cannot open manifest: " << manifest_path << '\n';
+    return false;
+  }
+  std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  yyjson_doc* doc = yyjson_read(content.data(), content.size(), 0);
+  if (!doc) {
+    std::cerr << "flop-library: manifest is not valid JSON: " << manifest_path << '\n';
+    return false;
+  }
+  struct DocGuard {
+    yyjson_doc* d;
+    ~DocGuard() { yyjson_doc_free(d); }
+  } guard{doc};
+  yyjson_val* root = yyjson_doc_get_root(doc);
+  yyjson_val* pinned = yyjson_is_obj(root) ? yyjson_obj_get(root, "library_bin_sha256") : nullptr;
+  if (!yyjson_is_str(pinned)) {
+    std::cerr << "flop-library: manifest has no library_bin_sha256: " << manifest_path << '\n';
+    return false;
+  }
+  const std::string pinned_hex = yyjson_get_str(pinned);
+  const std::filesystem::path sidecar = bin_path.string() + ".sha256";
+  std::ifstream sidecar_in(sidecar);
+  if (!sidecar_in) {
+    std::cerr << "flop-library: missing sidecar: " << sidecar << '\n';
+    return false;
+  }
+  std::string sidecar_hex;
+  sidecar_in >> sidecar_hex;
+  if (sidecar_hex != pinned_hex) {
+    std::cerr << "flop-library: sidecar digest disagrees with manifest for " << bin_path << '\n';
+    return false;
+  }
+  const std::string actual = bs::artifacts::sha256_file_hex(bin_path);
+  if (actual != pinned_hex) {
+    std::cerr << "flop-library: content digest disagrees with manifest for " << bin_path << '\n';
+    return false;
+  }
+  return true;
 }
 
 // RFC 0012 Phase 3: whether --lazy was passed.
@@ -599,6 +710,10 @@ bool collectFlopLibrarySpecs(int argc, char** argv,
       ~DocGuard() { yyjson_doc_free(d); }
     } guard{doc};
     yyjson_val* root = yyjson_doc_get_root(doc);
+    // RFC 0027: a manifest that names library.bin describes a packed library,
+    // not a set of SQLite class roots; the mmap path handles it.
+    if (yyjson_is_obj(root) && yyjson_is_str(yyjson_obj_get(root, "library_bin")))
+      continue;
     yyjson_val* classes = yyjson_is_obj(root) ? yyjson_obj_get(root, "classes") : nullptr;
     if (!yyjson_is_arr(classes) || yyjson_arr_size(classes) == 0) {
       std::cerr << "flop-library: manifest has no non-empty classes array: " << manifest_path
@@ -764,7 +879,14 @@ int main(int argc, char** argv) {
     return 2;
   }
   // RFC 0012 Phase 2: detect a .bin consolidated library for mmap mode.
-  const auto binary_path = collectBinaryLibraryPath(argc, argv);
+  std::string binary_error;
+  const auto binary_path = collectBinaryLibraryPath(argc, argv, binary_error);
+  if (!binary_error.empty()) {
+    std::cerr << "flop-library: " << binary_error << '\n';
+    return 2;
+  }
+  if (binary_path && !verify_pinned_binary_library(*binary_path))
+    return 2;
   // RFC 0012 Phase 3: detect --lazy for on-demand class loading.
   const bool lazy = hasLazyFlag(argc, argv);
   // Collect flop library directory specs. .bin files are skipped here

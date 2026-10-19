@@ -133,40 +133,38 @@ bool test_build_library(const fs::path& dir) {
   CHECK(manifest.card_id == bs::abstraction::suit_canonicalization_id());
   CHECK(fs::exists(dir / "manifest.json"));
 
-  // No checkpoint files remain; only immutable published policies.
+  // RFC 0027: the packed library is the artifact. No per-class SQLite policy
+  // file and no leftover section staging directory remain.
+  CHECK(manifest.library_bin == "library.bin");
+  CHECK(fs::exists(dir / manifest.library_bin));
+  CHECK(!fs::exists(dir / ".sections"));
   for (const auto& entry : manifest.classes) {
-    const fs::path artifact_path = dir / entry.artifact_name;
-    CHECK(fs::exists(artifact_path));
-    const fs::path checkpoint = dir / (artifact_path.stem().string() + "-checkpoint.db");
-    CHECK(!fs::exists(checkpoint));
-
-    const bs::artifacts::ArtifactProbe probe = bs::artifacts::probe_artifact(artifact_path);
-    // A v3 artifact carries the suit-canonicalization declaration.
-    CHECK(probe.manifest.card_abstraction.has_value());
-    CHECK(probe.manifest.card_abstraction.value() == bs::abstraction::suit_canonicalization_id());
-    // The stored board is the canonical class representative.
-    CHECK(probe.game_def.has_value());
-    CHECK(probe.game_def->board_size == 3);
-    const std::array<int, 3> stored{probe.game_def->board[0], probe.game_def->board[1],
-                                    probe.game_def->board[2]};
-    CHECK(bs::abstraction::canonicalize(stored).board == stored);
-    CHECK(stored == entry.canonical_board);
-    // The manifest's stored-row count matches the probe's aggregate.
-    CHECK(probe.information_sets > 0);
-    CHECK(entry.stored_rows == probe.information_sets);
+    char stem[32];
+    std::snprintf(stem, sizeof(stem), "class-%04zu",
+                  static_cast<std::size_t>(&entry - manifest.classes.data()));
+    CHECK(!fs::exists(dir / (std::string(stem) + ".db")));
+    CHECK(!fs::exists(dir / (std::string(stem) + "-checkpoint.bswarm")));
+    CHECK(entry.stored_rows > 0);
     CHECK(entry.completed_iterations == 100);
-    CHECK(entry.sha256_hex == probe.sha256_hex);
+    CHECK(entry.section_bytes > 0);
   }
 
-  // Independently recompute storage: the manifest's byte total must equal the
-  // sum of the on-disk artifact sizes (counted, not trusted from the builder).
-  std::error_code ec;
-  std::uintmax_t measured_bytes = 0;
+  // The packed file loads through the resident reader with the expected
+  // classes, and its sidecar matches the measured digest.
+  bs::resident::MmapLibrary library;
+  library.open(dir / manifest.library_bin);
+  CHECK(library.class_count() == manifest.class_count);
+  CHECK(library.sha256_hex() == manifest.library_bin_sha256);
   for (const auto& entry : manifest.classes) {
-    measured_bytes += fs::file_size(dir / entry.artifact_name, ec);
-    CHECK(!ec);
+    const std::int32_t class_id = library.class_id_for_board(entry.canonical_board);
+    CHECK(class_id >= 0);
+    CHECK(library.canonical_board(static_cast<std::uint32_t>(class_id)) == entry.canonical_board);
   }
-  CHECK(measured_bytes == manifest.storage_bytes);
+
+  // Independently recompute storage from the file itself.
+  std::error_code ec;
+  CHECK(fs::file_size(dir / manifest.library_bin, ec) == manifest.storage_bytes);
+  CHECK(!ec);
 
   // Independently recompute coverage for the two built classes.
   const auto classes = bs::flop_library::enumerate_classes();
@@ -189,8 +187,9 @@ bool test_build_library_coarse(const fs::path& dir) {
   CHECK(manifest.storage_bytes > 0);
   // The coarse tree should have fewer nodes than the identity tree at the
   // same stack profile (the forced min/cap seeds are removed).
+  CHECK(fs::exists(dir / manifest.library_bin));
   for (const auto& entry : manifest.classes) {
-    CHECK(fs::exists(dir / entry.artifact_name));
+    CHECK(fs::exists(dir / manifest.library_bin));
     CHECK(entry.stored_rows > 0);
   }
   return true;

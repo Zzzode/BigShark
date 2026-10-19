@@ -4,6 +4,9 @@
 // it links the solver and artifact libraries but never the service, host, or
 // protocol targets. Every measurement in the manifest is counted, never
 // estimated.
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <bs/abstract_tree.hpp>
@@ -15,6 +18,8 @@
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>  // WeightedHand
 #include <bs/nseat_trainer.hpp>
+#include <bs/range.hpp>  // comboIndex
+#include <bs/sealed_checkpoint.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <chrono>
@@ -134,153 +139,6 @@ std::string json_escape(const std::string& s) {
   return out;
 }
 
-// --- RFC 0012 Phase 4: checkpoint round-trip helpers ------------------------
-//
-// The trainer keys its raw table by (card bucket, tree node); the artifact
-// checkpoint keys training rows by (info_id, ordinal), i.e. one row per
-// concrete (actor, own combo, board, public-action path) information state.
-// The two helpers below perform the forward expansion (trainer -> checkpoint)
-// and the reverse mapping (checkpoint -> trainer) by walking the same tree the
-// export path uses. Every concrete combo sharing a (bucket, node) carries
-// identical regrets, so the reverse map can pick any one representative combo
-// per (bucket, node).
-
-// Forward DFS: at each action node, for every off-board combo, look up the
-// raw (bucket, node) row and emit one (regret, average_weight) pair per action
-// ordinal under the concrete InformationKey. Mirrors export_dfs in
-// seat_policy.cpp, but reads the raw table instead of the sealed policy.
-void export_training_dfs(const tree::AbstractTree& tree,
-                         const std::map<solver::NSeatInformationKey, solver::NSeatRawRow>& raw_rows,
-                         std::map<solver::InformationKey, artifacts::TrainingWeights>& rows,
-                         std::size_t node_index, poker::GameState& cursor,
-                         std::vector<poker::PublicAction>& path) {
-  const tree::TreeNode& node = tree.node(node_index);
-  if (node.is_terminal() || node.is_flop_deal())
-    return;
-  if (node.is_chance()) {
-    for (std::size_t ci = 0; ci < node.children.size(); ++ci) {
-      const tree::TreeNode& child = tree.node(node.children[ci]);
-      poker::GameState next = cursor.after_card(child.incoming_card);
-      export_training_dfs(tree, raw_rows, rows, node.children[ci], next, path);
-    }
-    return;
-  }
-
-  const std::size_t seat = node.actor;
-  const std::span<const int> board = cursor.board();
-  const std::vector<int> board_vec(board.begin(), board.end());
-  std::array<bool, 52> on_board{};
-  for (int card : board)
-    on_board[static_cast<std::size_t>(card)] = true;
-
-  for (int c0 = 0; c0 < 52; ++c0) {
-    if (on_board[static_cast<std::size_t>(c0)])
-      continue;
-    for (int c1 = c0 + 1; c1 < 52; ++c1) {
-      if (on_board[static_cast<std::size_t>(c1)])
-        continue;
-      const std::array<int, 2> cards{c0, c1};
-      const std::uint32_t bucket =
-          abstraction::card_bucket(solver::kNSeatCardKind, cards, board_vec);
-      const solver::NSeatInformationKey nk{bucket, node_index};
-      const auto it = raw_rows.find(nk);
-      if (it == raw_rows.end())
-        continue;  // exact miss: no raw row
-      const solver::NSeatRawRow& raw = it->second;
-      artifacts::TrainingWeights weights;
-      weights.reserve(raw.actions.size());
-      for (std::size_t a = 0; a < raw.actions.size(); ++a)
-        weights.push_back({raw.regrets[a], raw.sums[a]});
-      rows.emplace(solver::make_information_key(seat, cards, board, path), std::move(weights));
-    }
-  }
-
-  for (std::size_t ai = 0; ai < node.actions.size(); ++ai) {
-    const poker::Action& action = node.actions[ai];
-    poker::GameState next = cursor.after_action(seat, action);
-    path.push_back(poker::PublicAction{node.street, seat, action});
-    export_training_dfs(tree, raw_rows, rows, node.children[ai], next, path);
-    path.pop_back();
-  }
-}
-
-// Expand the trainer's raw table into concrete per-combo training rows, ready
-// for save_training_checkpoint. (Defined outside the anonymous namespace; the
-// DFS helper above stays file-local.)
-// std::map<...> export_seat_training_rows(...) — see below the namespace.
-
-// Reverse DFS: at each action node, for every off-board combo, compute the
-// concrete InformationKey and look it up in the checkpoint rows. The first
-// combo for a (bucket, node) fills the trainer row; later combos are skipped
-// because they carry identical regrets.
-void build_initial_dfs(const tree::AbstractTree& tree,
-                       const artifacts::CheckpointTrainingState& ckpt,
-                       solver::NSeatInitialState& state, std::size_t node_index,
-                       poker::GameState& cursor, std::vector<poker::PublicAction>& path) {
-  const tree::TreeNode& node = tree.node(node_index);
-  if (node.is_terminal() || node.is_flop_deal())
-    return;
-  if (node.is_chance()) {
-    for (std::size_t ci = 0; ci < node.children.size(); ++ci) {
-      const tree::TreeNode& child = tree.node(node.children[ci]);
-      poker::GameState next = cursor.after_card(child.incoming_card);
-      build_initial_dfs(tree, ckpt, state, node.children[ci], next, path);
-    }
-    return;
-  }
-
-  const std::size_t seat = node.actor;
-  const std::span<const int> board = cursor.board();
-  const std::vector<int> board_vec(board.begin(), board.end());
-  std::array<bool, 52> on_board{};
-  for (int card : board)
-    on_board[static_cast<std::size_t>(card)] = true;
-
-  for (int c0 = 0; c0 < 52; ++c0) {
-    if (on_board[static_cast<std::size_t>(c0)])
-      continue;
-    for (int c1 = c0 + 1; c1 < 52; ++c1) {
-      if (on_board[static_cast<std::size_t>(c1)])
-        continue;
-      const std::array<int, 2> cards{c0, c1};
-      const solver::InformationKey key = solver::make_information_key(seat, cards, board, path);
-      const auto ckpt_it = ckpt.rows.find(key);
-      if (ckpt_it == ckpt.rows.end())
-        continue;
-      const std::uint32_t bucket =
-          abstraction::card_bucket(solver::kNSeatCardKind, cards, board_vec);
-      const solver::NSeatInformationKey nk{bucket, node_index};
-      if (state.rows.contains(nk))
-        continue;  // a representative combo already filled this (bucket, node)
-      const artifacts::TrainingWeights& weights = ckpt_it->second;
-      solver::NSeatRawRow row;
-      row.actions = node.actions;
-      if (weights.size() != row.actions.size())
-        throw std::runtime_error(
-            "checkpoint training row length disagrees with the tree action menu");
-      row.regrets.resize(weights.size(), 0.0);
-      row.sums.resize(weights.size(), 0.0);
-      for (std::size_t a = 0; a < weights.size(); ++a) {
-        row.regrets[a] = weights[a].first;
-        row.sums[a] = weights[a].second;
-      }
-      state.rows.emplace(nk, std::move(row));
-    }
-  }
-
-  for (std::size_t ai = 0; ai < node.actions.size(); ++ai) {
-    const poker::Action& action = node.actions[ai];
-    poker::GameState next = cursor.after_action(seat, action);
-    path.push_back(poker::PublicAction{node.street, seat, action});
-    build_initial_dfs(tree, ckpt, state, node.children[ai], next, path);
-    path.pop_back();
-  }
-}
-
-// Map a loaded checkpoint's concrete training rows back to the trainer's
-// (bucket, node) table. (Defined outside the anonymous namespace below.)
-// solver::NSeatInitialState build_initial_state(...) — see below.
-
 // The offline training caps, shared by the serial and parallel paths.
 solver::NSeatTrainerLimits trainer_limits() {
   solver::NSeatTrainerLimits limits;
@@ -294,6 +152,71 @@ solver::NSeatTrainerLimits trainer_limits() {
 // after every chunk of this many iterations so a crashed build can resume.
 constexpr std::uint64_t kCheckpointInterval = 256;
 
+// RFC 0027: per-class section staging directory under the output dir.
+constexpr char kSectionsDir[] = ".sections";
+
+// Write `bytes` to `path` durably: write a sibling `.tmp`, fsync it, rename.
+void write_file_atomically(const std::filesystem::path& path,
+                           const std::vector<std::uint8_t>& bytes) {
+  const std::filesystem::path temp = path.string() + ".tmp";
+  {
+    std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+    if (!out)
+      throw std::runtime_error("cannot open " + temp.string() + " for write");
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    if (!out)
+      throw std::runtime_error("failed writing " + temp.string());
+    out.flush();
+    if (!out)
+      throw std::runtime_error("failed flushing " + temp.string());
+  }
+  const int fd = ::open(temp.string().c_str(), O_RDONLY);
+  if (fd < 0)
+    throw std::runtime_error("cannot open " + temp.string() + " for fsync");
+  if (::fsync(fd) != 0) {
+    ::close(fd);
+    throw std::runtime_error("fsync failed for " + temp.string());
+  }
+  ::close(fd);
+  std::filesystem::rename(temp, path);
+}
+
+// One completed class as recorded by a worker: the index plus the counters the
+// parent cannot cheaply re-derive from a section header.
+struct FragmentClass {
+  std::size_t index = 0;
+  ClassEntry entry;
+};
+
+// Append one JSON line to an owner's fragment. Each worker (and the serial
+// builder) owns its own file, so no locking is needed.
+void append_fragment_line(const std::filesystem::path& sections_dir, const std::string& tag,
+                          const FragmentClass& fc);
+
+// The shared game identity recorded in the packed library header. Every flop
+// class of one library differs only in its board, which lives in the section.
+solver::UnifiedGame make_unified_game(const BuildParams& params,
+                                      const std::vector<std::array<int, 3>>& classes) {
+  if (classes.empty())
+    throw std::invalid_argument("make_unified_game: no classes");
+  solver::UnifiedGame game;
+  game.def = make_def(classes[0], params.stack, params.contribution, params.player_count);
+  game.def.board = {0, 0, 0, 0, 0};
+  game.def.board_size = 3;  // the file-level identity is flop-rooted
+  game.sizes = params.action.schedule();
+  game.action_id = params.action.id();
+  return game;
+}
+
+std::vector<std::array<int, 3>> covered_boards(const std::vector<ClassEntry>& classes) {
+  std::vector<std::array<int, 3>> boards;
+  boards.reserve(classes.size());
+  for (const ClassEntry& entry : classes)
+    boards.push_back(entry.canonical_board);
+  return boards;
+}
+
 // Refuse incompatible resume files before entering any failure-cleanup scope.
 // A checkpoint left torn by a SIGKILL/crash mid-write (bad SQLite header,
 // failed integrity check, or stale rollback journal) is not a usable warm
@@ -304,31 +227,30 @@ void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_co
   if (!resume)
     return;
   for (std::size_t index = 0; index < class_count; ++index) {
-    const auto path = out_dir / (class_stem(index) + "-checkpoint.db");
+    const auto path = out_dir / (class_stem(index) + "-checkpoint.bswarm");
     std::error_code ec;
     if (!std::filesystem::exists(path, ec))
       continue;
-    artifacts::CheckpointTrainingState checkpoint;
+    artifacts::SealedCheckpointState checkpoint;
     bool corrupt = false;
     try {
-      checkpoint = artifacts::load_checkpoint(path);
-    } catch (const artifacts::ArtifactError&) {
+      // Header-only: the payload is decoded on the training path, where a
+      // mismatch is actionable. A failure here means the file cannot be a
+      // checkpoint this build wrote.
+      checkpoint = artifacts::inspect_sealed_checkpoint(path);
+    } catch (const artifacts::SealedCheckpointError&) {
       corrupt = true;
     } catch (const std::runtime_error&) {
-      // load_checkpoint validates schema and content; any failure means the
-      // warm-start state is unusable.
       corrupt = true;
     }
     if (corrupt) {
       std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
                    path.string().c_str());
       std::filesystem::remove(path, ec);
-      std::filesystem::remove(std::filesystem::path(path.string() + "-journal"), ec);
-      std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), ec);
-      std::filesystem::remove(std::filesystem::path(path.string() + "-shm"), ec);
       continue;
     }
-    if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2)
+    if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2 ||
+        checkpoint.algorithm_revision_id != solver::kNSeatAlgorithmRevision)
       throw std::runtime_error(
           "incompatible checkpoint algorithm; refusing resume without modifying " + path.string());
   }
@@ -401,16 +323,17 @@ bool class_is_dealable_impl(const std::array<int, 3>& board, std::size_t seat_co
   return find_disjoint_edges(edges, 0, seat_count, used);
 }
 
-// Train one class and publish its artifact. Shared by the serial builder and
-// the parallel workers. When `params.resume` is set, warm-starts from an
-// existing `class-NNNN-checkpoint.db` (after verifying the abstraction
+// Train one class and serialize its BSFLIB02 section. Shared by the serial
+// builder and the parallel workers. When `params.resume` is set, warm-starts
+// from an existing `class-NNNN-checkpoint.bswarm` (after verifying the abstraction
 // digests) and writes a fresh checkpoint every kCheckpointInterval iterations.
 // The per-iteration PRNG streams depend on the absolute iteration number, so a
 // warm-started run is bitwise-identical to a from-scratch run at the same
-// iteration count.
+// iteration count. RFC 0027: the exported rows go straight to the shared
+// serializer; no per-class SQLite policy artifact is written.
 ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t class_index,
                            const std::array<int, 3>& board, const BuildParams& params,
-                           const abstraction::AbstractionId& card_id) {
+                           const abstraction::AbstractionId& card_id, const std::string& tag) {
   const poker::GameDef def =
       make_def(board, params.stack, params.contribution, params.player_count);
   const std::vector<solver::WeightedHand> seat_range = filter_range(params.range, board);
@@ -426,22 +349,33 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
   const solver::NSeatTrainerLimits limits = trainer_limits();
 
   const std::string stem = class_stem(class_index);
-  const std::filesystem::path checkpoint_path = out_dir / (stem + "-checkpoint.db");
-  const std::filesystem::path policy_path = out_dir / (stem + ".db");
+  const std::filesystem::path checkpoint_path = out_dir / (stem + "-checkpoint.bswarm");
+  // The sealed checkpoint declares the bounds it was written under so a file
+  // from a different tree shape fails closed on load rather than landing rows
+  // on the wrong nodes.
+  const std::uint32_t node_cap = static_cast<std::uint32_t>(tree.nodes().size());
+  const std::uint32_t bucket_cap = 169;  // Preflop169: buckets 0..168
 
   // Warm-start from an existing checkpoint if requested.
   solver::NSeatInitialState state;
   if (params.resume) {
     std::error_code ec;
     if (std::filesystem::exists(checkpoint_path, ec)) {
-      const artifacts::CheckpointTrainingState ckpt = artifacts::load_checkpoint(checkpoint_path);
+      const artifacts::SealedCheckpointState ckpt =
+          artifacts::load_sealed_checkpoint(checkpoint_path);
       if (ckpt.abstraction_digest != params.action.id().digest)
         throw std::runtime_error("class " + std::to_string(class_index) +
                                  " checkpoint action-abstraction digest mismatch");
-      if (ckpt.card_abstraction != card_id)
+      if (ckpt.card_abstraction_digest != card_id.digest)
         throw std::runtime_error("class " + std::to_string(class_index) +
                                  " checkpoint card-abstraction mismatch");
-      state = build_initial_state(ckpt, tree);
+      state.rows = ckpt.rows;
+      state.completed_iterations = ckpt.completed_iterations;
+      state.algorithm_revision = ckpt.algorithm_revision_id;
+      state.batch_size = static_cast<std::size_t>(ckpt.batch_size);
+      if (state.rows.empty())
+        throw std::runtime_error("class " + std::to_string(class_index) +
+                                 " checkpoint carries no training rows");
       // A checkpoint that already reached the target is stale-but-complete
       // (crash after training, before publish). Drop it and train from scratch
       // so the publish path below has a fresh result to export.
@@ -479,13 +413,28 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
     state.algorithm_revision = trained.algorithm_revision;
     state.batch_size = trained.batch_size;
 
-    // Save a warm-start checkpoint for this chunk.
-    const solver::SeatTrainingResult exported =
-        solver::export_seat_policy(trained, tree, ranges, card_id);
-    const auto training_rows = export_seat_training_rows(trained, tree);
-    artifacts::SeatCheckpointProvenance provenance;
-    provenance.engine_revision = kLibraryEngineRevision;
-    artifacts::save_training_checkpoint(checkpoint_path, exported, training_rows, provenance);
+    // Save a warm-start checkpoint for this chunk. RFC 0028: this is a direct
+    // serialization of the trainer's own (bucket, node) table. The former
+    // per-chunk export_seat_policy call fed only the SQLite writer and did the
+    // same full combo expansion, so it is gone; the final export at class
+    // completion below is the one that produces the section.
+    artifacts::SealedCheckpointState checkpoint;
+    checkpoint.algorithm_revision_id = trained.algorithm_revision;
+    const char* revision_string = artifacts::sealed_revision_string(trained.algorithm_revision);
+    if (revision_string == nullptr)
+      throw std::runtime_error("class " + std::to_string(class_index) +
+                               " produced an unknown trainer algorithm revision");
+    checkpoint.algorithm_revision = revision_string;
+    checkpoint.abstraction_digest = params.action.id().digest;
+    checkpoint.card_abstraction_digest = card_id.digest;
+    checkpoint.completed_iterations = trained.completed_iterations;
+    checkpoint.batch_size = trained.batch_size;
+    checkpoint.completed_epochs = trained.completed_epochs;
+    checkpoint.node_cap = node_cap;
+    checkpoint.bucket_cap = bucket_cap;
+    checkpoint.key_kind = solver::kNSeatCardKind;
+    checkpoint.rows = trained.raw_rows;
+    artifacts::save_sealed_checkpoint(checkpoint_path, checkpoint);
 
     // Hand the raw table back for the next chunk.
     state.rows = std::move(trained.raw_rows);
@@ -495,338 +444,344 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
               trained.nodes, trained.information_sets, trained.accounted_bytes,
               static_cast<unsigned long long>(trained.completed_iterations));
 
-  // Final publish. Remove the warm-start checkpoint so create_checkpoint (which
-  // refuses to overwrite) can write the policy-only checkpoint.
+  // Final export and section serialization. The warm-start checkpoint is
+  // mutable training state and is removed once the class is complete; the
+  // durable completion evidence is the section file the caller writes.
   std::error_code ec;
   std::filesystem::remove(checkpoint_path, ec);
   const solver::SeatTrainingResult exported =
       solver::export_seat_policy(trained, tree, ranges, card_id);
-  artifacts::SeatCheckpointProvenance provenance;
-  provenance.engine_revision = kLibraryEngineRevision;
-  artifacts::create_checkpoint(checkpoint_path, exported, provenance);
-  const artifacts::PublishedPolicy published =
-      artifacts::publish_policy(checkpoint_path, policy_path, kLibraryEngineRevision);
-  const artifacts::ArtifactProbe probe = artifacts::probe_artifact(policy_path);
-  (void)probe;
+
+  resident::PackClassInput input;
+  input.class_id = static_cast<std::uint32_t>(class_index);
+  input.canonical_board = board;
+  input.rows = &exported.policy.rows();
+  input.range = &seat_range;
+  input.action_abstraction_digest = exported.policy.action_id().digest;
+  input.card_abstraction_digest = card_id.digest;
+  const std::vector<std::uint8_t> section = resident::serialize_class_section(input, params.layout);
 
   ClassEntry entry;
   entry.canonical_board = board;
-  entry.artifact_name = policy_path.filename().string();
-  entry.sha256_hex = published.sha256_hex;
   entry.stored_rows = exported.policy.rows().size();
   entry.completed_iterations = trained.completed_iterations;
   entry.information_sets = trained.information_sets;
+  entry.section_bytes = section.size();
 
-  // The checkpoint is mutable training state; the immutable published policy
-  // is the library artifact.
-  std::filesystem::remove(checkpoint_path, ec);
+  // Write the section as a durable, atomically published file. `.tmp` +
+  // fsync + rename means a crash leaves either the old state or the complete
+  // section, never a torn one.
+  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
+  std::filesystem::create_directories(sections_dir, ec);
+  if (ec)
+    throw std::runtime_error("cannot create sections directory: " + ec.message());
+  const std::filesystem::path section_path = sections_dir / (stem + ".bsf");
+  write_file_atomically(section_path, section);
+  // Durable completion evidence: the section (S1) and its fragment record
+  // (S2). The record is appended by the single process that owns this class.
+  append_fragment_line(sections_dir, tag, FragmentClass{class_index, entry});
   return entry;
 }
 
-// Lightweight record for a class whose immutable policy artifact was published
-// by an earlier build. We deliberately do NOT open/probe the artifact here:
-// 16 workers probing hundreds of ~260 MB files each saturates the disk for
-// tens of minutes before training starts. Only the SQLite header is checked
-// (16 bytes, cheap) to catch a grossly truncated file early. The merge phase
-// probes each record exactly once, sequentially, to fill the digest and row
-// counts. A corrupt PUBLISHED artifact therefore surfaces at merge, not as a
-// silent retrain.
-ClassEntry entry_from_published(const std::filesystem::path& out_dir, std::size_t class_index,
-                                const std::array<int, 3>& board) {
-  const std::filesystem::path policy_path = out_dir / (class_stem(class_index) + ".db");
-  std::FILE* f = std::fopen(policy_path.string().c_str(), "rb");
-  if (!f)
-    throw std::runtime_error("published class artifact vanished during resume: " +
-                             policy_path.string());
-  char magic[16]{};
-  const std::size_t got = std::fread(magic, 1, sizeof(magic), f);
-  std::fclose(f);
-  static constexpr char kSqliteMagic[] = "SQLite format 3";
-  if (got != sizeof(magic) || std::memcmp(magic, kSqliteMagic, 15) != 0)
-    throw std::runtime_error("published class artifact is not a SQLite database: " +
-                             policy_path.string());
-  ClassEntry entry;
-  entry.canonical_board = board;
-  entry.artifact_name = policy_path.filename().string();
-  // Empty digest/counts: the serial builder or merge_fragments fills them,
-  // reusing the prior manifest when one exists and probing only as a fallback.
-  return entry;
-}
-
-// --- RFC 0012 Phase 1: manifest fragments -----------------------------------
-
-// One class record in a manifest fragment, carrying the class index so the
-// merge can sort without parsing the artifact name.
-struct FragmentClass {
-  std::size_t index = 0;
-  ClassEntry entry;
-};
-
-// Write a worker's class records as a JSON fragment.
-void write_fragment(const std::filesystem::path& out_dir, std::size_t worker_id,
-                    const std::vector<FragmentClass>& classes) {
-  const std::filesystem::path path =
-      out_dir / ("manifest-part-" + std::to_string(worker_id) + ".json");
-  std::ofstream out(path);
-  if (!out)
-    throw std::runtime_error("cannot open fragment for writing: " + path.string());
-  out << "{\n  \"worker_id\": " << worker_id << ",\n  \"classes\": [\n";
-  for (std::size_t i = 0; i < classes.size(); ++i) {
-    const FragmentClass& fc = classes[i];
-    const ClassEntry& e = fc.entry;
-    out << "    {\"index\": " << fc.index << ", \"canonical_board\": [" << e.canonical_board[0]
-        << ", " << e.canonical_board[1] << ", " << e.canonical_board[2] << "], "
-        << "\"artifact_name\": \"" << json_escape(e.artifact_name) << "\", "
-        << "\"sha256_hex\": \"" << e.sha256_hex << "\", "
-        << "\"stored_rows\": " << e.stored_rows << ", "
-        << "\"completed_iterations\": " << e.completed_iterations << ", "
-        << "\"information_sets\": " << e.information_sets << "}"
-        << (i + 1 < classes.size() ? "," : "") << "\n";
-  }
-  out << "  ]\n}\n";
-  if (!out)
-    throw std::runtime_error("failed writing fragment: " + path.string());
-}
-
-// A minimal JSON parser for manifest fragments. Handles objects, arrays,
-// strings, and integers — the only value kinds a fragment contains.
-class FragmentParser {
- public:
-  explicit FragmentParser(std::string text) : text_(std::move(text)) {}
-
-  std::vector<FragmentClass> parse() {
-    std::vector<FragmentClass> out;
-    skip_ws();
-    expect('{');
-    skip_ws();
-    // Parse "worker_id" (skipped) and "classes".
-    while (true) {
-      skip_ws();
-      if (peek() == '}')
-        break;
-      const std::string key = parse_string();
-      skip_ws();
-      expect(':');
-      skip_ws();
-      if (key == "classes") {
-        out = parse_classes_array();
-      } else {
-        skip_value();
-      }
-      skip_ws();
-      if (peek() == ',') {
-        ++pos_;
-        continue;
-      }
-      break;
-    }
-    expect('}');
-    return out;
-  }
-
- private:
-  std::string text_;
-  std::size_t pos_ = 0;
-
-  char peek() const {
-    if (pos_ >= text_.size())
-      throw std::runtime_error("fragment: unexpected end of input");
-    return text_[pos_];
-  }
-  void expect(char c) {
-    if (peek() != c)
-      throw std::runtime_error(std::string("fragment: expected '") + c + "'");
-    ++pos_;
-  }
-  void skip_ws() {
-    while (pos_ < text_.size() && (text_[pos_] == ' ' || text_[pos_] == '\t' ||
-                                   text_[pos_] == '\n' || text_[pos_] == '\r'))
-      ++pos_;
-  }
-  std::string parse_string() {
-    expect('"');
-    std::string out;
-    while (pos_ < text_.size() && text_[pos_] != '"') {
-      if (text_[pos_] == '\\') {
-        ++pos_;
-        if (pos_ >= text_.size())
-          throw std::runtime_error("fragment: bad escape");
-        out += text_[pos_];
-      } else {
-        out += text_[pos_];
-      }
-      ++pos_;
-    }
-    expect('"');
-    return out;
-  }
-  std::int64_t parse_int() {
-    std::size_t start = pos_;
-    if (peek() == '-')
-      ++pos_;
-    while (pos_ < text_.size() && std::isdigit(static_cast<unsigned char>(text_[pos_])))
-      ++pos_;
-    if (pos_ == start || (pos_ == start + 1 && text_[start] == '-'))
-      throw std::runtime_error("fragment: expected integer");
-    return std::stoll(text_.substr(start, pos_ - start));
-  }
-  void skip_value() {
-    if (peek() == '"') {
-      parse_string();
-    } else if (peek() == '{' || peek() == '[') {
-      const char open = peek();
-      const char close = (open == '{') ? '}' : ']';
-      int depth = 0;
-      do {
-        if (peek() == '"')
-          parse_string();
-        else {
-          if (peek() == open)
-            ++depth;
-          else if (peek() == close)
-            --depth;
-          ++pos_;
-        }
-      } while (depth > 0);
-    } else {
-      while (pos_ < text_.size() && text_[pos_] != ',' && text_[pos_] != '}' && text_[pos_] != ']')
-        ++pos_;
-    }
-  }
-  std::vector<FragmentClass> parse_classes_array() {
-    std::vector<FragmentClass> out;
-    expect('[');
-    skip_ws();
-    if (peek() == ']') {
-      ++pos_;
-      return out;
-    }
-    while (true) {
-      skip_ws();
-      out.push_back(parse_class_object());
-      skip_ws();
-      if (peek() == ',') {
-        ++pos_;
-        continue;
-      }
-      break;
-    }
-    expect(']');
-    return out;
-  }
-  FragmentClass parse_class_object() {
-    expect('{');
-    FragmentClass fc;
-    ClassEntry& e = fc.entry;
-    while (true) {
-      skip_ws();
-      if (peek() == '}')
-        break;
-      const std::string key = parse_string();
-      skip_ws();
-      expect(':');
-      skip_ws();
-      if (key == "index") {
-        fc.index = static_cast<std::size_t>(parse_int());
-      } else if (key == "canonical_board") {
-        expect('[');
-        for (int& card : e.canonical_board) {
-          skip_ws();
-          card = static_cast<int>(parse_int());
-          skip_ws();
-          if (peek() == ',')
-            ++pos_;
-        }
-        expect(']');
-      } else if (key == "artifact_name") {
-        e.artifact_name = parse_string();
-      } else if (key == "sha256_hex") {
-        e.sha256_hex = parse_string();
-      } else if (key == "stored_rows") {
-        e.stored_rows = static_cast<std::size_t>(parse_int());
-      } else if (key == "completed_iterations") {
-        e.completed_iterations = static_cast<std::uint64_t>(parse_int());
-      } else if (key == "information_sets") {
-        e.information_sets = static_cast<std::size_t>(parse_int());
-      } else {
-        skip_value();
-      }
-      skip_ws();
-      if (peek() == ',') {
-        ++pos_;
-        continue;
-      }
-      break;
-    }
-    expect('}');
-    return fc;
-  }
-};
-
-std::vector<FragmentClass> read_fragment(const std::filesystem::path& path) {
-  std::ifstream in(path);
-  if (!in)
-    throw std::runtime_error("cannot open fragment: " + path.string());
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  FragmentParser parser(ss.str());
-  return parser.parse();
-}
-
-// Build an artifact_name -> ClassEntry index from an existing manifest.json.
-// A resume over already-published classes would otherwise re-hash every
-// multi-hundred-MB artifact to relearn its digest and row counts (hours of
-// sequential I/O on a full library); published artifacts are immutable
-// (publish_policy refuses overwrite), so a prior manifest written by THIS
-// builder is authoritative. Returns an empty map when no manifest exists;
-// throws when one exists but cannot be parsed (a torn manifest must never be
-// silently ignored). The canonical board is cross-checked at every use site.
-std::map<std::string, ClassEntry> read_manifest_index(const std::filesystem::path& out_dir) {
-  std::map<std::string, ClassEntry> index;
-  const std::filesystem::path path = out_dir / "manifest.json";
+// True when this class already has a durable section from an earlier attempt.
+bool class_section_exists(const std::filesystem::path& out_dir, std::size_t class_index) {
   std::error_code ec;
-  if (!std::filesystem::exists(path, ec))
-    return index;
-  std::ifstream in(path);
-  if (!in)
-    throw std::runtime_error("cannot open existing manifest: " + path.string());
-  std::ostringstream ss;
-  ss << in.rdbuf();
-  // The manifest's top-level shape (object with a "classes" array) is exactly
-  // what the fragment parser already scans; manifest class objects simply
-  // omit the "index" field.
-  for (const FragmentClass& fc : FragmentParser(ss.str()).parse()) {
-    if (!fc.entry.sha256_hex.empty())
-      index.emplace(fc.entry.artifact_name, fc.entry);
-  }
-  if (index.empty())
-    throw std::runtime_error("existing manifest carries no class records: " + path.string());
-  return index;
+  return std::filesystem::exists(out_dir / kSectionsDir / (class_stem(class_index) + ".bsf"), ec);
 }
 
-// Fill an entry whose digest/counts were not produced by this run (the class
-// was already published and skipped) from the prior manifest index when it
-// matches; otherwise probe the artifact. Returns true when the prior
-// manifest supplied the record.
-bool fill_published_entry(ClassEntry& entry,
-                          const std::map<std::string, ClassEntry>& manifest_index,
-                          const std::filesystem::path& artifact_path) {
-  if (!entry.sha256_hex.empty())
-    return false;
-  const auto it = manifest_index.find(entry.artifact_name);
-  if (it != manifest_index.end() && it->second.canonical_board == entry.canonical_board) {
-    entry.sha256_hex = it->second.sha256_hex;
-    entry.stored_rows = it->second.stored_rows;
-    entry.completed_iterations = it->second.completed_iterations;
-    entry.information_sets = it->second.information_sets;
-    return true;
+// --- RFC 0027: build identity and worker fragments -------------------------
+
+// The recorded build identity. Written before any worker starts and checked on
+// resume, because a section does not carry the codebook layout kind and the
+// reader does not bounds-check codebook indices. Any difference fails closed.
+struct BuildIdentity {
+  std::string codebook;
+  std::uint64_t card_abstraction_digest = 0;
+  std::uint64_t action_abstraction_digest = 0;
+  std::string range;
+  std::size_t range_combo_count = 0;
+  std::uint64_t range_digest = 0;
+  std::size_t player_count = 0;
+  poker::Chips big_blind = 0;
+  poker::Chips stack = 0;
+  poker::Chips contribution = 0;
+  std::uint8_t max_raises_per_street = 0;
+  std::uint64_t iterations_per_class = 0;
+  std::uint64_t seed = 0;
+  std::size_t class_count = 0;
+  std::size_t total_classes = 0;
+};
+
+std::string codebook_name(resident::ProbabilityLayout layout) {
+  switch (layout) {
+    case resident::ProbabilityLayout::Codebook16:
+      return "codebook16";
+    case resident::ProbabilityLayout::Doubles:
+      return "doubles";
+    case resident::ProbabilityLayout::Codebook8:
+      return "codebook8";
   }
-  const artifacts::ArtifactProbe probe = artifacts::probe_artifact(artifact_path);
-  entry.sha256_hex = probe.sha256_hex;
-  entry.stored_rows = probe.manifest.information_sets;
-  entry.completed_iterations = probe.manifest.completed_iterations;
-  entry.information_sets = probe.manifest.information_sets;
-  return false;
+  return "codebook16";
+}
+
+BuildIdentity make_identity(const BuildParams& params, const abstraction::AbstractionId& card_id) {
+  BuildIdentity id;
+  id.codebook = codebook_name(params.layout);
+  id.card_abstraction_digest = card_id.digest;
+  id.action_abstraction_digest = params.action.id().digest;
+  id.range = params.range_name;
+  id.range_combo_count = params.range.size();
+  id.range_digest = range_digest(params.range);
+  id.player_count = params.player_count;
+  id.big_blind = kDefaultBigBlind;
+  id.stack = params.stack;
+  id.contribution = params.contribution;
+  id.max_raises_per_street = params.action.max_raises_per_street();
+  id.iterations_per_class = params.iterations_per_class;
+  id.seed = params.seed;
+  id.class_count = params.class_count;
+  id.total_classes = kTotalClasses;
+  return id;
+}
+
+std::string identity_json(const BuildIdentity& id) {
+  std::ostringstream out;
+  out << "{\n";
+  out << "  \"codebook\": \"" << json_escape(id.codebook) << "\",\n";
+  out << "  \"card_abstraction_digest\": \"" << digest_hex(id.card_abstraction_digest) << "\",\n";
+  out << "  \"action_abstraction_digest\": \"" << digest_hex(id.action_abstraction_digest)
+      << "\",\n";
+  out << "  \"range\": \"" << json_escape(id.range) << "\",\n";
+  out << "  \"range_combo_count\": " << id.range_combo_count << ",\n";
+  out << "  \"range_digest\": \"" << digest_hex(id.range_digest) << "\",\n";
+  out << "  \"player_count\": " << id.player_count << ",\n";
+  out << "  \"big_blind\": " << id.big_blind << ",\n";
+  out << "  \"stack\": " << id.stack << ",\n";
+  out << "  \"contribution\": " << id.contribution << ",\n";
+  out << "  \"max_raises_per_street\": " << static_cast<int>(id.max_raises_per_street) << ",\n";
+  out << "  \"iterations_per_class\": " << id.iterations_per_class << ",\n";
+  out << "  \"seed\": " << id.seed << ",\n";
+  out << "  \"class_count\": " << id.class_count << ",\n";
+  out << "  \"total_classes\": " << id.total_classes << "\n";
+  out << "}\n";
+  return out.str();
+}
+
+// Read the parts of a build.json needed to compare identities. A minimal
+// scanner keeps the builder free of a JSON dependency; the file is written by
+// this function only, so its shape is fixed.
+BuildIdentity read_identity(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  if (!in)
+    throw std::runtime_error("cannot open " + path.string());
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const std::string text = ss.str();
+  auto str_value = [&](const std::string& key) -> std::string {
+    const std::string needle = "\"" + key + "\": \"";
+    const std::size_t pos = text.find(needle);
+    if (pos == std::string::npos)
+      throw std::runtime_error("build identity is missing " + key);
+    const std::size_t start = pos + needle.size();
+    const std::size_t end = text.find('"', start);
+    if (end == std::string::npos)
+      throw std::runtime_error("build identity has a malformed " + key);
+    return text.substr(start, end - start);
+  };
+  auto num_value = [&](const std::string& key) -> std::uint64_t {
+    const std::string needle = "\"" + key + "\": ";
+    const std::size_t pos = text.find(needle);
+    if (pos == std::string::npos)
+      throw std::runtime_error("build identity is missing " + key);
+    return std::strtoull(text.c_str() + pos + needle.size(), nullptr, 10);
+  };
+  BuildIdentity id;
+  id.codebook = str_value("codebook");
+  id.range = str_value("range");
+  id.card_abstraction_digest =
+      std::strtoull(str_value("card_abstraction_digest").c_str(), nullptr, 16);
+  id.action_abstraction_digest =
+      std::strtoull(str_value("action_abstraction_digest").c_str(), nullptr, 16);
+  id.range_combo_count = static_cast<std::size_t>(num_value("range_combo_count"));
+  id.range_digest = std::strtoull(str_value("range_digest").c_str(), nullptr, 16);
+  id.player_count = static_cast<std::size_t>(num_value("player_count"));
+  id.big_blind = static_cast<poker::Chips>(num_value("big_blind"));
+  id.stack = static_cast<poker::Chips>(num_value("stack"));
+  id.contribution = static_cast<poker::Chips>(num_value("contribution"));
+  id.max_raises_per_street = static_cast<std::uint8_t>(num_value("max_raises_per_street"));
+  id.iterations_per_class = num_value("iterations_per_class");
+  id.seed = num_value("seed");
+  id.class_count = static_cast<std::size_t>(num_value("class_count"));
+  id.total_classes = static_cast<std::size_t>(num_value("total_classes"));
+  return id;
+}
+
+void write_identity(const std::filesystem::path& sections_dir, const BuildIdentity& id) {
+  std::error_code ec;
+  std::filesystem::create_directories(sections_dir, ec);
+  if (ec)
+    throw std::runtime_error("cannot create sections directory: " + ec.message());
+  const std::string text = identity_json(id);
+  write_file_atomically(sections_dir / "build.json",
+                        std::vector<std::uint8_t>(text.begin(), text.end()));
+}
+
+// Fail closed unless `current` matches `requested` field for field. A smaller
+// class_count is as fatal as a larger one: it would skip classes, assemble a
+// smaller library, and then delete the completed sections for the larger run.
+void require_identity_match(const BuildIdentity& requested, const BuildIdentity& current) {
+  auto mismatch = [](const char* field, const std::string& want, const std::string& got) {
+    throw std::runtime_error(std::string("resume refused: build identity field `") + field +
+                             "` is `" + got + "`, requested `" + want + "`");
+  };
+  auto mismatch_num = [&](const char* field, std::uint64_t want, std::uint64_t got) {
+    mismatch(field, std::to_string(want), std::to_string(got));
+  };
+  if (requested.codebook != current.codebook)
+    mismatch("codebook", requested.codebook, current.codebook);
+  if (requested.card_abstraction_digest != current.card_abstraction_digest)
+    mismatch_num("card_abstraction_digest", requested.card_abstraction_digest,
+                 current.card_abstraction_digest);
+  if (requested.action_abstraction_digest != current.action_abstraction_digest)
+    mismatch_num("action_abstraction_digest", requested.action_abstraction_digest,
+                 current.action_abstraction_digest);
+  if (requested.range != current.range)
+    mismatch("range", requested.range, current.range);
+  if (requested.range_combo_count != current.range_combo_count)
+    mismatch_num("range_combo_count", requested.range_combo_count, current.range_combo_count);
+  if (requested.range_digest != current.range_digest)
+    mismatch_num("range_digest", requested.range_digest, current.range_digest);
+  if (requested.player_count != current.player_count)
+    mismatch_num("player_count", requested.player_count, current.player_count);
+  if (requested.big_blind != current.big_blind)
+    mismatch_num("big_blind", requested.big_blind, current.big_blind);
+  if (requested.stack != current.stack)
+    mismatch_num("stack", requested.stack, current.stack);
+  if (requested.contribution != current.contribution)
+    mismatch_num("contribution", requested.contribution, current.contribution);
+  if (requested.max_raises_per_street != current.max_raises_per_street)
+    mismatch_num("max_raises_per_street", requested.max_raises_per_street,
+                 current.max_raises_per_street);
+  if (requested.iterations_per_class != current.iterations_per_class)
+    mismatch_num("iterations_per_class", requested.iterations_per_class,
+                 current.iterations_per_class);
+  if (requested.seed != current.seed)
+    mismatch_num("seed", requested.seed, current.seed);
+  if (requested.class_count != current.class_count)
+    mismatch_num("class_count", requested.class_count, current.class_count);
+  if (requested.total_classes != current.total_classes)
+    mismatch_num("total_classes", requested.total_classes, current.total_classes);
+}
+
+// Append one JSON line to an owner's fragment; see the declaration above.
+void append_fragment_line(const std::filesystem::path& sections_dir, const std::string& tag,
+                          const FragmentClass& fc) {
+  const std::filesystem::path path = sections_dir / ("manifest-part-" + tag + ".jsonl");
+  const ClassEntry& e = fc.entry;
+  std::ostringstream line;
+  line << "{\"index\": " << fc.index << ", \"canonical_board\": [" << e.canonical_board[0] << ", "
+       << e.canonical_board[1] << ", " << e.canonical_board[2] << "], "
+       << "\"stored_rows\": " << e.stored_rows << ", "
+       << "\"completed_iterations\": " << e.completed_iterations << ", "
+       << "\"information_sets\": " << e.information_sets << ", "
+       << "\"section_bytes\": " << e.section_bytes << "}\n";
+  std::ofstream out(path, std::ios::binary | std::ios::app);
+  if (!out)
+    throw std::runtime_error("cannot append fragment " + path.string());
+  out << line.str();
+  out.flush();
+  if (!out)
+    throw std::runtime_error("failed appending fragment " + path.string());
+}
+
+// Read every fragment line. A trailing partial line is discarded (a crash
+// during append is covered by the section file); a complete but malformed line
+// is a hard error.
+// Parse one fixed-shape JSONL record written by append_fragment_line. Returns
+// false when the text is not a complete record (used to discard a torn tail).
+bool parse_fragment_line(const std::string& text, FragmentClass& out) {
+  auto number_after = [&](const std::string& key, std::uint64_t& value) -> bool {
+    const std::string needle = "\"" + key + "\": ";
+    const std::size_t pos = text.find(needle);
+    if (pos == std::string::npos)
+      return false;
+    const char* begin = text.c_str() + pos + needle.size();
+    char* end = nullptr;
+    value = std::strtoull(begin, &end, 10);
+    return end != begin;
+  };
+  std::uint64_t index = 0, rows = 0, iters = 0, infos = 0, bytes = 0;
+  if (!number_after("index", index) || !number_after("stored_rows", rows) ||
+      !number_after("completed_iterations", iters) || !number_after("information_sets", infos) ||
+      !number_after("section_bytes", bytes))
+    return false;
+  const std::string board_key = "\"canonical_board\": [";
+  const std::size_t board_pos = text.find(board_key);
+  if (board_pos == std::string::npos)
+    return false;
+  const char* p = text.c_str() + board_pos + board_key.size();
+  char* end = nullptr;
+  for (int i = 0; i < 3; ++i) {
+    out.entry.canonical_board[i] = static_cast<int>(std::strtol(p, &end, 10));
+    if (end == p)
+      return false;
+    p = end;
+    while (*p == ' ' || *p == ',')
+      ++p;
+  }
+  out.index = static_cast<std::size_t>(index);
+  out.entry.stored_rows = static_cast<std::size_t>(rows);
+  out.entry.completed_iterations = iters;
+  out.entry.information_sets = static_cast<std::size_t>(infos);
+  out.entry.section_bytes = static_cast<std::size_t>(bytes);
+  return true;
+}
+
+// Read every fragment line. A trailing partial line is discarded (a crash
+// during append is covered by the section file); a complete but malformed line
+// is a hard error.
+std::vector<FragmentClass> read_fragments(const std::filesystem::path& sections_dir) {
+  std::vector<FragmentClass> out;
+  std::error_code ec;
+  std::vector<std::string> tags;
+  for (std::size_t w = 0;; ++w) {
+    const std::filesystem::path probe =
+        sections_dir / ("manifest-part-" + std::to_string(w) + ".jsonl");
+    if (!std::filesystem::exists(probe, ec))
+      break;
+    tags.push_back(std::to_string(w));
+  }
+  tags.push_back("serial");
+  for (const std::string& tag : tags) {
+    const std::filesystem::path path = sections_dir / ("manifest-part-" + tag + ".jsonl");
+    if (!std::filesystem::exists(path, ec))
+      continue;
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+      throw std::runtime_error("cannot open fragment " + path.string());
+    std::string line;
+    std::vector<std::string> lines;
+    while (std::getline(in, line)) {
+      if (!line.empty() && line.back() == '\r')
+        line.pop_back();
+      lines.push_back(line);
+    }
+    // getline drops the final newline silently, so position alone cannot
+    // distinguish a torn tail; only the LAST line may be torn.
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+      if (lines[i].empty())
+        continue;
+      FragmentClass fc;
+      if (!parse_fragment_line(lines[i], fc)) {
+        if (i + 1 == lines.size())
+          break;  // torn tail
+        throw std::runtime_error("fragment " + path.string() + " has a malformed line " +
+                                 std::to_string(i + 1));
+      }
+      out.push_back(std::move(fc));
+    }
+  }
+  return out;
 }
 
 }  // namespace
@@ -834,31 +789,6 @@ bool fill_published_entry(ClassEntry& entry,
 bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
                        const std::vector<solver::WeightedHand>& range) {
   return class_is_dealable_impl(board, seat_count, range);
-}
-
-std::map<solver::InformationKey, artifacts::TrainingWeights> export_seat_training_rows(
-    const solver::NSeatTrainingResult& trained, const tree::AbstractTree& tree) {
-  std::map<solver::InformationKey, artifacts::TrainingWeights> rows;
-  poker::GameState cursor{tree.def()};
-  std::vector<poker::PublicAction> path;
-  export_training_dfs(tree, trained.raw_rows, rows, tree.root_index(), cursor, path);
-  return rows;
-}
-
-solver::NSeatInitialState build_initial_state(const artifacts::CheckpointTrainingState& ckpt,
-                                              const tree::AbstractTree& tree) {
-  if (ckpt.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2)
-    throw std::invalid_argument("checkpoint requires revision-two batch-one identity for resume");
-  solver::NSeatInitialState state;
-  state.algorithm_revision = solver::kNSeatAlgorithmRevision;
-  state.batch_size = 1;
-  state.completed_iterations = ckpt.completed_iterations;
-  poker::GameState cursor{tree.def()};
-  std::vector<poker::PublicAction> path;
-  build_initial_dfs(tree, ckpt, state, tree.root_index(), cursor, path);
-  if (state.rows.empty())
-    throw std::runtime_error("checkpoint training rows matched no tree node");
-  return state;
 }
 
 std::vector<std::array<int, 3>> enumerate_classes() {
@@ -917,12 +847,36 @@ std::vector<solver::WeightedHand> declared_full_library_range() {
   return range;
 }
 
+std::uint64_t range_digest(const std::vector<solver::WeightedHand>& range) {
+  std::vector<solver::WeightedHand> sorted = range;
+  std::sort(sorted.begin(), sorted.end(),
+            [](const solver::WeightedHand& a, const solver::WeightedHand& b) {
+              return bs::comboIndex(a.cards[0], a.cards[1]) <
+                     bs::comboIndex(b.cards[0], b.cards[1]);
+            });
+  std::uint64_t h = 0xcbf29ce484222325ULL;
+  auto mix = [&h](std::uint64_t value) {
+    for (int i = 0; i < 8; ++i) {
+      h ^= static_cast<std::uint8_t>((value >> (i * 8)) & 0xffu);
+      h *= 0x100000001b3ULL;
+    }
+  };
+  for (const solver::WeightedHand& hand : sorted) {
+    mix(static_cast<std::uint64_t>(bs::comboIndex(hand.cards[0], hand.cards[1])));
+    std::uint64_t bits;
+    std::memcpy(&bits, &hand.weight, sizeof(bits));
+    mix(bits);
+  }
+  return h;
+}
+
 LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips stack, poker::Chips contribution,
                               const std::vector<solver::WeightedHand>& range,
                               std::size_t player_count, abstraction::ActionAbstraction action,
-                              bool resume) {
+                              bool resume, resident::ProbabilityLayout layout,
+                              const std::string& range_name) {
   BuildParams params;
   params.class_count = class_count;
   params.iterations_per_class = iterations_per_class;
@@ -933,6 +887,8 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   params.player_count = player_count;
   params.action = action;
   params.resume = resume;
+  params.layout = layout;
+  params.range_name = range_name;
 
   if (class_count == 0)
     throw std::invalid_argument("class_count must be positive");
@@ -958,82 +914,52 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
     throw std::invalid_argument("class_count exceeds total classes (" +
                                 std::to_string(classes.size()) + ")");
 
-  preflight_resume(out_dir, class_count, resume);
-
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
+  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
+  const BuildIdentity requested = make_identity(params, card_id);
+  preflight_resume(out_dir, class_count, resume);
+  // Sections without an identity record cannot be trusted for a resume.
+  if (resume && !std::filesystem::exists(sections_dir / "build.json", ec))
+    std::filesystem::remove_all(sections_dir, ec);
+  (void)requested;
+  prepare_build_identity(out_dir, params, resume);
 
-  LibraryManifest manifest;
-  manifest.card_id = card_id;
-  manifest.action_id = action.id();
-  manifest.player_count = player_count;
-  manifest.max_raises_per_street = action.max_raises_per_street();
-  manifest.big_blind = kDefaultBigBlind;
-  manifest.stack = stack;
-  manifest.contribution = contribution;
-  manifest.iterations_per_class = iterations_per_class;
-  manifest.seed = seed;
-  manifest.total_classes = classes.size();
-  manifest.total_flops = kTotalFlops;
-
-  std::vector<std::array<int, 3>> covered;
-  covered.reserve(class_count);
-
-  // Prior-manifest index so resuming a complete library does not re-hash
-  // every published artifact (see read_manifest_index).
-  const std::map<std::string, ClassEntry> manifest_index =
-      resume ? read_manifest_index(out_dir) : std::map<std::string, ClassEntry>{};
-
+  // Serial path: train, serialize, and assemble once. Failure leaves no
+  // partial library (the sections and any checkpoint are removed).
+  std::vector<std::uint32_t> class_ids;
   try {
     for (std::size_t i = 0; i < class_count; ++i) {
       if (!class_is_dealable(classes[i], player_count, range)) {
-        manifest.undealable_boards.push_back(classes[i]);
         std::printf("class %zu: undealable for %zu seats (board blocks the range); excluded\n", i,
                     player_count);
         continue;
       }
-      const std::filesystem::path policy_path = out_dir / (class_stem(i) + ".db");
-      ClassEntry entry;
-      if (resume && std::filesystem::exists(policy_path, ec)) {
-        // Published by an earlier build: skip training (publish refuses
-        // overwrite); reuse the prior manifest digest when available, and
-        // only hash the artifact when no prior record exists.
-        entry = entry_from_published(out_dir, i, classes[i]);
-        fill_published_entry(entry, manifest_index, policy_path);
-      } else {
-        entry = train_one_class(out_dir, i, classes[i], params, card_id);
-      }
-      manifest.classes.push_back(entry);
-      manifest.storage_bytes += [&] {
-        std::error_code e2;
-        const auto sz = std::filesystem::file_size(out_dir / entry.artifact_name, e2);
-        if (e2)
-          throw std::runtime_error("cannot stat published artifact: " + e2.message());
-        return sz;
-      }();
-      covered.push_back(classes[i]);
+      if (resume && class_section_exists(out_dir, i))
+        continue;
+      (void)train_one_class(out_dir, i, classes[i], params, card_id, "serial");
+      class_ids.push_back(static_cast<std::uint32_t>(i));
     }
   } catch (...) {
-    // A failure mid-build leaves no partial library: remove every published
-    // class artifact and any checkpoint from the failed class before
-    // rethrowing. Without a manifest the directory is not a valid library, but
-    // orphaned read-only .db files would still confuse a later rebuild.
-    for (const auto& e : manifest.classes) {
-      std::filesystem::remove(out_dir / e.artifact_name, ec);
-    }
-    for (std::size_t i = 0; i < class_count; ++i) {
-      std::filesystem::remove(out_dir / (class_stem(i) + "-checkpoint.db"), ec);
-    }
+    std::filesystem::remove_all(sections_dir, ec);
     throw;
   }
+  (void)class_ids;
+  return assemble_library(out_dir, params);
+}
 
-  manifest.class_count = manifest.classes.size();
-  manifest.covered_flops = count_covered_flops(covered);
-
-  write_manifest(manifest, out_dir);
-  if (!manifest.undealable_boards.empty())
-    std::printf("[build] %zu class(es) undealable and excluded\n",
-                manifest.undealable_boards.size());
-  return manifest;
+void prepare_build_identity(const std::filesystem::path& out_dir, const BuildParams& params,
+                            bool resume) {
+  const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
+  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
+  const BuildIdentity requested = make_identity(params, card_id);
+  std::error_code ec;
+  if (resume && std::filesystem::exists(sections_dir / "build.json", ec)) {
+    require_identity_match(requested, read_identity(sections_dir / "build.json"));
+    return;
+  }
+  if (!resume)
+    std::filesystem::remove_all(sections_dir, ec);
+  write_identity(sections_dir, requested);
 }
 
 void build_library_worker(const std::filesystem::path& out_dir, std::size_t worker_id,
@@ -1061,68 +987,122 @@ void build_library_worker(const std::filesystem::path& out_dir, std::size_t work
   const std::vector<std::array<int, 3>> classes = enumerate_classes();
   if (params.class_count > classes.size())
     throw std::invalid_argument("class_count exceeds total classes");
-  preflight_resume(out_dir, params.class_count, params.resume);
+  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
+  std::filesystem::create_directories(sections_dir, ec);
+  if (ec)
+    throw std::runtime_error("cannot create sections directory: " + ec.message());
+  // The parent owns build.json. A worker that finds none must not guess the
+  // layout: fail closed before training anything.
+  if (!std::filesystem::exists(sections_dir / "build.json", ec))
+    throw std::runtime_error(
+        "worker: .sections/build.json is missing; the parent must call prepare_build_identity");
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
 
-  std::vector<FragmentClass> fragment;
   for (std::size_t i = worker_id; i < params.class_count; i += parallel) {
     if (!class_is_dealable(classes[i], params.player_count, params.range))
-      continue;  // undealable class: recorded as a coverage exclusion by merge
-    const std::filesystem::path policy_path = out_dir / (class_stem(i) + ".db");
-    std::error_code ec;
-    if (params.resume && std::filesystem::exists(policy_path, ec)) {
-      // Published in an earlier build: rebuild the fragment record from the
-      // immutable artifact instead of retraining (publish refuses overwrite).
-      fragment.push_back({i, entry_from_published(out_dir, i, classes[i])});
-      continue;
-    }
-    ClassEntry entry = train_one_class(out_dir, i, classes[i], params, card_id);
-    fragment.push_back({i, entry});
+      continue;  // undealable class: recorded as a coverage exclusion by assembly
+    if (class_section_exists(out_dir, i))
+      continue;  // completed by an earlier attempt
+    (void)train_one_class(out_dir, i, classes[i], params, card_id, std::to_string(worker_id));
   }
-  write_fragment(out_dir, worker_id, fragment);
 }
 
-LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const BuildParams& params) {
+LibraryManifest assemble_library(const std::filesystem::path& out_dir, const BuildParams& params) {
   const std::vector<std::array<int, 3>> classes = enumerate_classes();
   if (params.class_count > classes.size())
     throw std::invalid_argument("class_count exceeds total classes");
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
+  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
+  const BuildIdentity requested = make_identity(params, card_id);
 
-  // Collect every worker's fragment.
-  std::vector<FragmentClass> all;
-  for (std::size_t w = 0;; ++w) {
-    const std::filesystem::path fragment_path =
-        out_dir / ("manifest-part-" + std::to_string(w) + ".json");
-    std::error_code ec;
-    if (!std::filesystem::exists(fragment_path, ec))
-      break;  // workers are numbered 0..N-1 contiguously
-    auto part = read_fragment(fragment_path);
-    all.insert(all.end(), std::make_move_iterator(part.begin()),
-               std::make_move_iterator(part.end()));
-  }
-  // Geometrically undealable classes (board blocks the range so not every seat
-  // can be dealt a hand) are skipped by every worker and must be the exact
-  // difference between requested classes and fragment records.
+  // Derive the expected dealable set from the build parameters, not from the
+  // fragments: a missing fragment must not silently shrink the library.
   std::vector<std::array<int, 3>> undealable;
+  std::vector<std::uint32_t> expected_ids;
   for (std::size_t i = 0; i < params.class_count; ++i) {
-    if (!class_is_dealable(classes[i], params.player_count, params.range))
+    if (!class_is_dealable(classes[i], params.player_count, params.range)) {
       undealable.push_back(classes[i]);
+      continue;
+    }
+    expected_ids.push_back(static_cast<std::uint32_t>(i));
   }
-  if (all.size() + undealable.size() != params.class_count)
-    throw std::runtime_error("merge: expected " + std::to_string(params.class_count) +
-                             " class records (" + std::to_string(undealable.size()) +
-                             " undealable), found " + std::to_string(all.size()));
+  for (std::uint32_t id : expected_ids)
+    if (!class_section_exists(out_dir, id))
+      throw std::runtime_error("assembly: class " + std::to_string(id) +
+                               " has no section (build incomplete)");
 
-  // Sort by class index; every fragment index must name a dealable class.
-  std::sort(all.begin(), all.end(), [](const FragmentClass& lhs, const FragmentClass& rhs) {
-    return lhs.index < rhs.index;
-  });
-  std::set<std::array<int, 3>> undealable_set{undealable.begin(), undealable.end()};
-  for (const FragmentClass& record : all) {
-    if (record.index >= params.class_count || undealable_set.count(classes[record.index]))
-      throw std::runtime_error("merge: fragment names an out-of-range or undealable class " +
-                               std::to_string(record.index));
+  // Section headers are authoritative; fragments supply completed_iterations
+  // when present. A fragment naming a class with no section is corruption.
+  std::map<std::uint32_t, ClassEntry> records;
+  for (const FragmentClass& fc : read_fragments(sections_dir)) {
+    if (fc.index >= params.class_count || !class_section_exists(out_dir, fc.index))
+      throw std::runtime_error("assembly: fragment names class " + std::to_string(fc.index) +
+                               " with no section");
+    auto [it, inserted] = records.emplace(static_cast<std::uint32_t>(fc.index), fc.entry);
+    if (!inserted && (it->second.stored_rows != fc.entry.stored_rows ||
+                      it->second.completed_iterations != fc.entry.completed_iterations ||
+                      it->second.information_sets != fc.entry.information_sets ||
+                      it->second.section_bytes != fc.entry.section_bytes))
+      throw std::runtime_error("assembly: conflicting fragment records for class " +
+                               std::to_string(fc.index));
   }
+
+  std::vector<ClassEntry> entries;
+  entries.reserve(expected_ids.size());
+  for (std::uint32_t id : expected_ids) {
+    ClassEntry entry;
+    entry.canonical_board = classes[id];
+    auto it = records.find(id);
+    if (it != records.end()) {
+      entry = it->second;
+    } else {
+      // Section without a record: reconstruct the counters from its header.
+      char name[32];
+      std::snprintf(name, sizeof(name), "class-%04u.bsf", id);
+      const auto path = sections_dir / name;
+      std::error_code ec;
+      entry.section_bytes = static_cast<std::size_t>(std::filesystem::file_size(path, ec));
+      if (ec)
+        throw std::runtime_error("assembly: cannot stat section " + path.string());
+      entry.completed_iterations = params.iterations_per_class;
+      // stored_rows and information_sets are not recoverable from a section;
+      // use its bucket-row count as the honest public figure.
+      std::ifstream in(path, std::ios::binary);
+      std::array<std::uint8_t, 32> head{};
+      in.read(reinterpret_cast<char*>(head.data()), head.size());
+      if (!in)
+        throw std::runtime_error("assembly: cannot read section header " + path.string());
+      const std::uint32_t bucket_rows = static_cast<std::uint32_t>(head[20]) |
+                                        (static_cast<std::uint32_t>(head[21]) << 8) |
+                                        (static_cast<std::uint32_t>(head[22]) << 16) |
+                                        (static_cast<std::uint32_t>(head[23]) << 24);
+      entry.stored_rows = bucket_rows;
+      entry.information_sets = bucket_rows;
+    }
+    if (entry.canonical_board != classes[id])
+      throw std::runtime_error("assembly: class " + std::to_string(id) +
+                               " board disagrees between section and fragment");
+    entries.push_back(entry);
+  }
+
+  const std::string bin_name = "library.bin";
+  const std::filesystem::path bin_path = out_dir / bin_name;
+  resident::LibraryIdentity identity;
+  identity.card_abstraction_digest = card_id.digest;
+  identity.action_abstraction_digest = params.action.id().digest;
+  try {
+    resident::assemble_binary_library(bin_path, make_unified_game(params, classes), identity,
+                                      params.layout, sections_dir, expected_ids);
+  } catch (const std::exception&) {
+    std::error_code ec;
+    std::filesystem::remove(bin_path, ec);
+    std::filesystem::remove(std::filesystem::path(bin_path.string() + ".sha256"), ec);
+    throw;
+  }
+  std::error_code ec;
+  const std::uintmax_t bin_bytes = std::filesystem::file_size(bin_path, ec);
+  if (ec)
+    throw std::runtime_error("assembly: cannot stat " + bin_path.string());
 
   LibraryManifest manifest;
   manifest.card_id = card_id;
@@ -1134,55 +1114,23 @@ LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const Buil
   manifest.contribution = params.contribution;
   manifest.iterations_per_class = params.iterations_per_class;
   manifest.seed = params.seed;
-  manifest.total_classes = classes.size();
-  manifest.total_flops = kTotalFlops;
-
-  std::vector<std::array<int, 3>> covered;
-  covered.reserve(all.size());
-  // Prior-manifest index so resuming an already-merged complete library does
-  // not re-hash the whole library on every `--resume` (the workers leave
-  // digests empty for classes they skipped as published).
-  const std::map<std::string, ClassEntry> manifest_index = read_manifest_index(out_dir);
-  std::size_t reused_records = 0;
-  std::size_t probed_records = 0;
-  for (FragmentClass& fc : all) {
-    const std::filesystem::path artifact_path = out_dir / fc.entry.artifact_name;
-    std::error_code ec;
-    if (!std::filesystem::exists(artifact_path, ec))
-      throw std::runtime_error("merge: missing class artifact " + fc.entry.artifact_name);
-    // Records produced by this run carry a digest; skipped published classes
-    // reuse the prior manifest record when it names the same canonical board,
-    // and are probed only when no trustworthy prior record exists.
-    if (fill_published_entry(fc.entry, manifest_index, artifact_path))
-      ++reused_records;
-    else if (fc.entry.sha256_hex.empty())
-      ++probed_records;
-    manifest.classes.push_back(fc.entry);
-    manifest.storage_bytes += std::filesystem::file_size(artifact_path, ec);
-    if (ec)
-      throw std::runtime_error("merge: cannot stat " + fc.entry.artifact_name + ": " +
-                               ec.message());
-    covered.push_back(fc.entry.canonical_board);
-  }
-  if (reused_records > 0 || probed_records > 0)
-    std::printf("[merge] reused %zu records from existing manifest; probed %zu artifacts\n",
-                reused_records, probed_records);
-
+  manifest.total_classes = kTotalClasses;
+  manifest.classes = std::move(entries);
   manifest.undealable_boards = undealable;
   manifest.class_count = manifest.classes.size();
-  manifest.covered_flops = count_covered_flops(covered);
+  manifest.covered_flops = count_covered_flops(covered_boards(manifest.classes));
+  manifest.total_flops = kTotalFlops;
+  manifest.storage_bytes = bin_bytes;
+  manifest.library_bin = bin_name;
+  manifest.library_bin_sha256 = artifacts::sha256_file_hex(bin_path);
+  manifest.library_bin_bytes = bin_bytes;
+  manifest.codebook = codebook_name(params.layout);
+  manifest.range = params.range_name;
+  manifest.range_combo_count = params.range.size();
+  manifest.range_digest = range_digest(params.range);
 
   write_manifest(manifest, out_dir);
-
-  // Remove the fragments now that the manifest is written.
-  std::error_code ec;
-  for (std::size_t w = 0;; ++w) {
-    const std::filesystem::path fragment_path =
-        out_dir / ("manifest-part-" + std::to_string(w) + ".json");
-    if (!std::filesystem::exists(fragment_path, ec))
-      break;
-    std::filesystem::remove(fragment_path, ec);
-  }
+  std::filesystem::remove_all(sections_dir, ec);
   return manifest;
 }
 
@@ -1211,17 +1159,23 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
   out << "  \"contribution\": " << manifest.contribution << ",\n";
   out << "  \"iterations_per_class\": " << manifest.iterations_per_class << ",\n";
   out << "  \"seed\": " << manifest.seed << ",\n";
+  out << "  \"range\": \"" << json_escape(manifest.range) << "\",\n";
+  out << "  \"range_combo_count\": " << manifest.range_combo_count << ",\n";
+  out << "  \"range_digest\": \"" << digest_hex(manifest.range_digest) << "\",\n";
+  out << "  \"library_bin\": \"" << json_escape(manifest.library_bin) << "\",\n";
+  out << "  \"library_bin_sha256\": \"" << manifest.library_bin_sha256 << "\",\n";
+  out << "  \"library_bin_bytes\": " << manifest.library_bin_bytes << ",\n";
+  out << "  \"codebook\": \"" << json_escape(manifest.codebook) << "\",\n";
   out << "  \"classes\": [\n";
   for (std::size_t i = 0; i < manifest.classes.size(); ++i) {
     const ClassEntry& e = manifest.classes[i];
     out << "    {\n";
     out << "      \"canonical_board\": [" << e.canonical_board[0] << ", " << e.canonical_board[1]
         << ", " << e.canonical_board[2] << "],\n";
-    out << "      \"artifact_name\": \"" << json_escape(e.artifact_name) << "\",\n";
-    out << "      \"sha256_hex\": \"" << e.sha256_hex << "\",\n";
     out << "      \"stored_rows\": " << e.stored_rows << ",\n";
     out << "      \"completed_iterations\": " << e.completed_iterations << ",\n";
-    out << "      \"information_sets\": " << e.information_sets << "\n";
+    out << "      \"information_sets\": " << e.information_sets << ",\n";
+    out << "      \"section_bytes\": " << e.section_bytes << "\n";
     out << "    }" << (i + 1 < manifest.classes.size() ? "," : "") << "\n";
   }
   out << "  ],\n";

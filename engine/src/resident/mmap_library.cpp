@@ -95,6 +95,14 @@ void write_f64(std::vector<std::uint8_t>& buf, double value) {
   write_u64(buf, bits);
 }
 
+// Stream a little-endian u64 into an output file (used to patch class_offsets).
+void write_u64_to(std::ostream& out, std::uint64_t value) {
+  std::uint8_t bytes[8];
+  for (int i = 0; i < 8; ++i)
+    bytes[i] = static_cast<std::uint8_t>((value >> (i * 8)) & 0xffu);
+  out.write(reinterpret_cast<const char*>(bytes), 8);
+}
+
 // Little-endian readers from the mmap region. memcpy handles unaligned
 // access safely on every architecture.
 std::uint8_t read_u8(const std::uint8_t* p) {
@@ -299,15 +307,40 @@ std::uint8_t prob_entry_width(ProbabilityLayout layout) {
   return 8;  // unreachable
 }
 
+// RFC 0027: canonicalize the declared range to ascending comboIndex order.
+// The SQLite reader has always returned ranges in this order (`ORDER BY
+// player, combo`), and the packer therefore wrote it that way. The trainer
+// builds `declared_library_range()` in pair/rank order instead, so a direct
+// serializer that wrote the caller's vector verbatim would emit different
+// bytes for every non-full range. Sorting here makes the section a function of
+// the set of weighted combos, not of the caller's order.
+const std::vector<solver::WeightedHand>& canonical_range(
+    const std::vector<solver::WeightedHand>& range, std::vector<solver::WeightedHand>& scratch) {
+  scratch = range;
+  std::sort(scratch.begin(), scratch.end(),
+            [](const solver::WeightedHand& a, const solver::WeightedHand& b) {
+              return bs::comboIndex(a.cards[0], a.cards[1]) <
+                     bs::comboIndex(b.cards[0], b.cards[1]);
+            });
+  for (std::size_t i = 1; i < scratch.size(); ++i)
+    if (bs::comboIndex(scratch[i - 1].cards[0], scratch[i - 1].cards[1]) ==
+        bs::comboIndex(scratch[i].cards[0], scratch[i].cards[1]))
+      throw std::invalid_argument("pack: duplicate combo in the declared range");
+  return scratch;
+}
+
 // Collapse one class's concrete rows into (public node, trained bucket) runs,
 // asserting the losslessness invariants (RFC 0026 G2/G4):
 //   * every concrete row at a node shares that node's single action menu;
 //   * every concrete row sealing the same (node, bucket) is bitwise identical.
-ClassBuildData build_class_data(const PackClassInput& input) {
+// `range` is the canonicalized range (see canonical_range); nullptr means the
+// caller has no range.
+ClassBuildData build_class_data(const PackClassInput& input,
+                                const std::vector<solver::WeightedHand>* range) {
   ClassBuildData data;
   data.class_id = input.class_id;
   data.canonical_board = input.canonical_board;
-  data.range = input.range;
+  data.range = range;
   data.card_digest = input.card_abstraction_digest;
   data.action_digest = input.action_abstraction_digest;
 
@@ -396,10 +429,9 @@ ClassBuildData build_class_data(const PackClassInput& input) {
 
 // Thrown by a codebook-indexed pass when a class has more distinct
 // probability values than the layout can index; the caller reruns the full
-// pass with Doubles.
-struct CodebookTooLarge : std::runtime_error {
-  using std::runtime_error::runtime_error;
-};
+// pass with Doubles. RFC 0027: the public exception type lets the builder
+// fail closed without a private dependency.
+using CodebookTooLarge = CodebookCapacityError;
 
 // Write one class section. Offsets in bucket rows are section-relative byte
 // offsets into the probs region (caller patches the probs base).
@@ -427,11 +459,11 @@ void write_class_section(std::vector<std::uint8_t>& buf, const ClassBuildData& d
                                           ? 0u
                                           : static_cast<std::uint32_t>(data.codebook_index.size());
   if (file_layout == ProbabilityLayout::Codebook8 && codebook_size > 256)
-    throw CodebookTooLarge("pack: class " + std::to_string(data.class_id) +
-                           " has > 256 distinct probabilities for Codebook8");
+    throw CodebookCapacityError("pack: class " + std::to_string(data.class_id) +
+                                " has > 256 distinct probabilities for Codebook8");
   if (file_layout == ProbabilityLayout::Codebook16 && codebook_size > 65536)
-    throw CodebookTooLarge("pack: class " + std::to_string(data.class_id) +
-                           " has > 65536 distinct probabilities for Codebook16");
+    throw CodebookCapacityError("pack: class " + std::to_string(data.class_id) +
+                                " has > 65536 distinct probabilities for Codebook16");
   const std::uint16_t range_count = data.range ? static_cast<std::uint16_t>(data.range->size()) : 0;
 
   // Assign codebook indices in bit-pattern (map) order for this layout.
@@ -579,22 +611,19 @@ void write_class_section(std::vector<std::uint8_t>& buf, const ClassBuildData& d
 
 }  // namespace
 
-void pack_binary_library_streaming(const std::filesystem::path& path,
-                                   const solver::UnifiedGame& game, std::size_t class_count,
-                                   const PackClassSupplier& supplier) {
-  if (class_count == 0)
-    throw std::invalid_argument("pack_binary_library_streaming: no classes to pack");
-  if (game.def.player_count < 2 || game.def.player_count > kMaxSeats)
-    throw std::invalid_argument("pack_binary_library_streaming: player_count out of range");
+namespace {
 
-  // Header layout (fixed prefix is 216 bytes before the variable sizes):
-  //   0 magic[8], 8 version u32, 12 class_count u32,
-  //   16 codebook_type u8, 17 player_count u8, 18 button u8,
-  //   19 terminal_depth u8, 20 card_bucket_kind u8, 21 reserved u8[3],
-  //   24 big_blind u64, 32 pot u64,
-  //   40 stacks u64[10], 120 contributions u64[10],
-  //   200 card_digest u64, 208 action_digest u64, 216 sizes (variable),
-  //   after sizes: class_offsets u64[class_count].
+// Validate the identity handed to the assembler: both digests or neither.
+void validate_identity(const LibraryIdentity& identity) {
+  if (identity.card_abstraction_digest.has_value() !=
+      identity.action_abstraction_digest.has_value())
+    throw std::invalid_argument(
+        "assemble_binary_library: identity must supply both abstraction digests or neither");
+}
+
+// Build the fixed header (+ sizes + zeroed class_offsets) for a library.
+std::vector<std::uint8_t> build_header(const solver::UnifiedGame& game, std::size_t class_count,
+                                       ProbabilityLayout layout, const LibraryIdentity& identity) {
   std::size_t sizes_bytes = 0;
   for (const auto& street : game.sizes) {
     sizes_bytes += 2;
@@ -603,132 +632,331 @@ void pack_binary_library_streaming(const std::filesystem::path& path,
   }
   constexpr std::size_t kHeaderFixed = 216;
   const std::size_t header_fixed = kHeaderFixed + sizes_bytes;
-  const std::size_t class_offsets_pos = header_fixed;
   const std::size_t header_total =
       align_up(header_fixed + class_count * sizeof(std::uint64_t), kPageSize);
 
-  const std::uint8_t bucket_kind_u8 = static_cast<std::uint8_t>(
-      static_cast<std::underlying_type_t<abstraction::CardBucketKind>>(solver::kNSeatCardKind));
+  std::vector<std::uint8_t> header;
+  header.reserve(header_total);
+  header.insert(header.end(), kMagic, kMagic + 8);
+  write_u32(header, kVersion);
+  write_u32(header, static_cast<std::uint32_t>(class_count));
+  write_u8(header, codebook_type_to_u8(layout));
+  write_u8(header, static_cast<std::uint8_t>(game.def.player_count));
+  write_u8(header, static_cast<std::uint8_t>(game.def.button));
+  write_u8(header, game.def.terminal == poker::TerminalDepth::Flop ? 0 : 1);
+  write_u8(header, static_cast<std::uint8_t>(
+                       static_cast<std::underlying_type_t<abstraction::CardBucketKind>>(
+                           solver::kNSeatCardKind)));
+  for (int i = 0; i < 3; ++i)
+    write_u8(header, 0);
+  write_u64(header, game.def.big_blind);
+  write_u64(header, game.def.pot);
+  for (std::size_t i = 0; i < kMaxSeats; ++i)
+    write_u64(header, game.def.stacks[i]);
+  for (std::size_t i = 0; i < kMaxSeats; ++i)
+    write_u64(header, game.def.contributions[i]);
+  write_u64(header, identity.card_abstraction_digest.value_or(0));
+  write_u64(header, identity.action_abstraction_digest.value_or(0));
+  for (const auto& street : game.sizes) {
+    write_u8(header, static_cast<std::uint8_t>(street.bets.size()));
+    write_u8(header, static_cast<std::uint8_t>(street.raises.size()));
+    for (const auto& frac : street.bets)
+      write_fraction(header, frac);
+    for (const auto& frac : street.raises)
+      write_fraction(header, frac);
+  }
+  for (std::size_t i = 0; i < class_count; ++i)
+    write_u64(header, 0);
+  header.resize(header_total, 0);
+  return header;
+}
 
-  // One write pass under `layout`. Returns true on success; a class with more
-  // distinct probabilities than the layout can index makes it return false so
-  // the caller can rerun with a wider layout (the truncated file is removed).
-  // Cross-class abstraction digests are reconciled as classes are read.
-  auto run_pass = [&](ProbabilityLayout layout) -> bool {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out)
-      throw std::runtime_error("pack_binary_library_streaming: cannot open " + path.string() +
-                               " for write");
-    struct PartialCleanup {
-      std::ofstream& out;
-      std::filesystem::path path;
-      bool armed = true;
-      ~PartialCleanup() {
-        if (!armed)
-          return;
-        out.close();
-        std::error_code ec;
-        std::filesystem::remove(path, ec);
-        std::filesystem::remove(std::filesystem::path(path.string() + ".sha256"), ec);
-      }
-    } cleanup{out, path};
+std::size_t class_offsets_position(const solver::UnifiedGame& game) {
+  std::size_t sizes_bytes = 0;
+  for (const auto& street : game.sizes) {
+    sizes_bytes += 2;
+    sizes_bytes += street.bets.size() * 16;
+    sizes_bytes += street.raises.size() * 16;
+  }
+  return 216 + sizes_bytes;
+}
 
-    {
-      std::vector<std::uint8_t> header;
-      header.reserve(header_total);
-      header.insert(header.end(), kMagic, kMagic + 8);
-      write_u32(header, kVersion);
-      write_u32(header, static_cast<std::uint32_t>(class_count));
-      write_u8(header, codebook_type_to_u8(layout));
-      write_u8(header, static_cast<std::uint8_t>(game.def.player_count));
-      write_u8(header, static_cast<std::uint8_t>(game.def.button));
-      write_u8(header, game.def.terminal == poker::TerminalDepth::Flop ? 0 : 1);
-      write_u8(header, bucket_kind_u8);
-      for (int i = 0; i < 3; ++i)
-        write_u8(header, 0);
-      write_u64(header, game.def.big_blind);
-      write_u64(header, game.def.pot);
-      for (std::size_t i = 0; i < kMaxSeats; ++i)
-        write_u64(header, game.def.stacks[i]);
-      for (std::size_t i = 0; i < kMaxSeats; ++i)
-        write_u64(header, game.def.contributions[i]);
-      // Digests are reconciled during the pass and patched with the offsets.
-      write_u64(header, 0);
-      write_u64(header, 0);
-      for (const auto& street : game.sizes) {
-        write_u8(header, static_cast<std::uint8_t>(street.bets.size()));
-        write_u8(header, static_cast<std::uint8_t>(street.raises.size()));
-        for (const auto& frac : street.bets)
-          write_fraction(header, frac);
-        for (const auto& frac : street.raises)
-          write_fraction(header, frac);
-      }
-      for (std::size_t i = 0; i < class_count; ++i)
-        write_u64(header, 0);
-      header.resize(header_total, 0);
-      out.write(reinterpret_cast<const char*>(header.data()),
-                static_cast<std::streamsize>(header.size()));
-      if (!out)
-        throw std::runtime_error("pack_binary_library_streaming: header write failed");
+// Read one section file into memory after validating its header fields against
+// the build parameters. Returns the bytes.
+std::vector<std::uint8_t> read_section(const std::filesystem::path& path, std::uint32_t expected_id,
+                                       ProbabilityLayout layout) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in)
+    throw std::runtime_error("assemble: cannot open section " + path.string());
+  in.seekg(0, std::ios::end);
+  const std::streamoff size = in.tellg();
+  in.seekg(0, std::ios::beg);
+  if (size < 40)
+    throw std::runtime_error("assemble: truncated section " + path.string());
+  std::vector<std::uint8_t> bytes(static_cast<std::size_t>(size));
+  in.read(reinterpret_cast<char*>(bytes.data()), size);
+  if (!in)
+    throw std::runtime_error("assemble: short read on section " + path.string());
+
+  const std::uint32_t class_id = read_u32(bytes.data());
+  if (class_id != expected_id)
+    throw std::runtime_error("assemble: section " + path.string() + " names class " +
+                             std::to_string(class_id) + ", expected " +
+                             std::to_string(expected_id));
+  const std::uint32_t node_count = read_u32(bytes.data() + 8);
+  const std::uint16_t range_count = read_u16(bytes.data() + 12);
+  const std::uint32_t total_menu_actions = read_u32(bytes.data() + 16);
+  const std::uint32_t total_bucket_rows = read_u32(bytes.data() + 20);
+  const std::uint32_t total_prob_entries = read_u32(bytes.data() + 24);
+  const std::uint32_t codebook_size = read_u32(bytes.data() + 28);
+
+  // Recompute the exact byte length the writer must have produced for this
+  // layout. This is the authoritative consistency check: a section does not
+  // record the layout kind, so a mismatched layout shows up here.
+  std::size_t expected = 40 + static_cast<std::size_t>(range_count) * 16;
+  expected = align_up(expected, 8);
+  expected +=
+      (layout == ProbabilityLayout::Doubles ? 0 : static_cast<std::size_t>(codebook_size)) * 8;
+  expected += static_cast<std::size_t>(node_count) * (8 + 4 + 2);
+  if (node_count % 2 != 0)
+    expected += 2;
+  expected += static_cast<std::size_t>(node_count) * (4 + 2);
+  expected = align_up(expected, 8);
+  expected += static_cast<std::size_t>(total_bucket_rows) * 8;
+  expected += static_cast<std::size_t>(total_menu_actions) * 3;
+  if (layout == ProbabilityLayout::Codebook16)
+    expected = (expected + 1) & ~std::size_t{1};
+  else if (layout == ProbabilityLayout::Doubles)
+    expected = (expected + 7) & ~std::size_t{7};
+  expected += static_cast<std::size_t>(total_prob_entries) * prob_entry_width(layout);
+  if (bytes.size() != expected)
+    throw std::runtime_error(
+        "assemble: section " + path.string() + " is " + std::to_string(bytes.size()) +
+        " bytes; length " + std::to_string(expected) + " was required by its counters under `" +
+        (layout == ProbabilityLayout::Codebook16
+             ? "codebook16"
+             : (layout == ProbabilityLayout::Doubles ? "doubles" : "codebook8")) +
+        "` (layout mismatch or corruption)");
+  return bytes;
+}
+
+}  // namespace
+
+std::vector<std::uint8_t> serialize_class_section(const PackClassInput& input,
+                                                  ProbabilityLayout layout) {
+  if (input.rows == nullptr)
+    throw std::invalid_argument("serialize_class_section: rows are required");
+  std::vector<solver::WeightedHand> range_scratch;
+  const std::vector<solver::WeightedHand>* range = nullptr;
+  if (input.range != nullptr) {
+    range = &canonical_range(*input.range, range_scratch);
+  }
+  ClassBuildData data = build_class_data(input, range);
+  std::vector<std::uint8_t> section;
+  write_class_section(section, data, layout, 0, 0);
+  return section;
+}
+
+void assemble_binary_library(const std::filesystem::path& path, const solver::UnifiedGame& game,
+                             const LibraryIdentity& identity, ProbabilityLayout layout,
+                             const std::filesystem::path& section_dir,
+                             std::span<const std::uint32_t> class_ids) {
+  if (class_ids.empty())
+    throw std::invalid_argument("assemble_binary_library: no classes to assemble");
+  if (game.def.player_count < 2 || game.def.player_count > kMaxSeats)
+    throw std::invalid_argument("assemble_binary_library: player_count out of range");
+  validate_identity(identity);
+  for (std::size_t i = 1; i < class_ids.size(); ++i)
+    if (class_ids[i] <= class_ids[i - 1])
+      throw std::invalid_argument("assemble_binary_library: class ids must be strictly ascending");
+
+  // Validate every section before writing any output byte.
+  std::vector<std::vector<std::uint8_t>> sections;
+  sections.reserve(class_ids.size());
+  for (std::uint32_t class_id : class_ids) {
+    char name[32];
+    std::snprintf(name, sizeof(name), "class-%04u.bsf", class_id);
+    sections.push_back(read_section(section_dir / name, class_id, layout));
+  }
+
+  const std::filesystem::path temp_path = path.string() + ".tmp";
+  struct TempCleanup {
+    std::filesystem::path temp;
+    std::filesystem::path final_path;
+    bool armed = true;
+    ~TempCleanup() {
+      if (!armed)
+        return;
+      std::error_code ec;
+      std::filesystem::remove(temp, ec);
+      std::filesystem::remove(std::filesystem::path(temp.string() + ".sha256"), ec);
+      std::filesystem::remove(final_path, ec);
+      std::filesystem::remove(std::filesystem::path(final_path.string() + ".sha256"), ec);
     }
+  } cleanup{temp_path, path};
 
-    bool have_digests = false;
-    std::uint64_t card_digest = 0;
-    std::uint64_t action_digest = 0;
-    std::vector<std::uint64_t> section_offsets(class_count);
+  std::vector<std::uint8_t> header = build_header(game, class_ids.size(), layout, identity);
+  const std::size_t offsets_pos = class_offsets_position(game);
+
+  std::ofstream out(temp_path, std::ios::binary | std::ios::trunc);
+  if (!out)
+    throw std::runtime_error("assemble_binary_library: cannot open " + temp_path.string());
+  out.write(reinterpret_cast<const char*>(header.data()),
+            static_cast<std::streamsize>(header.size()));
+  if (!out)
+    throw std::runtime_error("assemble_binary_library: header write failed");
+
+  std::vector<std::uint64_t> section_offsets(class_ids.size());
+  for (std::size_t i = 0; i < sections.size(); ++i) {
+    section_offsets[i] = static_cast<std::uint64_t>(out.tellp());
+    out.write(reinterpret_cast<const char*>(sections[i].data()),
+              static_cast<std::streamsize>(sections[i].size()));
+    if (!out)
+      throw std::runtime_error("assemble_binary_library: section write failed");
+    const std::size_t current = static_cast<std::size_t>(out.tellp());
+    const std::size_t aligned = align_up(current, kPageSize);
+    if (aligned > current) {
+      const std::vector<std::uint8_t> padding(aligned - current, 0);
+      out.write(reinterpret_cast<const char*>(padding.data()),
+                static_cast<std::streamsize>(padding.size()));
+      if (!out)
+        throw std::runtime_error("assemble_binary_library: padding write failed");
+    }
+  }
+  out.seekp(static_cast<std::streamoff>(offsets_pos));
+  for (std::uint64_t offset : section_offsets)
+    write_u64_to(out, offset);
+  if (!out)
+    throw std::runtime_error("assemble_binary_library: class_offsets patch failed");
+  out.flush();
+  if (!out)
+    throw std::runtime_error("assemble_binary_library: flush failed");
+  out.close();
+
+  // fsync the temp file, then publish atomically.
+  {
+    const int fd = ::open(temp_path.string().c_str(), O_RDONLY);
+    if (fd < 0)
+      throw std::runtime_error("assemble_binary_library: cannot reopen temp for fsync");
+    if (::fsync(fd) != 0) {
+      ::close(fd);
+      throw std::runtime_error("assemble_binary_library: fsync failed");
+    }
+    ::close(fd);
+  }
+  std::filesystem::rename(temp_path, path);
+
+  const std::string hex = artifacts::sha256_file_hex(path);
+  const std::filesystem::path sidecar = path.string() + ".sha256";
+  std::ofstream sidecar_out(sidecar, std::ios::binary | std::ios::trunc);
+  if (!sidecar_out)
+    throw std::runtime_error("assemble_binary_library: cannot open " + sidecar.string());
+  sidecar_out << hex << "  " << path.filename().string() << "\n";
+  if (!sidecar_out)
+    throw std::runtime_error("assemble_binary_library: sidecar write failed");
+  cleanup.armed = false;
+}
+
+void assemble_binary_library(const std::filesystem::path& path, const solver::UnifiedGame& game,
+                             const LibraryIdentity& identity, ProbabilityLayout layout,
+                             std::span<const ClassSectionInput> sections) {
+  if (sections.empty())
+    throw std::invalid_argument("assemble_binary_library: no classes to assemble");
+  const std::filesystem::path staging =
+      path.parent_path() / (".bs-assemble-" + std::to_string(::getpid()));
+  struct StagingCleanup {
+    std::filesystem::path dir;
+    ~StagingCleanup() {
+      std::error_code ec;
+      std::filesystem::remove_all(dir, ec);
+    }
+  } staging_cleanup{staging};
+  std::error_code ec;
+  std::filesystem::create_directories(staging, ec);
+  if (ec)
+    throw std::runtime_error("assemble_binary_library: cannot create staging dir: " + ec.message());
+
+  std::vector<std::uint32_t> class_ids;
+  class_ids.reserve(sections.size());
+  for (const ClassSectionInput& section : sections) {
+    class_ids.push_back(section.class_id);
+    char name[32];
+    std::snprintf(name, sizeof(name), "class-%04u.bsf", section.class_id);
+    std::ofstream out(staging / name, std::ios::binary | std::ios::trunc);
+    if (!out)
+      throw std::runtime_error("assemble_binary_library: cannot stage section");
+    out.write(reinterpret_cast<const char*>(section.bytes.data()),
+              static_cast<std::streamsize>(section.bytes.size()));
+    if (!out)
+      throw std::runtime_error("assemble_binary_library: staging write failed");
+  }
+  std::sort(class_ids.begin(), class_ids.end());
+  assemble_binary_library(path, game, identity, layout, staging, class_ids);
+}
+
+void pack_binary_library_streaming(const std::filesystem::path& path,
+                                   const solver::UnifiedGame& game, std::size_t class_count,
+                                   const PackClassSupplier& supplier) {
+  if (class_count == 0)
+    throw std::invalid_argument("pack_binary_library_streaming: no classes to pack");
+  if (game.def.player_count < 2 || game.def.player_count > kMaxSeats)
+    throw std::invalid_argument("pack_binary_library_streaming: player_count out of range");
+
+  // One pass under `layout`: serialize every class into a section temp while
+  // reconciling the shared digests, then assemble. A class that exceeds the
+  // layout's codebook cap aborts the pass so the caller can rerun wider.
+  auto run_pass = [&](ProbabilityLayout layout) -> bool {
+    const std::filesystem::path staging =
+        path.parent_path() / (".bs-pack-" + std::to_string(::getpid()));
+    struct StagingCleanup {
+      std::filesystem::path dir;
+      ~StagingCleanup() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+      }
+    } staging_cleanup{staging};
+    std::error_code ec;
+    std::filesystem::create_directories(staging, ec);
+    if (ec)
+      throw std::runtime_error("pack_binary_library_streaming: cannot create staging dir");
+
+    LibraryIdentity identity;
+    std::vector<std::uint32_t> class_ids;
+    class_ids.reserve(class_count);
     for (std::size_t i = 0; i < class_count; ++i) {
       const PackClassInput input = supplier(i);
-      reconcile_digests(input, have_digests, card_digest, action_digest);
-      ClassBuildData data = build_class_data(input);
-      section_offsets[i] = static_cast<std::uint64_t>(out.tellp());
       try {
-        std::vector<std::uint8_t> section;
-        write_class_section(section, data, layout, card_digest, action_digest);
+        std::vector<std::uint8_t> section = serialize_class_section(input, layout);
+        char name[32];
+        std::snprintf(name, sizeof(name), "class-%04u.bsf", input.class_id);
+        std::ofstream out(staging / name, std::ios::binary | std::ios::trunc);
+        if (!out)
+          throw std::runtime_error("pack_binary_library_streaming: cannot stage section");
         out.write(reinterpret_cast<const char*>(section.data()),
                   static_cast<std::streamsize>(section.size()));
+        if (!out)
+          throw std::runtime_error("pack_binary_library_streaming: staging write failed");
+        class_ids.push_back(input.class_id);
       } catch (const CodebookTooLarge&) {
         return false;  // rerun under a wider layout
       }
-      if (!out)
-        throw std::runtime_error("pack_binary_library_streaming: section write failed");
-      const std::size_t current = static_cast<std::size_t>(out.tellp());
-      const std::size_t aligned = align_up(current, kPageSize);
-      if (aligned > current) {
-        const std::vector<std::uint8_t> padding(aligned - current, 0);
-        out.write(reinterpret_cast<const char*>(padding.data()),
-                  static_cast<std::streamsize>(padding.size()));
-        if (!out)
-          throw std::runtime_error("pack_binary_library_streaming: padding write failed");
+      // Reconcile digests exactly as before (once any class supplies them, all
+      // must supply identical values).
+      bool have = identity.card_abstraction_digest.has_value();
+      std::uint64_t card_digest = identity.card_abstraction_digest.value_or(0);
+      std::uint64_t action_digest = identity.action_abstraction_digest.value_or(0);
+      reconcile_digests(input, have, card_digest, action_digest);
+      identity.card_abstraction_digest = card_digest;
+      identity.action_abstraction_digest = action_digest;
+      if (!have) {
+        identity.card_abstraction_digest.reset();
+        identity.action_abstraction_digest.reset();
       }
     }
-
-    // Patch class offsets and digests into the header.
-    auto patch_u64 = [&](std::size_t pos, std::uint64_t value) {
-      out.seekp(static_cast<std::streamoff>(pos));
-      std::uint8_t bytes[8];
-      for (int b = 0; b < 8; ++b)
-        bytes[b] = static_cast<std::uint8_t>((value >> (b * 8)) & 0xffu);
-      out.write(reinterpret_cast<const char*>(bytes), 8);
-    };
-    for (std::size_t i = 0; i < class_count; ++i)
-      patch_u64(class_offsets_pos + i * 8, section_offsets[i]);
-    if (have_digests) {
-      patch_u64(200, card_digest);
-      patch_u64(208, action_digest);
-    }
-    if (!out)
-      throw std::runtime_error("pack_binary_library_streaming: header patch failed");
-    out.close();
-
-    const std::string hex = artifacts::sha256_file_hex(path);
-    const std::filesystem::path sidecar = path.string() + ".sha256";
-    std::ofstream sidecar_out(sidecar, std::ios::binary | std::ios::trunc);
-    if (!sidecar_out)
-      throw std::runtime_error("pack_binary_library_streaming: cannot open " + sidecar.string());
-    sidecar_out << hex << "  " << path.filename().string() << "\n";
-    if (!sidecar_out)
-      throw std::runtime_error("pack_binary_library_streaming: sidecar write failed");
-    cleanup.armed = false;
+    std::sort(class_ids.begin(), class_ids.end());
+    if (std::adjacent_find(class_ids.begin(), class_ids.end()) != class_ids.end())
+      throw std::runtime_error("pack_binary_library_streaming: duplicate class id");
+    assemble_binary_library(path, game, identity, layout, staging, class_ids);
     return true;
   };
 

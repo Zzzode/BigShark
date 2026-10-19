@@ -278,6 +278,7 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `preflop_nash_conv` | Hidden-information counterexamples, pooled/frozen responses, held-out confirmation, normalization, signed paired uncertainty, and failure propagation |
 | `nseat_parallel` | Serial one-worker parity, repeated unchanged quality gates, twelve complete pre-optimization result fingerprints across widths/tails/weighted ranges/chance, frozen-sigma lifetime, global visit caps, clamp behavior, and frontier errors |
 | `seat_policy` | Exact independent concrete export, sparse parents with covered descendants, chance siblings, Preflop169, key grammar, and two-seat key identity |
+| `sealed_checkpoint` | RFC 0028 BSWARM01 round trip including `visits`, header-only inspection agreeing with the full load, every malformed-file rejection (magic, version, truncation, digest, counts, revision), writer refusal of unrepresentable state, failed-write preservation, and key-proportional size |
 | `sixmax_hand_ledger` | Eighteen full native six-dealt-seat hand-start replays with literal per-node ledgers, all buttons, unequal all-ins/refunds, folded contributors, single-eligible side layers and odd-chip ties |
 | `gto` | River LP/DCFR policy contracts, exploitability, and range tracking |
 | `multistreet_ref` | Independent fixed-run best-response reference |

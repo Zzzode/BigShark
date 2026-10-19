@@ -32,7 +32,8 @@
 
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
-#include <bs/seat_policy.hpp>  // SeatPolicyRow
+#include <bs/mmap_library.hpp>  // ProbabilityLayout, CompactAction
+#include <bs/seat_policy.hpp>   // SeatPolicyRow
 #include <bs/unified_game.hpp>
 #include <cstddef>
 #include <cstdint>
@@ -41,22 +42,6 @@
 #include <vector>
 
 namespace bs::resident {
-
-// Packed 3-byte action: type (0-4, matching poker::ActionType) and target
-// total (0-65535, enough for any trained artifact's chip values).
-#pragma pack(push, 1)
-struct CompactAction {
-  std::uint8_t type = 0;
-  std::uint16_t target = 0;
-
-  constexpr bool operator==(const CompactAction&) const = default;
-  constexpr bool operator==(const poker::Action& other) const noexcept {
-    return type == static_cast<std::uint8_t>(other.type) &&
-           static_cast<std::uint64_t>(target) == other.target_total;
-  }
-};
-#pragma pack(pop)
-static_assert(sizeof(CompactAction) == 3);
 
 // Maximum actions per resident row. The public-view expansion scratch is
 // sized to this, and the abstraction builder caps menus at 32 actions, so a
@@ -71,7 +56,10 @@ inline constexpr std::size_t kMaxResidentActions = 32;
 //   - Doubles:    > 65536 distinct values (one exact double per action)
 // Codebook16 activates compression for deeper-stack libraries whose distinct
 // probability count exceeds the uint8 cap but stays within uint16 range.
-enum class ProbabilityLayout : std::uint8_t { Doubles, Codebook8, Codebook16 };
+// RFC 0027: defined once in the public packed-library header, which the
+// offline serializer also uses. Re-exported here so existing resident callers
+// keep their unqualified name.
+using bs::resident::ProbabilityLayout;
 
 struct CompactRowView {
   std::uint16_t count = 0;

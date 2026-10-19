@@ -171,6 +171,52 @@ test('parseFlopLibraries rejects malformed entries instead of silently dropping 
 
 // ---- auto-detection, budget, and warmup -----------------------------------
 
+
+test('RFC 0027: exactly one binary library wins; mixing is a configuration error', () => {
+  const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+  delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
+
+  const tempRoot = mkdtempSync(join(tmpdir(), 'bs-binary-precedence-'));
+  const sqliteDir = join(tempRoot, 'artifacts', 'flop-library');
+  mkdirSync(sqliteDir, { recursive: true });
+  writeFileSync(join(sqliteDir, 'manifest.json'), '{"classes":[]}');
+  const binaryDir = join(tempRoot, 'artifacts', 'flop-library-6way-fullrange');
+  mkdirSync(binaryDir, { recursive: true });
+  writeFileSync(
+    join(binaryDir, 'manifest.json'),
+    '{"library_bin":"library.bin","library_bin_sha256":"' + 'a'.repeat(64) + '","classes":[]}',
+  );
+
+  // Only the binary directory present: it is the sole source.
+  const onlyBinary = resolveFlopLibraries({flopLibraries: [binaryDir]});
+  assert.deepEqual(onlyBinary.libraries, [binaryDir]);
+
+  // One binary plus a SQLite directory is refused, not silently narrowed.
+  assert.throws(
+    () => resolveFlopLibraries({flopLibraries: [binaryDir, sqliteDir]}),
+    /cannot be combined/,
+  );
+
+  // Two binary libraries are refused.
+  const binaryDir2 = join(tempRoot, 'artifacts', 'flop-library-other');
+  mkdirSync(binaryDir2, { recursive: true });
+  writeFileSync(
+    join(binaryDir2, 'manifest.json'),
+    '{"library_bin":"library.bin","library_bin_sha256":"' + 'b'.repeat(64) + '","classes":[]}',
+  );
+  assert.throws(
+    () => resolveFlopLibraries({flopLibraries: [binaryDir, binaryDir2]}),
+    /multiple binary/,
+  );
+
+  // A SQLite-only set keeps today's behavior.
+  const sqliteOnly = resolveFlopLibraries({flopLibraries: [sqliteDir]});
+  assert.deepEqual(sqliteOnly.libraries, [sqliteDir]);
+
+  if (prior !== undefined) process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
+  rmSync(tempRoot, { recursive: true, force: true });
+});
+
 test('resolveFlopLibraries auto-detects bundled libraries and attaches the budget', () => {
   const prior = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
   delete process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;

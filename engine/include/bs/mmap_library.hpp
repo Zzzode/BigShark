@@ -1,7 +1,9 @@
 // RFC 0026 bucket-deduplicated mmap flop class library.
 //
 // A packed library is a single binary file that replaces a directory of
-// schema-v3 SQLite class artifacts with a bucket-keyed acceleration format.
+// schema-v3 SQLite class artifacts with a bucket-keyed format. RFC 0027: the
+// builder writes it directly during training (one section per class), so it is
+// the library artifact rather than a derived cache.
 // N-seat training seals strategy rows under (card bucket, tree node); the
 // SQLite publish path copies a sealed row onto every concrete holding in the
 // bucket. The packed file stores only the distinct (public node, bucket)
@@ -65,9 +67,10 @@
 //   bucket-id-sorted slice [node_bucket_start, +node_bucket_count).
 //
 // A missing bucket at a present node is a miss with the same meaning as the
-// exporter skipping a bucket the training range never reached. The SQLite
-// artifacts remain the canonical interchange format; the .bin is derived,
-// cacheable, and regenerable at any time.
+// exporter skipping a bucket the training range never reached. RFC 0027:
+// training serializes each class straight into its section, so the packed
+// file is the library artifact and no per-class SQLite copy is required.
+// `bigshark-flop-library-pack` still converts older SQLite class directories.
 #pragma once
 
 #include <array>
@@ -81,6 +84,7 @@
 #include <map>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -93,6 +97,49 @@ namespace bs::resident {
 
 struct CompactRowView;
 
+// Packed 3-byte action: type (0-4, matching poker::ActionType) and target
+// total (0-65535, enough for any trained artifact's chip values). RFC 0027
+// moved this from the private resident index so the offline serializer and the
+// resident reader name one encoding; RFC 0028 reuses it from the sealed
+// checkpoint codec for the same reason.
+#pragma pack(push, 1)
+struct CompactAction {
+  std::uint8_t type = 0;
+  std::uint16_t target = 0;
+
+  constexpr bool operator==(const CompactAction&) const = default;
+  constexpr bool operator==(const poker::Action& other) const noexcept {
+    return type == static_cast<std::uint8_t>(other.type) &&
+           static_cast<std::uint64_t>(target) == other.target_total;
+  }
+};
+#pragma pack(pop)
+static_assert(sizeof(CompactAction) == 3);
+
+// Probability storage layout for a packed library. RFC 0027 moved this from
+// the private resident index so the offline serializer and the resident
+// reader name one enum.
+//   - Codebook8:  <= 256 distinct values (uint8 index per action)
+//   - Codebook16: <= 65536 distinct values (uint16 index per action)
+//   - Doubles:    more than 65536 distinct values (one exact double per action)
+enum class ProbabilityLayout : std::uint8_t { Doubles, Codebook8, Codebook16 };
+
+// Thrown by serialize_class_section when a class has more distinct
+// probability values than the requested layout can index. The caller either
+// reruns under a wider layout (packer) or fails closed (trainer).
+class CodebookCapacityError : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
+// The two abstraction identities stored in the file header (offsets 200/208).
+// A class section does not carry them. Both present or both absent; a
+// one-sided identity is rejected, matching the packer's reconcile rule.
+struct LibraryIdentity {
+  std::optional<std::uint64_t> card_abstraction_digest;
+  std::optional<std::uint64_t> action_abstraction_digest;
+};
+
 // One class's rows for the pack function. The rows and range are borrowed;
 // the pack function reads them but does not retain them after returning.
 struct PackClassInput {
@@ -101,6 +148,9 @@ struct PackClassInput {
   const std::map<solver::InformationKey, solver::SeatPolicyRow>* rows = nullptr;
   // Per-seat declared range for this class (board-overlapping combos already
   // removed by the trainer). All seats share this range in a flop library.
+  // RFC 0027: the serializer canonicalizes it to ascending comboIndex order,
+  // which is the order the SQLite reader always produced; callers may pass any
+  // order. A duplicate combo is an error.
   const std::vector<solver::WeightedHand>* range = nullptr;
   // Shared abstraction digests (FNV-1a 64-bit, as rendered in the artifact
   // manifest). Optional for synthetic test inputs; real class artifacts
@@ -109,18 +159,49 @@ struct PackClassInput {
   std::optional<std::uint64_t> action_abstraction_digest;
 };
 
+// RFC 0027: serialize one class into its BSFLIB02 section bytes (unpadded,
+// section-relative offsets). Runs the RFC 0026 losslessness assertions: one
+// action menu per public node, and bitwise-identical probability runs for
+// every concrete row sealing the same (node, bucket). Throws
+// CodebookCapacityError when the class cannot be indexed under `layout`.
+std::vector<std::uint8_t> serialize_class_section(const PackClassInput& input,
+                                                  ProbabilityLayout layout);
+
+// One pre-serialized section for the in-memory assembler.
+struct ClassSectionInput {
+  std::uint32_t class_id = 0;
+  std::span<const std::uint8_t> bytes;
+};
+
+// Write a complete BSFLIB02 file and its .sha256 sidecar from per-class
+// section files. Streams to `path + ".tmp"`, fsyncs, and atomically renames.
+// `section_dir` holds one `class-NNNN.bsf` per id; `class_ids` is the ordering
+// and must be strictly ascending and unique. Every section is validated
+// before the first output byte is written.
+void assemble_binary_library(const std::filesystem::path& path, const solver::UnifiedGame& game,
+                             const LibraryIdentity& identity, ProbabilityLayout layout,
+                             const std::filesystem::path& section_dir,
+                             std::span<const std::uint32_t> class_ids);
+
+// In-memory convenience adapter for tests: stages the sections in a private
+// `.bs-assemble-*` directory under `path.parent_path()`, calls the
+// file-backed assembler, and removes the directory on success or failure.
+void assemble_binary_library(const std::filesystem::path& path, const solver::UnifiedGame& game,
+                             const LibraryIdentity& identity, ProbabilityLayout layout,
+                             std::span<const ClassSectionInput> sections);
+
 // Pack a set of class policies into the consolidated binary format at `path`
 // and write the <path>.sha256 sidecar. Delegates to the streaming writer.
 void pack_binary_library(const std::filesystem::path& path, const solver::UnifiedGame& game,
                          std::span<const PackClassInput> classes);
 
 // Streaming variant: the supplier is called once per class index in a single
-// pass (group, write); only one class's artifact is resident at a time, so
-// peak memory is bounded by the largest single class. The probability region
-// uses Codebook16 by default; if a class ever exceeds its 65,535 distinct-
-// value cap the library is automatically rewritten in a second pass under
-// exact Doubles. The supplier must return a PackClassInput whose borrowed
-// pointers remain valid until the next call.
+// pass (serialize, stage, assemble); only one class's rows are resident at a
+// time, so peak memory is bounded by the largest single class. The
+// probability region uses Codebook16 by default; if a class ever exceeds its
+// 65,535 distinct-value cap the whole pass is rerun under exact Doubles. The
+// supplier must return a PackClassInput whose borrowed pointers remain valid
+// until the next call.
 using PackClassSupplier = std::function<PackClassInput(std::size_t index)>;
 
 void pack_binary_library_streaming(const std::filesystem::path& path,

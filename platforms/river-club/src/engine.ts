@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readSync } from 'node:fs';
 import { totalmem } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -101,6 +101,54 @@ export function parseResidentRoots(
   });
 }
 
+
+/** Whether a flop library directory's manifest names a packed `library.bin`. */
+export function isBinaryFlopLibrary(dir: string): boolean {
+  const manifest = join(dir, 'manifest.json');
+  if (!existsSync(manifest)) return false;
+  // Bounded probe: only the first 4 KiB, which always contains library_bin
+  // because the writer emits it before the classes array. This runs on the
+  // per-decision resolution path, so a full parse is too expensive (the
+  // full-range manifest is ~486 KB).
+  let prefix: string;
+  try {
+    const fd = openSync(manifest, 'r');
+    try {
+      const buffer = Buffer.alloc(4096);
+      const read = readSync(fd, buffer, 0, buffer.length, 0);
+      prefix = buffer.subarray(0, read).toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+  return prefix.includes('"library_bin"');
+}
+
+/**
+ * Apply the RFC 0027 source precedence to a resolved flop-library set.
+ *
+ * Exactly one binary library is the only source; zero keeps today's behavior;
+ * more than one binary, or one binary alongside any SQLite directory, is a
+ * configuration error rather than a silent first-wins (the engine's
+ * ResidentPolicySet returns immediately on a binary path and would drop every
+ * other source, including resident roots).
+ */
+export function applyFlopLibraryPrecedence(dirs: readonly string[]): string[] {
+  const binary = dirs.filter(isBinaryFlopLibrary);
+  if (binary.length === 0) return [...dirs];
+  if (binary.length > 1)
+    throw new Error(
+      `multiple binary flop libraries configured: ${binary.join(', ')}`,
+    );
+  if (dirs.length > 1)
+    throw new Error(
+      `a binary flop library cannot be combined with other flop libraries: ${binary[0]}`,
+    );
+  return [...binary];
+}
+
 /**
  * All bundled flop class library directories with a manifest.json,
  * sorted by name for deterministic launch order. Returns an empty array
@@ -162,12 +210,13 @@ export function resolveFlopLibraries(
   autoDetect: () => string[] = () => autoDetectedFlopLibraries(),
 ): ResolvedFlopLibraries {
   if (config.flopLibraries !== undefined) {
+    const libraries = config.flopLibraries.map(lib => {
+      if (typeof lib !== 'string' || lib.length === 0)
+        throw new Error('flop library entries must be non-empty strings');
+      return lib;
+    });
     return {
-      libraries: config.flopLibraries.map(lib => {
-        if (typeof lib !== 'string' || lib.length === 0)
-          throw new Error('flop library entries must be non-empty strings');
-        return lib;
-      }),
+      libraries: applyFlopLibraryPrecedence(libraries),
     };
   }
   const raw = process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES;
@@ -181,17 +230,19 @@ export function resolveFlopLibraries(
     if (!Array.isArray(value))
       return { libraries: [] };
     return {
-      libraries: value.map(entry => {
-        if (typeof entry !== 'string' || entry.length === 0)
-          throw new Error('flop library entries must be non-empty strings');
-        return entry;
-      }),
+      libraries: applyFlopLibraryPrecedence(
+        value.map(entry => {
+          if (typeof entry !== 'string' || entry.length === 0)
+            throw new Error('flop library entries must be non-empty strings');
+          return entry;
+        }),
+      ),
     };
   }
   const detected = autoDetect();
-  return detected.length > 0
-    ? { libraries: detected, residentBudgetMiB: residentBudgetMiB() }
-    : { libraries: [] };
+  if (detected.length === 0) return { libraries: [] };
+  const libraries = applyFlopLibraryPrecedence(detected);
+  return { libraries, residentBudgetMiB: residentBudgetMiB() };
 }
 
 /**

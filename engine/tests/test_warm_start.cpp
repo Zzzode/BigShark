@@ -1,12 +1,17 @@
-// RFC 0012 Phase 4: warm-start (checkpoint resume) tests.
+// RFC 0028: warm-start (sealed checkpoint resume) tests.
 //
-// Trains a class to 256 iterations, saves a warm-start checkpoint, resumes
-// from it to 512 iterations, and compares the raw regret/average-weight table
-// against a from-scratch 512-iteration run. The per-iteration PRNG streams
-// depend on the absolute iteration number, so a warm-started run must be
-// bitwise-identical to a from-scratch run at the same iteration count; the
-// 1e-9 tolerance is a safety margin for any unforeseen floating-point
-// reordering.
+// The sealed checkpoint stores the trainer's own (bucket, node) table, so this
+// test exercises the boundary directly: train to a chunk boundary, save, load,
+// resume, and compare against a from-scratch run at the same iteration count.
+// The per-iteration PRNG streams depend on the absolute iteration number, so a
+// warm-started run must be bitwise-identical to a from-scratch run.
+//
+// Three jobs are kept from the RFC 0012 version of this test, at the sealed
+// boundary: (a) chunk-boundary resume reproduces an uninterrupted run; (b) an
+// incompatible algorithm revision is still refused, and the refusal is a hard
+// error that leaves the files untouched; (c) the atomic-overwrite behavior
+// moved to save_sealed_checkpoint. The SQLite-specific assertions went with the
+// functions they exercised (see RFC 0028, "Builder changes").
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
@@ -14,12 +19,15 @@
 #include <bs/flop_library.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/nseat_trainer.hpp>
+#include <bs/sealed_checkpoint.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -80,7 +88,58 @@ struct Fixture {
           limits.wall = std::chrono::minutes{5};
           return bs::tree::AbstractTree(def, action);
         }()) {}
+
+  // The sealed caps the builder derives from the tree.
+  std::uint32_t node_cap() const { return static_cast<std::uint32_t>(tree.nodes().size()); }
 };
+
+// Serialize a training result's raw table as the builder does.
+bs::artifacts::SealedCheckpointState seal(const Fixture& fx,
+                                          const bs::solver::NSeatTrainingResult& trained) {
+  bs::artifacts::SealedCheckpointState state;
+  state.algorithm_revision_id = trained.algorithm_revision;
+  const char* revision = bs::artifacts::sealed_revision_string(trained.algorithm_revision);
+  if (revision == nullptr)
+    throw std::runtime_error("unknown trainer algorithm revision in test fixture");
+  state.algorithm_revision = revision;
+  state.abstraction_digest = fx.action.id().digest;
+  state.card_abstraction_digest = fx.card_id.digest;
+  state.completed_iterations = trained.completed_iterations;
+  state.batch_size = trained.batch_size;
+  state.completed_epochs = trained.completed_epochs;
+  state.node_cap = fx.node_cap();
+  state.bucket_cap = 169;
+  state.key_kind = bs::solver::kNSeatCardKind;
+  state.rows = trained.raw_rows;
+  return state;
+}
+
+bool same_raw_rows(const std::map<bs::solver::NSeatInformationKey, bs::solver::NSeatRawRow>& a,
+                   const std::map<bs::solver::NSeatInformationKey, bs::solver::NSeatRawRow>& b) {
+  if (a.size() != b.size())
+    return false;
+  for (const auto& [key, row] : b) {
+    const auto it = a.find(key);
+    if (it == a.end())
+      return false;
+    const bs::solver::NSeatRawRow& got = it->second;
+    if (got.visits != row.visits)
+      return false;
+    if (got.actions.size() != row.actions.size() || got.regrets.size() != row.regrets.size() ||
+        got.sums.size() != row.sums.size())
+      return false;
+    for (std::size_t i = 0; i < row.actions.size(); ++i) {
+      if (got.actions[i].type != row.actions[i].type ||
+          got.actions[i].target_total != row.actions[i].target_total)
+        return false;
+      if (std::memcmp(&got.regrets[i], &row.regrets[i], sizeof(double)) != 0)
+        return false;
+      if (std::memcmp(&got.sums[i], &row.sums[i], sizeof(double)) != 0)
+        return false;
+    }
+  }
+  return true;
+}
 
 bool test_warm_start_matches_scratch(const fs::path& dir) {
   Fixture fx;
@@ -93,32 +152,32 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
   CHECK(r256.batch_size == 1 && r256.completed_epochs == 256);
   CHECK(!r256.raw_rows.empty());
 
-  // Save a warm-start checkpoint with the raw training rows.
-  const bs::solver::SeatTrainingResult exported256 =
-      bs::solver::export_seat_policy(r256, fx.tree, fx.ranges, fx.card_id);
-  const auto training_rows = bs::flop_library::export_seat_training_rows(r256, fx.tree);
-  CHECK(!training_rows.empty());
-  const fs::path checkpoint_path = dir / "warm-start-checkpoint.db";
-  bs::artifacts::SeatCheckpointProvenance provenance;
-  provenance.engine_revision = "test-warm-start";
-  bs::artifacts::save_training_checkpoint(checkpoint_path, exported256, training_rows, provenance);
+  // Save a sealed checkpoint holding exactly the trainer's table.
+  const fs::path checkpoint_path = dir / "warm-start-checkpoint.bswarm";
+  bs::artifacts::save_sealed_checkpoint(checkpoint_path, seal(fx, r256));
   CHECK(fs::exists(checkpoint_path));
 
-  // Load the checkpoint and verify its identity.
-  const bs::artifacts::CheckpointTrainingState ckpt =
-      bs::artifacts::load_checkpoint(checkpoint_path);
+  // Load it back and verify both the identity and the rows.
+  const bs::artifacts::SealedCheckpointState ckpt =
+      bs::artifacts::load_sealed_checkpoint(checkpoint_path);
   CHECK(ckpt.completed_iterations == 256);
-  CHECK(ckpt.algorithm_revision == bs::artifacts::kDefaultAlgorithmRevisionV2);
+  CHECK(ckpt.algorithm_revision ==
+        bs::artifacts::sealed_revision_string(bs::solver::kNSeatAlgorithmRevision));
+  CHECK(ckpt.algorithm_revision_id == bs::solver::kNSeatAlgorithmRevision);
   CHECK(ckpt.abstraction_digest == fx.action.id().digest);
-  CHECK(ckpt.card_abstraction.has_value());
-  CHECK(ckpt.card_abstraction.value() == fx.card_id);
+  CHECK(ckpt.card_abstraction_digest.has_value());
+  CHECK(ckpt.card_abstraction_digest.value() == fx.card_id.digest);
   CHECK(!ckpt.rows.empty());
+  CHECK(same_raw_rows(ckpt.rows, r256.raw_rows));
 
-  // Build the trainer's initial state from the checkpoint.
-  const bs::solver::NSeatInitialState state = bs::flop_library::build_initial_state(ckpt, fx.tree);
+  // Build the trainer's initial state directly from the loaded rows.
+  bs::solver::NSeatInitialState state;
+  state.rows = ckpt.rows;
+  state.completed_iterations = ckpt.completed_iterations;
+  state.algorithm_revision = ckpt.algorithm_revision_id;
+  state.batch_size = static_cast<std::size_t>(ckpt.batch_size);
   CHECK(state.completed_iterations == 256);
   CHECK(state.algorithm_revision == 2 && state.batch_size == 1);
-  CHECK(!state.rows.empty());
   CHECK(state.rows.size() == r256.raw_rows.size());
 
   // Phase 2: resume from the checkpoint, training 256 more iterations
@@ -136,36 +195,9 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
   CHECK(r512_scratch.completed_iterations == 512);
   CHECK(r512_scratch.batch_size == 1 && r512_scratch.completed_epochs == 512);
 
-  // Compare the raw regret/average-weight tables.
-  CHECK(r512_resumed.raw_rows.size() == r512_scratch.raw_rows.size());
-  for (const auto& [key, scratch_row] : r512_scratch.raw_rows) {
-    const auto it = r512_resumed.raw_rows.find(key);
-    CHECK(it != r512_resumed.raw_rows.end());
-    const bs::solver::NSeatRawRow& resumed_row = it->second;
-    CHECK(resumed_row.actions.size() == scratch_row.actions.size());
-    CHECK(resumed_row.regrets.size() == scratch_row.regrets.size());
-    CHECK(resumed_row.sums.size() == scratch_row.sums.size());
-    for (std::size_t a = 0; a < scratch_row.regrets.size(); ++a) {
-      const double regret_diff = std::fabs(resumed_row.regrets[a] - scratch_row.regrets[a]);
-      const double sum_diff = std::fabs(resumed_row.sums[a] - scratch_row.sums[a]);
-      if (regret_diff > 1e-9) {
-        std::printf(
-            "regret mismatch at (bucket=%u, node=%llu, action=%zu): resumed=%.17g "
-            "scratch=%.17g diff=%.3g\n",
-            key.own_card_bucket, static_cast<unsigned long long>(key.node_index), a,
-            resumed_row.regrets[a], scratch_row.regrets[a], regret_diff);
-        return false;
-      }
-      if (sum_diff > 1e-9) {
-        std::printf(
-            "sum mismatch at (bucket=%u, node=%llu, action=%zu): resumed=%.17g "
-            "scratch=%.17g diff=%.3g\n",
-            key.own_card_bucket, static_cast<unsigned long long>(key.node_index), a,
-            resumed_row.sums[a], scratch_row.sums[a], sum_diff);
-        return false;
-      }
-    }
-  }
+  // Compare the raw regret/average-weight/visits tables bitwise.
+  CHECK(same_raw_rows(r512_resumed.raw_rows, r512_scratch.raw_rows));
+  // And the derived policy, which is what the published artifact carries.
   CHECK(r512_resumed.policy.rows().size() == r512_scratch.policy.rows().size());
   for (const auto& [key, row] : r512_scratch.policy.rows()) {
     const auto resumed = r512_resumed.policy.rows().find(key);
@@ -176,113 +208,123 @@ bool test_warm_start_matches_scratch(const fs::path& dir) {
   return true;
 }
 
+// A checkpoint written under a different algorithm revision is a hard
+// refusal: the builder's preflights must refuse rather than discard and
+// retrain, and the files must be left byte-identical.
 bool test_incompatible_resume_preserves_files(const fs::path& dir) {
   Fixture fx;
   const auto trained =
       bs::solver::train_nseat(fx.tree, fx.ranges, 16, fx.seed, fx.limits, &fx.frontier);
   const auto exported = bs::solver::export_seat_policy(trained, fx.tree, fx.ranges, fx.card_id);
-  const auto raw = bs::flop_library::export_seat_training_rows(trained, fx.tree);
   const auto source_dir = dir / "refused-resume";
-  fs::create_directory(source_dir);
-  const auto checkpoint = source_dir / "class-0000-checkpoint.db";
-  const auto policy = source_dir / "class-0000.db";
-  const std::vector<std::string> identities = {
-      bs::artifacts::kLegacyAlgorithmRevisionV2,
-      "rfc0016-nseat-rev2-frozen-batch-8-sampled-splitmix64",
-      "unknown-raw-algorithm",
-  };
-  for (const auto& identity : identities) {
-    auto result = exported;
-    bs::artifacts::SeatCheckpointProvenance provenance;
-    provenance.algorithm_revision = identity;
-    if (identity == bs::artifacts::kLegacyAlgorithmRevisionV2) {
-      result.algorithm_revision = 1;
-      result.batch_size = 0;
-      result.completed_epochs = 0;
-    } else if (identity.find("batch-8-") != std::string::npos) {
-      result.batch_size = 8;
-      result.completed_epochs = 2;
-    }
-    bs::artifacts::save_training_checkpoint(checkpoint, result, raw, provenance);
-    if (!fs::exists(policy)) {
-      // Immutable publication consumes a policy-only checkpoint; raw warm-start
-      // storage is intentionally read through load_checkpoint instead.
-      const auto immutable_source = source_dir / "immutable-source.db";
-      bs::artifacts::create_checkpoint(immutable_source, result, provenance);
-      (void)bs::artifacts::publish_policy(immutable_source, policy);
-    }
-    const auto checkpoint_sha = bs::artifacts::sha256_file_hex(checkpoint);
-    const auto policy_sha = bs::artifacts::sha256_file_hex(policy);
-    const auto loaded = bs::artifacts::load_checkpoint(checkpoint);
-    CHECK(loaded.algorithm_revision == identity);
-    bool refused = false;
-    try {
-      (void)bs::flop_library::build_initial_state(loaded, fx.tree);
-    } catch (const std::invalid_argument&) {
-      refused = true;
-    }
-    CHECK(refused);
-    refused = false;
-    try {
-      (void)bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 4, 2,
-                                            bs::flop_library::declared_library_range(), 2,
-                                            fx.action, true);
-    } catch (const std::runtime_error& error) {
-      refused =
-          std::string(error.what()).find("incompatible checkpoint algorithm") != std::string::npos;
-    }
-    CHECK(refused);
-    CHECK(fs::exists(checkpoint) && fs::exists(policy));
-    CHECK(bs::artifacts::sha256_file_hex(checkpoint) == checkpoint_sha);
-    CHECK(bs::artifacts::sha256_file_hex(policy) == policy_sha);
+  fs::create_directories(source_dir);
+  const auto checkpoint = source_dir / "class-0000-checkpoint.bswarm";
+
+  // A well-formed sealed file whose revision the current trainer rejects. The
+  // numeric and string revisions must agree or the codec rejects the file as
+  // corrupt before the revision rule is even reached, so both are set.
+  bs::artifacts::SealedCheckpointState bad = seal(fx, trained);
+  bad.algorithm_revision_id = 1;
+  bad.algorithm_revision = bs::artifacts::sealed_revision_string(1);
+  bs::artifacts::save_sealed_checkpoint(checkpoint, bad);
+  const auto checkpoint_sha = bs::artifacts::sha256_file_hex(checkpoint);
+
+  // The sealed load succeeds: this is structurally valid, incompatibility is a
+  // semantic judgement the caller makes.
+  const auto loaded = bs::artifacts::load_sealed_checkpoint(checkpoint);
+  CHECK(loaded.algorithm_revision_id == 1);
+
+  // The header-only inspection the preflights use agrees with the full load.
+  const auto inspected = bs::artifacts::inspect_sealed_checkpoint(checkpoint);
+  CHECK(inspected.algorithm_revision_id == 1);
+  CHECK(inspected.algorithm_revision == bs::artifacts::sealed_revision_string(1));
+
+  // The trainer independently rejects the numeric identity.
+  bs::solver::NSeatInitialState state;
+  state.rows = trained.raw_rows;
+  state.completed_iterations = trained.completed_iterations;
+  state.algorithm_revision = 1;
+  state.batch_size = 1;
+  bool refused = false;
+  try {
+    (void)bs::solver::train_nseat(fx.tree, fx.ranges, 1, fx.seed, fx.limits, &fx.frontier, &state);
+  } catch (const std::invalid_argument&) {
+    refused = true;
   }
-  // The trainer's direct raw-state entry point independently rejects bad
-  // numeric identity even when no artifact loader or producer is involved.
-  for (bool wrong_revision : {false, true}) {
-    bs::solver::NSeatInitialState state;
-    state.rows = trained.raw_rows;
-    state.completed_iterations = trained.completed_iterations;
-    state.algorithm_revision = wrong_revision ? 1 : 2;
-    state.batch_size = wrong_revision ? 1 : 8;
-    bool refused = false;
-    try {
-      (void)bs::solver::train_nseat(fx.tree, fx.ranges, 1, fx.seed, fx.limits, &fx.frontier,
-                                    &state);
-    } catch (const std::invalid_argument&) {
-      refused = true;
-    }
-    CHECK(refused);
+  CHECK(refused);
+
+  // The builder's resume path refuses and leaves the checkpoint untouched.
+  refused = false;
+  try {
+    (void)bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 4, 2,
+                                          bs::flop_library::declared_library_range(), 2, fx.action,
+                                          true);
+  } catch (const std::runtime_error& error) {
+    refused =
+        std::string(error.what()).find("incompatible checkpoint algorithm") != std::string::npos;
   }
+  CHECK(refused);
+  CHECK(fs::exists(checkpoint));
+  CHECK(bs::artifacts::sha256_file_hex(checkpoint) == checkpoint_sha);
+
+  // An unrepresentable state is refused by the writer instead of being
+  // silently truncated into an incompatible file.
+  bs::artifacts::SealedCheckpointState unrepresentable = seal(fx, trained);
+  unrepresentable.algorithm_revision_id = 99;  // no canonical string
+  bool writer_refused = false;
+  try {
+    bs::artifacts::save_sealed_checkpoint(source_dir / "never.bswarm", unrepresentable);
+  } catch (const bs::artifacts::SealedCheckpointError&) {
+    writer_refused = true;
+  }
+  CHECK(writer_refused);
   return true;
 }
 
+// A newer checkpoint atomically replaces an older one: the iteration count
+// advances and the file is completely rewritten (no stale trailing bytes).
 bool test_checkpoint_overwrite(const fs::path& dir) {
-  // save_training_checkpoint must atomically overwrite an existing file.
   Fixture fx;
-  const bs::solver::NSeatTrainingResult r1 =
+  const bs::solver::NSeatTrainingResult r64 =
       bs::solver::train_nseat(fx.tree, fx.ranges, 64, fx.seed, fx.limits, &fx.frontier);
-  const bs::solver::SeatTrainingResult exported1 =
-      bs::solver::export_seat_policy(r1, fx.tree, fx.ranges, fx.card_id);
-  const auto rows1 = bs::flop_library::export_seat_training_rows(r1, fx.tree);
-  const fs::path path = dir / "overwrite-checkpoint.db";
-  bs::artifacts::SeatCheckpointProvenance provenance;
-  provenance.engine_revision = "test-overwrite";
-  bs::artifacts::save_training_checkpoint(path, exported1, rows1, provenance);
+  const fs::path path = dir / "overwrite-checkpoint.bswarm";
+  bs::artifacts::save_sealed_checkpoint(path, seal(fx, r64));
   const std::string sha1 = bs::artifacts::sha256_file_hex(path);
 
-  // Train more and overwrite.
-  const bs::solver::NSeatTrainingResult r2 =
+  const bs::solver::NSeatTrainingResult r128 =
       bs::solver::train_nseat(fx.tree, fx.ranges, 128, fx.seed, fx.limits, &fx.frontier);
-  const bs::solver::SeatTrainingResult exported2 =
-      bs::solver::export_seat_policy(r2, fx.tree, fx.ranges, fx.card_id);
-  const auto rows2 = bs::flop_library::export_seat_training_rows(r2, fx.tree);
-  bs::artifacts::save_training_checkpoint(path, exported2, rows2, provenance);
+  bs::artifacts::save_sealed_checkpoint(path, seal(fx, r128));
   const std::string sha2 = bs::artifacts::sha256_file_hex(path);
   CHECK(sha1 != sha2);  // the overwrite changed the file
 
-  // The overwritten checkpoint loads with the new iteration count.
-  const bs::artifacts::CheckpointTrainingState ckpt = bs::artifacts::load_checkpoint(path);
+  const bs::artifacts::SealedCheckpointState ckpt = bs::artifacts::load_sealed_checkpoint(path);
   CHECK(ckpt.completed_iterations == 128);
+  CHECK(same_raw_rows(ckpt.rows, r128.raw_rows));
+  return true;
+}
+
+// A checkpoint at or past the target iteration count is stale-but-complete: a
+// crash after training but before the section was written. The builder drops
+// it and retrains, so the publish path has a fresh result to export. This is
+// the fourth AC2 case.
+bool test_stale_but_complete(const fs::path& dir) {
+  const auto source_dir = dir / "stale-complete";
+  fs::create_directories(source_dir);
+  Fixture fx;
+  const bs::solver::NSeatTrainingResult trained =
+      bs::solver::train_nseat(fx.tree, fx.ranges, 32, fx.seed, fx.limits, &fx.frontier);
+  bs::artifacts::SealedCheckpointState stale = seal(fx, trained);
+  stale.completed_iterations = 32;  // exactly the class target below
+  bs::artifacts::save_sealed_checkpoint(source_dir / "class-0000-checkpoint.bswarm", stale);
+
+  const auto manifest = bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 4, 2,
+                                                        bs::flop_library::declared_library_range(),
+                                                        2, fx.action, true);
+  CHECK(manifest.class_count == 1);
+  // The stale checkpoint is removed by the training path once the class is
+  // complete, and the section is written from the fresh result.
+  std::error_code ec;
+  CHECK(!fs::exists(source_dir / "class-0000-checkpoint.bswarm", ec));
   return true;
 }
 
@@ -298,6 +340,7 @@ int main() {
   ok = test_warm_start_matches_scratch(dir) && ok;
   ok = test_checkpoint_overwrite(dir) && ok;
   ok = test_incompatible_resume_preserves_files(dir) && ok;
+  ok = test_stale_but_complete(dir) && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {

@@ -20,6 +20,7 @@
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>         // poker::Chips
 #include <bs/heads_up_solver.hpp>  // WeightedHand
+#include <bs/mmap_library.hpp>     // ProbabilityLayout, LibraryIdentity
 #include <bs/nseat_trainer.hpp>
 #include <bs/seat_policy.hpp>  // InformationKey
 #include <bs/strategy_artifact.hpp>
@@ -32,14 +33,15 @@
 
 namespace bs::flop_library {
 
-// One trained class artifact in the library.
+// One trained class artifact in the library. RFC 0027: a class is stored as a
+// section inside the packed library, not as a standalone file, so records name
+// the class by board and carry its exact measurements instead of a filename.
 struct ClassEntry {
   std::array<int, 3> canonical_board{};
-  std::string artifact_name;  // filename within the library directory
-  std::string sha256_hex;
   std::size_t stored_rows = 0;  // concrete policy rows persisted
   std::uint64_t completed_iterations = 0;
-  std::size_t information_sets = 0;
+  std::size_t information_sets = 0;  // trainer's bucket-keyed table size
+  std::size_t section_bytes = 0;     // unpadded BSFLIB02 section length
 };
 
 // The honest record of one library build, written as manifest.json beside the
@@ -70,7 +72,19 @@ struct LibraryManifest {
   std::size_t total_classes = 0;     // 1,755
   std::size_t covered_flops = 0;     // of 22,100 concrete flops
   std::size_t total_flops = 0;       // 22,100
-  std::uintmax_t storage_bytes = 0;  // sum of published artifact sizes
+  std::uintmax_t storage_bytes = 0;  // size of the packed library file
+  // RFC 0027: the packed library file is the artifact.
+  std::string library_bin;         // "library.bin" relative to out_dir
+  std::string library_bin_sha256;  // lowercase hex, matches <bin>.sha256
+  std::uintmax_t library_bin_bytes = 0;
+  std::string codebook;  // "codebook16" | "doubles"
+  // Training-range identity. `range` names the declared profile, the count is
+  // its combo count, and the digest is FNV-1a 64-bit over the canonical sorted
+  // (combo_index, weight_bits) pairs so two ranges with the same name and
+  // count but different weights are distinguishable.
+  std::string range;
+  std::size_t range_combo_count = 0;
+  std::uint64_t range_digest = 0;
 };
 
 // Enumerate all 1,755 canonical flop classes, sorted by canonical board id
@@ -101,10 +115,12 @@ std::vector<solver::WeightedHand> declared_full_library_range();
 bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
                        const std::vector<solver::WeightedHand>& range);
 
-// Build a class library: train and publish a schema-v3 artifact for each of
-// the first `class_count` canonical classes (by board-id order). Writes
-// `class-NNNN.db` artifacts and `manifest.json` into `out_dir`. Throws on any
-// failure (no partial library is published).
+// Build a class library: train each of the first `class_count` canonical
+// classes (by board-id order) and serialize it straight into its BSFLIB02
+// section, then assemble `library.bin` + `manifest.json` into `out_dir`
+// (RFC 0027). No per-class SQLite policy artifact is written; the only
+// intermediate is the per-class warm-start checkpoint. Throws on any failure
+// (no partial library is published).
 //
 // `player_count` sets the number of seats (2..10). All seats use the same
 // range and stack profile. The manifest records the player count so the
@@ -121,17 +137,21 @@ bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
 // before continuing), and a checkpoint is written every 256 iterations so a
 // crashed build can resume. The per-iteration PRNG streams depend on the
 // absolute iteration number, so a warm-started run is bitwise-identical to a
-// from-scratch run at the same iteration count.
+// from-scratch run at the same iteration count. RFC 0027: class sections
+// already renamed under `.sections/` are skipped, and the requested build
+// identity is checked against `.sections/build.json` first.
 LibraryManifest build_library(
     const std::filesystem::path& out_dir, std::size_t class_count,
     std::uint64_t iterations_per_class, std::uint64_t seed, poker::Chips stack,
     poker::Chips contribution, const std::vector<solver::WeightedHand>& range,
     std::size_t player_count = 2,
     abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity(),
-    bool resume = false);
+    bool resume = false,
+    resident::ProbabilityLayout layout = resident::ProbabilityLayout::Codebook16,
+    const std::string& range_name = "declared");
 
-// RFC 0012 Phase 1: parameters for a library build, shared by the serial,
-// parallel-worker, and fragment-merge paths.
+// RFC 0012 Phase 1: parameters for a library build, shared by the serial and
+// parallel worker paths.
 struct BuildParams {
   std::size_t class_count = 0;
   std::uint64_t iterations_per_class = 0;
@@ -142,44 +162,40 @@ struct BuildParams {
   std::size_t player_count = 2;
   abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity();
   bool resume = false;
+  // RFC 0027: probability layout and the declared range profile name.
+  resident::ProbabilityLayout layout = resident::ProbabilityLayout::Codebook16;
+  std::string range_name = "declared";
 };
 
-// RFC 0012 Phase 1: parallel worker entry point. Trains the classes at indices
+// RFC 0027: FNV-1a 64-bit digest over the canonical range: entries in
+// ascending combo_index order, each little-endian u32 combo_index followed by
+// the little-endian IEEE-754 bits of the weight, with no separators.
+std::uint64_t range_digest(const std::vector<solver::WeightedHand>& range);
+
+// RFC 0027: establish `.sections/build.json` (the build identity) before any
+// worker starts. On a fresh build the parent writes it; on `--resume` it
+// validates the existing file and fails closed on any difference. The parent
+// owns this file; a direct-worker test path must call the same helper.
+// `build_library_worker` fails closed when it is absent.
+void prepare_build_identity(const std::filesystem::path& out_dir, const BuildParams& params,
+                            bool resume);
+
+// RFC 0027: parallel worker entry point. Trains the classes at indices
 // `worker_id`, `worker_id + parallel`, `worker_id + 2*parallel`, ... below
-// class_count, writing each class artifact directly to `out_dir` and a manifest
-// fragment to `out_dir / "manifest-part-<worker_id>.json"`. Called by a forked
-// child process; the parent detects failure via the exit status. Each worker's
-// SQLite files are independent (one class per file), so concurrent workers
-// never write the same file.
+// class_count, writing each completed class to
+// `.sections/class-NNNN.bsf` and one JSON line to
+// `.sections/manifest-part-<worker_id>.jsonl`. Sections the parent already has
+// under `.sections/` are skipped. Called by a forked child process; the parent
+// detects failure via the exit status. Concurrent workers write disjoint
+// files, so no locking is required.
 void build_library_worker(const std::filesystem::path& out_dir, std::size_t worker_id,
                           std::size_t parallel, const BuildParams& params);
 
-// RFC 0012 Phase 1: merge `manifest-part-*.json` fragments into the final
-// `manifest.json`. Collects every worker's ClassEntry records, sorts them by
-// class index, recomputes covered_flops and storage_bytes from the on-disk
-// artifacts (counted, not trusted from the fragments), and writes
-// `manifest.json`. Throws if a fragment or class artifact is missing.
-// Classes the workers skipped as already-published carry no digest: an
-// existing manifest.json (immutable published artifacts) supplies their
-// records in O(classes) parsing instead of re-hashing the whole library;
-// artifacts with no prior record are probed individually.
-LibraryManifest merge_fragments(const std::filesystem::path& out_dir, const BuildParams& params);
-
-// RFC 0012 Phase 4: expand a trainer result's raw (bucket, node) table into
-// concrete per-combo training rows (one (regret, average_weight) pair per
-// action ordinal), ready for save_training_checkpoint. Walks the same tree as
-// export_seat_policy; every concrete combo sharing a (bucket, node) carries
-// identical regrets.
-std::map<solver::InformationKey, artifacts::TrainingWeights> export_seat_training_rows(
-    const solver::NSeatTrainingResult& trained, const tree::AbstractTree& tree);
-
-// RFC 0012 Phase 4: map a loaded checkpoint's concrete training rows back to
-// the trainer's (bucket, node) table for warm-start. Walks the tree to resolve
-// each InformationKey to its (bucket, node); the first concrete combo for a
-// (bucket, node) fills the row (all combos share identical regrets). The
-// returned state's completed_iterations is the checkpoint's.
-solver::NSeatInitialState build_initial_state(const artifacts::CheckpointTrainingState& ckpt,
-                                              const tree::AbstractTree& tree);
+// RFC 0027: assemble the library after every worker exits. Derives the expected
+// dealable class set from `params`, requires a section for each, reconciles the
+// worker fragments, writes `library.bin` + `.sha256` + `manifest.json`, and
+// removes `.sections/`. Throws naming the missing or inconsistent class.
+LibraryManifest assemble_library(const std::filesystem::path& out_dir, const BuildParams& params);
 
 // Write the manifest as JSON to `out_dir / "manifest.json"`.
 void write_manifest(const LibraryManifest& manifest, const std::filesystem::path& out_dir);

@@ -21,8 +21,8 @@
 //                 a manifest fragment; the parent merges them after all workers
 //                 exit. Refused if N x the per-worker RSS estimate would exceed
 //                 75% of physical RAM.
-//   --resume      warm-start each class from its class-NNNN-checkpoint.db if
-//                 present (RFC 0012 Phase 4). A checkpoint is written every
+//   --resume      warm-start each class from its class-NNNN-checkpoint.bswarm
+//                 if present (RFC 0028). A checkpoint is written every
 //                 256 iterations so a crashed build can resume.
 //   --raise-cap N cap the number of full raises per street (RFC 0024). Zero
 //                 means no cap (the default). The cap is recorded in the
@@ -36,8 +36,10 @@
 #include <bs/abstraction.hpp>
 #include <bs/flop_library.hpp>
 #include <bs/heads_up.hpp>  // poker::Chips
+#include <bs/sealed_checkpoint.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <cerrno>
+#include <chrono>
 #include <climits>
 #include <csignal>
 #include <cstdint>
@@ -64,6 +66,7 @@ struct Args {
   bs::poker::Chips contribution = 2;
   bool coarse = false;
   bool full_range = false;  // 1,326 combos/seat instead of the 40-combo premium range
+  bool doubles = false;     // RFC 0027: exact-doubles probability layout
   std::size_t parallel = 1;
   bool resume = false;
   std::uint8_t raise_cap = 0;
@@ -86,7 +89,8 @@ struct Args {
                "  --parallel N  train with N forked workers      (default 1)\n"
                "  --resume      warm-start from per-class checkpoints\n"
                "  --raise-cap N cap raises per street, 0 = no cap (default 0)\n"
-               "  --range S     'premium' 40 combos/seat (default) or 'full' 1,326\n",
+               "  --range S     'premium' 40 combos/seat (default) or 'full' 1,326\n"
+               "  --codebook C  '16' (default) or 'doubles' probability layout\n",
                prog);
   std::exit(2);
 }
@@ -183,6 +187,9 @@ bs::flop_library::BuildParams make_params(const Args& args) {
                               : bs::abstraction::ActionAbstraction::identity();
   params.action.set_max_raises_per_street(args.raise_cap);
   params.resume = args.resume;
+  params.range_name = args.full_range ? "full" : "premium";
+  params.layout = args.doubles ? bs::resident::ProbabilityLayout::Doubles
+                               : bs::resident::ProbabilityLayout::Codebook16;
   return params;
 }
 
@@ -224,7 +231,7 @@ void check_memory_budget(std::size_t parallel) {
 }
 
 // Remove only incomplete artifacts (SQLite .tmp files and manifest fragments)
-// after a worker failure. Completed .db and checkpoint files are preserved so
+// after a worker failure. Completed sections and checkpoints are preserved so
 // the build can resume with --resume. This is critical for long parallel builds
 // where a single worker crash would otherwise destroy hours of progress.
 void cleanup_incomplete_artifacts(const std::filesystem::path& out_dir) {
@@ -236,34 +243,25 @@ void cleanup_incomplete_artifacts(const std::filesystem::path& out_dir) {
     // Remove SQLite temporary files (.bs-policy-*.tmp, *.tmp-journal).
     if (name.rfind(".bs-policy-", 0) == 0)
       std::filesystem::remove(entry.path(), ec);
-    // Remove manifest fragments (they are regenerated on resume).
-    if (name.rfind("manifest-part-", 0) == 0 && name.size() > 5 &&
-        name.substr(name.size() - 5) == ".json")
+    // RFC 0027: `.sections/` is durable progress and is kept; only its stale
+    // `.tmp` files are removed.
+    if (name.size() > 4 && name.substr(name.size() - 4) == ".tmp")
       std::filesystem::remove(entry.path(), ec);
   }
 }
 
-// Remove every published class artifact, checkpoint, and manifest fragment for
-// a failed build, mirroring the serial builder's catch-block cleanup.
+// Remove the mutable state of a build that could not start (fork failure):
+// every checkpoint plus the section staging directory. RFC 0027 keeps
+// `.sections/` only after training has begun, where it is durable progress;
+// a spawn failure has no progress to keep.
 void cleanup_failed_build(const std::filesystem::path& out_dir, std::size_t class_count) {
   std::error_code ec;
-  // Remove by expected name for the requested class range.
   for (std::size_t i = 0; i < class_count; ++i) {
     char stem[32];
     std::snprintf(stem, sizeof(stem), "class-%04zu", i);
-    std::filesystem::remove(out_dir / (std::string(stem) + ".db"), ec);
-    std::filesystem::remove(out_dir / (std::string(stem) + "-checkpoint.db"), ec);
+    std::filesystem::remove(out_dir / (std::string(stem) + "-checkpoint.bswarm"), ec);
   }
-  // Sweep any manifest fragments (worker ids may exceed class_count when
-  // parallel > class_count).
-  if (std::filesystem::is_directory(out_dir, ec)) {
-    for (const auto& entry : std::filesystem::directory_iterator(out_dir, ec)) {
-      const std::string name = entry.path().filename().string();
-      if (name.rfind("manifest-part-", 0) == 0 && name.size() > 5 &&
-          name.substr(name.size() - 5) == ".json")
-        std::filesystem::remove(entry.path(), ec);
-    }
-  }
+  std::filesystem::remove_all(out_dir / ".sections", ec);
 }
 
 int run_worker(const Args& args) {
@@ -276,23 +274,24 @@ int run_parallel(const Args& args) {
   check_memory_budget(args.parallel);
   const bs::flop_library::BuildParams params = make_params(args);
   // The parent must reject old raw state before spawning workers: the existing
-  // worker-failure cleanup removes checkpoint and policy files from this dir.
-  // A torn checkpoint from a SIGKILL/crash (bad SQLite header, failed
-  // validation) is discarded with its journal so the class retrains, matching
-  // the in-worker preflight; only a structurally valid but incompatible
-  // checkpoint is a hard refusal.
+  // worker-failure cleanup removes checkpoint files from this dir. A torn
+  // checkpoint (truncated write, failed digest) is discarded so the class
+  // retrains, matching the in-worker preflight; only a structurally valid but
+  // incompatible checkpoint is a hard refusal. RFC 0028: this reads the sealed
+  // header only, so it does not decode a payload for every class before
+  // forking.
   if (params.resume) {
     for (std::size_t index = 0; index < params.class_count; ++index) {
       char stem[64];
-      std::snprintf(stem, sizeof(stem), "class-%04zu-checkpoint.db", index);
+      std::snprintf(stem, sizeof(stem), "class-%04zu-checkpoint.bswarm", index);
       const auto path = args.out_dir / stem;
       if (!std::filesystem::exists(path))
         continue;
-      bs::artifacts::CheckpointTrainingState checkpoint;
+      bs::artifacts::SealedCheckpointState checkpoint;
       bool corrupt = false;
       try {
-        checkpoint = bs::artifacts::load_checkpoint(path);
-      } catch (const bs::artifacts::ArtifactError&) {
+        checkpoint = bs::artifacts::inspect_sealed_checkpoint(path);
+      } catch (const bs::artifacts::SealedCheckpointError&) {
         corrupt = true;
       } catch (const std::runtime_error&) {
         corrupt = true;
@@ -302,12 +301,10 @@ int run_parallel(const Args& args) {
         std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
                      path.string().c_str());
         std::filesystem::remove(path, ec);
-        std::filesystem::remove(path.string() + "-journal", ec);
-        std::filesystem::remove(path.string() + "-wal", ec);
-        std::filesystem::remove(path.string() + "-shm", ec);
         continue;
       }
-      if (checkpoint.algorithm_revision != bs::artifacts::kDefaultAlgorithmRevisionV2) {
+      if (checkpoint.algorithm_revision != bs::artifacts::kDefaultAlgorithmRevisionV2 ||
+          checkpoint.algorithm_revision_id != bs::solver::kNSeatAlgorithmRevision) {
         std::fprintf(stderr,
                      "incompatible checkpoint algorithm; refusing resume without modifying %s\n",
                      path.string().c_str());
@@ -315,10 +312,14 @@ int run_parallel(const Args& args) {
       }
     }
   }
+  // RFC 0027: the parent owns the build identity. Write it before spawning so
+  // every worker validates the same layout/identity and a resume can compare.
+  bs::flop_library::prepare_build_identity(args.out_dir, params, params.resume);
+
   const std::string exe = executable_path();
 
   // Spawn N workers via fork/exec. Each worker trains a strided class range
-  // and writes its own SQLite files and manifest fragment, so concurrent
+  // and appends to its own JSONL fragment, so concurrent
   // workers never touch the same file.
   std::vector<pid_t> pids;
   for (std::size_t w = 0; w < args.parallel; ++w) {
@@ -349,7 +350,9 @@ int run_parallel(const Args& args) {
               ct.c_str(), abstraction, "--raise-cap", cap.c_str(),
               args.full_range ? "--range" : (const char*)nullptr,
               args.full_range ? "full" : (const char*)nullptr,
-              args.resume ? "--resume" : nullptr, nullptr);
+              args.doubles ? "--codebook" : (const char*)nullptr,
+              args.doubles ? "doubles" : (const char*)nullptr, args.resume ? "--resume" : nullptr,
+              nullptr);
       // exec failed.
       std::perror("execl");
       ::_exit(127);
@@ -387,7 +390,7 @@ int run_parallel(const Args& args) {
   }
 
   if (any_failed) {
-    // Preserve completed .db and checkpoint files so the build can resume
+    // Preserve completed sections and checkpoint files so the build can resume
     // with --resume. Only remove incomplete artifacts (.tmp, fragments).
     cleanup_incomplete_artifacts(args.out_dir);
     std::fprintf(stderr,
@@ -396,9 +399,14 @@ int run_parallel(const Args& args) {
     return 1;
   }
 
-  // All workers succeeded: merge their fragments into the final manifest.
+  // All workers succeeded: assemble the sections into the final library.
+  const auto assemble_start = std::chrono::steady_clock::now();
   const bs::flop_library::LibraryManifest manifest =
-      bs::flop_library::merge_fragments(args.out_dir, params);
+      bs::flop_library::assemble_library(args.out_dir, params);
+  const auto assemble_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - assemble_start);
+  std::printf("assembly: %.3f s for %zu classes\n",
+              static_cast<double>(assemble_elapsed.count()) / 1000.0, manifest.class_count);
   const double coverage_pct = 100.0 * static_cast<double>(manifest.covered_flops) /
                               static_cast<double>(manifest.total_flops);
   std::printf(
@@ -421,9 +429,14 @@ int main(int argc, char** argv) {
 
   // Serial path.
   const bs::flop_library::BuildParams params = make_params(args);
+  const auto serial_start = std::chrono::steady_clock::now();
   const bs::flop_library::LibraryManifest manifest = bs::flop_library::build_library(
       args.out_dir, params.class_count, params.iterations_per_class, params.seed, params.stack,
-      params.contribution, params.range, params.player_count, params.action, params.resume);
+      params.contribution, params.range, params.player_count, params.action, params.resume,
+      params.layout, params.range_name);
+  const auto serial_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - serial_start);
+  std::printf("build: %.3f s total\n", static_cast<double>(serial_elapsed.count()) / 1000.0);
 
   const double coverage_pct = 100.0 * static_cast<double>(manifest.covered_flops) /
                               static_cast<double>(manifest.total_flops);
@@ -434,10 +447,10 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(manifest.storage_bytes), manifest.player_count,
       manifest.action_id.name.c_str());
   for (const auto& c : manifest.classes) {
-    std::printf("  class board {%d, %d, %d}: %s, %llu rows, %llu iterations\n",
+    std::printf("  class board {%d, %d, %d}: %llu rows, %llu iterations, %zu section bytes\n",
                 c.canonical_board[0], c.canonical_board[1], c.canonical_board[2],
-                c.artifact_name.c_str(), static_cast<unsigned long long>(c.stored_rows),
-                static_cast<unsigned long long>(c.completed_iterations));
+                static_cast<unsigned long long>(c.stored_rows),
+                static_cast<unsigned long long>(c.completed_iterations), c.section_bytes);
   }
   return 0;
 }

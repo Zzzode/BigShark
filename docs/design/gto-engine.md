@@ -968,17 +968,28 @@ time on this machine is 3 h 24 m (from artifact timestamps); extrapolated
 time is 19.0 s and the 2 GiB/worker memory budget caps practical parallelism
 at ~40 workers.
 
-**Warm-start training (RFC 0012 Phase 4).** The builder accepts `--resume`.
-When set, each class checks for a `class-NNNN-checkpoint.db` in the output
-directory. If found, the builder loads the regret and average-weight tables
-via `artifacts::load_checkpoint` (which verifies the abstraction and
-card-abstraction digests) and passes them to `train_nseat` as an optional
-`initial_state`. The trainer initializes its tables from the loaded state and
-resumes the iteration counter at `completed_iterations`, so per-iteration PRNG
-streams are bitwise-identical to a from-scratch run. During training, the
-builder writes a checkpoint every 256 iterations (a new periodic mechanism;
-the previous code checkpointed only after completion and then deleted it). The
-manifest records `completed_iterations` honestly.
+**Warm-start training (RFC 0012 Phase 4, sealed format RFC 0028).** The
+builder accepts `--resume`. When set, each class checks for a
+`class-NNNN-checkpoint.bswarm` in the output directory. If found, the builder
+loads the trainer's own `(card bucket, public node)` table via
+`artifacts::load_sealed_checkpoint` (which verifies the action and
+card-abstraction digests) and passes it to `train_nseat` as an
+`initial_state`. The checkpoint is a direct serialization of
+`NSeatTrainingResult::raw_rows`: 2,808 rows and 5,688 actions for a
+full-range six-way class, about 187 KB, where the retired schema-v3 SQLite
+checkpoint expanded the same content onto 1,100,736 concrete states and
+occupied 347.8 MB (RFC 0028 measures the 392x redundancy). The trainer
+initializes its tables from the loaded state and resumes the iteration counter
+at `completed_iterations`, so per-iteration PRNG streams are bitwise-identical
+to a from-scratch run. During training, the builder writes a checkpoint every
+256 iterations. The manifest records `completed_iterations` honestly.
+
+Both the parent and the worker preflight read the sealed header only
+(`inspect_sealed_checkpoint`): a structurally corrupt file is discarded so the
+class retrains, while a well-formed file with an incompatible algorithm
+revision is a hard refusal. An unknown revision is deliberately *not* treated
+as corruption, because discarding it would silently discard a checkpoint an
+operator needs to inspect.
 
 RFC 0016 additionally requires the exact revision-two, batch-one algorithm
 identity before raw-state mapping or training. Revision-one and unknown
@@ -1127,9 +1138,11 @@ checks or claiming that native construction/cancellation and complete six-max
 receipt-to-action costs are qualified.
 
 **Bucket-deduplicated binary format (RFC 0026, supersedes the RFC 0012
-Phase 2 layout).** The offline `bigshark-flop-library-pack` tool converts a
-directory of schema-v3 SQLite class files into a single mmap-friendly file
-(`library.bin`, magic `BSFLIB02`). N-seat training seals rows under
+Phase 2 layout; RFC 0027 makes it the training output).** The builder
+serializes each trained class straight into its `BSFLIB02` section and
+assembles `library.bin`; `bigshark-flop-library-pack` remains for converting
+older directories of schema-v3 SQLite class files. N-seat training seals rows
+under
 `(card_bucket(kNSeatCardKind, holding, board), tree node)`; the SQLite
 publish path copies each sealed row onto every concrete holding of that
 bucket. The packer reverses the copy and stores, per class, only:
@@ -1154,10 +1167,14 @@ per observed action and evaluates only the bucket per combo. Lookups are
 zero-allocation against the mmap region; `MmapLibrary` is immutable and
 thread-safe after `open`.
 
-Measured (2026-10-18): the six-way flop library packs from **334 GB of
-SQLite artifacts to 107.93 MB** across 1,745 classes (~3,100x), with size
-independent of the training-range width (rows scale with public nodes ×
-distinct sealed buckets, not concrete combos). The packer is single-pass
+Measured (2026-10-18/19): the premium six-way flop library packs from
+**334 GB of SQLite artifacts to 107.93 MB** across 1,745 classes (~3,100x);
+the full-range generation packs from **440 GiB to 179.71 MiB** across all
+1,755 classes (~2,450x), with size independent of the training-range width
+(rows scale with public nodes × distinct sealed buckets, not concrete
+combos). The full-range `.bin` was exhaustively verified lossless on
+2026-10-19: 1,755 classes, 1,938,640,886 stored rows, 12,383,280 holding/node
+checks, 0 mismatches. The packer is single-pass
 (Codebook16 by default; a class exceeding its 65,535 distinct-value cap
 triggers one exact-Doubles rewrite), streaming one artifact at a time so
 peak memory stays bounded by one class. It fails loudly if two concrete rows
@@ -1169,8 +1186,25 @@ probability equivalence plus exact miss semantics against the `.bin`;
 
 The earlier `BSFLIB01` layout (one resident row per concrete combo, with
 only probability *values* codebook-deduplicated) and its reader/writer were
-removed in the same change; existing `.bin` files are regenerated from the
-canonical SQLite artifacts.
+removed in RFC 0026.
+
+**Direct train-and-pack (RFC 0027).** A class is trained, exported, and
+serialized into its section in one step; the only intermediate is the
+per-class warm-start checkpoint. Workers write `.sections/class-NNNN.bsf`
+(`fsync` + atomic rename) and one JSONL fragment record, and the parent
+assembles the class sections into `library.bin` (`.tmp` + `fsync` + rename)
+and writes the manifest. The parent writes `.sections/build.json` before
+spawning workers and validates it on `--resume`: a section does not record
+the codebook layout kind, so a layout or identity change across a resume
+fails closed. The serializer canonicalizes the declared range to ascending
+`comboIndex` order, matching the order the SQLite reader always produced, so
+a direct build is byte-identical to the retired train → SQLite → pack
+pipeline. The manifest names `library_bin`, its digest and size, the range
+identity (name, count, and an FNV-1a digest over the canonical sorted
+`(combo_index, weight_bits)` pairs), and the codebook layout; per-class
+records carry `stored_rows`, `completed_iterations`,
+`information_sets` (the trainer's bucket-keyed table size), and
+`section_bytes`, but no filename or per-class digest.
 
 Full-file SHA-256 verification at open time is opt-in via
 `ResidentOptions::verify_binary_library` (engine-host flag `--verify-binary`).
@@ -1183,16 +1217,21 @@ Measured (2026-10-07): 2 BB library (421 MB `.bin`, 1,755 classes) loads in
 header parse) and independent of file size; the 25 BB library (27 GB on disk)
 is expected to load in under 1 second without verification.
 
-The pack tool uses a streaming single-pass writer
-(`pack_binary_library_streaming`) that loads one SQLite artifact at a time;
-peak memory is bounded by the largest single class (~200 MB for the six-way
-artifacts) rather than the whole library.
+Both front ends share one serializer (`serialize_class_section`) and one
+file-backed assembler (`assemble_binary_library`), so the layout exists once.
+`pack_binary_library_streaming` stages one class section at a time; peak
+memory is one class's section, not the library.
 
-The engine host's `--flop-library` flag accepts either a directory (SQLite,
-current behavior) or a `.bin` file (mmap). Auto-detection is by file
-extension. `ResidentPolicySet::build` gains a `binary_library_path` option;
-when set, it loads the `MmapLibrary` instead of iterating `SupportedRootSpec`s.
-The SQLite path remains the fallback and the canonical interchange format.
+The engine host's `--flop-library` flag accepts a directory whose manifest
+names `library_bin` (resolved to `<dir>/<library_bin>`), a directory of SQLite
+class artifacts, or an explicit `.bin`. A directory-resolved binary library is
+content-verified at startup against `manifest.library_bin_sha256` and the
+sidecar; an explicitly passed `.bin` keeps the sidecar-only default with
+`--verify-binary` as the opt-in full check. `ResidentPolicySet::build` returns
+early on `binary_library_path`, so a binary library may not be combined with
+another binary, a SQLite directory, or a `--resident-root`: the host and the
+Runner resolve exactly one source and fail closed otherwise. The SQLite paths
+remain for libraries that have not been repacked.
 
 **Lazy loading (RFC 0012 Phase 3).** The engine host accepts `--lazy` to
 enable on-demand class loading. In lazy mode, `ResidentPolicySet::build` reads

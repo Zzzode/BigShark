@@ -5,13 +5,16 @@
 // verifies every holding projects to its bucket row bitwise. Also covers a
 // history-action node, miss semantics (absent node vs absent bucket), the
 // packer's same-bucket identity rejection, and SHA-256 verification.
+#include <algorithm>
 #include <array>
 #include <bs/abstraction.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up_solver.hpp>
 #include <bs/mmap_library.hpp>
 #include <bs/nseat_trainer.hpp>
+#include <bs/range.hpp>
 #include <bs/seat_policy.hpp>
+#include <bs/strategy_artifact.hpp>
 #include <bs/unified_game.hpp>
 #include <cstdint>
 #include <cstdio>
@@ -378,6 +381,122 @@ bool test_sha256_verification(const fs::path& dir) {
   return g_failures == 0;
 }
 
+// RFC 0027: range canonicalization. The serializer sorts the declared range by
+// comboIndex, so a shuffled input must produce the same section bytes as the
+// canonical order, and a duplicate combo is rejected. This is the property
+// that makes a direct build match the SQLite packer for non-full ranges.
+bool test_range_canonicalization(const fs::path& dir) {
+  Fixture fx = make_fixture();
+  auto shuffled = make_range();
+  std::reverse(shuffled.begin(), shuffled.end());
+  auto sorted = make_range();
+  std::sort(sorted.begin(), sorted.end(),
+            [](const solver::WeightedHand& a, const solver::WeightedHand& b) {
+              return comboIndex(a.cards[0], a.cards[1]) < comboIndex(b.cards[0], b.cards[1]);
+            });
+
+  resident::PackClassInput a;
+  a.class_id = 0;
+  a.canonical_board = kBoard;
+  a.rows = &fx.root_rows;
+  a.range = &shuffled;
+  resident::PackClassInput b = a;
+  b.range = &sorted;
+
+  const std::vector<std::uint8_t> section_a =
+      resident::serialize_class_section(a, resident::ProbabilityLayout::Codebook16);
+  const std::vector<std::uint8_t> section_b =
+      resident::serialize_class_section(b, resident::ProbabilityLayout::Codebook16);
+  CHECK(section_a == section_b);
+
+  // A duplicate combo cannot be represented and must be rejected.
+  auto dup = sorted;
+  dup.push_back(sorted.front());
+  resident::PackClassInput c = a;
+  c.range = &dup;
+  bool threw = false;
+  try {
+    (void)resident::serialize_class_section(c, resident::ProbabilityLayout::Codebook16);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+  return true;
+}
+
+// RFC 0027: the in-memory assembler and the file-backed assembler produce the
+// same bytes from the same sections, and the section is exactly its class.
+bool test_assemble_matches_pack(const fs::path& dir) {
+  Fixture fx = make_fixture();
+  auto range = make_range();
+  solver::UnifiedGame game = make_game();
+  std::vector<resident::PackClassInput> inputs;
+  for (std::uint32_t id = 0; id < 2; ++id) {
+    resident::PackClassInput input;
+    input.class_id = id;
+    input.canonical_board = kBoard;
+    input.rows = id == 0 ? &fx.root_rows : &fx.history_rows;
+    input.range = &range;
+    inputs.push_back(input);
+  }
+
+  const fs::path packed = dir / "assemble_packed.bin";
+  resident::pack_binary_library(packed, game, inputs);
+
+  std::vector<resident::ClassSectionInput> sections;
+  std::vector<std::vector<std::uint8_t>> storage;
+  storage.reserve(inputs.size());
+  for (const auto& input : inputs)
+    storage.push_back(
+        resident::serialize_class_section(input, resident::ProbabilityLayout::Codebook16));
+  for (std::size_t i = 0; i < inputs.size(); ++i) {
+    resident::ClassSectionInput section;
+    section.class_id = inputs[i].class_id;
+    section.bytes = storage[i];
+    sections.push_back(section);
+  }
+  const fs::path assembled = dir / "assemble_direct.bin";
+  resident::LibraryIdentity identity;
+  resident::assemble_binary_library(assembled, game, identity,
+                                    resident::ProbabilityLayout::Codebook16, sections);
+  CHECK(artifacts::sha256_file_hex(packed) == artifacts::sha256_file_hex(assembled));
+  return true;
+}
+
+// RFC 0027: a section whose byte length does not match the layout's counters is
+// rejected before any output byte is written.
+bool test_assembly_rejects_layout_mismatch(const fs::path& dir) {
+  Fixture fx = make_fixture();
+  auto range = make_range();
+  solver::UnifiedGame game = make_game();
+  resident::PackClassInput input;
+  input.class_id = 0;
+  input.canonical_board = kBoard;
+  input.rows = &fx.root_rows;
+  input.range = &range;
+  const std::vector<std::uint8_t> codebook16 =
+      resident::serialize_class_section(input, resident::ProbabilityLayout::Codebook16);
+
+  std::vector<resident::ClassSectionInput> sections;
+  resident::ClassSectionInput section;
+  section.class_id = 0;
+  section.bytes = codebook16;
+  sections.push_back(section);
+  const fs::path out = dir / "layout_mismatch.bin";
+  resident::LibraryIdentity identity;
+  bool threw = false;
+  try {
+    resident::assemble_binary_library(out, game, identity, resident::ProbabilityLayout::Doubles,
+                                      sections);
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  CHECK(threw);
+  CHECK(!fs::exists(out));
+  CHECK(!fs::exists(out.string() + ".tmp"));
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -389,6 +508,9 @@ int main() {
   ok = test_pack_and_mmap(dir) && ok;
   ok = test_pack_rejects_same_bucket_conflict(dir) && ok;
   ok = test_sha256_verification(dir) && ok;
+  ok = test_range_canonicalization(dir) && ok;
+  ok = test_assemble_matches_pack(dir) && ok;
+  ok = test_assembly_rejects_layout_mismatch(dir) && ok;
 
   fs::remove_all(dir);
   if (!ok || g_failures > 0) {

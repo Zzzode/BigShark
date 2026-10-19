@@ -149,7 +149,11 @@ The live engine is a hybrid poker decision engine:
   operational fallback.
 - Flop and turn: deterministic Monte Carlo equity plus heuristics;
   resident blueprint libraries serve flop-rooted decisions at the
-  `approximate` guarantee level when a configured root matches.
+  `approximate` guarantee level when a configured root matches. Flop
+  libraries may be a packed `BSFLIB02` file written directly by training
+  (RFC 0027) or a directory of schema-v3 SQLite class artifacts; the packed
+  form is the canonical artifact and a launch may use only one binary
+  library.
 - River: exact sequence-form LP when available and within budget, otherwise
   bounded DCFR; resident blueprints serve river-rooted decisions at the
   `certified_bound` guarantee level.

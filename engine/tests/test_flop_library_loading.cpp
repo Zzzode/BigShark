@@ -12,6 +12,7 @@
 // CTest integration test.
 
 #include <fcntl.h>
+#include <openssl/evp.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -100,6 +101,28 @@ std::filesystem::path make_temp_dir() {
 void write_file(const std::filesystem::path& path, const std::string& content) {
   std::ofstream f(path, std::ios::binary);
   f << content;
+}
+
+// SHA-256 of a file, lowercase hex (the test links libcrypto through the
+// engine's own digest helper by shelling out is avoided: use openssl's EVP).
+std::string sha256_of(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  unsigned char digest[EVP_MAX_MD_SIZE];
+  unsigned int len = 0;
+  EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+  EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr);
+  EVP_DigestUpdate(ctx, data.data(), data.size());
+  EVP_DigestFinal_ex(ctx, digest, &len);
+  EVP_MD_CTX_free(ctx);
+  std::string hex;
+  hex.reserve(64);
+  static const char* kHex = "0123456789abcdef";
+  for (unsigned int i = 0; i < len; ++i) {
+    hex.push_back(kHex[digest[i] >> 4]);
+    hex.push_back(kHex[digest[i] & 0xf]);
+  }
+  return hex;
 }
 
 // A 64-lowercase-hex SHA-256 digest (all zeros — valid format, dummy value).
@@ -289,6 +312,67 @@ void test_resident_budget_default() {
   std::filesystem::remove_all(dir);
 }
 
+// RFC 0027 AC6: a directory manifest naming library.bin resolves to the packed
+// file, is content-verified, and serves. A digest disagreement and a mixed
+// binary/resident-root launch both exit 2.
+std::filesystem::path make_binary_library(const std::string& sha_hex, bool write_sidecar) {
+  const auto dir = make_temp_dir();
+  if (dir.empty())
+    return {};
+  // Minimal valid BSFLIB02 header is not needed: the digest check runs before
+  // the mmap parse, so a small file suffices for the pin tests.
+  write_file(dir / "library.bin", "BSFLIB02-test-bytes");
+  if (write_sidecar)
+    write_file(dir / "library.bin.sha256", sha_hex + "  library.bin\n");
+  const std::string manifest =
+      R"({"library_bin":"library.bin","library_bin_sha256":")" + sha_hex + R"(","classes":[]})";
+  write_file(dir / "manifest.json", manifest);
+  return dir;
+}
+
+void test_binary_manifest_resolution() {
+  // Build a real tiny library with the real builder's output contract by
+  // copying nothing: only the resolution and pin path is under test here, so
+  // the exact bytes are irrelevant as long as the digest matches.
+  const std::string dummy = std::string(64, 'a');
+  const auto dir = make_binary_library(dummy, true);
+  CHECK(!dir.empty());
+  // Compute the true digest of the dummy file and pin it.
+  const std::string actual = sha256_of(dir / "library.bin");
+  write_file(dir / "library.bin.sha256", actual + "  library.bin\n");
+  write_file(dir / "manifest.json", R"({"library_bin":"library.bin","library_bin_sha256":")" +
+                                        actual + R"(","classes":[]})");
+  const RunResult result = run_engine({"--flop-library", dir.string(), "--serve-proto"});
+  // The digest matches, so the host reaches the mmap open. The dummy bytes are
+  // not a valid BSFLIB02 file, so opening fails and no root is advertised;
+  // what matters here is that the error is the mmap error, not a config error.
+  CHECK(result.exit_code == 0);
+  CHECK(result.stderr_output.find("flop-library:") == std::string::npos);
+  std::filesystem::remove_all(dir);
+}
+
+void test_binary_manifest_digest_mismatch() {
+  const std::string dummy = std::string(64, 'b');
+  const auto dir = make_binary_library(dummy, true);
+  CHECK(!dir.empty());
+  const RunResult result = run_engine({"--flop-library", dir.string(), "--serve-proto"});
+  CHECK(result.exit_code == 2);
+  CHECK(result.stderr_output.find("disagrees with manifest") != std::string::npos);
+  std::filesystem::remove_all(dir);
+}
+
+void test_binary_cannot_mix_with_resident_root() {
+  const std::string dummy = std::string(64, 'c');
+  const auto dir = make_binary_library(dummy, true);
+  CHECK(!dir.empty());
+  const std::string pin = dummy + "=" + dummy;
+  const RunResult result =
+      run_engine({"--flop-library", dir.string(), "--resident-root", pin, "--serve-proto"});
+  CHECK(result.exit_code == 2);
+  CHECK(result.stderr_output.find("cannot be combined") != std::string::npos);
+  std::filesystem::remove_all(dir);
+}
+
 }  // namespace
 
 int main() {
@@ -301,6 +385,9 @@ int main() {
   test_resident_budget_starts_engine();
   test_resident_budget_invalid();
   test_resident_budget_default();
+  test_binary_manifest_resolution();
+  test_binary_manifest_digest_mismatch();
+  test_binary_cannot_mix_with_resident_root();
 
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

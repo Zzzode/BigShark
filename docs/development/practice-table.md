@@ -39,7 +39,7 @@ The interactive CLI is `bigshark-practice` (built from
 # With a resident blueprint and flop library.
 ./build/release/engine/bigshark-practice --seats 6 --difficulty engine \
   --resident-root artifacts/blueprint=abc123... \
-  --flop-library artifacts/flop-library-6way
+  --flop-library artifacts/flop-library-6way-fullrange
 ```
 
 At your turn pick an action from the numbered menu (or type `f`/`x`/`c`,

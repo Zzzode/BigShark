@@ -8,11 +8,16 @@
 //   4. The LRU cache evicts entries when the capacity is exceeded.
 #include <array>
 #include <bs/abstraction.hpp>
+#include <bs/equity_frontier.hpp>
 #include <bs/flop_library.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/mmap_library.hpp>
+#include <bs/nseat_trainer.hpp>
 #include <bs/resident_policy.hpp>
+#include <bs/seat_policy.hpp>
+#include <bs/strategy_artifact.hpp>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -88,35 +93,88 @@ std::array<int, 2> find_hero_combo(const std::array<int, 3>& board) {
   return {0, 1};  // fallback (will likely miss)
 }
 
+// RFC 0027: the direct builder no longer writes per-class SQLite policies, but
+// the lazy SQLite cache still reads them. This fixture reproduces the retired
+// publish step for a small class set so the lazy path keeps its own test until
+// RFC 0027's removal condition retires it.
+std::vector<std::string> write_sqlite_class_artifacts(const fs::path& dir,
+                                                      const flop_library::LibraryManifest& manifest,
+                                                      std::uint64_t iterations) {
+  const auto range = flop_library::declared_library_range();
+  std::vector<std::string> artifact_names;
+  const auto classes = flop_library::enumerate_classes();
+  const auto card_id = abstraction::suit_canonicalization_id();
+  for (std::size_t i = 0; i < manifest.class_count; ++i) {
+    const auto& board = manifest.classes[i].canonical_board;
+    poker::GameDef def{};
+    def.player_count = manifest.player_count;
+    def.button = 0;
+    def.big_blind = manifest.big_blind;
+    for (std::size_t s = 0; s < manifest.player_count; ++s) {
+      def.stacks[s] = manifest.stack;
+      def.contributions[s] = manifest.contribution;
+    }
+    def.pot = static_cast<poker::Chips>(manifest.player_count * manifest.contribution);
+    def.board = {board[0], board[1], board[2], 0, 0};
+    def.board_size = 3;
+    def.terminal = poker::TerminalDepth::Flop;
+
+    std::vector<solver::WeightedHand> seat_range;
+    for (const auto& hand : range) {
+      bool blocked = false;
+      for (int b : board)
+        if (hand.cards[0] == b || hand.cards[1] == b)
+          blocked = true;
+      if (!blocked)
+        seat_range.push_back(hand);
+    }
+    std::vector<std::vector<solver::WeightedHand>> ranges(manifest.player_count, seat_range);
+    const tree::AbstractTree tree(def, abstraction::ActionAbstraction::identity());
+    solver::NSeatTrainerLimits limits;
+    limits.wall = std::chrono::minutes(5);
+    const gto::EquityFrontierEvaluator frontier;
+    const auto trained = solver::train_nseat(tree, ranges, iterations, 42, limits, &frontier);
+    const auto exported = solver::export_seat_policy(trained, tree, ranges, card_id);
+
+    artifacts::SeatCheckpointProvenance provenance;
+    provenance.engine_revision = "test-lazy-fixture";
+    const fs::path checkpoint = dir / ("immutable-source-" + std::to_string(i) + ".db");
+    artifacts::create_checkpoint(checkpoint, exported, provenance);
+    const std::string name = "class-" + std::to_string(i) + ".db";
+    (void)artifacts::publish_policy(checkpoint, dir / name);
+    std::error_code ec;
+    fs::remove(checkpoint, ec);
+    artifact_names.push_back(name);
+  }
+  return artifact_names;
+}
 bool test_lazy_loading(const fs::path& dir) {
-  // Build a small 2-class library.
+  // RFC 0027: the direct builder writes no per-class SQLite policy, so this
+  // lazy-loading test builds its roots from the packed library's own classes
+  // (the lazy cache reads SQLite artifacts, which is why this test still
+  // produces them explicitly through the artifact writer below).
   const auto range = flop_library::declared_library_range();
   const flop_library::LibraryManifest manifest =
       flop_library::build_library(dir, 2, 100, 42, 4, 2, range);
   CHECK(manifest.class_count == 2);
 
-  // Build specs from the manifest.
+  const std::vector<std::string> artifact_names = write_sqlite_class_artifacts(dir, manifest, 100);
   std::vector<resident::SupportedRootSpec> specs;
-  for (const auto& entry : manifest.classes) {
+  for (std::size_t i = 0; i < manifest.classes.size(); ++i) {
     resident::SupportedRootSpec spec;
-    spec.path = dir / entry.artifact_name;
-    // Parse sha256_hex into a digest.
+    spec.path = dir / artifact_names[i];
     artifacts::Sha256Digest digest{};
-    const std::string& hex = entry.sha256_hex;
-    if (hex.size() == 64) {
-      for (std::size_t i = 0; i < 32; ++i) {
-        auto nib = [](char c) -> int {
-          if (c >= '0' && c <= '9')
-            return c - '0';
-          if (c >= 'a' && c <= 'f')
-            return c - 'a' + 10;
-          return 0;
-        };
-        digest[i] = static_cast<std::uint8_t>((nib(hex[2 * i]) << 4) | nib(hex[2 * i + 1]));
-      }
+    const std::string hex = artifacts::sha256_file_hex(spec.path);
+    for (std::size_t b = 0; b < 32; ++b) {
+      auto nib = [](char c) -> int {
+        if (c >= '0' && c <= '9')
+          return c - '0';
+        return c - 'a' + 10;
+      };
+      digest[b] = static_cast<std::uint8_t>((nib(hex[2 * b]) << 4) | nib(hex[2 * b + 1]));
     }
     spec.expected_sha256 = digest;
-    spec.canonical_board = entry.canonical_board;
+    spec.canonical_board = manifest.classes[i].canonical_board;
     specs.push_back(std::move(spec));
   }
 
@@ -235,30 +293,9 @@ bool test_lazy_mmap_bypass(const fs::path& dir) {
       flop_library::build_library(dir / "lib", 2, 50, 99, 4, 2, range);
   CHECK(manifest.class_count == 2);
 
-  // Pack the library.
-  const fs::path bin_path = dir / "test_bypass.bin";
-  // Load artifacts and pack.
-  std::vector<artifacts::LoadedArtifact> loaded;
-  for (const auto& entry : manifest.classes) {
-    loaded.push_back(artifacts::load_artifact(dir / "lib" / entry.artifact_name));
-  }
-  const auto& first_policy = loaded.front().bundle.nseat->policy;
-  solver::UnifiedGame game;
-  game.def = first_policy.game();
-  game.sizes = first_policy.sizes();
-
-  std::vector<resident::PackClassInput> inputs;
-  for (std::size_t i = 0; i < loaded.size(); ++i) {
-    const auto& policy = loaded[i].bundle.nseat->policy;
-    resident::PackClassInput input;
-    input.class_id = static_cast<std::uint32_t>(i);
-    input.canonical_board = manifest.classes[i].canonical_board;
-    input.rows = &policy.rows();
-    if (!policy.ranges().empty())
-      input.range = &policy.ranges()[0];
-    inputs.push_back(input);
-  }
-  resident::pack_binary_library(bin_path, game, inputs);
+  // RFC 0027: the builder already wrote the packed library.
+  const fs::path bin_path = dir / "lib" / manifest.library_bin;
+  CHECK(fs::exists(bin_path));
 
   // Build with both binary_library_path and lazy_cache_capacity set.
   resident::ResidentOptions options;

@@ -160,6 +160,7 @@ message(STATUS "zstd for tree/policy compression: ${ZSTD_LIBRARY}")
 # public surface exchanges only solver domain records.
 add_library(bigshark_artifacts STATIC
   src/artifacts/artifact_codec.cpp
+  src/artifacts/sealed_checkpoint.cpp
   src/artifacts/strategy_artifact.cpp
   src/artifacts/artifact_digest.cpp
 )
@@ -224,6 +225,7 @@ target_include_directories(bigshark_flop_library
 )
 target_link_libraries(bigshark_flop_library
   PUBLIC bigshark_artifacts
+  PUBLIC bigshark_resident
 )
 
 
@@ -1097,6 +1099,14 @@ if(BUILD_TESTING)
   )
   add_test(NAME artifacts COMMAND test_artifacts)
 
+  # RFC 0028: sealed warm-start checkpoint codec. The round trip is the only
+  # check that can see `visits`, since no published artifact carries it.
+  add_executable(test_sealed_checkpoint tests/test_sealed_checkpoint.cpp)
+  target_link_libraries(test_sealed_checkpoint PRIVATE
+    bigshark_artifacts
+  )
+  add_test(NAME sealed_checkpoint COMMAND test_sealed_checkpoint)
+
   # RFC 0005 Stage 6 resident lookup. The gto debug passkey header is used
   # ONLY to synthesize complete policy fixtures, as in test_artifacts.
   add_executable(test_resident_policy tests/test_resident_policy.cpp)
@@ -1224,6 +1234,8 @@ if(BUILD_TESTING)
   add_executable(test_flop_library_loading tests/test_flop_library_loading.cpp)
   target_compile_definitions(test_flop_library_loading PRIVATE
     ENGINE_PATH="$<TARGET_FILE:bigshark-engine>")
+  # RFC 0027: the pin tests hash a stub library with libcrypto.
+  target_link_libraries(test_flop_library_loading PRIVATE ${BS_OPENSSL_CRYPTO_TARGET})
   add_dependencies(test_flop_library_loading bigshark-engine)
   add_test(NAME flop_library_loading COMMAND test_flop_library_loading)
 
