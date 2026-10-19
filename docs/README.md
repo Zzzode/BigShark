@@ -44,7 +44,7 @@ integration, and development documentation.
 | RFC | [RFC 0025: Off-tree decision handling](rfcs/0025-off-tree-decision-handling.md) | Implemented | Flop-rooted depth-limited resolving and off-tree action-line tolerance |
 | RFC | [RFC 0026: Bucket-deduplicated flop library resident format](rfcs/0026-bucket-deduplicated-flop-library-format.md) | Implemented | Bucket-keyed BSFLIB02 packed layout: six-way library 334 GB to 108 MB, 1.37B rows verified lossless |
 | RFC | [RFC 0027: Direct train-and-pack flop library production](rfcs/0027-train-and-pack-direct.md) | Implemented | Serialize each trained class straight into its BSFLIB02 section; removes the 440 GiB SQLite intermediate and the pack read pass |
-| RFC | [RFC 0028: Sealed warm-start checkpoints](rfcs/0028-sealed-warm-start-checkpoints.md) | Accepted | Store checkpoints under the trainer's (bucket, node) key: 392x less checkpoint data, no SQLite on the training path |
+| RFC | [RFC 0028: Sealed warm-start checkpoints](rfcs/0028-sealed-warm-start-checkpoints.md) | Implemented | Store checkpoints under the trainer's (bucket, node) key: 392x less checkpoint data, no SQLite on the training path |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [RFC 0009 implementation](plans/0009-implementation.md) | Current | Unified engine delivery stages W1-W5, status, and evidence |

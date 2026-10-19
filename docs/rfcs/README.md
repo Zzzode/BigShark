@@ -41,7 +41,7 @@ their own RFC.
 | [0025](0025-off-tree-decision-handling.md) | Off-Tree Decision Handling | Implemented | Engine resolver, engine solver, engine protocol |
 | [0026](0026-bucket-deduplicated-flop-library-format.md) | Bucket-Deduplicated Flop Library Resident Format | Implemented | Engine resident, artifact boundary, engine benchmarks |
 | [0027](0027-train-and-pack-direct.md) | Direct Train-and-Pack Flop Library Production | Implemented | Engine flop library, engine resident, artifact boundary, engine-host, engine benchmarks |
-| [0028](0028-sealed-warm-start-checkpoints.md) | Sealed Warm-Start Checkpoints | Accepted | Artifact boundary, engine flop library, engine solver, engine benchmarks |
+| [0028](0028-sealed-warm-start-checkpoints.md) | Sealed Warm-Start Checkpoints | Implemented | Artifact boundary, engine flop library, engine solver, engine benchmarks |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.
