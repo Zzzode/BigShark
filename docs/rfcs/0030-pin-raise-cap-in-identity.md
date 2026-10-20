@@ -145,17 +145,19 @@ checkpoint's rows. This is the case a tree-shape witness must catch.
 public constructors take it:
 
 ```cpp
+// The cap is std::uint8_t throughout, matching the existing setter and member
+// (engine/include/bs/abstraction.hpp:238-239); the RFC does not widen it.
 // Minters: the cap joins the hashed parameters.
-AbstractionId make_id(const SizeSchedule& schedule, std::uint32_t max_raises);
+AbstractionId make_id(const SizeSchedule& schedule, std::uint8_t max_raises);
 AbstractionId make_declared_id(const SizeSchedule& schedule,
                                abstraction::CoverSeeds seeds,
-                               std::uint32_t max_raises);
+                               std::uint8_t max_raises);
 
 // Consumed surface (engine/include/bs/abstraction.hpp:220-231).
-explicit ActionAbstraction(SizeSchedule schedule, std::uint32_t max_raises);
-static ActionAbstraction identity(std::uint32_t max_raises);
+explicit ActionAbstraction(SizeSchedule schedule, std::uint8_t max_raises);
+static ActionAbstraction identity(std::uint8_t max_raises);
 static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds,
-                                  std::uint32_t max_raises);
+                                  std::uint8_t max_raises);
 ```
 
 The parameter line gains a canonical token appended **after** the existing
@@ -182,7 +184,7 @@ the constructor — five code sites, named in Motivation. Because `max_raises`
 keeps a `0` default (see Risk 2), `identity_action_id()` — which is
 `ActionAbstraction::identity().id()` (`engine/src/abstraction/abstraction.cpp:156-158`)
 and is used as a default member initializer at `engine/include/bs/solve.hpp:193`,
-compared against `tree.action_id()` at `engine/src/solver/solve.cpp:26,82` —
+compared against `tree.action_id()` at `engine/src/gto/solve.cpp:26,82` —
 continues to mean the cap-0 identity. A tree built with a nonzero cap therefore
 has a different `action_id()` than `identity_action_id()`, which is correct: they
 are different abstractions. That is the point: a

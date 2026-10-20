@@ -246,18 +246,20 @@ resident root reaches `resolve_uniform`, and any engine error that is not a
 
 The contract:
 
-1. **The host** returns a distinct error code (`UNSUPPORTED_BOARD_SIZE`) whose
-   message carries the board size, from the same dispatch site that currently
-   maps `SubgameResolveStatus::Ineligible` to `ResolveOutcome::Unsupported`
-   (`apps/engine-host/main.cpp:361-363`).
+1. **The host** returns the **existing** `ERROR_CODE_UNSUPPORTED_GAME`
+   (`proto/bigshark/engine/v2/engine.proto:127`) whose message carries the
+   board size, from the same dispatch site that currently maps
+   `SubgameResolveStatus::Ineligible` to `ResolveOutcome::Unsupported`
+   (`apps/engine-host/main.cpp:361-363`). No new error code and no protocol
+   change: the enum already means "this game shape is not served".
 2. **The wire** carries it: `EngineError` already has a `message` field
-   (`proto/.../engine.proto:655-665`), but `mapMissToError` returns a code and
+   (`proto/bigshark/engine/v2/engine.proto:655-665`), but `mapMissToError` returns a code and
    the response uses the canned `messageFor(code)`
    (`envelope.cpp:191-208,334-336`). The host sends the board size in the
    message.
 3. **The adapter** stops discarding `EngineError.message`
-   (`platforms/river-club/src/v2-mapper.ts:1081-1085`) and surfaces it.
-4. **`decide()`** treats `UNSUPPORTED_BOARD_SIZE` like
+   (`platforms/river-club/src/mapper.ts:1081-1085`) and surfaces it.
+4. **`decide()`** treats `ERROR_CODE_UNSUPPORTED_GAME` like
    `GUARANTEE_BELOW_REQUEST`: it propagates rather than becoming
    `safeFallback`. The caller still receives a **legal action** — the tooling
    path must act, it cannot stall — but that action is labelled
@@ -334,7 +336,7 @@ propagation and labelling) cover this.
 - **Reach.** The blocking loop excludes every board card, verified by a fixture
   where `board[3]` is otherwise dealable.
 - **Refusal.** A four-card root that cannot be served produces
-  `UNSUPPORTED_BOARD_SIZE` carrying the board size, propagates past
+  `ERROR_CODE_UNSUPPORTED_GAME` carrying the board size, propagates past
   `safeFallback` swallowing in `decide()`, and is labelled and counted; a
   native test covers the host dispatch and a Node test covers the propagation and
   the label.
@@ -359,7 +361,7 @@ propagation and labelling) cover this.
    refusal count, and latency per seat count into `docs/plans/rfc0032-replay.md`.
    Gate: the result file exists with its evidence (redacted subset or corpus
    SHA-256 plus extraction command).
-4. **Named refusal.** Implement the `UNSUPPORTED_BOARD_SIZE` contract end to end
+4. **Named refusal.** Implement the `ERROR_CODE_UNSUPPORTED_GAME` contract end to end
    and route it past `safeFallback`. Gate: native and Node tests pass and the
    refusal is counted in the replay output.
 
