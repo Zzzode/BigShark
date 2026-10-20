@@ -82,8 +82,8 @@ four RFCs old. This RFC closes it.
   for the untrainable third, so the comparison isolates the abstraction and not
   the budget.
 - **G3**: A decision rule declared *before* the measurement, as explicit
-  inequalities over intervals: what gap would justify a finer scheme, and what
-  would justify keeping tiers.
+  inequalities over intervals with a stated orientation: what `expl` difference
+  would justify a finer scheme, and what would justify keeping tiers.
 - **G4**: The bucket scheme pinned in `build.json`, the sealed checkpoint
   resume check, and the manifest, so a build cannot silently mix schemes.
 - **G5**: The baseline statistics reproduced by a committed tool from a pinned
@@ -230,9 +230,10 @@ Three granularities:
 
 Fixed at two iteration counts per cell, so the ranking is not a budget artifact.
 
-**A qualifier the headline needs.** At the trained nodes, 2.04 of the 4.47 rows
-are still uniform fallback, and 36.1% of trained nodes have exactly one learned
-row. The differentiation claim is directionally supported — learned rows per
+**A qualifier the headline needs.** At the 696,500 trained nodes there are
+3,111,455 rows, of which 1,368,180 are learned, i.e. **1.96 learned and 2.50
+uniform rows per trained node** (4.4673 total), and 36.1% of trained nodes have
+exactly one learned row. The differentiation claim is directionally supported — learned rows per
 learned vector is about 1.00, i.e. distinct learned rows do not collapse onto
 each other — but the aggregate 2.93 "distinct vectors per trained node" counts
 the fallback as a vector. The RFC states both numbers rather than the flattering
@@ -240,33 +241,45 @@ one.
 
 ### Adoption criteria declared in advance
 
-Let `expl(s)` be the measured quantity above for scheme `s`, with 95% interval
-`[lo(s), hi(s)]`, and let `bytes(s)` be the total `.bin` size of a library built
-entirely under `s` on a stated class set. The rule is an **absolute difference**
-with a minimum effect size, so it has a defined outcome for every sign of
-`expl(tiers)` — a precondition such as `expl(tiers) > 0` would leave the
-adoption test unevaluated exactly when a finer scheme might still help:
+`expl` is **lower-is-better**: it is how much a best response wins against the
+policy. Let `[lo(s), hi(s)]` be its 95% interval for scheme `s`, and let
+`bytes(s)` be the total `.bin` size of a library built entirely under `s` on a
+stated class set.
 
 ```text
-improvement = expl(tiers) - expl(TiersDrawV1)
-minimum     = max(0.01 BB/hand, 0.5 * |expl(tiers)|)
+improvement = expl(tiers) - expl(TiersDrawV1)      # positive == intermediate better
+minimum     = max(0.01 BB/hand, (1/3) * |expl(tiers)|)
 ```
 
-- **Adopt `TiersDrawV1`** if `hi(tiers) < lo(TiersDrawV1)` **and**
-  `improvement >= minimum` **and** `bytes(TiersDrawV1) <= 2 * bytes(tiers)`.
-- **Keep tiers** if `lo(tiers) >= hi(TiersDrawV1)` (tiers is better), or if
+- **Adopt `TiersDrawV1`** if `hi(TiersDrawV1) < lo(tiers)` — the intermediate's
+  whole interval lies strictly below tiers', so it is genuinely less exploitable
+  — **and** `improvement >= minimum` **and**
+  `bytes(TiersDrawV1) <= 2 * bytes(tiers)`.
+- **Keep tiers** if `lo(TiersDrawV1) >= hi(tiers)` (tiers' whole interval is
+  below the intermediate's, so tiers is less exploitable), or if
   `improvement < minimum`, or if `bytes(TiersDrawV1) > 2 * bytes(tiers)`.
-- **Inconclusive otherwise**, recorded as such: the material answer is that the
-  fixture set or the interval width is inadequate, which this RFC must report
-  rather than resolve.
+- **Inconclusive otherwise**, recorded as such: the intervals overlap and the
+  fixture set or its precision is inadequate. Reporting "inconclusive" is a
+  valid outcome and is what makes the rule falsifiable.
 
-The `0.01 BB/hand` floor is the absolute minimum effect the thresholds document
-already treats as meaningful
-(`docs/plans/sixmax-gto-thresholds.md:82-102`); the relative half keeps the rule
-sane when the baseline is small. If `expl(tiers) <= 0` — tiers already beats the
-uniform control — the rule still runs, and the outcome is recorded either way;
-lower exploitability is better and a negative baseline does not by itself block
-adoption.
+A prior revision of this section had the interval comparisons inverted — adopt
+required tiers' interval to lie below the intermediate's — which made the adopt
+branch **unsatisfiable**: under that condition `improvement` is necessarily
+negative, so it could never clear a positive minimum. A 200,000-draw random
+interval check fired the old rule zero times and the corrected one 76,099 times.
+The orientation is now stated explicitly because it is exactly the kind of
+detail that produced that bug.
+
+The `0.01 BB/hand` floor borrows the `delta_regression` value from
+`docs/plans/sixmax-gto-thresholds.md:66-75` — the smallest degradation that
+document treats as material. It is a **minimum effect size**, not the
+`interval_precision` half-width at `:82-102`, which is a separate requirement on
+the intervals themselves. The relative third keeps the test meaningful when the
+baseline is large; when the baseline is small the absolute floor dominates.
+
+When `expl(tiers) <= 0` — tiers already beats the uniform control — the rule
+still runs and the outcome is recorded; a negative baseline does not by itself
+block adoption.
 
 Per-lookup cost is a gate, not a trade-off: a scheme whose measured
 `card_bucket` cost exceeds **150 ns/combo** (twice the ~75 ns/combo the
@@ -427,9 +440,15 @@ No `.bin` field is added and no version bump is needed.
    scheme unchanged, and no number moves. This stage is independent of RFC
    0029.
 2. **Specify and wire `TiersDrawV1`.** Define the board-dependent draw flag,
-   record its bucket count, confirm it fits `uint16`, and register it. Gate: it
-   is selectable and its buckets are enumerable and bounded. Independent of
-   RFC 0029.
+   record its bucket count, confirm it fits `uint16`, and register the new
+   `CardBucketKind` enumerator. Three switch sites must gain a case or the
+   scheme cannot be trained or packed at all: `bucket_ceiling`
+   (`engine/src/artifacts/sealed_checkpoint.cpp:144-155`), `card_abstraction_id`
+   (`engine/src/abstraction/abstraction.cpp:164-183`), and the packer's
+   `bucket_in_range`, whose postflop window is hardcoded to `1..9`
+   (`engine/src/resident/mmap_library.cpp:239-243`). Gate: it is selectable, its
+   buckets are enumerable and bounded, and all three sites handle it.
+   Independent of RFC 0029.
 3. **Ablation.** Requires RFC 0029 to be accepted and its adapter to exist.
    Run the declared matrix. Gate: G1-G3 satisfied.
 4. **Decision.** Record the outcome against the declared rule. If adoption is
@@ -454,9 +473,10 @@ without an intentional rebuild halts the rollout.
    the made-hand tier — record the resulting bucket count, and confirm it fits
    `uint16` **before** Stage 3 runs, because the decision rule compares against
    it.
-2. **Should the decision rule be phrased in absolute or relative terms?** The
-   one-third relative rule is chosen because an absolute chip threshold would
-   differ per fixture; it will be revisited if the intervals turn out wide.
+2. **None on the rule's form.** Decided: a relative third of the baseline,
+   floored at the `delta_regression` value of 0.01 BB/hand, because an absolute
+   chip threshold alone would differ per fixture and a relative one alone
+   becomes trivially easy as the baseline approaches zero.
 3. **Does the 57.6% uniform finding indicate under-training or a genuinely
    indifferent region?** Stage 3's second iteration count is the first evidence;
    distinguishing them may need a third.
