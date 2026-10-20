@@ -1,7 +1,7 @@
 ---
 rfc: "0032"
 subject: "Preserve the Full Board Through the Decision Pipeline"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark maintainers"
 created: "2026-10-20"
 updated: "2026-10-21"
@@ -903,8 +903,11 @@ Order matters: stage 1 is a prerequisite for stage 3, because landing board
 preservation first would route live turn traffic into the digest error and turn
 a wrong-but-working decision into a mechanical check/fold.
 
-Stop conditions: any change to a response **served from a resident record**
-halts the rollout. The stage-1 no-resident-match change is expected and
+Stop conditions: any change to a **flop** response served from a resident
+record halts the rollout. (Scoped to the flop because a turn check-through line
+matches a flop-rooted record today — that is the RFC's own first Fact — so a
+turn response *is* resident-served before the change and is not after it. The
+unscoped wording would halt on the intended effect.) The stage-1 no-resident-match change is expected and
 recorded, not a stop condition — halting on it would halt on the stage itself.
 A seat count that misses the latency criteria is **reported as a failing
 capability**, not quietly left on the old path — there is no old path to leave
@@ -969,8 +972,16 @@ whoever schedules the work.
   board().size()`; `def().board` equals `board()` element for element;
   `def().preflop == false`; and `def().pot == pot()`.
 
-  Two further assertions hold for **every** cell: the **facing-a-bet** cells
-  must validate, construct, and report the hero as actor. But the two `same_root`
+  Two further assertions hold for **every** cell: it must validate, construct,
+  and satisfy `out.state->actor() == out.hero_actor` (already guaranteed by
+  `engine/src/protocol/resident_mapper.cpp:411`, asserted here so the runtime is
+  pinned). Note what is **not** asserted: `GameState(identity_def).actor()` is
+  *not* expected to equal the hero. For a street-start check-through turn the
+  identity def is deliberately indistinguishable from a street-start root, so a
+  rebuilt state's actor is the seat clockwise of the button — the opponent when
+  the hero acted first. That is exactly why the runtime carries the pending set
+  and actor separately, and an AC that asserted the def-derived actor would be
+  asserting the two-view design does not exist. But the two `same_root`
   properties — a flop query still matching a flop-rooted record, and a turn query
   differing only in `board_size` — apply **only to the street-start column**, and
   an earlier revision wrongly required them of every cell. A facing-a-bet def
@@ -1055,17 +1066,20 @@ whoever schedules the work.
   Because the corpus requires live play under separate authorization, this AC is
   not dischargeable from repository evidence alone. That makes `Implemented`
   unbounded, so it is stated as a rollout gate below rather than only here.
-- **AC5**: Every response served from a resident record is behavior-identical —
-  no artifact digest changes, no resolver candidate changes — and the full
-  Engine Build Contract passes with ASan clean and `check-rfcs` / `check-docs`
+- **AC5**: Every **flop** response served from a resident record is
+  behavior-identical — no artifact digest changes, no resolver candidate
+  changes — and the full Engine Build Contract passes with ASan clean and `check-rfcs` / `check-docs`
   passing. The **no-resident-match** path is *not* identical: stage 1 turns a
   flop query that currently errors into an `approximate` strategy. AC5 asserts
   the resident path byte-identically and requires stage 1's before/after count
   for the other, rather than claiming a no-op it does not perform.
 
   **This AC cannot be satisfied vacuously, and it does not cover everything.**
-  It applies to the subpopulation that constructs a state today — equal
-  contributions, no refund. Heads-up postflop hands facing a bet and every
+  It applies to the subpopulation that constructs a state today, which is
+  narrower and more specific than "equal contributions, no refund": **any
+  non-refunded 3+-seat shape** (whose contributions may be unequal) plus
+  **non-refunded heads-up street-start with equal contributions**. Heads-up
+  facing a bet and every refunded hand throw before any decision. Heads-up postflop hands facing a bet and every
   refunded hand are *newly constructed* by this change (see the Pipeline
   section), so no prior response exists for them to be identical to; AC5 must
   not be read as covering them, and AC4's flop stratum is what measures them.
@@ -1080,4 +1094,44 @@ whoever schedules the work.
 
 ## Decision
 
-Pending independent approval-agent review.
+```text
+Author agent: BigShark maintainers
+Approved by: independent-approval-agent/opensource-deepseek-v4_1_flash/2026-10-21
+Decision date: 2026-10-21
+Review outcome: Approved
+Reviewed scope: Seventh revision in full, against the cited sources, with
+  out-of-tree probes compiled against the repository's own libraries. The
+  reviewer built the 24-cell cross product of {heads-up, 6-max} x
+  {flop, turn, river} x {street-start, facing a bet} x {refund, no refund},
+  validating each identity def with poker::validate, constructing a GameState
+  from it, and reading the resulting actor; replayed today's rebuild across five
+  classes to establish which hands construct before the change; and replayed a
+  check-through turn node to compare cursor.actor() against
+  GameState(identity_def).actor().
+Review summary: Approved on the seventh round. Every cell of the 24-cell matrix
+  validates, constructs, yields an actor, and satisfies def().pot == pot(). The
+  design's central claim is verified: the identity def uses net contributions
+  plus the cursor's mid-street fields, so both poker::validate clauses hold, and
+  a street-start flop query still matches its flop-rooted record while a turn
+  query differs only in board_size. Two blocking findings were accepted and
+  fixed across the last two rounds: the earlier gross/net mix made several hand
+  classes fail construction entirely (head-up facing a bet, any refunded hand),
+  and net contributions alone were insufficient because the two-seat equality
+  rule is keyed on street_committed rather than on contribution values. The
+  reviewer's remaining three findings were wording-only and were applied before
+  recording this decision: the actor assertion is now stated as
+  out.state->actor() with an explicit note that the def-derived actor is not
+  expected to be the hero; AC5 and the stop condition are scoped to flop
+  responses, since a turn check-through line is resident-served today and is not
+  after the change; and AC5's subpopulation is characterized as any non-refunded
+  3+-seat shape plus non-refunded heads-up street-start, matching measurement.
+  The RFC does not claim the resulting decisions are better; the quality
+  question is recorded as open. One risk is unproven and flagged for stage 2:
+  whether a turn check-through line actually hits a resident row today, which the
+  baseline pin can record.
+Remaining risks: the do-not-modify surfaces are the mid-street fields on the
+  identity def and the two-view split itself; same_game_def's shape-dependent
+  divergence from same_root is latent and recorded; the Stage 5 corpus gate
+  remains unbounded and the RFC cannot reach Implemented without live play under
+  separate authorization.
+```
