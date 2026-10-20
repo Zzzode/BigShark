@@ -101,10 +101,25 @@ digest fix are therefore a pair, not a change and an optional extra.
   `engine/src/protocol/resident_mapper.cpp:504-532` builds
   `flopDef.board_size = 3` and `flopDef.board = {cursor.board()[0..2]}` for any
   postflop decision, discarding `board[3]` and `board[4]`.
-- **The truncation also corrupts an information key.** For a turn check-through
-  line the mapper's flop definition carries the same pot, stacks, and
-  contributions as the flop root, so `same_root` matches and
-  `replay_public_path` processes turn events against a three-card span. The
+- **The rebuild does not construct for a whole class of hands, and that is
+  why the corruption has gone unnoticed.** It copies **gross** `contributed`
+  (`:527`) while taking the **net** `cursor.pot()` (`:523`), and
+  `poker::validate` reconciles the two: heads-up rooted boards require equal
+  contributions when not mid-street and that their sum equal the pot
+  (`engine/src/poker/game_definition.cpp:135-139`); 3+ seats require the pot to
+  equal the declared contributions (`:199-208`). So `GameState flopState(flopDef)`
+  at `:530` throws for a heads-up postflop node with unequal contributions
+  (facing a bet) and for any refunded hand, and the `catch (const
+  std::exception&)` at `:536-542` turns that into `ReplayMiss::ReplayMismatch`
+  (or a rethrow at two seats). Those hands never reach a decision at all. An
+  earlier draft claimed the opposite twice — that the rebuild "carries the same
+  pot, stacks, and contributions as the flop root, so `same_root` matches" — and
+  that claim is only true for the subpopulation that constructs: equal
+  contributions, no refund.
+- **The truncation also corrupts an information key.** On a turn check-through
+  line the mapper's flop definition does match the flop root, so `same_root`
+  matches and `replay_public_path` processes turn events against a three-card
+  span. The
   prefix-board builder computes `prefix_board_size = 4` for a turn event and
   reads `state.board()[3]` (`engine/src/resident/resident_policy.cpp:861-872`).
   `state.board()` has size 3, so this reads past the span's extent. It is a bug
@@ -231,14 +246,48 @@ board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
   | View | Contents | Consumers |
   | --- | --- | --- |
   | Runtime (`board()`, `players()`, `pot()`, `actor()`) | the replay cursor: real board of any length, true `pending`, correct actor, live `street_committed`, net-contributed refunds | `hero_decision`, `resolve_uniform`, `resolve_flop`, the adapter's legality check |
-  | Identity (`def()`) | today's postflop rebuild values — `stacks`, `contributions`, `folded`, `pot`, `button`, `big_blind`, `preflop = false`, `terminal` unchanged from `:518-529` — with `board` and `board_size` taken from `cursor.board()` | `same_root`, `cache_key`, `root_pot`, the certifier, `publicSeed` |
+  | Identity (`def()`) | `stacks`, `contributions`, `folded`, `pot`, `button`, `big_blind`, `preflop = false`, `terminal` — with **net** contributions, and `board`/`board_size` taken from `cursor.board()` | `same_root`, `cache_key`, `root_pot`, the certifier, `publicSeed` |
 
-  Keeping the identity def's non-board fields **exactly as the rebuild computes
-  them today** is what preserves flop behaviour: a flop query produces the same
-  `stacks`/`contributions`/`pot` it produced before, so every existing
-  `same_root` outcome is unchanged, and only the board comparison moves — which
-  is the point of the RFC. A turn query differs only in `board_size`, which is
-  the single property the whole design rests on and which AC1 tests directly.
+  **The identity def must be a valid `GameDef`, and that forces net
+  contributions.** Two constraints decide every field:
+
+  1. `GameState`'s contract is `validate(def)` first
+     (`engine/include/bs/game_definition.hpp:218`, enforced at
+     `engine/src/poker/game_definition.cpp:295`), and a seam that skipped it
+     would publish a def five identity consumers then hash and certify against.
+     So AC1 requires `poker::validate(identity_def)` to pass.
+  2. `def().pot` must equal `pot()` — otherwise `root_pot`
+     (`engine/src/resolver/resolver.cpp:123`), the certifier
+     (`engine/src/resolver/certifier.cpp:120`), `cache_key` (`:57-66`), and
+     `publicSeed` (`apps/engine-host/main.cpp:403-407`) read a different pot than
+     the state reports.
+
+  `pot()` sums `net_contributed()` (`game_definition.cpp:440-444`), and
+  `validate` reconciles contributions against the pot, so the only def that
+  satisfies both is one whose contributions are **net** and whose pot is their
+  sum. The current rebuild's gross/net mix is why it throws; copying it
+  unchanged would reproduce the throw.
+
+  This is a **deliberate scope statement, not an implementation detail**: heads-up
+  postflop hands facing a bet, and every refunded hand, begin constructing for
+  the first time. They are not covered by "no resident-served response changed",
+  because none exists today to compare against — they were rejected before any
+  decision. AC5 states the subpopulation it applies to.
+
+  For the hands that *do* construct today (equal contributions, no refund),
+  contributions are already equal to their net values, so the identity def is
+  numerically identical to today's rebuild and every existing `same_root`
+  outcome is preserved; only the board comparison moves. A turn query differs
+  only in `board_size`, which is the property the whole design rests on and
+  which AC1 tests directly.
+
+  Fields the rebuild never sets — `ante`, `variant`, `blinds_posted` — keep
+  their `GameDef` defaults (`engine/include/bs/game_definition.hpp:83`, `:115`,
+  `:162`), which `validate` accepts for a rooted postflop def
+  (`engine/src/poker/game_definition.cpp:151-181`). `last_full_raise`, `street_committed`, and
+  `raise_rights` stay zero, matching a street-start root; `same_game_def`
+  compares them (`:275`, `:285`) but no River path calls that predicate, so the
+  omission is latent rather than live — noted under Risks.
 
   Mechanically this needs a way to attach an identity def to a cursor copy —
   a constructor or member taking `(runtime state, identity def)` — because
@@ -277,14 +326,14 @@ board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
   `GameState::pot()` uses `net_contributed()`
   (`engine/include/bs/game_definition.hpp:210`). A heads-up turn with gross
   `{30,20}` and pot 45 throws `unmatched contributions at closed-street root`.
-  The cursor's runtime carries the correct net values, so `pot()` is right.
-  `def().pot` is a separate question: it is the root pot the identity consumers
-  read (`resolver.cpp:123`, `certifier.cpp:120`, `cache_key` at
-  `:57-66`, `publicSeed`), and it stays whatever the identity def says. The
-  design keeps the identity def's `pot` exactly as today's rebuild computes it,
-  so no identity consumer moves; the divergence is fixed for `pot()` and
-  deliberately preserved for `def().pot`, which is what makes flop behaviour
-  unchanged. AC1 asserts both.
+  With net contributions this divergence disappears for both views: `pot()` is
+  the sum of `net_contributed()`, and the identity def's `pot` is the same sum,
+  so `def().pot == pot()` holds by construction. An earlier draft said the
+  identity def keeps today's `pot` while AC1 asserted equality with `pot()` —
+  those two cannot both be true for a refunded hand. Net contributions are the
+  only choice that satisfies `validate` and keeps the four identity consumers
+  (`root_pot`, the certifier, `cache_key`, `publicSeed`) reading the same pot
+  the state reports.
 - **The preflop branch is unchanged, and that is a requirement, not an
   observation.** It returns the hand-start `rootState` built from `rootDef`
   (`:494-503`), which is what the preflop blueprint's identity expects and why
@@ -688,10 +737,20 @@ replay**, not surfaced to an operator in real time.
 4. **The two-view state is a new coupling and can drift.** `def()` and the
    runtime now describe different points in the hand by design, and a consumer
    that reads the wrong one gets a plausible but wrong answer — the failure this
-   design exists to prevent arriving from the other direction. *Mitigation:* the
-   consumer table above names which view each caller reads, AC1 asserts the
-   identity def's contents field by field, and the flop fixture in AC5 fails
-   loudly if any identity consumer starts reading runtime values.
+   design exists to prevent arriving from the other direction. The concrete
+   failure mode is an **unvalidated identity def**: the seam attaches a def
+   without the constructor's `validate(def)` call
+   (`engine/include/bs/game_definition.hpp:218`), so a def that `poker::validate`
+   would reject is published and five identity consumers hash, compare, and
+   certify against it with no error anywhere. *Mitigation:* the seam validates
+   the identity def and throws if it fails; AC1 asserts `validate` passes for
+   every fixture shape, not only `def().pot == pot()`.
+
+   A second, latent form: `same_game_def` compares `last_full_raise`,
+   `street_committed`, and `raise_rights` (`engine/src/poker/game_definition.cpp:275`,
+   `:285`), which the identity def leaves at zero. No River path calls that
+   predicate today, so the omission is safe now; if one ever routes `def()`
+   through it, the identity def will silently mismatch.
 5. **A four-card state reaches code that assumes a three-card board.**
    `GameState::board()` now yields four or five cards from an adapter-built
    state, and any remaining `i < 3` or `3 + street` arithmetic that this RFC
@@ -824,14 +883,26 @@ whoever schedules the work.
   | Board assembly (`:1087-1093`, `:1191-1198`) | integration, synthetic record |
 
   The identity row is the one that would otherwise pass while the design is
-  broken, so its assertions are enumerated rather than described. For a turn
-  snapshot, `out.state` must satisfy: `def().board_size == board().size()`;
-  `def().board` equals `board()` element for element; `def().preflop == false`;
-  `def().pot == pot()`; and — the property the whole design rests on — a **flop**
-  query against a flop-rooted record still **matches** `same_root`, while the
-  same record compared to a turn query differs only in `board_size`. A test that
-  only asserts "the cursor is returned" would be green with `def()` left at the
-  preflop root and the resident path dead at every street.
+  broken, so its assertions are enumerated rather than described. For every
+  postflop shape in the fixture set — heads-up and 6-max, flop/turn/river, equal
+  and unequal contributions, with and without a refund — `out.state` must
+  satisfy: **`poker::validate(out.state->def())` passes**; `def().board_size ==
+  board().size()`; `def().board` equals `board()` element for element;
+  `def().preflop == false`; `def().pot == pot()`; and — the property the whole
+  design rests on — a **flop** query against a flop-rooted record still
+  **matches** `same_root`, while the same record compared to a turn query
+  differs only in `board_size`.
+
+  The `validate` assertion is the seam's rule, not a formality. `GameState`'s
+  documented contract is "`validate(def)` first"
+  (`engine/include/bs/game_definition.hpp:218`), and the seam attaches a def
+  without going through the constructor. If the seam skips validation, an
+  impossible def is published and five identity consumers hash, compare, and
+  certify against it with no error. The rule is therefore: **the seam validates
+  the identity def and throws if it fails**, exactly as the constructor would.
+
+  A test that only asserts "the cursor is returned" would be green with `def()`
+  left at the preflop root and the resident path dead at every street.
 
   The two anonymous-namespace rows require a **new seam**, and the RFC says so
   unconditionally: `Record` is forward-declared and `records_` is private
@@ -886,8 +957,14 @@ whoever schedules the work.
   the resident path byte-identically and requires stage 1's before/after count
   for the other, rather than claiming a no-op it does not perform.
 
-  **This AC cannot be satisfied vacuously.** It is a claim about responses that
-  *do* come from a resident record, so the check must show they still do. The
+  **This AC cannot be satisfied vacuously, and it does not cover everything.**
+  It applies to the subpopulation that constructs a state today — equal
+  contributions, no refund. Heads-up postflop hands facing a bet and every
+  refunded hand are *newly constructed* by this change (see the Pipeline
+  section), so no prior response exists for them to be identical to; AC5 must
+  not be read as covering them, and AC4's flop stratum is what measures them.
+  The claim about responses that *do* come from a resident record requires
+  showing they still do. The
   in-tree flop fixture
   (`platforms/river-club/tests/w1-resident-wiring.test.ts:485-515`) asserts a
   blueprint-served flop decision with the fixture's digest and guarantee level,
