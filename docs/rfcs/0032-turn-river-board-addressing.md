@@ -48,8 +48,10 @@ turn decisions stop matching resident records and fall through to
   identity checks, and the reach model without truncation.
 - **G2**: The current truncating behavior is pinned by a test before the change,
   so the fix is demonstrably a behavior change and not a refactor.
-- **G3**: Where the pipeline cannot yet serve a four- or five-card root, it
-  refuses by name instead of silently deciding a different game.
+- **G3**: Where the pipeline cannot yet serve a four- or five-card root, the
+  refusal is a named, counted outcome carrying the board size — not a silent
+  decision of a different game and not a `safeFallback` labelled as an ordinary
+  operational fallback.
 
 ## Non-Goals
 
@@ -87,10 +89,13 @@ turn decisions stop matching resident records and fall through to
   contributions as the flop root, so `same_root` matches and
   `replay_public_path` processes turn events against a three-card span. The
   prefix-board builder computes `prefix_board_size = 4` for a turn event and
-  reads `state.board()[3]` (`engine/src/resident/resident_policy.cpp:861-872`);
-  the backing `board_` is a zero-initialized `array<int,5>`, so it substitutes
-  **card 0** as the turn card. That is a corrupted key, not merely a re-rooted
-  game.
+  reads `state.board()[3]` (`engine/src/resident/resident_policy.cpp:861-872`).
+  `state.board()` has size 3, so this is an **out-of-bounds span read —
+  undefined behavior** — which happens to yield card 0 only because the backing
+  `board_` is a zero-initialized `array<int,5>`
+  (`engine/include/bs/game_definition.hpp:303`). The result is a corrupted
+  information key, not merely a re-rooted game, and it is an ASan case as well
+  as a behavioural one.
 - **The resident path refuses a non-flop root.**
   `engine/src/resident/resident_policy.cpp:110-113` throws for
   `game.board_size != 3 && != 0`, naming RFC 0009 D4 as the reason it is not
@@ -157,7 +162,10 @@ reach-model blocking loop carry `board_size` through unchanged:
 
 - `resident_mapper.cpp:504-532` builds the postflop `GameDef` from the actual
   board length and cards instead of clamping to three.
-- `same_root` in both places compares every present card.
+- `same_root` in both places compares **`board_size` explicitly as well as
+  every card**. Without the size equality a three-card record still matches a
+  four-card query on the first three cards — the exact failure AC1 warns about —
+  so the requirement is part of the design, not a residual risk.
 - `canonical_query_board` generalizes to a board span; the flop branch is
   unchanged.
 - `build_v2_game` is **unchanged**: it already throws for a four- or five-card
@@ -174,46 +182,91 @@ reach-model blocking loop carry `board_size` through unchanged:
 
 ### Behavior change and its gate
 
-The adapter change is measured, not assumed. Before it lands, a recorded set of
-turn and river snapshots is replayed through the current pipeline and the new
-one, comparing chosen action, decision source, and p95 latency per seat count. A
-change of source from resident lookup to `resolve_uniform` is expected and is the
-evidence the change is real.
+The adapter change is measured, not assumed, and it is **unconditional**: one
+code path exists, the adapter always preserves the board the room reported, and
+a seat count that cannot yet be served gets the named refusal described below.
+There is no per-seat-count switch between an old and a new behaviour — that
+would be exactly the dual implementation the repository forbids, and it would
+also violate G3 by silently deciding a different game at the seat counts it kept
+on the old path.
 
-**The replay corpus.** The snapshots come from the local `sessions/` journals,
-which `bin/bigshark.mjs` already appends to. The RFC requires at least 200
-postflop snapshots with `board_size >= 4`, drawn from sessions across at least
-two tables and stratified by seat count (2..6), so every seat count has at least
-20. The corpus is recorded as raw JSONL in `sessions/rfc0032-replay/`, and the
-summary lives in `docs/plans/rfc0032-replay.md`.
+The replay therefore measures **what the change does**, not whether to enable
+it. It answers two questions: how often a turn decision reaches the named
+refusal rather than a served root, and whether the seat counts that do resolve
+meet the budget.
 
-**The deadline is a stated tier, not "the deadline".** `room.timeLeftMs` varies
-by table (roughly 11 s to 25 s), so a threshold without a tier is unfalsifiable.
-The gate uses the **12 s tier**, the boundary in `CLAUDE.md`'s decision-time
-budget between hybrid and engine-led play, and the budget itself is 2.5 s for
-"decide directly from range, board, and pot odds". Pass criteria per seat count,
-over the stratified corpus:
+**The corpus does not exist yet.** `sessions/` is empty and gitignored
+(`.gitignore:2`), so the >= 200-snapshot corpus requires **live play under
+separate authorization**. This RFC cannot reach `Implemented` before that, and
+says so rather than implying the data is available.
+
+**Configuration.** The replay reuses `collectReplaySnapshots`
+(`tools/replay/main.ts`), which already dedupes by
+`(room, handId, revision, street)`. It must run with **the same resident roots
+and flop library as production** — the existing harness calls
+`decide(room, {timeoutMs: 10_000})` with no roots configured
+(`tools/replay/main.ts:8-40`, `platforms/river-club/src/engine.ts:372-408`), so
+it neither exercises resident lookup nor measures anything meaningful today. The
+`timeoutMs` must match the criteria below.
+
+**Decision source** is derived from the response's `guaranteeLevel` and reason
+string, not inferred.
+
+**Acceptance evidence must survive review.** The raw JSONL is gitignored, so
+Stage 3 commits either a redacted subset or the corpus's SHA-256 plus the exact
+extraction command into `docs/plans/rfc0032-replay.md`.
+
+**Criteria**, per seat count over the stratified corpus:
 
 | Criterion | Threshold |
 | --- | --- |
 | p95 decision latency | <= 2,500 ms |
 | p99 decision latency | <= 4,000 ms |
 | snapshots exceeding 11 s | 0 |
-| named refusals | counted and reported, not hidden |
+| named refusals | counted, with the reason string matched |
 
-A seat count that fails any row keeps the current flop-re-rooted path. The
-result file records every row per seat count.
+The 2,500 ms figure is the **lower bound of `CLAUDE.md`'s 2.5-4 s band**
+(`CLAUDE.md:110-111`), which is the "decide directly from range, board, and pot
+odds" guidance. The 4,000 ms p99 allowance lets one per cent of decisions use
+the full band; a run whose p95 sits at the bound but whose p99 routinely exceeds
+it is reported as failing, not as passing.
 
-**The gate is a capability boundary, not a switch.** It is not a flag selecting
-an old and a new implementation: one code path exists, and the pipeline serves a
-four- or five-card root only at the seat counts where the replay proved it can
-meet the budget. The boundary is recorded in the capability/status documentation
-when implemented, and it is re-measured whenever the decision clock tier or the
-supported seat counts change — so it is a measured capability matrix with a
-re-measurement trigger, not an indefinite toggle.
+A snapshot is one **actionable postflop state** (`room.next === "act"` with
+`board_size >= 4`) recorded in a session journal. "At least two tables" is
+identified by distinct `room.id` (falling back to `room.name`).
 
-RFC 0029 does **not** cover this: its Non-Goals exclude turn/river measurement.
-This RFC's own replay corpus is the evidence.
+### The named refusal
+
+This is a contract, not a log line. Today a turn decision that misses the
+resident root reaches `resolve_uniform`, and any engine error that is not a
+`GUARANTEE_BELOW_REQUEST` refusal is swallowed into `safeFallback`
+(`platforms/river-club/src/engine.ts:437-453`) — a check/call/fold labelled
+`operational_fallback`. That is a strategic action, not a visible failure, so
+"fails visibly" is not true until this RFC makes it true.
+
+The contract:
+
+1. **The host** returns a distinct error code (`UNSUPPORTED_BOARD_SIZE`) whose
+   message carries the board size, from the same dispatch site that currently
+   maps `SubgameResolveStatus::Ineligible` to `ResolveOutcome::Unsupported`
+   (`apps/engine-host/main.cpp:361-363`).
+2. **The wire** carries it: `EngineError` already has a `message` field
+   (`proto/.../engine.proto:655-665`), but `mapMissToError` returns a code and
+   the response uses the canned `messageFor(code)`
+   (`envelope.cpp:191-208,334-336`). The host sends the board size in the
+   message.
+3. **The adapter** stops discarding `EngineError.message`
+   (`platforms/river-club/src/v2-mapper.ts:1081-1085`) and surfaces it.
+4. **`decide()`** treats `UNSUPPORTED_BOARD_SIZE` like
+   `GUARANTEE_BELOW_REQUEST`: it propagates rather than becoming
+   `safeFallback`. The caller still receives a **legal action** — the tooling
+   path must act, it cannot stall — but that action is labelled
+   `unsupported_board_size` and counted, and the reason string names the board
+   size. "Visible" here means *accounted for*, not *surfaced to an operator in
+   real time*.
+
+Tests in both the native suite (host dispatch) and the Node suite (`decide()`
+propagation and labelling) cover this.
 
 ## Dependency Rules
 
@@ -280,11 +333,16 @@ This RFC's own replay corpus is the evidence.
   `board[4]`; `canonical_query_board` does not drop them.
 - **Reach.** The blocking loop excludes every board card, verified by a fixture
   where `board[3]` is otherwise dealable.
-- **Refusal.** A four-card root that cannot be served raises a named error, not
-  a silent three-card decision.
+- **Refusal.** A four-card root that cannot be served produces
+  `UNSUPPORTED_BOARD_SIZE` carrying the board size, propagates past
+  `safeFallback` swallowing in `decide()`, and is labelled and counted; a
+  native test covers the host dispatch and a Node test covers the propagation and
+  the label.
 - **Replay measurement.** The 200-snapshot corpus replayed through both
-  pipelines; action, source, p95, p99, and refusal counts per seat count
-  recorded in `docs/plans/rfc0032-replay.md` with the raw JSONL beside it.
+  pipelines with production roots and matching `timeoutMs`; action, source,
+  p95, p99, and refusal counts per seat count recorded in
+  `docs/plans/rfc0032-replay.md`, with either a redacted subset or the corpus
+  SHA-256 and extraction command, since the raw journals are gitignored.
 - **Project gates**: full Engine Build Contract, ASan, `check-rfcs` /
   `check-docs`.
 
@@ -296,14 +354,18 @@ This RFC's own replay corpus is the evidence.
 2. **Board preservation.** Adapter, `same_root` (both), `canonical_query_board`,
    reach loop, prefix-board builder, board assembly. Gate: preservation and
    identity tests pass; the flop path is unchanged.
-3. **Replay measurement and gate.** Run the recorded set, record action/source/
-   latency, and enable per seat count where the deadline is met. Gate: G3 and
-   the recorded result file.
-4. **Refusal.** Replace the silent fall-through with a named refusal where a
-   root cannot be served. Gate: the refusal test passes.
+3. **Replay measurement.** Requires live play; the corpus does not exist yet.
+   Run the recorded set with production configuration and record action, source,
+   refusal count, and latency per seat count into `docs/plans/rfc0032-replay.md`.
+   Gate: the result file exists with its evidence (redacted subset or corpus
+   SHA-256 plus extraction command).
+4. **Named refusal.** Implement the `UNSUPPORTED_BOARD_SIZE` contract end to end
+   and route it past `safeFallback`. Gate: native and Node tests pass and the
+   refusal is counted in the replay output.
 
-Stop conditions: any flop-path behavior change halts the rollout; any seat
-count whose replay exceeds the deadline keeps the old path.
+Stop conditions: any flop-path behavior change halts the rollout. A seat count
+that misses the latency criteria is **reported as a failing capability**, not
+quietly left on the old path — there is no old path to leave it on.
 
 ## Rollback Plan
 
@@ -337,10 +399,14 @@ count whose replay exceeds the deadline keeps the old path.
   change.
 - **AC3**: A four- or five-card root that cannot be served raises a named error;
   no path silently decides a three-card game.
-- **AC4**: The 200-snapshot corpus (>= 20 per seat count, 2..6) is replayed
-  before and after, and `docs/plans/rfc0032-replay.md` records per seat count
-  the action, decision source, p95, p99, and refusal count against the 12 s
-  tier's 2,500 ms / 4,000 ms thresholds.
+- **AC4**: The 200-snapshot corpus (>= 20 per seat count, 2..6, >= 2 tables by
+  `room.id`) is replayed before and after with production resident roots and
+  library, and `docs/plans/rfc0032-replay.md` records per seat count the action,
+  decision source (from `guaranteeLevel` and reason), policy latency p95/p99,
+  and the named-refusal count with its reason string, against the 2,500 ms /
+  4,000 ms criteria. Because the corpus requires live play under separate
+  authorization, this AC is not dischargeable from repository evidence alone and
+  the RFC cannot reach `Implemented` before that run.
 - **AC5**: The flop path is behavior-identical — no artifact digest changes, no
   resolver candidate changes for flop spots — and the full Engine Build
   Contract passes with ASan clean and `check-rfcs` / `check-docs` passing.
