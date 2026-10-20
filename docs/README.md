@@ -47,7 +47,7 @@ integration, and development documentation.
 | RFC | [RFC 0028: Sealed warm-start checkpoints](rfcs/0028-sealed-warm-start-checkpoints.md) | Implemented | Store checkpoints under the trainer's (bucket, node) key: 392x less checkpoint data, no SQLite on the training path |
 | RFC | [RFC 0029: Stage-6 frontier walks and resident measurement](rfcs/0029-flop-terminal-best-response.md) | Proposed | Make the evaluation walkers model frontier leaves instead of returning zeros, hitting undefined behaviour, or spinning; measure the resident serving path |
 | RFC | [RFC 0030: Pin strategy-shaping abstraction parameters](rfcs/0030-pin-raise-cap-in-identity.md) | Proposed | Put the raise cap in the action-abstraction digest and a tree-shape witness in the sealed checkpoint; no cap value change |
-| RFC | [RFC 0031: Measure postflop card-abstraction error](rfcs/0031-measure-card-abstraction-error.md) | Proposed | Defer finer bucketing until abstraction loss is measured; pin the bucket scheme in build identity |
+| RFC | [RFC 0031: Measure postflop card-abstraction error](rfcs/0031-measure-card-abstraction-error.md) | Accepted | Defer finer bucketing until abstraction loss is measured; pin the bucket scheme in build identity |
 | RFC | [RFC 0032: Preserve the full board through the decision pipeline](rfcs/0032-turn-river-board-addressing.md) | Proposed | Stop re-rooting every postflop decision to three cards; pin the current truncation with a baseline test |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |

@@ -1,7 +1,7 @@
 ---
 rfc: "0031"
 subject: "Measure Postflop Card-Abstraction Error Before Changing It"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark maintainers"
 created: "2026-10-20"
 updated: "2026-10-20"
@@ -274,8 +274,11 @@ The `0.01 BB/hand` floor borrows the `delta_regression` value from
 `docs/plans/sixmax-gto-thresholds.md:66-75` — the smallest degradation that
 document treats as material. It is a **minimum effect size**, not the
 `interval_precision` half-width at `:82-102`, which is a separate requirement on
-the intervals themselves. The relative third keeps the test meaningful when the
-baseline is large; when the baseline is small the absolute floor dominates.
+the intervals themselves. The relative third keeps the test meaningful when the baseline is large; when
+the baseline is small the absolute floor dominates. The rule is deliberately
+conservative at the boundary: the interval test requires `>` (strictly
+disjoint), so an improvement of exactly one third from a point estimate keeps
+tiers.
 
 When `expl(tiers) <= 0` — tiers already beats the uniform control — the rule
 still runs and the outcome is recorded; a negative baseline does not by itself
@@ -400,8 +403,8 @@ No `.bin` field is added and no version bump is needed.
 2. **The exact pooled walk cannot cover production ranges.** *Mitigation:*
    fixtures are declared and bounded, and the result is labelled to its set.
 3. **The cost of a finer scheme is prohibitive at identity.** *Mitigation:*
-   the intermediate scheme is the intended candidate; identity is measured for
-   the shape of the curve, not as a shipping option.
+   the intermediate scheme is the intended candidate; identity is projected for
+   the shape of the cost curve, never trained and never a shipping option.
 4. **The identity widening touches every `card_bucket` caller.** There are 11
    call expressions in `engine/src` (9 passing `kNSeatCardKind`) plus 7 in
    `engine/benchmarks`. Identity pinning changes no caller signature, so the
@@ -413,8 +416,9 @@ No `.bin` field is added and no version bump is needed.
 - **Baseline tool.** The committed statistics tool reproduces all five
   baseline numbers and the segmented trained/untrained table from the pinned
   artifact sha256, and an independent recomputation agrees.
-- **Ablation run** at three granularities and two iteration counts, on a
-  recorded fixture set, reporting `expl` with 95% intervals and
+- **Ablation run** at two measured granularities plus the labelled `Identity`
+  projection, at two iteration counts, on a recorded fixture set, reporting
+  `expl` with 95% intervals and
   miss counts.
 - **Identity tests.** A library built under tiers and one built under the
   intermediate have different identities and cannot be mixed.
@@ -503,4 +507,44 @@ without an intentional rebuild halts the rollout.
 
 ## Decision
 
-Pending independent approval-agent review.
+```text
+Author agent: BigShark maintainers
+Approved by: independent-approval-agent/opensource-deepseek-v4_1_flash/2026-10-20
+Decision date: 2026-10-20
+Review outcome: Approved
+Reviewed scope: Fourth revision in full, against the shipped artifact and the
+  cited sources. The reviewer independently re-parsed
+  artifacts/flop-library-6way-fullrange/library.bin (sha256 b67e3cb3...20b4),
+  re-derived every segmentation statistic, and re-implemented the decision
+  rule's branch analysis rather than accepting the RFC's figures.
+Review summary: Approved on the fourth round. The two blocking defects from
+  round three are fixed and independently verified. The adopt predicate was
+  sign-inverted and therefore unsatisfiable: the reviewer's 300,000-draw random
+  interval check now fires adopt 77,947, keep 215,371, and inconclusive 6,682,
+  with adopt and keep never co-firing across a 6,561-point adversarial grid
+  including negative baselines. The minimum effect no longer demands a
+  strict-majority improvement; it is a relative third floored at the
+  delta_regression value, and a 49% improvement now adopts. The floor's
+  citation was corrected from interval_precision to delta_regression. The
+  trained-node qualifier matches the reviewer's independent recomputation
+  (1.9644 learned / 2.5029 uniform rows per trained node). The three enum
+  switch sites a new CardBucketKind requires are named. Three non-blocking
+  findings were returned and are applied as factual errata in the same change:
+  the Verification Plan now says two measured granularities plus a projection,
+  Risk 3 says projected rather than measured, and the boundary convention is
+  stated. Residual risks recorded: Stage 3 has two prerequisites, since RFC
+  0029 supplies the adapter but not BR_full or the uniform control; the
+  Identity projection's row count has no scripted basis until Stage 0 lands;
+  the convergence confound remains the leading alternative explanation; and
+  if per-seat intervals cannot reach the interval_precision half-width most
+  runs will be inconclusive, which the RFC permits but does not bound.
+```
+
+Review history: four rounds. Round 1 (Changes Requested, 12 findings) found the
+RFC's central argument inverted -- aggregate statistics were cited as proving
+the library over-segments, when the 57.60% untrained majority drives the
+aggregate and the trained nodes differentiate at 2.93 vectors per node. Rounds 2
+and 3 (Changes Requested) corrected errors the author introduced while revising,
+including a formula that was the criticised expression negated, and a decision
+rule whose adopt branch was unreachable. Every finding was verified against
+source before being accepted; none was disputed.
