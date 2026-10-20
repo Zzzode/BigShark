@@ -30,10 +30,13 @@ sizing schedule (`engine/src/abstraction/abstraction.cpp:110-117`);
 `AbstractionId` carries `name`, `version`, `parameters`, `digest`
 (`engine/include/bs/abstraction.hpp:95-110`) and no typed cap. Every producer
 applies the cap *after* construction through `set_max_raises_per_street`
-(flop builder `engine/src/flop_library/flop_library.cpp:188`, preflop builder
-`:206-207`, resolver `engine/src/resolver/subgame_resolver.cpp:505`), so the
-value never reaches the minter. `flop_library.hpp:59-62` records the exclusion
-as deliberate.
+(`engine/include/bs/abstraction.hpp:238`), at five code sites:
+`engine/benchmarks/flop_library_builder.cpp:188`,
+`engine/benchmarks/preflop_profile_builder.cpp:207`,
+`engine/src/resolver/subgame_resolver.cpp:505`,
+`engine/benchmarks/subgame_nash_conv.cpp:1169,1198`, and
+`engine/tests/test_flop_library.cpp:204`. The value never reaches the minter.
+`flop_library.hpp:59-62` records the exclusion as deliberate.
 
 **A checkpoint can be resumed against a tree it does not match.** Sealed
 resume compares two digests and nothing about tree shape
@@ -51,7 +54,7 @@ resume is already protected: `.sections/build.json` records
 (`engine/src/flop_library/flop_library.cpp:662-664`). The gap is the path where
 that file is absent. `build_library` removes only `.sections` when
 `build.json` is missing (`:922`), while the checkpoint lives in `out_dir`
-(`:350`). So: delete `.sections`, keep the checkpoint, change the cap, and the
+(`:352`). So: delete `.sections`, keep the checkpoint, change the cap, and the
 builder writes a fresh identity from the new cap and resumes the old
 checkpoint's rows. This is the case a tree-shape witness must catch.
 
@@ -113,9 +116,11 @@ checkpoint's rows. This is the case a tree-shape witness must catch.
   duplicates.
 - **The heads-up route cannot carry a cap today.** `HeadsUpGame` has no
   `ActionAbstraction` and `HeadsUpState` has no raise count.
-- **`TerminalDepth`, not the cap, gates the tree shape.** `TreeLimits` throws
+- **The tree builder throws rather than truncating.** `TreeLimits` raises
   `tree_resource_exhausted` before allocation
-  (`engine/src/tree/abstract_tree.cpp:52-53`); it never truncates.
+  (`engine/src/tree/abstract_tree.cpp:52-53`), so a checkpoint can only come
+  from a tree that was fully built — "smaller tree" means a different
+  configuration, never a truncation.
 
 ### Assumptions (to be verified)
 
@@ -136,30 +141,50 @@ checkpoint's rows. This is the case a tree-shape witness must catch.
 ### Identity-minting contract
 
 `max_raises_per_street` becomes a constructor-level parameter of
-`ActionAbstraction`, not a post-construction setter:
+`ActionAbstraction`, not a post-construction setter. Both minters and both
+public constructors take it:
 
 ```cpp
-// Both minters take the cap and include it in the digest parameters.
+// Minters: the cap joins the hashed parameters.
 AbstractionId make_id(const SizeSchedule& schedule, std::uint32_t max_raises);
-AbstractionId make_declared_id(const SizeSchedule& schedule, bool cover_seeds,
+AbstractionId make_declared_id(const SizeSchedule& schedule,
+                               abstraction::CoverSeeds seeds,
                                std::uint32_t max_raises);
+
+// Consumed surface (engine/include/bs/abstraction.hpp:220-231).
+explicit ActionAbstraction(SizeSchedule schedule, std::uint32_t max_raises);
+static ActionAbstraction identity(std::uint32_t max_raises);
+static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds,
+                                  std::uint32_t max_raises);
 ```
 
-The parameter line gains a canonical token `max-raises=<N>` appended after the
-schedule, so `reconstruct_action_abstraction`
-(`engine/src/resolver/subgame_resolver.cpp:112-117`) parses the cap back out
-instead of assuming a value. `set_max_raises_per_street` is **removed**; every
-producer passes the cap into the constructor. That is a breaking API change
-across the three producers named in Motivation and is the point: a setter that
-must remember to re-mint the digest is exactly how the value was lost.
+The parameter line gains a canonical token appended **after** the existing
+content, because the digest is order-sensitive and `make_declared_id` currently
+appends `cover-seeds=` last (`engine/src/abstraction/abstraction.cpp:125-128`):
+
+```text
+<canonical schedule>[|cover-seeds=...]|max-raises=<N>
+```
+
+`reconstruct_action_abstraction`
+(`engine/src/resolver/subgame_resolver.cpp:112-117`) parses the trailing token
+back out instead of assuming a value. This also fixes a pre-existing gap the
+RFC claims only as a side effect: that function currently returns cap 0 for a
+blueprint built with `--raise-cap 1`, so turn/river continuation menus are
+uncapped today.
+
+`set_max_raises_per_street` is **removed**. Every producer passes the cap into
+the constructor — five code sites, named in Motivation. That is the point: a
+setter that must remember to re-mint the digest is exactly how the value was
+lost.
 
 The golden digest `0x422c245239c7a527` moves. It is pinned at
 `engine/tests/test_abstraction.cpp:214,556` and embedded in
 `artifacts/flop-library-6way-fullrange`, `artifacts/preflop-profile-6way`,
 `artifacts/preflop-profile-3way`, `artifacts/preflop-profile-validation`, and
 `artifacts/ac1-16w`. The three non-shipping directories are historical and are
-not republished; they remain in the tree as inert records and are named here so
-a reader is not surprised by a stale digest.
+not republished; they remain as inert records and are named here so a reader is
+not surprised by a stale digest.
 
 ### Tree-shape witness
 
@@ -202,9 +227,9 @@ checkpoint tree shape does not match the current tree
 ```
 
 A cap difference is one instance of a shape mismatch. The witness is **strictly
-stronger for row validity** than a cap field — it also catches a sizing,
-stack, or node-kind change — and it never rejects a resume whose rows are
-valid, including two different caps that happen to produce identical trees,
+stronger for row validity** than a cap field — it also catches a sizing or
+stack change that alters any action target or the tree shape, and a node-kind
+change — and it never rejects a resume whose rows are valid, including two different caps that happen to produce identical trees,
 which is the correct outcome.
 
 The checkpoint extension is a persisted-format change: a version-1 file is
@@ -213,19 +238,37 @@ discard path. No `.bswarm` file exists at the time of writing.
 
 ### Mid-street roots
 
-`GameDef` gains `raises_this_street` and `build_subgame_def_from_node` seeds it
-from the source node, so a subgame rebuilt mid-street starts at the correct
-count instead of zero. Three persisted surfaces must agree:
+`GameDef` gains `raises_this_street`, `GameState(const GameDef&)` assigns it to
+`raises_this_street_` (`engine/src/poker/game_definition.cpp:294+`; accessor at
+`/include/bs/game_definition.hpp:240`), and `build_subgame_def_from_node` seeds
+it from the source node
+(`engine/src/resolver/subgame_resolver.cpp:340-377`). Without the constructor
+assignment the new field would be inert.
 
-- `same_game_def` (`engine/src/poker/game_definition.cpp:269-288`) compares it;
-- `insert_game_v2`/`read_game_v2`
-  (`engine/src/artifacts/strategy_artifact.cpp:1401,2106`) persist it; and
-- `validate_game_v2` accepts it in `0..255`.
+**It is not persisted, and this is deliberate.** A prior draft added
+`same_game_def`, `insert_game_v2`/`read_game_v2`, and `validate_game_v2` to the
+scope. Three problems make that wrong:
 
-Persisting it changes artifact round-trip identity, so the round-trip pins at
-`engine/tests/test_artifacts.cpp:466` and
-`engine/tests/test_nseat_policy_codec_limits.cpp:95` are updated in the same
-change.
+1. `kSchemaDdlV3` reuses `kSchemaDdlV2[1]` for the `game` table verbatim
+   (`engine/src/artifacts/strategy_artifact.cpp:861-873`) and
+   `verify_schema_objects` requires the stored CREATE text to be byte-identical
+   (`:2396-2425`). Adding a `game` column without a new schema set would make
+   every existing v2 and v3 artifact fail with `InvalidSchema`; doing it
+   properly needs `kArtifactSchemaVersionV4` with its own DDL, table set, and
+   `open_validated` branch.
+2. There is no consumer. `SubgameResolveResult` carries no `GameDef`, and
+   nothing in `engine/src/resolver` or the host writes a policy artifact — every
+   artifact-producing path is street-start. A persisted field with no reader is
+   a speculative surface.
+3. It would be incoherent alone: `same_game_def` compares `street_committed`,
+   `raise_rights`, and `last_full_raise`
+   (`engine/src/poker/game_definition.cpp:283-286`) and none of those is
+   persisted, so a mid-street definition already cannot round-trip. Adding one
+   of the four does not make it round-trip.
+
+The count therefore lives in memory for the duration of a resolve. If a future
+proposal needs it persisted, that proposal takes the v4 path and names its
+consumer — it is not smuggled in here.
 
 ## Dependency Rules
 
@@ -274,15 +317,16 @@ change.
 1. **The rebuild invalidates every artifact for a correctness fix.** *Mitigation:*
    the rebuild is reproducible from pinned parameters, and the RFC states the
    cost up front rather than presenting the change as free.
-2. **The constructor change touches three producers.** *Mitigation:* the
+2. **The constructor change touches five code sites.** *Mitigation:* the
    compiler finds every call site once the setter is removed; there is no
    silent path.
 3. **The witness is computed differently in two places.** *Mitigation:* one
    function, one test that recomputes it for a known tree and compares to a
    stored constant.
-4. **Persisting a raise count changes artifact round-trip identity.**
-   *Mitigation:* the two round-trip pins are updated in the same change, and a
-   fixture with a nonzero mid-street count is added.
+4. **The mid-street count stays in memory only.** A reloaded artifact loses it,
+   which is already true of the other three mid-street fields. *Mitigation:*
+   the limitation is stated, and persistence would need its own schema version
+   and a named consumer.
 
 ## Verification Plan
 
@@ -307,8 +351,9 @@ change.
    reference remains.
 2. **Tree-shape witness.** BSWARM01 version 2, header 192, the hash function
    and its stored-constant test. Gate: refusal test passes.
-3. **Mid-street roots.** `GameDef` field, seeding, and the three persisted
-   surfaces. Gate: round-trip pins updated and the mid-street test passes.
+3. **Mid-street roots.** `GameDef` field, the `GameState` constructor
+   assignment, and the seeding in `build_subgame_def_from_node`; no schema
+   change. Gate: the mid-street test passes and no artifact pin moves.
 
 Stop conditions: any existing number changing without an explanation halts the
 rollout; any artifact rebuild that does not reproduce from pinned parameters
@@ -331,18 +376,20 @@ halts it.
    `build_action_menu`. Carrying a cap into the heads-up route needs either an
    abstraction plus a count on `HeadsUpGame`/`HeadsUpState` or a `GameState`
    bridge — a separate change with its own fixtures. Not attempted here.
-2. **Should `raises_this_street` be persisted at all?** It is needed for a
-   correct mid-street root, but persisting it changes artifact round-trip
-   identity. This RFC persists it; the alternative is to seed it only in
-   memory and accept that a reloaded artifact loses it.
+2. **None remaining on persistence.** Decided: the count stays in memory. It
+   has no artifact consumer today, and persisting it would require a schema
+   version plus the other three mid-street fields to be coherent. A future
+   proposal that needs it takes that path and names its consumer.
 
 ## Acceptance Criteria
 
 - **AC1**: The raise cap is part of the action-abstraction digest; a
   cap-differing pair has differing digests, and
   `reconstruct_action_abstraction` recovers the cap from a persisted identity.
-- **AC2**: `set_max_raises_per_street` no longer exists, and a repository-wide
-  grep returns zero hits.
+- **AC2**: `set_max_raises_per_street` no longer exists, and a grep over
+  `engine/`, `apps/`, `bin/`, and `tools/` returns zero hits. Historical RFC
+  text is exempt: `docs/rfcs/0025-off-tree-decision-handling.md:238` quotes the
+  call and accepted RFCs are immutable, the same exemption RFC 0028 AC5 took.
 - **AC3**: A checkpoint written for a different tree shape is refused by name;
   the `.sections`-absent sequence that previously resumed stale rows now
   produces exactly one refusal.
@@ -350,8 +397,7 @@ halts it.
   and changing a node's action target, a node's kind, or the tree size each
   changes it.
 - **AC5**: A mid-street subgame root reports the same legal action count as the
-  live state, and the new count round-trips through
-  `insert_game_v2`/`read_game_v2`.
+  live state, and no artifact schema, DDL, or round-trip pin moves.
 - **AC6**: The full Engine Build Contract passes, ASan is clean,
   `check-rfcs` / `check-docs` pass, and `docs/design/gto-engine.md` documents
   the cap and the witness.

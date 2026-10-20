@@ -82,6 +82,15 @@ turn decisions stop matching resident records and fall through to
   `engine/src/protocol/resident_mapper.cpp:504-532` builds
   `flopDef.board_size = 3` and `flopDef.board = {cursor.board()[0..2]}` for any
   postflop decision, discarding `board[3]` and `board[4]`.
+- **The truncation also corrupts an information key.** For a turn check-through
+  line the mapper's flop definition carries the same pot, stacks, and
+  contributions as the flop root, so `same_root` matches and
+  `replay_public_path` processes turn events against a three-card span. The
+  prefix-board builder computes `prefix_board_size = 4` for a turn event and
+  reads `state.board()[3]` (`engine/src/resident/resident_policy.cpp:861-872`);
+  the backing `board_` is a zero-initialized `array<int,5>`, so it substitutes
+  **card 0** as the turn card. That is a corrupted key, not merely a re-rooted
+  game.
 - **The resident path refuses a non-flop root.**
   `engine/src/resident/resident_policy.cpp:110-113` throws for
   `game.board_size != 3 && != 0`, naming RFC 0009 D4 as the reason it is not
@@ -112,7 +121,7 @@ turn decisions stop matching resident records and fall through to
   the strategy-artifact SQLite `CHECK (terminal_depth IN (0,1))`
   (`engine/src/artifacts/strategy_artifact.cpp:722,734,854,2002-2003`); and
   `SeatPolicy.terminal_depth`. None is widened here.
-- **`resolve_flop` hardcodes cap 1** (`engine/src/gto/subgame_resolver.cpp:504-505`);
+- **`resolve_flop` hardcodes cap 1** (`engine/src/resolver/subgame_resolver.cpp:504-505`);
   only `resolve_uniform` (`:442`) and `reconstruct_action_abstraction`
   (`:112-117`) omit the cap. RFC 0030 owns the cap.
 
@@ -120,7 +129,7 @@ turn decisions stop matching resident records and fall through to
 
 - Serving cost. The exact n-seat reach model is used by the resident
   blueprint-belief path only; `resolve_uniform`, `resolve_flop`, and `resolve`
-  do not use it (`engine/src/gto/subgame_resolver.cpp:340-720`). A prior draft
+  do not use it (`engine/src/resolver/subgame_resolver.cpp:340-720`). A prior draft
   of this RFC claimed the recursion makes any turn/river serving path
   non-terminating at five or six seats, citing figures that appear nowhere in
   the repository. Those figures are withdrawn. Any latency claim must be
@@ -151,30 +160,60 @@ reach-model blocking loop carry `board_size` through unchanged:
 - `same_root` in both places compares every present card.
 - `canonical_query_board` generalizes to a board span; the flop branch is
   unchanged.
-- `build_v2_game` accepts a four- or five-card root **only if** the rest of the
-  resident path can serve it. Because this RFC does not add a turn/river
-  library, the honest outcome is a named refusal for those roots
-  (`resident root of board_size N is not served; no turn/river library exists`)
-  rather than a silent fall-through. The refusal replaces the current silent
-  re-rooting.
+- `build_v2_game` is **unchanged**: it already throws for a four- or five-card
+  root (`engine/src/resident/resident_policy.cpp:110-113`), naming the board
+  size. Because this RFC adds no turn/river library, that condition is never
+  satisfiable, so the refusal stays where it is and gains a pinning test. The
+  query-time named refusal is raised one layer up, in the host's resolver
+  dispatch (`SubgameResolveStatus::Ineligible` with a message naming the board
+  size), so a turn decision that reaches it fails visibly instead of deciding a
+  different game.
 - The reach-model loop blocks `board_size` cards, not three.
 - The prefix-board builder and board assembly gain the same board-size
   parameter and a test each.
 
 ### Behavior change and its gate
 
-The adapter change is measured, not assumed. Before it lands, a recorded set
-of live turn and river snapshots is replayed through the current pipeline and
-the new one, comparing chosen action, decision source, and p95 latency per
-seat count. A change in decision source from resident lookup to
-`resolve_uniform` is expected and is the evidence the change is real; it is
-also why the change needs an explicit gate:
+The adapter change is measured, not assumed. Before it lands, a recorded set of
+turn and river snapshots is replayed through the current pipeline and the new
+one, comparing chosen action, decision source, and p95 latency per seat count. A
+change of source from resident lookup to `resolve_uniform` is expected and is the
+evidence the change is real.
 
-- The adapter fix is activated only for seat counts where the Stage 3 replay
-  shows p95 latency within the decision deadline; otherwise it stays off for
-  that seat count.
-- RFC 0029 does **not** cover this: its Non-Goals exclude turn/river and
-  preflop-rooted measurement. This RFC's own replay set is the evidence.
+**The replay corpus.** The snapshots come from the local `sessions/` journals,
+which `bin/bigshark.mjs` already appends to. The RFC requires at least 200
+postflop snapshots with `board_size >= 4`, drawn from sessions across at least
+two tables and stratified by seat count (2..6), so every seat count has at least
+20. The corpus is recorded as raw JSONL in `sessions/rfc0032-replay/`, and the
+summary lives in `docs/plans/rfc0032-replay.md`.
+
+**The deadline is a stated tier, not "the deadline".** `room.timeLeftMs` varies
+by table (roughly 11 s to 25 s), so a threshold without a tier is unfalsifiable.
+The gate uses the **12 s tier**, the boundary in `CLAUDE.md`'s decision-time
+budget between hybrid and engine-led play, and the budget itself is 2.5 s for
+"decide directly from range, board, and pot odds". Pass criteria per seat count,
+over the stratified corpus:
+
+| Criterion | Threshold |
+| --- | --- |
+| p95 decision latency | <= 2,500 ms |
+| p99 decision latency | <= 4,000 ms |
+| snapshots exceeding 11 s | 0 |
+| named refusals | counted and reported, not hidden |
+
+A seat count that fails any row keeps the current flop-re-rooted path. The
+result file records every row per seat count.
+
+**The gate is a capability boundary, not a switch.** It is not a flag selecting
+an old and a new implementation: one code path exists, and the pipeline serves a
+four- or five-card root only at the seat counts where the replay proved it can
+meet the budget. The boundary is recorded in the capability/status documentation
+when implemented, and it is re-measured whenever the decision clock tier or the
+supported seat counts change — so it is a measured capability matrix with a
+re-measurement trigger, not an indefinite toggle.
+
+RFC 0029 does **not** cover this: its Non-Goals exclude turn/river measurement.
+This RFC's own replay corpus is the evidence.
 
 ## Dependency Rules
 
@@ -197,9 +236,10 @@ also why the change needs an explicit gate:
 
 - No credential or trust-boundary change; the adapter consumes only public
   state.
-- Observability: the adapter logs board size on every conversion in debug
-  builds, so a truncation is visible rather than silent. A refusal names the
-  board size.
+- Observability: this RFC **adds** debug-build logging of the board size on
+  every adapter conversion (`resident_mapper.cpp` has none today), so a
+  truncation is visible rather than silent, and a test asserts the line is
+  emitted. A refusal names the board size.
 
 ## Alternatives Considered
 
@@ -242,9 +282,9 @@ also why the change needs an explicit gate:
   where `board[3]` is otherwise dealable.
 - **Refusal.** A four-card root that cannot be served raises a named error, not
   a silent three-card decision.
-- **Replay measurement.** Recorded turn and river snapshots replayed through
-  both pipelines; action, source, and p95 latency per seat count recorded in a
-  named result file.
+- **Replay measurement.** The 200-snapshot corpus replayed through both
+  pipelines; action, source, p95, p99, and refusal counts per seat count
+  recorded in `docs/plans/rfc0032-replay.md` with the raw JSONL beside it.
 - **Project gates**: full Engine Build Contract, ASan, `check-rfcs` /
   `check-docs`.
 
@@ -285,7 +325,10 @@ count whose replay exceeds the deadline keeps the old path.
 
 ## Acceptance Criteria
 
-- **AC1**: Every truncation site is enumerated and has its own test: the adapter
+- **AC1**: The adapter change and both `same_root` changes land in one commit;
+  `same_root` does not compare `board_size` on the postflop branch today, so an
+  adapter-only landing could match a four-card root against a flop record.
+  Every truncation site is enumerated and has its own test: the adapter
   (`resident_mapper.cpp:504-532`), both `same_root` functions, the reach
   blocking loop, `build_v2_game`, `canonical_query_board`, the prefix-board
   builder (`resident_policy.cpp:861-872`), and board assembly
@@ -294,8 +337,10 @@ count whose replay exceeds the deadline keeps the old path.
   change.
 - **AC3**: A four- or five-card root that cannot be served raises a named error;
   no path silently decides a three-card game.
-- **AC4**: A recorded turn/river replay reports action, decision source, and p95
-  latency per seat count, in a named result file, before and after.
+- **AC4**: The 200-snapshot corpus (>= 20 per seat count, 2..6) is replayed
+  before and after, and `docs/plans/rfc0032-replay.md` records per seat count
+  the action, decision source, p95, p99, and refusal count against the 12 s
+  tier's 2,500 ms / 4,000 ms thresholds.
 - **AC5**: The flop path is behavior-identical — no artifact digest changes, no
   resolver candidate changes for flop spots — and the full Engine Build
   Contract passes with ASan clean and `check-rfcs` / `check-docs` passing.
