@@ -67,17 +67,45 @@ sequence refuses at `flop_library.cpp:366-368` on the
 witness is consulted. The witness cannot be justified by this sequence, and AC4
 was written against it; both are corrected below.
 
-*Defect B: a shape change that leaves the digest equal.* `BuildIdentity` also
-records `stack` and `contribution` (`engine/src/flop_library/flop_library.cpp:506-507`),
-and neither enters `AbstractionId`. Delete `.sections`, keep the checkpoint, and
-change the stack or the contribution: every stored digest still matches, so the
-builder resumes rows trained on a tree with a different pot and different
-stacks. Stack and contribution change the reachable betting tree — the all-in
-thresholds move, so node indices and action menus diverge — while leaving every
-persisted digest identical.
+*Defect B: a row lands on a different node.* This is the case G1 cannot reach,
+and two earlier drafts described it wrongly — first as a cap change G1 already
+closes, then as a silent resume that `validate_initial` in fact catches. The
+real mechanism is an **index shift**.
 
-This is the case G1 cannot reach and the witness exists for. It is also the case
-AC4 must exercise.
+The checkpoint keys rows by `(own_card_bucket, node_index)`
+(`engine/include/bs/nseat_trainer.hpp:100-106`), and `node_index` is nothing but
+the node's position in the builder's expansion order:
+`node.index = tree_.nodes_.size()` (`engine/src/tree/abstract_tree.cpp:345`).
+A stored row therefore identifies a node only by its ordinal.
+
+`validate_initial` (`engine/src/gto/nseat_trainer.cpp:905-921`) checks that the
+ordinal is in range, that the node is an action node, and that the stored action
+list equals the node's menu element for element — and `poker::Action::operator==`
+is defaulted over `type` and `target_total`
+(`engine/include/bs/heads_up.hpp:25-30`). It has no other notion of which node a
+row belongs to.
+
+Now change the stack or the contribution with `.sections` deleted. Every digest
+still matches, because neither field enters `AbstractionId` — `BuildIdentity`
+records them (`engine/src/flop_library/flop_library.cpp:506-507`) but only in
+`build.json`, which this path deletes (`:922`). The change moves some node's
+menu, so the expansion inserts or removes a child earlier in the order, and every
+later ordinal shifts by one. A stored row at ordinal *k* now names a different
+node. `validate_initial` accepts it whenever that different node happens to carry
+the same menu — which is the common case, not a contrived one: any two
+check-through action nodes on the same board have identical menus, so a shift
+re-associates rows freely among them.
+
+So the failure is not "resume is refused with a misleading error"; it is
+"resume succeeds and silently trains the wrong node". The `validate_initial`
+guard catches only the shifts that also change the menu at the shifted ordinal,
+which is a subset. Two drafts missed this because they asked whether the
+sequence resumes and whether it throws, and never asked *which node a row
+lands on*.
+
+That is what a whole-tree witness buys, and it is the only thing that buys it: a
+proof that the tree is byte-identical, hence ordinal *k* means the same node it
+meant when the checkpoint was written.
 
 ## Goals
 
@@ -185,15 +213,33 @@ static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds,
 
 The parameter line gains a canonical token appended **after** the existing
 content, because the digest is order-sensitive and `make_declared_id` currently
-appends `cover-seeds=` last (`engine/src/abstraction/abstraction.cpp:125-128`):
+appends `cover-seeds=` last (`engine/src/abstraction/abstraction.cpp:125-128`).
 
-```text
-<canonical schedule>[cover-seeds=...]|max-raises=<N>
-```
+The digest is byte-sensitive — `abstraction_digest` hashes the parameter string
+as-is — so the exact bytes must be pinned or two implementations mint different
+digests from the same configuration. `canonical_schedule` terminates **every**
+line, including the last street's, with `'\n'`
+(`engine/src/abstraction/abstraction.cpp:55-68`), and `make_declared_id`
+appends `cover-seeds=<value>\n`, newline included (`:126-127`). The two minters
+therefore end as:
 
-`cover-seeds=` keeps its current spelling with **no** separator, because
-changing it would move the declared digest for a second, unrelated reason. Only
-the new token is `|`-prefixed.
+| Minter | Final bytes |
+| --- | --- |
+| `make_id` | `size-v1\n` `street=0 ...\n` … `street=3 ...\n` `|max-raises=<N>` |
+| `make_declared_id` | the same schedule, then `cover-seeds=declared-only\n` or `cover-seeds=min-and-cap\n`, then `|max-raises=<N>` |
+
+`<N>` is the decimal spelling of the `std::uint8_t`, no padding, no sign. The
+new token carries **no** trailing newline: it is the last thing in the string,
+so a trailing newline would be a second, silent spelling of the same cap. The
+existing `\n` after `cover-seeds=` is left exactly as it is — changing it would
+move the declared digest for a reason unrelated to the cap. `cover-seeds=`
+keeps its current spelling with **no** separator; only the new token is
+`|`-prefixed.
+
+With cap 0 the token is still appended (`|max-raises=0`). Omitting it at zero
+would create two spellings for the default and make the "no token" row of the
+parser table ambiguous, so zero is spelled explicitly and the pre-change line —
+which has no token at all — is accepted only by the parser, never minted.
 
 `reconstruct_action_abstraction`
 (`engine/src/resolver/subgame_resolver.cpp:112-117`) parses the trailing token
@@ -290,14 +336,43 @@ so the cases are enumerable and each must reject rather than fall back to cap 0:
 | no `|max-raises=` token | cap 0 — the literal pre-change line, the only accepted absence |
 | `|max-raises=` with an empty or trailing-only value | reject |
 | a value above 255, non-numeric, or with trailing characters | reject |
+| a value whose canonical decimal spelling differs (`01`, `+1`, ` 1`) | reject |
 | the token not last | reject |
 | more than one `|max-raises=` token | reject |
 | identity name with a schedule that does not match the canonical one | reject (existing rule) |
+| a name/version pair other than `rfc0007-pot-fractions` v1, or `rfc0008-declared-coarse` v1 | reject |
 
-Silently reading an unparseable token as cap 0 would re-open exactly the defect
-this RFC closes: two abstractions differing in cap would compare equal. The
-coarse path keeps its current name-only match
-(`engine/src/abstraction/abstraction.cpp:160-162`) and is unchanged.
+`AbstractionId::operator==` includes `version`
+(`engine/include/bs/abstraction.hpp:103-106`), so a predicate that matched name
+and schedule but ignored version would admit an id equality says is different.
+The non-canonical-numerics row exists for the same reason: `01` and `1` parse to
+the same integer, so an ordinary `stoi` would silently collapse two distinct
+parameter lines onto one cap.
+
+**The coarse branch must parse too, and a prior draft left it out.**
+`reconstruct_action_abstraction` has two branches
+(`engine/src/resolver/subgame_resolver.cpp:112-117`): the identity branch and
+`ActionAbstraction::declared(sizes, CoverSeeds::DeclaredOnly)` for a coarse id.
+Once `make_declared_id` also carries the token, a coarse artifact built with
+`--coarse --raise-cap 1`
+(`engine/benchmarks/flop_library_builder.cpp:163-188`;
+`engine/benchmarks/preflop_profile_builder.cpp:203-207`) mints
+`|max-raises=1`, and a coarse branch that does not forward it returns cap 0 —
+uncapped menus, the exact defect this RFC exists to close. Both branches take
+the parsed cap. No coarse artifact ships today (the published manifest names
+`rfc0007-pot-fractions`), so this is a correctness requirement for a supported
+builder option rather than a live serving bug, but it is not deferred: the
+fail-closed promise is about the parser, and a branch that never calls it is the
+same silent cap 0 by a different route.
+
+**The digest must agree with the parameters.** A persisted id read from an
+artifact carries name, version, parameters, and digest as independent values
+(`engine/src/artifacts/strategy_artifact.cpp:2579-2580`;
+`engine/src/resident/resident_policy.cpp:545-547,624-626`). The predicate
+recomputes `abstraction_digest(name, version, parameters)` and rejects a
+mismatch, mirroring the check the codebase already applies to the card identity
+(`engine/src/artifacts/strategy_artifact.cpp:2088,2878`). Without it a
+hand-edited parameter line could claim a cap the digest does not cover.
 
 ### Tree-shape witness
 
@@ -341,12 +416,30 @@ checkpoint tree shape does not match the current tree
 (expected <hex>, found <hex>); refusing resume
 ```
 
-A cap difference is one instance of a shape mismatch. The witness is **strictly
-stronger for row validity** than a cap field — it also catches a sizing or
-stack change that alters any action target or the tree shape, and a node-kind
-change — and it never rejects a resume whose rows are valid, including two
-different caps that happen to produce identical trees, which is the correct
-outcome.
+The witness is a **conservative whole-tree equality check**, and that is a
+different thing from a per-row validity check. It is worth being precise,
+because a prior draft claimed a no-false-positive guarantee the design does not
+have:
+
+- **It cannot miss.** Two trees with the same witness are treated as one shape,
+  so any difference that moves any node's ordinal or menu is rejected. A cap
+  difference is one instance; a sizing, stack, contribution, or node-kind change
+  are others.
+- **It can over-reject, and that is accepted.** Validity is per stored row;
+  identity is per tree. A change confined to a subtree that holds no stored rows
+  leaves every row valid and still moves the witness, so the class retrains
+  instead of resuming. The cost is one class's training time, and the operation
+  is idempotent. A check that never over-rejected would have to compare rows
+  positionally against a tree it cannot yet name as the same tree — which is the
+  defect.
+- **Two different caps that produce identical trees resume, correctly.** The
+  witness sees one shape, and rows trained under one cap are valid under the
+  other because the tree — and therefore every node and menu — is the same. This
+  is the one case where "different configuration" and "valid resume" coexist,
+  and the witness gets it right by construction rather than by exemption.
+
+The property the RFC claims is therefore *soundness*, not *completeness*: never
+accepts a mismatched tree, may reject a matched row set.
 
 The checkpoint extension is a persisted-format change. A version-1 file is
 **discarded, not refused**: `preflight_resume` catches the version failure as
@@ -493,11 +586,14 @@ vacuous for a `uint8_t`.)
    draft implied it did. `engine/benchmarks/preflop_nash_conv.cpp:56-64`
    reconstructs an identity by trying three mints against a persisted digest and
    then asserting equality. After this RFC a persisted id carrying
-   `|max-raises=1` matches none of the three mints and the benchmark throws. Its
-   default input is `artifacts/preflop-profile/preflop-profile.db`
-   (`:35`) and `artifacts/preflop-profile-6way/manifest.json:29` records
-   `max_raises_per_street: 1`, so this is reachable, not theoretical. That call
-   site changes to pass the recovered cap — it is added to the producer list and
+   `|max-raises=1` matches none of the three mints and the benchmark throws. The
+   benchmark's *default* invocation stays cap 0 and keeps working: its default
+   input `artifacts/preflop-profile/preflop-profile.db` (`:35`) has a manifest
+   with no `max_raises_per_street` key at all. The break requires passing
+   `artifacts/preflop-profile-6way`, whose manifest records
+   `max_raises_per_street: 1` (`:29`), as an explicit argument. That is a
+   supported invocation and it is the one that must keep working, so the call
+   site changes to pass the recovered cap; it is added to the producer list and
    to stage 1. No other load path recomputes the action digest
    (`strategy_artifact.cpp` recomputes only the card digest at `:2088` and
    `:2878`), so the "inert records" claim for stale artifacts otherwise holds.
@@ -519,12 +615,18 @@ vacuous for a `uint8_t`.)
   direct unit test is possible without a new seam, which this RFC does not add.
 - **Witness.** A stored-constant test on a known tree; changing one node's
   action target, one node's kind, or the tree size each moves the digest.
-- **Refusal.** A checkpoint written for a smaller tree is refused by name. The
-  regression test is defect B from Motivation — `.sections` deleted, checkpoint
-  kept, stack or contribution changed — because that is the sequence no digest
-  check covers. It previously resumed stale rows and must now refuse once. The
-  same sequence with a changed **cap** must refuse earlier, at the abstraction
-  digest, confirming the two mechanisms cover disjoint cases.
+- **Refusal.** A checkpoint written for a different tree is refused by name
+  before `state.rows` is assigned. The regression test is defect B from
+  Motivation — `.sections` deleted, checkpoint kept, stack or contribution
+  changed — with an input chosen so that some stored row's ordinal shifts onto a
+  node carrying the *same* menu, which is the case `validate_initial` accepts and
+  the witness catches. The test asserts the silent-association result on a
+  build with the witness disabled, and the refusal with it enabled, so the
+  regression is demonstrated rather than asserted. The same sequence with a
+  changed **cap** must refuse earlier, at the abstraction digest, confirming the
+  two mechanisms cover disjoint cases. A separate case asserts the accepted
+  over-rejection: a change confined to an untrained node refuses although every
+  stored row is valid.
 - **Mid-street root.** A subgame rebuilt mid-street reports the same legal
   action count as the live state.
 - **Project gates**: full Engine Build Contract, ASan, and a `grep` for
@@ -606,19 +708,22 @@ halts it.
   `engine/`, `apps/`, `bin/`, and `tools/` returns zero hits. Historical RFC
   text is exempt: `docs/rfcs/0025-off-tree-decision-handling.md:238` quotes the
   call and accepted RFCs are immutable, the same exemption RFC 0028 AC5 took.
-- **AC4**: A checkpoint written for a different tree shape is refused by name,
-  through **defect B**, which is the case G1 does not cover: with `.sections`
-  deleted, the checkpoint retained, and the stack or contribution changed, every
-  persisted digest still matches and the build refuses at the witness check
-  instead of resuming. The test also asserts the *negative* — the same sequence
-  with the **cap** changed refuses earlier, at the abstraction-digest check
-  (`flop_library.cpp:366-368`), so it is clear which mechanism caught which
-  case. The refusal is a hard build abort, not a per-class retrain: the throw
-  propagates through `train_one_class` to `build_library`'s
+- **AC4**: A checkpoint whose rows would land on the wrong nodes is refused by
+  name, through **defect B**, which G1 does not cover. Setup: `.sections`
+  deleted, checkpoint retained, stack or contribution changed by an amount that
+  shifts ordinal *k* onto a node carrying the same menu. The test asserts three
+  things: that a build with the witness disabled **accepts** the shifted rows
+  (demonstrating the silent association, not asserting it); that the same build
+  with the witness enabled refuses before `state.rows` is assigned
+  (`engine/src/flop_library/flop_library.cpp:372`); and that the **cap**-changed
+  variant refuses earlier, at the abstraction-digest check (`:366-368`), so it
+  is clear which mechanism caught which case. A fourth case asserts the accepted
+  over-rejection: a change confined to an untrained node refuses although every
+  stored row is valid. The refusal is a hard build abort rather than a per-class
+  retrain — the throw propagates through `train_one_class` to `build_library`'s
   `catch (...)`, which removes `.sections` and rethrows
-  (`engine/src/flop_library/flop_library.cpp:942-945`). The test asserts that
-  abort explicitly, because one stale class aborting a 1,755-class resume is a
-  real operational cost.
+  (`:942-945`) — and the test asserts the abort explicitly, because one stale
+  class aborting a 1,755-class resume is a real operational cost.
 - **AC5**: The tree-shape witness matches a stored constant for a known tree,
   and changing a node's action target, a node's kind, or the tree size each
   changes it.
