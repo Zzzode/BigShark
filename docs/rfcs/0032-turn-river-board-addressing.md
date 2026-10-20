@@ -246,7 +246,7 @@ board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
   | View | Contents | Consumers |
   | --- | --- | --- |
   | Runtime (`board()`, `players()`, `pot()`, `actor()`) | the replay cursor: real board of any length, true `pending`, correct actor, live `street_committed`, net-contributed refunds | `hero_decision`, `resolve_uniform`, `resolve_flop`, the adapter's legality check |
-  | Identity (`def()`) | `stacks`, `contributions`, `folded`, `pot`, `button`, `big_blind`, `preflop = false`, `terminal` — with **net** contributions, and `board`/`board_size` taken from `cursor.board()` | `same_root`, `cache_key`, `root_pot`, the certifier, `publicSeed` |
+  | Identity (`def()`) | `stacks`, `contributions`, `folded`, `pot`, `button`, `big_blind`, `preflop = false`, `terminal` — with **net** contributions — plus `board`/`board_size` from `cursor.board()` and, for a mid-street root, `street_committed`/`raise_rights`/`last_full_raise` | `same_root`, `cache_key`, `root_pot`, the certifier, `publicSeed` |
 
   **The identity def must be a valid `GameDef`, and that forces net
   contributions.** Two constraints decide every field:
@@ -263,21 +263,79 @@ board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
      the state reports.
 
   `pot()` sums `net_contributed()` (`game_definition.cpp:440-444`), and
-  `validate` reconciles contributions against the pot, so the only def that
-  satisfies both is one whose contributions are **net** and whose pot is their
-  sum. The current rebuild's gross/net mix is why it throws; copying it
-  unchanged would reproduce the throw.
+  `validate` reconciles contributions against the pot, so the def's
+  contributions must be **net** and its pot their sum. The current rebuild's
+  gross/net mix is why it throws; copying it unchanged would reproduce the
+  throw.
 
-  This is a **deliberate scope statement, not an implementation detail**: heads-up
-  postflop hands facing a bet, and every refunded hand, begin constructing for
-  the first time. They are not covered by "no resident-served response changed",
-  because none exists today to compare against — they were rejected before any
-  decision. AC5 states the subpopulation it applies to.
+  **Net contributions alone are not sufficient, and an earlier revision of this
+  paragraph claimed they were.** The two-seat branch has a *second* rule:
+  `if (!mid_street) require(def.contributions[0] == def.contributions[1])`
+  (`engine/src/poker/game_definition.cpp:135-137`), where `mid_street` is
+  derived from `street_committed > 0` (`:95-98`) — not from the contribution
+  values. So a heads-up node facing a bet still fails `validate` with net
+  contributions, because its contributions are unequal and its
+  `street_committed` is zero. The same holds for the short-all-in shape.
 
-  For the hands that *do* construct today (equal contributions, no refund),
-  contributions are already equal to their net values, so the identity def is
-  numerically identical to today's rebuild and every existing `same_root`
-  outcome is preserved; only the board comparison moves. A turn query differs
+  The identity def therefore carries `street_committed`, `raise_rights`, and
+  `last_full_raise` from the cursor when the street has a wager — by exactly the
+  rule `build_subgame_def_from_node` already uses and is already tested with
+  (`engine/src/resolver/subgame_resolver.cpp:357-369`): copy
+  `players()[p].street_committed` and `raise_rights` per seat, and set
+  `last_full_raise` to the live value only when some `street_committed` is
+  nonzero, leaving the `0` "street start" sentinel otherwise. This is **not** the
+  work the earlier draft did on the runtime — the runtime never needed these
+  fields, because the cursor already holds the correct `pending` set and actor.
+  The identity def needs them only to be a *valid* `GameDef`, and the values are
+  a straight copy from the cursor, not a re-derivation.
+
+  With this, both `validate` branches are satisfied: at a street-start root
+  (every `street_committed` zero) contributions are equal by construction, and
+  at a mid-street root the equality rule is relaxed and the mid-street branch
+  requires `last_full_raise >= big_blind` (`:230-232`) and at least one seat
+  still facing the wager (`:233-238`) — both true for a node the cursor already
+  validated as actionable.
+
+  This is a **deliberate scope statement, not an implementation detail**:
+  heads-up postflop hands facing a bet, and every refunded hand, begin
+  constructing for the first time. They are not covered by "no
+  resident-served response changed", because none exists today to compare
+  against — they were rejected before any decision. AC5 states the
+  subpopulation it applies to.
+
+  A refunded hand is **equal after the refund**, so it validates as an ordinary
+  street-start root. This is not an assumption: `close_street()` calls
+  `refund_unmatched()` (`engine/src/poker/game_definition.cpp:577-578`), so by
+  the time a street is closed the unmatched excess has already been returned and
+  the net values have converged. The rebuilder therefore never sees a
+  street-start root with unequal net contributions, and if one ever appears the
+  seam's `validate` rejects it — the correct outcome for an inconsistent ledger,
+  not a gap to paper over.
+
+  The two classes that *do* carry unequal net contributions are the ones with a
+  live wager on the current street, and those are exactly the ones the
+  mid-street fields make valid.
+
+  **The short-all-in cell is named rather than left implicit.** A heads-up node
+  where the short seat has *no chips left* and the wager is already settled has
+  unequal `street_committed` values with no seat facing a wager, so
+  `validate`'s mid-street branch rejects it (`:233-238` requires
+  `facing_wager >= 1`). This is not a case the reducer produces — an unmatched
+  excess is refunded at street close (`:577-578`), and a seat that shoves is
+  answered or the street does not close — so the state is inconsistent by
+  construction. If it appears, the seam's `validate` throws and the request is a
+  `ReplayMiss`, which is correct. AC1's fixture set does not include it, and the
+  AC says so instead of implying universal coverage.
+
+  For the hands that *do* construct today — a street-start root with equal
+  contributions and no refund — contributions already equal their net values and
+  every `street_committed` is zero, so the identity def is numerically identical
+  to today's rebuild and every existing `same_root` outcome is preserved; only
+  the board comparison moves. For a mid-street root the identity def now carries
+  nonzero `street_committed`, which the old path left at zero — but every record
+  is flop-rooted and street-start, and `same_root` does not compare
+  `street_committed` at all (`engine/src/resident/resident_policy.cpp:53-87`), so
+  no matching outcome changes on that axis either. A turn query differs
   only in `board_size`, which is the property the whole design rests on and
   which AC1 tests directly.
 
@@ -748,9 +806,13 @@ replay**, not surfaced to an operator in real time.
 
    A second, latent form: `same_game_def` compares `last_full_raise`,
    `street_committed`, and `raise_rights` (`engine/src/poker/game_definition.cpp:275`,
-   `:285`), which the identity def leaves at zero. No River path calls that
-   predicate today, so the omission is safe now; if one ever routes `def()`
-   through it, the identity def will silently mismatch.
+   `:285`). The identity def now carries them for a mid-street root and leaves
+   them zero at street start, so the trap is **shape-dependent**: a future caller
+   routing `def()` through that predicate would match on one class of hand and
+   silently mismatch on another, which is harder to notice than a uniform
+   mismatch. No River path calls it today (`same_root` does not compare these
+   fields, `engine/src/resident/resident_policy.cpp:53-87`), so it is latent —
+   but the shape dependence is the reason to note it.
 5. **A four-card state reaches code that assumes a three-card board.**
    `GameState::board()` now yields four or five cards from an adapter-built
    state, and any remaining `i < 3` or `3 + street` arithmetic that this RFC
@@ -883,15 +945,22 @@ whoever schedules the work.
   | Board assembly (`:1087-1093`, `:1191-1198`) | integration, synthetic record |
 
   The identity row is the one that would otherwise pass while the design is
-  broken, so its assertions are enumerated rather than described. For every
-  postflop shape in the fixture set — heads-up and 6-max, flop/turn/river, equal
-  and unequal contributions, with and without a refund — `out.state` must
-  satisfy: **`poker::validate(out.state->def())` passes**; `def().board_size ==
+  broken, so its assertions are enumerated rather than described. The fixture
+  set is the cross product of {heads-up, 6-max} × {flop, turn, river} ×
+  {street-start, facing a bet} × {with, without a refund}, and for every cell
+  `out.state` must satisfy: **`poker::validate(out.state->def())` passes**; `def().board_size ==
   board().size()`; `def().board` equals `board()` element for element;
   `def().preflop == false`; `def().pot == pot()`; and — the property the whole
   design rests on — a **flop** query against a flop-rooted record still
   **matches** `same_root`, while the same record compared to a turn query
   differs only in `board_size`.
+
+  The "facing a bet" axis is not decoration: it is the cell that fails without
+  the mid-street fields. An earlier revision of this AC listed "equal and
+  unequal contributions" without saying which *cause* the inequality, and an
+  inequality with no live wager cannot be validated at all — so the axis is the
+  wager, and the unequal-but-street-start cell is excluded because
+  `close_street()` refunds before the street closes (see the Pipeline section).
 
   The `validate` assertion is the seam's rule, not a formality. `GameState`'s
   documented contract is "`validate(def)` first"
