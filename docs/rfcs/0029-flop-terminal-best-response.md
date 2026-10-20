@@ -19,7 +19,7 @@ independent reasons. Its walks do not model `Phase::Frontier`, so a
 flop-terminal game either returns zeros, dereferences an empty optional, or
 spins forever; and no adapter converts the resident serving path into the
 `stage6::BehaviorPolicy` those walks consume. This RFC fixes both, settles the
-definition of exploitability (there are two, not three), and adds a reference
+definition of exploitability (there are three, not two), and adds a reference
 document. It changes no strategy and publishes no strength claim.
 
 ## Motivation
@@ -183,7 +183,7 @@ interchangeable.
   unacceptable.
 - **Measure the served path.** The adapter wraps `hero_decision`, so
   canonicalization and the zero-reach post-filter are inside the measurement.
-- **One number, one definition, and label the other.**
+- **One number, one definition, and label the others.**
 - **An estimate is labelled an estimate** in code, output, and docs.
 
 ## Proposed Design
@@ -303,7 +303,7 @@ through `ResidentPolicySet`; if a decode detail is not, the RFC forbids widening
 its visibility unilaterally — that is a cross-module boundary change and needs
 its own decision (see Dependency Rules).
 
-### Two definitions, labelled
+### Three definitions, labelled
 
 The n-seat BB/seat/hand rule is implemented once, in the offline eval target.
 Because the pooled walk is exact on its fixtures, the result is a single number
@@ -358,15 +358,30 @@ not "the driver passes an evaluator"; it is:
    `exact_omniscient_deviation_utility`
    (`engine/include/bs/stage6/exact_oracle.hpp:60-114`) a required
    `const FrontierEvaluator&` parameter, and thread it into the internal walks.
-2. Migrate every caller. The set is 42 call expressions across
-   `engine/tests/test_stage6_simulator.cpp` (16),
-   `engine/tests/test_stage6_br_estimator.cpp` (19),
-   `engine/tests/test_postflop_frontier.cpp` (3),
-   `engine/tests/test_postflop_templates.cpp` (1),
-   `engine/benchmarks/subgame_nash_conv.cpp` (2), and
-   `engine/src/stage6/br_estimator.cpp:865` (1). Every one passes `NoFrontier`
-   except the two `test_postflop_frontier.cpp` sites that mean to exercise a
-   frontier and the new driver.
+2. Migrate every caller. The set is **34 call expressions**: 
+   `engine/tests/test_stage6_simulator.cpp` (14),
+   `engine/tests/test_stage6_br_estimator.cpp` (17),
+   `engine/tests/test_postflop_frontier.cpp` (1),
+   `engine/tests/test_postflop_templates.cpp` (1), and
+   `engine/src/stage6/br_estimator.cpp:865` (1). An earlier revision said 42
+   across six files, and both halves were wrong: the numbers were produced by
+   counting *comment lines* that mention a name, and
+   `engine/benchmarks/subgame_nash_conv.cpp` contains **no** oracle call at all —
+   it does not even include the header, and its two mentions (`:15`, `:567`) are
+   prose describing an algorithm.
+
+   **Every one of the 34 passes `NoFrontier`**, and the new driver is the only
+   site that passes a real evaluator. An earlier revision exempted "the two
+   `test_postflop_frontier.cpp` sites that mean to exercise a frontier", which is
+   wrong: that file has exactly one oracle call (`:348`) and its def is
+   `TerminalDepth::River` on a five-card board
+   (`engine/tests/test_postflop_frontier.cpp:288-291`), so it is not
+   frontier-bearing either. The file's genuine frontier work uses the frontier
+   tables directly and never calls an `exact_*_utility` entry point. No existing
+   call site anywhere in the repository sets `TerminalDepth::Flop`, so the
+   exception list is empty — a fact worth stating, because an implementer
+   following an inverted list would wire a real evaluator into a
+   River-terminal fixture.
 
 Making the parameter required rather than defaulted is deliberate: a defaulted
 `NoFrontier` would let a new frontier-bearing caller silently throw at runtime
@@ -375,7 +390,7 @@ remove. AC1 asserts the count so the migration is checked, not estimated.
 
 ### Reference document
 
-`docs/reference/exploitability.md` (new) records both definitions, which
+`docs/reference/exploitability.md` (new) records all three definitions, which
 harness computes what, the fixture conventions, and the labeling rule. It is
 registered in `docs/README.md` in the same change.
 
@@ -383,6 +398,11 @@ registered in `docs/README.md` in the same change.
 
 - The adapter lives in the offline eval surface and may depend on
   `bigshark_resident` and `bigshark_solver`.
+- **The BB/seat/hand formula moves into `bigshark_solver`.** That is forced:
+  `bigshark-subgame-nash-conv` links only that target
+  (`engine/CMakeLists.txt:594-599`), so a shared implementation both harnesses
+  call cannot live in a benchmark. The solver library gains one pure arithmetic
+  function with no new link dependency of its own.
 - It must not be linked into `bigshark_service`, the engine host, or any live
   binary. The enforcement is a linked-symbol `nm` scan plus the fixed
   seven-source include closure; a header-only addition must be added to
@@ -510,11 +530,23 @@ catches a mistake there.
 
 1. **Which abstracted game is the standing reproduction target?** Decided here
    rather than deferred: the target is a **2-seat flop-rooted flop-terminal
-   game with a 4-combo-per-seat range**, the smallest game where the pooled walk
-   enumerates and a frontier leaf is still reached. Its NashConv is a property of
-   that abstracted game, not of the shipped library, and the reference document
-   says so. A full-range six-seat figure is out of scope (Non-Goals).
-2. **Pooled or sampled best response?** Decided: pooled, on fixtures where it
+   game with a 4-combo-per-seat range, `stack = 10`, `contribution = 2`** (a
+   5 BB game). It is the smallest game where the pooled walk enumerates and a
+   frontier leaf is still reached, and it is the deepest stack at which the
+   deviation menu contains the library's menu — measured: 0 uncontained nodes at
+   2 and 5 BB, 1 at 7 BB, 29 at 20 BB, 394 at 100 BB (see AC4). Its NashConv is a
+   property of that abstracted game, not of the shipped library, and the
+   reference document says so. A deeper fixture needs the
+   `declared_behavior_menu` base-term fix first; a full-range six-seat figure is
+   out of scope (Non-Goals).
+2. **Should `declared_behavior_menu` include `actor_committed`?** It currently
+   omits it (`engine/src/behavior/behavior_policy.cpp:75-77`) while the tree adds
+   it (`engine/src/abstraction/abstraction.cpp:211,225`), so the reference
+   deviation menu is narrower than the tree at every re-raise node. Fixing it
+   would let a deep fixture satisfy containment, but it widens the estimator's
+   published coarse-game NashConv — a number RFC 0015 measured — so it needs its
+   own before/after measurement and is not done here.
+3. **Pooled or sampled best response?** Decided: pooled, on fixtures where it
    enumerates. No sampling estimator is in scope, so no sampling error is
    introduced.
 
@@ -522,8 +554,12 @@ catches a mistake there.
 
 - **AC1**: The five named walks handle `Phase::Frontier` through a required
   evaluator reference; `HandSimulator` and `PracticeTable` throw the named
-  error instead; and **no** phase switch has a `default`, so `-Wswitch` remains
-  live for a future enumerator.
+  error instead; and **no phase switch in the five named walks has a
+  `default`**, so `-Wswitch` remains live for a future enumerator. The scope is
+  those five walks plus the two throw-only walkers: `mccfr_trainer.cpp:495-519`
+  and `nseat_trainer.cpp:598-611` already switch on `Phase` and already handle
+  `Frontier` without a `default`, so they need no edit and the AC does not
+  demand one.
 - **AC2**: A table-driven test drives each named public entry point with one
   state per `poker::Phase`; a **preflop-rooted** flop-terminal definition makes
   `HandSimulator` throw the named error instead of looping.
@@ -563,8 +599,14 @@ catches a mistake there.
   artifact cannot serve this fixture and is not used by any AC.
 - **AC4**: `bigshark-stage6-resident-nash-conv` produces a single NashConv
   number (no interval: the pooled walk is exact on its fixture) with the
-  evaluator's identity, for the 2-seat 4-combo fixture named in Open Question 1,
-  **with zero policy misses**. The fixture's `GameDef` is the library's declared
+  evaluator's identity, for the 2-seat 4-combo fixture named in Open Question 1
+  (`stack = 10`, `contribution = 2`), **with zero policy misses**, **with a
+  measured uncontained-node count of 0**, and with both recorded in the reference
+  document. The uncontained count is part of the AC rather than a diagnostic
+  because the fixture's depth is the only thing making containment true: the
+  declared deviation menu omits `actor_committed` and diverges at every re-raise
+  node, so a deeper fixture would silently print a negative figure (see the
+  measurement table in Verification Plan). The fixture's `GameDef` is the library's declared
   root verbatim, reconstructed from the manifest's **scalar** fields plus the
   library's construction rule: `LibraryManifest` carries `player_count`, `stack`,
   `contribution`, `big_blind`, and per-class `canonical_board`
@@ -577,17 +619,54 @@ catches a mistake there.
   (`engine/src/resident/resident_policy.cpp:53-87`), and a mismatch would make
   every lookup miss while still "producing a number" that measures the fallback.
 
-  **The figure must be non-negative, and the driver must check why.** The
-  deviation menu is `declared_behavior_menu`, built from `kPotFractions`
-  (`{1/3, 1/2, 3/4, 1/1, 3/2}`, `engine/src/behavior/behavior_policy.cpp:18-24`)
-  plus min and cap, while the resident rows are sealed under the library's own
-  `ActionAbstraction` schedule (`{1/3, 3/4, 3/2}` bets, `{1/2, 1}` raises,
-  `engine/src/abstraction/abstraction.cpp:81-90`). `exact_oracle.hpp:104-109`
-  warns that BR−profile can go negative when the profile's support is not
-  contained in the declared menu — an honest property of the quantity, and a
-  meaningless number if it happens here. AC4 therefore requires the driver to
-  assert menu containment for every resident row it serves and to fail loudly
-  rather than print a negative figure, instead of leaving it to be read.
+  **The deviation menu does not contain the library's menu, and the cause is a
+  formula defect, not a fraction-set difference.** An earlier revision blamed the
+  differing fraction sets; that is the wrong axis, and the fractions overlap. The
+  real divergence is the **base term**:
+
+  | | Target formula | Site |
+  | --- | --- | --- |
+  | Tree (`ActionAbstraction`) | `base + ceil_fraction(pot_after_call, f)`, `base = actor_committed + call_amount` | `engine/src/abstraction/abstraction.cpp:211,225` |
+  | Declared (`declared_behavior_menu`) | `call + f * (pot + call)` — **omits `actor_committed`** | `engine/src/behavior/behavior_policy.cpp:75-77` |
+
+  The two agree only when `actor_committed == 0`, which is exactly a first bet.
+  At any re-raise node they diverge, and the tree's targets can fall outside the
+  declared menu while remaining legal: at 100 BB, a bet-to-3 → raise-to-11 node
+  gives a tree menu of `Raise 11/15/23/200` against a declared menu of
+  `Raise 11/12/16/20/28/200`. Measured over the 2-seat flop-terminal graph, the
+  uncontained-node count grows with depth: 0 at 2 and 5 BB, 1 at 7 BB, 5 at
+  10 BB, 29 at 20 BB, 141 at 50 BB, 394 at 100 BB.
+
+  So AC4's containment assertion **is satisfiable only for a shallow fixture**,
+  and the RFC never pinned `stack`/`contribution`. That is a fixture finding the
+  AC has to absorb, and there are three honest options:
+
+  1. **Fix `declared_behavior_menu` to include `actor_committed`.** It already
+     receives the `GameState` and can read `state.players()[seat].street_committed`
+     (`engine/include/bs/game_definition.hpp:133-136`), so the base is available.
+     This makes the declared menu agree with the tree by construction and makes
+     containment hold at every depth. It also changes a **published reference
+     quantity**: the estimator's coarse-game NashConv would move, because its
+     deviation menu gets larger. That is a behaviour change with its own
+     measurement obligation, not a drive-by fix.
+  2. **Pin a shallow fixture** (≤5 BB stacks, where containment holds) and state
+     that the reported figure is for a shallow game. Honest, cheap, and weak: at
+     2-5 BB the abstracted game has almost no betting tree, so the number says
+     little about the library's real play.
+  3. **Keep a deep fixture and record the divergence** as a permanent, named
+     limitation, with AC4 reporting the uncontained-node count beside the figure
+     and declining to call the result an exploitability bound.
+
+  **This RFC takes option 2 for the deliverable and files option 1 as a
+  follow-up**, because option 1 changes an existing published number and cannot
+  be measured by this RFC's own driver. Concretely: Open Question 1 pins the
+  fixture at `stack = 10`, `contribution = 2` (5 BB, the deepest point where
+  containment held in measurement), AC4 records that choice and the measured
+  uncontained-node count (0), and the reference document states in one sentence
+  that the figure describes a shallow abstracted game and that deeper fixtures
+  need the `declared_behavior_menu` base-term fix. The assertion stays — it is
+  what makes the shallow choice safe rather than assumed — and it will fire if
+  anyone deepens the fixture without doing option 1 first.
 
   **Frontier settlement must be zero-sum-checked.** `settle_fold`/`settle_showdown`
   carry a zero-sum test (`engine/src/stage6/br_estimator.cpp:313-335`); the new
@@ -602,7 +681,13 @@ catches a mistake there.
   This is not satisfied by writing the formula in the new driver alone: the
   existing implementation is in `subgame_nash_conv.cpp`, that target links only
   `bigshark_solver` (`engine/CMakeLists.txt:594-599`), and the new driver would
-  otherwise become the second copy — the exact duplication the AC forbids. The
+  otherwise become the second copy — the exact duplication the AC forbids.
+
+  **Where it goes:** the formula lives in **`bigshark_solver`**, because that is
+  the only target `bigshark-subgame-nash-conv` links and the new driver links it
+  too. This is a new dependency direction (a benchmark-owned arithmetic helper
+  moving down into the solver library) and it is recorded as such under
+  Dependency Rules rather than left implicit. The
   two pot-relative harnesses carry comments naming their different definition,
   `stage6_measurement_driver.cpp`'s summed-chips output keeps its own documented
   label, and `docs/reference/exploitability.md` states all three and is
