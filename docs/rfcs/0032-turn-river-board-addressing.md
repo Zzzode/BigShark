@@ -196,32 +196,49 @@ digest fix are therefore a pair, not a change and an optional extra.
 The adapter stops clamping; the identity helpers start comparing the whole
 board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
 
-- `resident_mapper.cpp:504-532` builds the postflop `GameDef` from the actual
-  board length and cards instead of clamping to three, **and carries the
-  mid-street root fields**. This second half is not optional and an earlier
-  draft omitted it. The def currently copies `stacks`, `contributions`, and
-  `folded` (`:525-529`) and never sets `street_committed`, `raise_rights`, or
-  `last_full_raise` — a grep over the file finds those three names only as reads
-  of the replay cursor (`:378-379`, `:423`). `poker::validate` then rejects the
-  shape in the two-seat profile: a rooted board requires either equal
-  contributions (`engine/src/poker/game_definition.cpp:135-137`) or a mid-street
-  def, and a street-start def must carry `last_full_raise == 0` (`:239-241`).
-  A heads-up turn spot where the seats have not contributed equally — the
-  ordinary case when facing a bet — throws `unmatched contributions at
-  closed-street root`. Carrying the three fields from `cursor` (which already
-  has them, `:378-379`) makes it a valid mid-street root, and the constructor
-  seeds `pending` and the actor from them (`:392-422`).
-- Carrying `street_committed` also fixes hero attribution, which the board
-  change alone does not. The returned state is built from `cursor`'s stacks and
-  contributions (`:526-528`) and its actor is then the first seat clockwise of
-  the button that can act (`engine/src/poker/game_definition.cpp:415-422`) — not
-  necessarily the seat facing the wager. `hero_decision` keys off
-  `*state.actor()` (`engine/src/resident/resident_policy.cpp:1082,1094`), so
-  without the mid-street fields a turn decision can be answered for the wrong
-  seat. This is a pre-existing defect that the flop clamp hides: at a flop
-  street-start root the seat clockwise of the button *is* the actor by the
-  rules. Preserving the board without preserving `street_committed` would
-  surface it on every turn spot.
+- `resident_mapper.cpp:504-532` stops rebuilding a postflop `GameDef` and
+  **returns the replay cursor instead**. This is smaller than the alternative
+  and an earlier draft took the alternative, so the comparison is recorded.
+
+  The cursor already *is* the decision node: `reconstructHandState` replays
+  every transition event through `cursor = cursor.after_card(...)` and
+  `cursor = cursor.after_action(...)` (`:351`, `:392`), then validates that the
+  cursor's street, board size, actor, and pot match the declared snapshot
+  (`:407-413`). It holds the real board of any length, the true pending set, the
+  correct actor, the live `street_committed`/`raise_rights`/`last_full_raise`,
+  and the net-contributed refunds. The flop-rooted `GameDef` is built by
+  discarding all of that and re-deriving it from `stacks`, `contributions`, and
+  `folded` alone (`:525-529`).
+
+  The alternative — keep the rebuild and copy three more fields onto it — was
+  the previous draft, and it does not work. `GameDef` has no field for "this
+  seat has already acted on the current street" (`engine/include/bs/game_definition.hpp:75-164`;
+  `pending` exists only on the runtime `GamePlayer`, `:209`). When a turn is
+  checked to the hero, every `street_committed` is zero, so the constructor
+  takes its street-start branch, marks every live seat pending, and picks the
+  seat clockwise of the button (`engine/src/poker/game_definition.cpp:395-397,415-422`)
+  — which is the hero's opponent when the hero acted first. `hero_decision`
+  keys off `*state.actor()` (`engine/src/resident/resident_policy.cpp:1082,1094`)
+  and `resolve_uniform` off `*node.actor()`
+  (`engine/src/resolver/subgame_resolver.cpp:425`), so the decision would be
+  computed for the wrong seat on exactly the check-through line this RFC exists
+  for. Returning the cursor fixes that by construction rather than by adding a
+  field that `GameDef` does not have.
+- The rebuild also mis-states the pot when a refund happened: it copies gross
+  `contributed` (`:527`) while `poker::validate` reconciles the pot against
+  contributions (`engine/src/poker/game_definition.cpp:135-139`, `:199-208`) and
+  `GameState::pot()` uses `net_contributed()`
+  (`engine/include/bs/game_definition.hpp:210`). A heads-up turn with gross
+  `{30,20}` and pot 45 throws `unmatched contributions at closed-street root`.
+  The cursor carries the correct net values, so this divergence disappears with
+  it. A field-by-field comparison is in AC1.
+- The cursor path must still be pinned: `out.state` is a
+  `std::optional<poker::GameState>` (`engine/src/protocol/mappers.hpp:65-70`),
+  the cursor is a local in the replay (`:337`), and only the preflop branch
+  currently returns a state (`:503`). The postflop branch assigns
+  `std::move(cursor)`, and `out.hero_actor` (`:159`, validated against the
+  cursor at `:411`) becomes the source of actor identity rather than a
+  re-derivation.
 - `same_root` in both places compares **`board_size`, then all `board_size`
   cards**. The size equality alone is not enough: two four-card states that
   differ only in `board[3]` both have `board_size == 4`, so a three-card loop
@@ -291,13 +308,20 @@ Two honest consequences, both reflected in AC1 rather than papered over:
 1. These are **latent** fixes: correctness-by-construction for the day a
    four- or five-card record exists. They are included because leaving them
    three-card would make the first such record silently wrong.
-2. They are verified by **`[,)`-input unit tests of the same logic**, which
-   requires either exposing a test seam or accepting an integration test that
-   places a synthetic four-card record into a `ResidentPolicySet`. This RFC
-   chooses the latter and states it: the test builds a set directly, bypassing
-   `build_v2_game`, and drives `public_belief`/`hero_decision`. If that proves
-   impossible without widening an interface, the site gets a named seam in the
-   same commit and this paragraph is updated — it is not silently skipped.
+2. Verifying them **requires a new seam, and this RFC says so unconditionally**.
+   An earlier draft presented an integration test as the chosen route with a
+   seam as fallback; that was wrong. `Record` is forward-declared and `records_`
+   is private (`engine/include/bs/resident_policy.hpp:313,335`), `build()` is the
+   only constructor (`:270-272`), and a four-card def passed through it hits
+   `build_v2_game` and lands as `LoadFailed`, never advertised. There is no way
+   to place a synthetic four-card record without widening the interface.
+
+   The seam is therefore part of the change: a construction entry point that
+   accepts a pre-built game without a board-size refusal, marked with its
+   single caller and its lifetime in the header comment. It is **not** a
+   compatibility shim — it exists so the sites can be tested, and the
+   no-legacy rule forbids leaving it in place once a turn-rooted record makes it
+   unnecessary. AC1 states this as a required part of the commit.
 
 ### Behavior change and its gate
 
@@ -427,12 +451,52 @@ field's optionality:
 - The adapter already treats the digest as optional
   (`platforms/river-club/src/mapper.ts:1063`, `:1089` spreads it only when
   defined), so no client change is required.
+- The metadata for these rows also misreports the source:
+  `mapExpandedResponseImpl` sets `reason_code = "blueprint"` and
+  `cache_hit = true` for any `SOLVER_SOURCE_BLUEPRINT` row
+  (`engine/src/protocol/response_mapper.cpp:246-247`), while RFC 0025 specifies
+  `"resolving"`, `SOLVER_SOURCE_RESOLVING`, and `cache_hit = false` for a
+  subgame row (`docs/rfcs/0025-off-tree-decision-handling.md:340-344`). Stage 1
+  corrects this too, because AC4's source accounting reads those fields and
+  would otherwise classify every subgame row as a blueprint row. The adapter's
+  reason precedence (`platforms/river-club/src/mapper.ts:1049-1051`) already
+  prefers `diagnostic_reason`, so the label reaches the log either way — but
+  reporting a cache hit that did not happen is a false signal in its own right.
 - Losing the digest is not a silent quality regression: the response carries
   `guarantee_level` and the diagnostic token, and both reach the results log.
 
-This changes the wire for subgame-served rows from an error to a strategy. It
-does not touch any flop or preflop response: those rows carry a real digest
-today and keep it.
+**The emit side must clear the field, not set it empty.** `mapExpandedResponseImpl`
+currently writes `metadata->set_artifact_sha256(...)` unconditionally
+(`engine/src/protocol/response_mapper.cpp:248`); for an empty digest that is
+*presence with a zero-length value*, which the RFC's own rule would still
+reject. It must call `clear_artifact_sha256()` when the row has no artifact, and
+AC3 must assert `has_artifact_sha256() == false`, not an empty string.
+
+**The relaxation must be scoped, not global.** `mapExpandedResponseImpl` serves
+resident rows too (`:311-326`), and `mapResolvedResponse` labels an Approximate
+outcome `SOLVER_SOURCE_BLUEPRINT` (`:324`), so the source cannot distinguish
+them. Relaxing the digest check globally would also accept a resident row that
+lost its digest, where the 64-character check is the only assertion. The
+relaxation is therefore keyed on the row having no artifact — which only the
+subgame branches produce — and every resident row still requires 64 characters.
+
+**This is a live flop change, and an earlier draft said the opposite.**
+`resolvingDecision`'s no-blueprint branch is reached whenever a root is
+advertised but the query matches none (`apps/engine-host/main.cpp:179-181`, whose
+own comment names "a seat count without a production flop library"), and
+`resolve_flop` is eligible exactly at `board.size() == 3`
+(`engine/src/resolver/subgame_resolver.cpp:469-472`) — which is what every
+postflop query is clamped to today. So today's empty-digest path is a **flop**
+path, and stage 1 converts those rows from `ERROR_CODE_INTERNAL` into an
+`approximate` strategy.
+
+That is very likely an improvement, but it is a real behaviour change with no
+replay evidence attached, and it must be measured rather than assumed. AC5 and
+the rollout stop condition are worded accordingly: *responses served from a
+resident record* are byte-identical; the previously-erroring no-resident-match
+path now returns a strategy. Stage 1 records its own before/after count on the
+same corpus AC4 uses, so the flop change is visible even though it is not the
+RFC's subject.
 
 ### Attribution: `turn_root_unserved`
 
@@ -486,10 +550,14 @@ replay**, not surfaced to an operator in real time.
   seat count; there is no per-seat-count switch, as above.
 - **The wire changes for subgame-served rows only.** A row that today maps to
   `ERROR_CODE_INTERNAL` maps to an `expanded_strategy` with `artifact_sha256`
-  unset. No flop or preflop response moves, and `proto/baseline/v2.binpb` (which
-  contains only the guarantee token) is unaffected. Clients that require the
-  digest field must treat it as optional — the adapter already does
-  (`platforms/river-club/src/mapper.ts:1063`).
+  absent. Responses served from a resident record do not move. `buf breaking` is
+  unaffected because no `.proto` file changes — `artifact_sha256` stays
+  `optional string` (`proto/bigshark/engine/v2/engine.proto:609`) and
+  `proto/baseline/v2.binpb` is the buf breaking-change descriptor baseline
+  (`package.json:29`,
+  `docs/reference/protobuf-engine-protocol.md:77`), not a response fixture, so it
+  neither moves nor needs to. Clients that require the digest must treat it as
+  optional — the adapter already does (`platforms/river-club/src/mapper.ts:1063`).
 
 ## Security and Operational Impact
 
@@ -519,9 +587,9 @@ replay**, not surfaced to an operator in real time.
 
 1. **The adapter change changes live decisions with no quality evidence, and
    this RFC does not claim the result is better.** What it claims is narrower:
-   the decision stops being made for the wrong game (a flop board and, without
-   the mid-street fields, possibly the wrong seat), and the outcome becomes
-   attributable. Whether a uniform-prior subgame solve beats the current
+   the decision stops being made for the wrong game — a flop board, and on a
+   checked-to line the wrong seat, both of which the current checkpointing
+   rebuild produces — and the outcome becomes attributable. Whether a uniform-prior subgame solve beats the current
    wrong-but-fast flop decision at five and six seats is **unmeasured** and this
    RFC supplies no evidence for it. *Mitigation:* the Stage 3 replay records
    action, source, and latency per seat count, so the difference is visible
@@ -579,18 +647,21 @@ replay**, not surfaced to an operator in real time.
 
 ## Rollout Plan
 
-1. **Digest repair, standalone.** Make `artifact_sha256` optional end to end in
-   the mapper, keeping RFC 0025's empty-digest semantics
-   (`docs/rfcs/0025-off-tree-decision-handling.md:345`). This lands **before**
-   the adapter change and is independently valuable: it fixes a turn spot the
-   subgame resolver already solves today. Gate: a subgame-solved response maps
-   to a strategy instead of `ERROR_CODE_INTERNAL`; every flop and preflop
-   response keeps its digest byte-identically.
+1. **Digest repair, standalone.** Clear `artifact_sha256` instead of setting it
+   empty, and accept an absent digest only for a row with no artifact, keeping
+   RFC 0025's semantics (`docs/rfcs/0025-off-tree-decision-handling.md:345`).
+   This lands **before** the adapter change. Gate: a subgame-solved response
+   maps to a strategy instead of `ERROR_CODE_INTERNAL`; a resident row that lost
+   its digest is still rejected; and the change's own before/after count on the
+   AC4 corpus is recorded, because **this stage changes a live flop path** —
+   today's no-resident-match flop query errors and will now return an
+   `approximate` strategy. That is outside this RFC's subject and is measured,
+   not assumed.
 2. **Baseline pin and site enumeration.** Add the failing-baseline test and
    enumerate every identity/truncation site with its own test. Gate: the
    baseline test fails as expected and the list is complete against a grep.
 3. **Board and mid-street preservation.** Adapter (board **and**
-   `street_committed`/`raise_rights`/`last_full_raise`), `same_root` (both),
+   returns the replay cursor), `same_root` (both),
    `canonical_query_board` narrowing, reach loops (both), record paths,
    prefix-board builder, board assembly. Gate: preservation, identity, and
    hero-attribution tests pass; the flop path is unchanged.
@@ -608,9 +679,12 @@ Order matters: stage 1 is a prerequisite for stage 3, because landing board
 preservation first would route live turn traffic into the digest error and turn
 a wrong-but-working decision into a mechanical check/fold.
 
-Stop conditions: any flop-path behavior change halts the rollout. A seat count
-that misses the latency criteria is **reported as a failing capability**, not
-quietly left on the old path — there is no old path to leave it on.
+Stop conditions: any change to a response **served from a resident record**
+halts the rollout. The stage-1 no-resident-match change is expected and
+recorded, not a stop condition — halting on it would halt on the stage itself.
+A seat count that misses the latency criteria is **reported as a failing
+capability**, not quietly left on the old path — there is no old path to leave
+it on.
 
 **The last gate cannot be discharged from the repository.** Step 5 needs a
 corpus that does not exist (`sessions/` is empty and gitignored), so this RFC
@@ -642,7 +716,7 @@ whoever schedules the work.
 
 ## Acceptance Criteria
 
-- **AC1**: The adapter change (board **and** the three mid-street fields) and
+- **AC1**: The adapter change (postflop state sourced from the replay cursor) and
   both `same_root` changes land in one commit; `same_root` does not compare
   `board_size` on the postflop branch today, so an adapter-only landing could
   match a four-card root against a flop record. Every truncation site is
@@ -657,16 +731,19 @@ whoever schedules the work.
   | Reach loop #1 (`public_reach.cpp:140`) | direct |
   | Reach loop #2 (`public_reach.cpp:164`) | direct |
   | Record paths `:355,544,549,574-576,621,628,672,679` | direct (assert `board_size`) |
+  | Postflop state source (`:504-532`) | direct: cursor returned, no `GameDef` rebuild |
+  | Gross-vs-net contributions (`:527`, refund case) | direct: net values preserved |
   | Prefix builder (`:861-872`) | integration, synthetic record |
   | Board assembly (`:1087-1093`, `:1191-1198`) | integration, synthetic record |
 
-  The last two rows are file-local in an anonymous namespace and unreachable
-  through `resolve_root` after the change; they are driven by placing a
-  synthetic four-card record into a `ResidentPolicySet` and calling
-  `public_belief`/`hero_decision`. If that requires a new seam, the seam lands
-  in the same commit and this table is updated — a test that copies the logic
-  does not count. Span contents are asserted explicitly rather than relying on
-  a sanitizer, which cannot detect this class (see the facts above).
+  The two anonymous-namespace rows require a **new seam**, and the RFC says so
+  unconditionally: `Record` is forward-declared and `records_` is private
+  (`engine/include/bs/resident_policy.hpp:313,335`) and `build()` refuses a
+  four-card def at `build_v2_game`, so a synthetic record cannot be placed
+  without widening the interface. The seam ships in the same commit, with its
+  single caller and lifetime documented, and a test that copies the logic does
+  not count. Span contents are asserted explicitly rather than relying on a
+  sanitizer, which cannot detect this class (see the facts above).
 - **AC2**: A baseline test pins today's truncating behavior and fails before the
   change.
 - **AC3**: A four- or five-card decision never arrives as `safe-fallback:*`.
@@ -703,9 +780,13 @@ whoever schedules the work.
   Because the corpus requires live play under separate authorization, this AC is
   not dischargeable from repository evidence alone. That makes `Implemented`
   unbounded, so it is stated as a rollout gate below rather than only here.
-- **AC5**: The flop path is behavior-identical — no artifact digest changes, no
-  resolver candidate changes for flop spots — and the full Engine Build
-  Contract passes with ASan clean and `check-rfcs` / `check-docs` passing.
+- **AC5**: Every response served from a resident record is behavior-identical —
+  no artifact digest changes, no resolver candidate changes — and the full
+  Engine Build Contract passes with ASan clean and `check-rfcs` / `check-docs`
+  passing. The **no-resident-match** path is *not* identical: stage 1 turns a
+  flop query that currently errors into an `approximate` strategy. AC5 asserts
+  the resident path byte-identically and requires stage 1's before/after count
+  for the other, rather than claiming a no-op it does not perform.
 
 ## Decision
 
