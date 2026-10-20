@@ -228,8 +228,16 @@ therefore end as:
 | `make_id` | `size-v1\n` `street=0 ...\n` … `street=3 ...\n` `|max-raises=<N>` |
 | `make_declared_id` | the same schedule, then `cover-seeds=declared-only\n` or `cover-seeds=min-and-cap\n`, then `|max-raises=<N>` |
 
-`<N>` is the decimal spelling of the `std::uint8_t`, no padding, no sign. The
-new token carries **no** trailing newline: it is the last thing in the string,
+`<N>` is the decimal spelling of the `std::uint8_t`, no padding, no sign.
+**It must be formatted as an integer, not streamed as a character.**
+`canonical_schedule` and `make_declared_id` build their strings with
+`std::ostringstream` (`engine/src/abstraction/abstraction.cpp:55-68,125-128`),
+and `out << std::uint8_t(1)` emits code point 1, not `"1"`. An implementer who
+appends with `out << max_raises` and one who uses `std::to_string` would mint
+different digests from the same configuration. Cast to `unsigned` (or use
+`std::to_string`) explicitly, and pin the result in a golden test.
+
+The new token carries **no** trailing newline: it is the last thing in the string,
 so a trailing newline would be a second, silent spelling of the same cap. The
 existing `\n` after `cover-seeds=` is left exactly as it is — changing it would
 move the declared digest for a reason unrelated to the cap. `cover-seeds=`
@@ -327,13 +335,38 @@ the predicate matches the family *and* the canonical schedule, and admits only a
 differing cap. This is the first place the new parameter parser becomes
 load-bearing, and it is the highest-risk item in the change.
 
-The predicate **fails closed** on anything it cannot parse. The parameter line
+**Two parsers, two contracts, and a prior draft conflated them.** An earlier
+revision gave `reconstruct_action_abstraction` the same strict predicate as the
+admissibility gates, which contradicts its own packed-library gap: an
+`MmapLibrary`-backed game carries an **empty** `AbstractionId`
+(`engine/include/bs/unified_game.hpp:40`, copied at
+`engine/src/resident/resident_policy.cpp:497`, passed at
+`engine/src/resolver/subgame_resolver.cpp:600-601`). A strict predicate rejects
+the empty id, so it could not "fall through to `ActionAbstraction(sizes)` and
+mint cap 0" as AC1 requires, and the throw would reach `resolvingDecision` —
+which is `noexcept` with a whole-body catch (`apps/engine-host/main.cpp:172,374`)
+— degrading every shipped turn/river subgame to a miss.
+
+The two contracts are therefore stated separately and neither is implicit:
+
+| Call site | Contract |
+| --- | --- |
+| `validate_request` (`nseat_trainer.cpp:870-873`), `solve.cpp:26-29,82-85` | **Strict.** Family, version, schedule, cap, and recomputed digest must all agree; anything else is refused. This is where a wrong admission trains a wrong tree. |
+| `reconstruct_action_abstraction` (`subgame_resolver.cpp:112-117`) | **Lenient, and only here.** A recognized family parses its cap; an unrecognized or empty id keeps today's fallback — `ActionAbstraction(sizes)`, cap 0 — because it is the documented packed-library gap (below), whose consequence is an uncapped menu, not a wrong tree. |
+
+The lenient branch is a **named gap with a named consequence**, not a silent
+default: it is the packed path, it is recorded as Open Question 3, and AC1
+asserts its behaviour rather than pretending it away. Both branches still
+reject a *recognized* family carrying a malformed token; only an unrecognized
+identity falls back.
+
+The strict predicate **fails closed** on anything it cannot parse. The parameter line
 is order-sensitive and deterministic (`engine/src/abstraction/abstraction.cpp:110-131`),
 so the cases are enumerable and each must reject rather than fall back to cap 0:
 
 | Parameter line | Result |
 | --- | --- |
-| no `|max-raises=` token | cap 0 — the literal pre-change line, the only accepted absence |
+| no `|max-raises=` token | **legacy, cap unknown** — see below |
 | `|max-raises=` with an empty or trailing-only value | reject |
 | a value above 255, non-numeric, or with trailing characters | reject |
 | a value whose canonical decimal spelling differs (`01`, `+1`, ` 1`) | reject |
@@ -341,6 +374,41 @@ so the cases are enumerable and each must reject rather than fall back to cap 0:
 | more than one `|max-raises=` token | reject |
 | identity name with a schedule that does not match the canonical one | reject (existing rule) |
 | a name/version pair other than `rfc0007-pot-fractions` v1, or `rfc0008-declared-coarse` v1 | reject |
+
+**A tokenless line is information loss, not cap 0, and reading it as 0 is the
+defect this RFC exists to close.** A prior revision accepted it as "the literal
+pre-change line", which is true as bytes and false as evidence: the line proves
+nothing about the cap that shaped the tree. This is concrete, not hypothetical
+— `artifacts/preflop-profile-6way/preflop-profile.db` stores
+`rfc0007-pot-fractions|1|422c245239c7a527` with 176 bytes of tokenless
+parameters (verified against the file), while its JSON manifest records
+`max_raises_per_street: 1`. Its tree was built capped; its identity cannot say
+so; the digest recomputes correctly from the old line and every new check
+passes. Reading it as 0 would hand the subgame resolver an uncapped menu for a
+capped artifact.
+
+The RFC therefore treats tokenless as **legacy, with the cap unknown**, and
+resolves it by rebuild rather than by guessing:
+
+- The parser reports "no token" as a distinct outcome, not as cap 0. The three
+  strict gates reject it, because a tree whose cap is unknown cannot be
+  certified admissible.
+- Stage 1 **rebuilds every artifact in use**, so the rebuilt set carries
+  explicit tokens and no strict path ever sees a tokenless line again. The set,
+  enumerated rather than summarized, with the cap each manifest records
+  (`ABSENT` meaning 0): `flop-library-6way-fullrange` (1), `preflop-profile`
+  (0), `preflop-profile-6way` (1), `preflop-profile-3way` (0), and `ac1-16w`
+  (0). `preflop-profile-validation` and `preflop-profile-postflop` are
+  validation and experimental outputs referenced by no document or code path
+  (verified by grep) and are deleted rather than rebuilt.
+- **The rebuild cannot be a CI gate, and the RFC does not pretend otherwise.**
+  `artifacts/` is entirely gitignored (`.gitignore:88`), so no test can assert
+  anything about it from a clean checkout. The check is therefore a local
+  pre-publication step: a tool that opens every `.db` under `artifacts/` and
+  fails on a tokenless `abstraction_parameters`, run by the operator as part of
+  stage 1 and recorded in the stage's evidence. AC9 states it as a local gate
+  with recorded output, not as a repository test, because a repository test
+  would pass vacuously on any machine without artifacts.
 
 `AbstractionId::operator==` includes `version`
 (`engine/include/bs/abstraction.hpp:103-106`), so a predicate that matched name
@@ -406,6 +474,18 @@ Every byte is little-endian, matching the rest of the format. Non-action nodes
 contribute their index, kind, and a zero action count, so a node-kind change
 also moves the witness.
 
+**Terminal payloads are deliberately omitted, and this is sufficient for the
+builder.** The witness does not hash stack/pot settlements or frontier values. A
+`GameDef` stack or contribution change reaches the hash through a menu first:
+`cover_total` and the pot-fraction targets derive from the opponent's stack and
+the pot (`engine/src/abstraction/abstraction.cpp:210,245`), and the flop
+builder fixes `kDefaultBigBlind` (`engine/src/flop_library/flop_library.cpp:536`),
+so no accepted parameter change can move a terminal's chips while leaving every
+menu byte-identical. The omission is a statement about this builder's parameter
+space, not a general one: a future caller that varies a terminal-only field
+would need it hashed, and that caller must revisit this section rather than
+assume the witness covers it.
+
 On resume the builder recomputes the witness for its own tree and requires
 equality **in `train_one_class`, before `state.rows = ckpt.rows`
 (`engine/src/flop_library/flop_library.cpp:372`)** — not later inside
@@ -421,15 +501,19 @@ different thing from a per-row validity check. It is worth being precise,
 because a prior draft claimed a no-false-positive guarantee the design does not
 have:
 
-- **It cannot miss.** Two trees with the same witness are treated as one shape,
-  so any difference that moves any node's ordinal or menu is rejected. A cap
-  difference is one instance; a sizing, stack, contribution, or node-kind change
-  are others.
+- **It rejects every difference that changes the hash.** Any change that moves
+  a node's ordinal or menu moves the witness. A cap difference is one instance;
+  a sizing, stack, contribution, or node-kind change are others. It cannot miss
+  *modulo a collision*: FNV-1a is non-cryptographic (Assumptions), so "cannot
+  miss" means "cannot miss without a collision" — the same threat model stated
+  under Security.
 - **It can over-reject, and that is accepted.** Validity is per stored row;
   identity is per tree. A change confined to a subtree that holds no stored rows
   leaves every row valid and still moves the witness, so the class retrains
-  instead of resuming. The cost is one class's training time, and the operation
-  is idempotent. A check that never over-rejected would have to compare rows
+  instead of resuming. The cost is one class's training time, and the retrain is
+  repeatable — the stale checkpoint is deleted first, so the next run starts
+  clean rather than aborting again. A check that never over-rejected would have
+  to compare rows
   positionally against a tree it cannot yet name as the same tree — which is the
   defect.
 - **Two different caps that produce identical trees resume, correctly.** The
@@ -594,7 +678,14 @@ vacuous for a `uint8_t`.)
    `max_raises_per_street: 1` (`:29`), as an explicit argument. That is a
    supported invocation and it is the one that must keep working, so the call
    site changes to pass the recovered cap; it is added to the producer list and
-   to stage 1. No other load path recomputes the action digest
+   to stage 1. For a **rebuilt** artifact the cap is in the token, so passing
+   it is straightforward. For a pre-change tokenless artifact there is nothing
+   to recover from the database; the sibling JSON manifest has the value but the
+   benchmark reads only the `.db`. The benchmark therefore rejects a tokenless
+   input with a message naming the missing token and the manifest key, rather
+   than silently running at cap 0 — a tokenless run would build a cap-0 tree
+   and report a NashConv for a tree the artifact was not trained on, which is
+   worse than failing. No other load path recomputes the action digest
    (`strategy_artifact.cpp` recomputes only the card digest at `:2088` and
    `:2878`), so the "inert records" claim for stale artifacts otherwise holds.
 3. **The witness is computed differently in two places.** *Mitigation:* one
@@ -620,12 +711,13 @@ vacuous for a `uint8_t`.)
   Motivation — `.sections` deleted, checkpoint kept, stack or contribution
   changed — with an input chosen so that some stored row's ordinal shifts onto a
   node carrying the *same* menu, which is the case `validate_initial` accepts and
-  the witness catches. The test asserts the silent-association result on a
-  build with the witness disabled, and the refusal with it enabled, so the
-  regression is demonstrated rather than asserted. The same sequence with a
-  changed **cap** must refuse earlier, at the abstraction digest, confirming the
-  two mechanisms cover disjoint cases. A separate case asserts the accepted
-  over-rejection: a change confined to an untrained node refuses although every
+  the witness catches. The test demonstrates the silent association by calling
+  `train_nseat(..., &shifted_state)` directly — which exercises
+  `validate_initial` and needs no builder flag — and then shows the builder
+  discarding the checkpoint instead of resuming. The same sequence with a
+  changed **cap** must be caught earlier, at the abstraction digest, confirming
+  the two mechanisms cover disjoint cases. A separate case asserts the accepted
+  over-rejection: a change confined to an untrained node retrains although every
   stored row is valid.
 - **Mid-street root.** A subgame rebuilt mid-street reports the same legal
   action count as the live state.
@@ -711,19 +803,25 @@ halts it.
 - **AC4**: A checkpoint whose rows would land on the wrong nodes is refused by
   name, through **defect B**, which G1 does not cover. Setup: `.sections`
   deleted, checkpoint retained, stack or contribution changed by an amount that
-  shifts ordinal *k* onto a node carrying the same menu. The test asserts three
-  things: that a build with the witness disabled **accepts** the shifted rows
-  (demonstrating the silent association, not asserting it); that the same build
-  with the witness enabled refuses before `state.rows` is assigned
-  (`engine/src/flop_library/flop_library.cpp:372`); and that the **cap**-changed
-  variant refuses earlier, at the abstraction-digest check (`:366-368`), so it
-  is clear which mechanism caught which case. A fourth case asserts the accepted
-  over-rejection: a change confined to an untrained node refuses although every
-  stored row is valid. The refusal is a hard build abort rather than a per-class
-  retrain — the throw propagates through `train_one_class` to `build_library`'s
-  `catch (...)`, which removes `.sections` and rethrows
-  (`:942-945`) — and the test asserts the abort explicitly, because one stale
-  class aborting a 1,755-class resume is a real operational cost.
+  shifts ordinal *k* onto a node carrying the same menu. The test asserts four
+  things.
+
+  1. A direct `train_nseat(..., &shifted_state)` call **accepts** the shifted
+     rows. This exercises `validate_initial` and demonstrates the silent
+     association; it uses no builder flag, which the no-legacy rule forbids.
+  2. The builder **discards the checkpoint and retrains**, warning with both
+     hashes, rather than resuming. The witness check runs before
+     `state.rows = ckpt.rows` (`engine/src/flop_library/flop_library.cpp:372`).
+  3. A second run with `--resume` **succeeds** — the retrain is not the sticky
+     abort the discard rule exists to prevent.
+  4. The **cap**-changed variant is caught earlier, at the abstraction-digest
+     check (`:366-368`), and also discards and retrains. This shows the two
+     mechanisms cover disjoint cases.
+
+  Test-design constraints, from the mechanism: the changed tree must not shrink,
+  or `node_index >= tree.size()` rejects the rows and the test exercises the
+  wrong guard; and the checkpoint must be partial, or the stale-but-complete
+  branch (`:382-386`) discards it before the witness is reached.
 - **AC5**: The tree-shape witness matches a stored constant for a known tree,
   and changing a node's action target, a node's kind, or the tree size each
   changes it.
@@ -734,6 +832,18 @@ halts it.
   `check-rfcs` / `check-docs` pass, `docs/design/gto-engine.md` documents the
   cap and the witness, and the `flop_library.hpp:59-62` comment no longer
   claims the cap is excluded from the digest.
+- **AC8**: Each fail-closed parser case has a **negative** test, not only a
+  passing one: a missing token, an empty value, a value above 255, a
+  non-canonical spelling (`01`, `+1`, ` 1`), a non-final token, a duplicated
+  token, a wrong version, and a parameter line whose digest does not recompute.
+  Each asserts refusal. The lenient reconstruction branch asserts its named
+  exception: an unrecognized identity falls back to cap 0 rather than throwing.
+- **AC9**: Stage 1's local pre-publication check reports every `.db` under
+  `artifacts/` carrying explicit `|max-raises=` tokens, and its output is
+  recorded as stage evidence. This cannot be a repository test: `artifacts/` is
+  gitignored (`.gitignore:88`), so such a test would pass vacuously on a clean
+  checkout. The check fails on a tokenless parameter line, which is how a
+  forgotten artifact is caught instead of silently reading cap 0.
 
 ## Decision
 
