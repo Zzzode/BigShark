@@ -85,8 +85,9 @@ interchangeable.
 - **G2**: A measurement adapter reads the **resident serving path**, not a
   lookup that happens to be beneath it. The demonstrated number is on a named
   abstracted game, not on the shipped six-seat library; see Non-Goals.
-- **G3**: The two exploitability definitions in the tree are documented and
-  labelled, and the n-seat one is implemented once.
+- **G3**: The three exploitability normalizations in the tree are documented and
+  labelled, and the n-seat BB/seat/hand one has a **single implementation that
+  both n-seat harnesses link**, not two copies.
 - **G4**: A documented command reproduces a NashConv figure for a named,
   abstracted game, with its miss count.
 
@@ -116,13 +117,30 @@ interchangeable.
   `FrontierEvaluator`. Its inability to measure the shipped library is the
   adapter, not frontier support — the earlier claim that every harness predates
   the flop-terminal choice was too broad.
-- **There are two exploitability definitions, not three.**
-  `engine/benchmarks/subgame_nash_conv.cpp:552-553` computes BB per seat per
-  hand (`nash_conv / live_seats / big_blind`).
-  `engine/src/gto/heads_up_solver.cpp:754` computes `nash_conv / root.pot`, and
-  `engine/src/gto/multistreet_cfr.cpp:610` computes
-  `(brI - eqI) / pot + (brO - eqO) / pot`, which is algebraically the same
-  pot-relative rule. Two definitions: BB/seat/hand and pot-relative.
+- **There are three exploitability normalizations live in the tree, not two.**
+  A prior draft said two and would have written a false catalogue into
+  `docs/reference/exploitability.md`:
+  1. **BB per seat per hand** — `engine/benchmarks/subgame_nash_conv.cpp:552-553`
+     computes `nash_conv / live_seats / big_blind`.
+  2. **Pot-relative** — `engine/src/gto/heads_up_solver.cpp:754` computes
+     `nash_conv / root.pot`, and `engine/src/gto/multistreet_cfr.cpp:610`
+     computes `(brI - eqI) / pot + (brO - eqO) / pot`, which is algebraically
+     the same rule (and is the one the two-player solver reports).
+  3. **Summed chips per hand across seats** — `BrEstimatorResult` carries
+     `gain[traverser][seed]` in chips/hand and
+     `nashconv_replicates`, "Y_s = sum_i g_{i,s}"
+     (`engine/include/bs/stage6/br_estimator.hpp:188-189`), and
+     `stage6_measurement_driver.cpp:33-34` publishes both as "chips/hand … the
+     scalar per-replicate seat sum". `preflop_nash_conv.cpp:143-149` prints the
+     summed figure *and* a per-seat BB figure derived from it
+     (`total.mean / seats / bb`).
+
+  The third is not a rounding of the first: it is a different scalar, and it is
+  what the stage-6 harness the RFC is about actually reports. The RFC therefore
+  names all three and states which one it standardizes
+  (`sum / (live_seats * big_blind)`) and which ones it leaves alone (the
+  pot-relative rules belong to the two-player solver's own convention, and the
+  estimator's summed chips figure is its public output).
 - **Two other policy bridges exist, but not for `NSeatPolicy`.**
   `CandidateBehaviorPolicy`
   (`engine/include/bs/stage6/candidate_policy.hpp:104`) bridges frozen postflop
@@ -201,10 +219,20 @@ rather than showing one snippet:
 | Walker | Return shape | Frontier settlement |
 | --- | --- | --- |
 | `exact_oracle::recurse` | `std::array<double,10>` | evaluator value per seat, unweighted (the caller weights) |
-| `exact_oracle::br_group` | `PooledValue{value, mass}` | evaluator value × `view.reach`, and add `view.reach` to `mass` |
+| `exact_oracle::br_group` | `PooledValue{value, mass}` | evaluator value × `view.weight * view.reach`, and add `view.weight * view.reach` to `mass` |
 | `LearnWalk`/`LegWalk`/`PairWalk` | `std::array<double,10>` (pair: on both legs) | evaluator value, then the existing zero-sum check at `br_estimator.cpp:333` applies |
 | `HandSimulator` | none (it advances state) | **throws the named error**; it accepts a `GameDef`, so a flop-terminal definition reaches this today (`simulator.hpp:58-65`) |
 | `PracticeTable` | none (it advances state) | **throws the named error** if ever reached. It cannot be reached today: `PracticeConfig` has no terminal-depth field (`practice_table.hpp:79-86`) and the file-local `make_def` never sets `terminal` (`practice_table.cpp:66-90`), so it stays at the `TerminalDepth::River` default. The switch still gains the case so a future flop-terminal configuration cannot spin. |
+
+The `br_group` row is the one an implementer would get wrong, so it is spelled
+out. Its sibling leaves in the same function weight by `weight * reach`:
+`Folded` accumulates `out.mass += v->weight * v->reach`
+(`engine/src/stage6/exact_oracle.cpp:329`) and `Showdown` uses
+`const double w = v->weight * v->reach` (`:342-345`), with `BRView::weight`
+documented as the unconditional joint-deal weight (`:146-150`). Using `reach`
+alone would weight frontier leaves differently from fold and showdown leaves
+inside the same pooled walk and produce a wrong NashConv — a plausible-looking
+number with no error attached.
 
 The evaluator is a **required reference** in the walk signatures, not a
 nullable pointer. A tree that cannot contain frontier leaves passes an explicit
@@ -247,10 +275,12 @@ resident set and the hero cards, not a query definition.
 
 **Thread safety is part of the contract.** `hero_decision` mutates a
 `ResidentScratch` of about 340 KiB
-(`engine/include/bs/resident_policy.hpp:192`), and the n-seat benchmark
-parallelizes walks across deals
-(`engine/benchmarks/subgame_nash_conv.cpp:538-548`). The adapter owns one scratch
-per thread; a shared instance would data-race.
+(`engine/include/bs/resident_policy.hpp:192`). The n-seat benchmark parallelizes
+across **traversers** (`#pragma omp parallel for` over `p < seat_count`,
+`engine/benchmarks/subgame_nash_conv.cpp:535-539`) with a separate across-deals
+loop at `:466-467`; the new driver parallelizes across fixture deals, so both
+patterns exist in the tree. The adapter owns one scratch per thread and a shared
+instance would data-race.
 
 For the trainer-side comparison, a second adapter takes an `NSeatPolicy`:
 
@@ -309,11 +339,39 @@ bigshark-stage6-resident-nash-conv --library <dir> --fixture <name>
 ```
 
 It builds the named fixture's `GameDef`, wraps the resident set in
-`ResidentBehaviorPolicy`, runs `exact_best_response_utility` and
-`exact_oracle_utility`, and prints the NashConv figure with the evaluator
-identity and the adapter's miss count. It is introduced in Rollout stage 2 and
-must be added to the offline guard's include closure, since the `nm` scan only
-covers linked symbols.
+`ResidentBehaviorPolicy`, runs the exact best-response and oracle-value entry
+points, and prints the NashConv figure with the evaluator identity and the
+adapter's miss count. It is introduced in Rollout stage 2 and must be added to
+the offline guard's include closure, since the `nm` scan only covers linked
+symbols.
+
+**The oracle's public API must change, and that is a named, sized part of this
+RFC.** No entry point takes a `FrontierEvaluator` today —
+`grep FrontierEvaluator engine/include/bs/stage6/exact_oracle.hpp` returns
+nothing — because each constructs its own `GameState` internally
+(`engine/src/stage6/exact_oracle.cpp:386`, `:457`). The walks that would take an
+evaluator are in an anonymous namespace (`:12`) with no seam. So the design is
+not "the driver passes an evaluator"; it is:
+
+1. Give `exact_deal_utility`, `exact_oracle_utility`,
+   `exact_best_response_utility`, and
+   `exact_omniscient_deviation_utility`
+   (`engine/include/bs/stage6/exact_oracle.hpp:60-114`) a required
+   `const FrontierEvaluator&` parameter, and thread it into the internal walks.
+2. Migrate every caller. The set is 42 call expressions across
+   `engine/tests/test_stage6_simulator.cpp` (16),
+   `engine/tests/test_stage6_br_estimator.cpp` (19),
+   `engine/tests/test_postflop_frontier.cpp` (3),
+   `engine/tests/test_postflop_templates.cpp` (1),
+   `engine/benchmarks/subgame_nash_conv.cpp` (2), and
+   `engine/src/stage6/br_estimator.cpp:865` (1). Every one passes `NoFrontier`
+   except the two `test_postflop_frontier.cpp` sites that mean to exercise a
+   frontier and the new driver.
+
+Making the parameter required rather than defaulted is deliberate: a defaulted
+`NoFrontier` would let a new frontier-bearing caller silently throw at runtime
+instead of failing to compile, which is the failure mode this RFC exists to
+remove. AC1 asserts the count so the migration is checked, not estimated.
 
 ### Reference document
 
@@ -337,8 +395,13 @@ registered in `docs/README.md` in the same change.
 ## Compatibility and Migration
 
 - No persisted format changes. No library, checkpoint, or artifact is rewritten.
-- Walk signatures gain a required evaluator parameter. Callers over
-  showdown-terminal trees pass `NoFrontier` and behave exactly as before.
+- Walk signatures gain a required evaluator parameter, and the four public
+  oracle entry points do too. 42 call expressions migrate, every one passing
+  `NoFrontier` except the frontier-exercising tests and the new driver. Callers
+  over showdown-terminal trees behave exactly as before, and `Frontier` is
+  unreachable in a showdown-terminal tree
+  (`engine/src/poker/game_definition.cpp:739-742` gates it on
+  `TerminalDepth::Flop`), so no existing number can move.
 - The two pot-relative harnesses are unchanged in behavior and gain comments.
 - No Legacy Code is satisfied explicitly: no flag selects an old and a new
   walk, no versioned path is retained, and `NoFrontier` is an assertion type
@@ -382,18 +445,23 @@ registered in `docs/README.md` in the same change.
 3. **The four-card frontier multiplies cost by `52 - 3 - 2N`.** *Mitigation:* state it, and
    let the tree-side `FlopDeal` leaf be the optimization if the cost bites.
 4. **The evaluator differs from training's.** *Mitigation:* use the same
-   constructed type, and require the zero-sum check at frontier settlement.
+   constructed type, and require the zero-sum check at frontier settlement —
+   carried into AC4, because a mitigation with no acceptance criterion is a
+   hope.
 
 ## Verification Plan
 
 - **Phase coverage.** A table-driven test drives each named public entry point
   with one state per `poker::Phase` and asserts a finite result or the named
   throw; `-Werror=switch` is enabled on the affected targets.
-- **Simulator termination.** A **preflop-rooted** flop-terminal definition (the
-  simulator rejects any other shape,
-  `engine/include/bs/stage6/simulator.hpp:63-65`) throws the named error instead
-  of looping. This is a different fixture from Open Question 1's flop-rooted
-  target. The practice table is covered by constructing a `Frontier` state
+- **Simulator termination.** A **preflop-rooted** flop-terminal definition
+  throws the named error instead of looping. The simulator does not currently
+  reject that shape — it validates seat count and hole count only
+  (`engine/src/stage6/simulator.cpp:58-61`) and never reads `def.terminal` or
+  `def.board_size` — which is precisely why it spins today. This is a different
+  fixture from Open Question 1's flop-rooted target. The practice table is
+  covered by driving the extracted phase-dispatch function with a constructed
+  `Frontier` state
   directly, since no configuration can reach one.
 - **Regression.** Existing showdown-terminal fixtures reproduce their recorded
   values within the tolerance those tests already use.
@@ -425,7 +493,10 @@ registered in `docs/README.md` in the same change.
    abstracted game and record the figure with its evaluator identity.
 
 Stop conditions: any change to an existing showdown-terminal number halts the
-rollout until explained.
+rollout until explained — not because `Frontier` can appear in such a tree
+(`engine/src/poker/game_definition.cpp:739-742` makes that impossible), but
+because the added case sits in the shared settlement switch and the check
+catches a mistake there.
 
 ## Rollback Plan
 
@@ -455,14 +526,33 @@ rollout until explained.
   live for a future enumerator.
 - **AC2**: A table-driven test drives each named public entry point with one
   state per `poker::Phase`; a **preflop-rooted** flop-terminal definition makes
-  `HandSimulator` throw the named error instead of looping. `PracticeTable`'s
-  switch is covered by a directly-constructed `Frontier` state, because no
-  `PracticeConfig` can produce one today. `-Werror=switch` is enabled on
-  `bigshark_stage6_eval` and `bigshark_practice`.
+  `HandSimulator` throw the named error instead of looping.
+
+  **`PracticeTable` cannot be tested through its current interface, and the RFC
+  says so rather than pretending otherwise.** It exposes only `play_hand` and
+  observers (`engine/include/bs/stage6/practice_table.hpp:88-131`), `Impl` is
+  private, and `play_hand` builds its own `GameState` from the file-local
+  `make_def` (`engine/src/stage6/practice_table.cpp:237,246`) before entering a
+  private `while (true) switch` (`:252-253`). No test can hand that switch a
+  constructed `Frontier` state.
+
+  The phase dispatch is therefore **extracted into a testable free function**
+  taking `(GameState, HumanAgent&, observers)` and returning the hand utility;
+  `play_hand` becomes a thin wrapper that builds the state and calls it. The
+  table-driven test drives the extracted function directly with a constructed
+  `Frontier` state. That extraction is part of the change, not an optional
+  refactor — without it the AC is unimplementable, and the `-Werror=switch`
+  guard alone cannot prove the case behaves, only that it exists.
+
+  `-Werror=switch` is enabled on `bigshark_stage6_eval` and `bigshark_practice`.
 - **AC3**: `NSeatBehaviorPolicy` matches a direct `NSeatPolicy::lookup` on every
   information set of a named fixture; `ResidentBehaviorPolicy` matches a recorded
-  `hero_decision` trace — not a `find_bucket` call — and holds one
-  `ResidentScratch` per thread. The trace is produced from a **2-seat library
+  `hero_decision` trace — not a `find_bucket` call — and the driver holds one
+  `ResidentScratch` per worker thread. The last clause is a property of the new
+  driver rather than of the adapter in isolation: the driver parallelizes across
+  fixture deals, so the requirement is exercised there and a shared scratch
+  would fail under the sanitizer build. An earlier draft stated it as an
+  adapter-only property with no parallel caller, which nothing could falsify. The trace is produced from a **2-seat library
   built for this RFC**. Note that the builder's CLI cannot produce it: `--range`
   accepts only `premium` or `full`
   (`engine/benchmarks/flop_library_builder.cpp:122-133`), so the fixture library
@@ -475,16 +565,48 @@ rollout until explained.
   number (no interval: the pooled walk is exact on its fixture) with the
   evaluator's identity, for the 2-seat 4-combo fixture named in Open Question 1,
   **with zero policy misses**. The fixture's `GameDef` is the library's declared
-  root verbatim — the same `player_count`, `pot`, `big_blind`, `button`,
-  per-seat `stacks`/`contributions`/`folded`, and canonical flop prefix that
-  `make_def` wrote (`engine/src/flop_library/flop_library.cpp:73-92`), derived
-  from the manifest. `same_root` requires all of them
+  root verbatim, reconstructed from the manifest's **scalar** fields plus the
+  library's construction rule: `LibraryManifest` carries `player_count`, `stack`,
+  `contribution`, `big_blind`, and per-class `canonical_board`
+  (`engine/include/bs/flop_library.hpp:50-88`), while `stacks`,
+  `contributions`, `folded`, `button`, and `pot` are **not** stored — they are
+  uniform and `button = 0` by construction (`engine/src/flop_library/flop_library.cpp:73-92`),
+  with `pot = player_count * contribution`. The RFC says this instead of
+  implying per-seat manifest fields that do not exist; an earlier draft did.
+  `same_root` requires all of them
   (`engine/src/resident/resident_policy.cpp:53-87`), and a mismatch would make
   every lookup miss while still "producing a number" that measures the fallback.
-- **AC5**: One BB/seat/hand formula exists in the n-seat code; the two
-  pot-relative harnesses carry comments naming their different definition, and
-  `docs/reference/exploitability.md` states both and is registered in
-  `docs/README.md`.
+
+  **The figure must be non-negative, and the driver must check why.** The
+  deviation menu is `declared_behavior_menu`, built from `kPotFractions`
+  (`{1/3, 1/2, 3/4, 1/1, 3/2}`, `engine/src/behavior/behavior_policy.cpp:18-24`)
+  plus min and cap, while the resident rows are sealed under the library's own
+  `ActionAbstraction` schedule (`{1/3, 3/4, 3/2}` bets, `{1/2, 1}` raises,
+  `engine/src/abstraction/abstraction.cpp:81-90`). `exact_oracle.hpp:104-109`
+  warns that BR−profile can go negative when the profile's support is not
+  contained in the declared menu — an honest property of the quantity, and a
+  meaningless number if it happens here. AC4 therefore requires the driver to
+  assert menu containment for every resident row it serves and to fail loudly
+  rather than print a negative figure, instead of leaving it to be read.
+
+  **Frontier settlement must be zero-sum-checked.** `settle_fold`/`settle_showdown`
+  carry a zero-sum test (`engine/src/stage6/br_estimator.cpp:313-335`); the new
+  evaluator settlement has no equivalent, so an evaluator that breaks the
+  zero-sum assumption stated under Assumptions would corrupt the figure with no
+  error. AC4 requires the same check at the frontier settlement in the oracle
+  and in the estimator.
+- **AC5**: One BB/seat/hand formula exists in the n-seat code, in a shared
+  location that **both** `bigshark-subgame-nash-conv` and the new stage-6
+  resident driver link, and `engine/benchmarks/subgame_nash_conv.cpp:551-553`
+  calls it instead of computing `nash_conv / live_seats / big_blind` itself.
+  This is not satisfied by writing the formula in the new driver alone: the
+  existing implementation is in `subgame_nash_conv.cpp`, that target links only
+  `bigshark_solver` (`engine/CMakeLists.txt:594-599`), and the new driver would
+  otherwise become the second copy — the exact duplication the AC forbids. The
+  two pot-relative harnesses carry comments naming their different definition,
+  `stage6_measurement_driver.cpp`'s summed-chips output keeps its own documented
+  label, and `docs/reference/exploitability.md` states all three and is
+  registered in `docs/README.md`.
 - **AC6**: The full Engine Build Contract passes, ASan is clean, and
   `check-rfcs` / `check-docs` pass.
 
