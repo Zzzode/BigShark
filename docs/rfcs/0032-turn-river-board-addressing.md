@@ -312,9 +312,12 @@ board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
   seam's `validate` rejects it — the correct outcome for an inconsistent ledger,
   not a gap to paper over.
 
-  The two classes that *do* carry unequal net contributions are the ones with a
-  live wager on the current street, and those are exactly the ones the
-  mid-street fields make valid.
+  Precisely: `validate` rejects a root that has **both** unequal contributions
+  **and** no seat facing a wager. Nonzero `street_committed` alone does not force
+  rejection — equal net contributions with mid-street fields still validate as a
+  street-start root — so the rule to remember is the pair, not "a wager implies
+  mid-street". Every unequal-contribution root the reducer produces has a live
+  wager, and those are exactly the ones the mid-street fields make valid.
 
   **The short-all-in cell is named rather than left implicit.** A heads-up node
   where the short seat has *no chips left* and the wager is already settled has
@@ -732,6 +735,13 @@ replay**, not surfaced to an operator in real time.
 - `.sections/build.json` is unchanged.
 - The adapter change is behavior-visible for turn and river spots at every
   seat count; there is no per-seat-count switch, as above.
+- **A second newly-reachable class exists at the flop, and it is stated here.**
+  Once heads-up facing-bet and refunded postflop hands construct, their identity
+  def carries unequal net contributions and a larger pot, so they match no
+  flop-rooted street-start record and take the same subgame path a turn spot
+  does — at the flop. That is correct (the record is genuinely a different
+  root), but it is not a turn/river effect, and a reader comparing flop
+  behaviour before and after would otherwise find an unexplained difference.
 - **The wire changes for subgame-served rows only.** A row that today maps to
   `ERROR_CODE_INTERNAL` maps to an `expanded_strategy` with `artifact_sha256`
   absent. Responses served from a resident record do not move. `buf breaking` is
@@ -871,7 +881,14 @@ replay**, not surfaced to an operator in real time.
    the def disables the resident path at every street), `same_root` (both),
    `canonical_query_board` narrowing, reach loops (both), record paths,
    prefix-board builder, board assembly. Gate: preservation, identity, and
-   hero-attribution tests pass; the flop path is unchanged.
+   hero-attribution tests pass; the flop path is unchanged for responses served
+   from a resident record.
+
+   **Cost, stated because it is real:** AC1's fixture set is 24 cells
+   (2 seat-counts × 3 streets × 2 wager states × 2 refund states), and each cell
+   needs a hand-built snapshot — there is no live corpus to draw from. That is
+   more mapper fixture work than the repository currently has, and it belongs in
+   this stage's estimate rather than being discovered during it.
 4. **Labelling.** Add the `turn_root_unserved` reason to the operational
    fallback path and to `resultsLogEntry`. Gate: native and Node tests pass, and
    the label is counted in the replay output.
@@ -950,10 +967,25 @@ whoever schedules the work.
   {street-start, facing a bet} × {with, without a refund}, and for every cell
   `out.state` must satisfy: **`poker::validate(out.state->def())` passes**; `def().board_size ==
   board().size()`; `def().board` equals `board()` element for element;
-  `def().preflop == false`; `def().pot == pot()`; and — the property the whole
-  design rests on — a **flop** query against a flop-rooted record still
-  **matches** `same_root`, while the same record compared to a turn query
-  differs only in `board_size`.
+  `def().preflop == false`; and `def().pot == pot()`.
+
+  Two further assertions hold for **every** cell: the **facing-a-bet** cells
+  must validate, construct, and report the hero as actor. But the two `same_root`
+  properties — a flop query still matching a flop-rooted record, and a turn query
+  differing only in `board_size` — apply **only to the street-start column**, and
+  an earlier revision wrongly required them of every cell. A facing-a-bet def
+  necessarily carries unequal net contributions and a different pot than a
+  street-start record, and `same_root` compares both
+  (`engine/src/resident/resident_policy.cpp:55`, `:82-85`), so it cannot match.
+  The AC's table states which assertion each column carries:
+
+  | Column | `validate` | construct + actor | board eq. | `def().pot == pot()` | flop `same_root` | turn differs only in `board_size` |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | street-start | required | required | required | required | **required** | **required** |
+  | facing a bet | required | required | required | required | not applicable — the root genuinely differs | not applicable |
+
+  The design's load-bearing property is about the street-start root, and the AC
+  says so rather than demanding it of a class where it is false by construction.
 
   The "facing a bet" axis is not decoration: it is the cell that fails without
   the mid-street fields. An earlier revision of this AC listed "equal and
@@ -1013,7 +1045,12 @@ whoever schedules the work.
   | Ordinary fallback | `guaranteeLevel = operational_fallback`, reason `cpp:operational-fallback` |
   | Transport/engine failure | reason `safe-fallback:*` |
 
-  A non-zero count in the last row is a **failure of this RFC**, not a result.
+  A non-zero count in the last row is a **failure of this RFC**, with one
+  exception noted so an unreachable-cell rejection is not miscounted: a hand the
+  provider reports in a shape the local reducer would not produce (an unequal
+  ledger with no seat facing a wager) legitimately fails `validate` and lands in
+  `safe-fallback:*`. Those are counted and reported separately, with their
+  reason, rather than folded into the failure bucket.
 
   Because the corpus requires live play under separate authorization, this AC is
   not dischargeable from repository evidence alone. That makes `Implemented`
