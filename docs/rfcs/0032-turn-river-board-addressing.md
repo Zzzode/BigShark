@@ -196,9 +196,56 @@ digest fix are therefore a pair, not a change and an optional extra.
 The adapter stops clamping; the identity helpers start comparing the whole
 board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
 
-- `resident_mapper.cpp:504-532` stops rebuilding a postflop `GameDef` and
-  **returns the replay cursor instead**. This is smaller than the alternative
-  and an earlier draft took the alternative, so the comparison is recorded.
+- `resident_mapper.cpp:504-532` returns the **replay cursor's runtime with a
+  decision-node identity def attached**, not the cursor wholesale and not the
+  current rebuild. Both simpler options are wrong, and the reasons pin the
+  design.
+
+  *Why not the cursor wholesale.* `GameState::def_` is a copy of the
+  constructor's def and is never updated: `after_card` writes only
+  `next.board_`, `next.street_`, and `next.players_`
+  (`engine/src/poker/game_definition.cpp:727-732`) and `after_action` writes
+  only `next.players_`; no statement in the file assigns `def_` after
+  `:294`. So `cursor.def()` remains the **hand-start preflop root**
+  (`board_size = 0`, `preflop = true`, blinds-only pot, starting stacks) while
+  `cursor.board()` correctly holds the real four-card board. Returning it
+  directly breaks every identity consumer at every street, not just turn:
+  `resolve_root` compares `same_root(record.game.def, state.def(), ...)`
+  (`engine/src/resident/resident_policy.cpp:781-782,791-792`) and
+  `same_root`'s preflop branch returns false for `0 != 3` (`:60-62`), so a flop
+  query stops matching its own record; `counterfactual_reach.cpp:80` returns
+  `CoverageMiss`; `resolver.cpp:57-66` mixes root values into `cache_key`;
+  `resolver.cpp:123` and `certifier.cpp:120` read `def().pot` as the root pot;
+  and `publicSeed` mixes `def.board`, `def.stacks`, `def.contributions`, and
+  `def.pot` (`apps/engine-host/main.cpp:403-407`), so every resolver candidate
+  for every spot would change.
+
+  *Why not the current rebuild.* It re-derives pending and actor from three
+  copied fields, which cannot express "this seat already acted this street"
+  (`engine/include/bs/game_definition.hpp:75-164`; `pending` exists only on the
+  runtime `GamePlayer`, `:209`).
+
+  *The design.* The two views genuinely differ and each consumer gets the one it
+  needs:
+
+  | View | Contents | Consumers |
+  | --- | --- | --- |
+  | Runtime (`board()`, `players()`, `pot()`, `actor()`) | the replay cursor: real board of any length, true `pending`, correct actor, live `street_committed`, net-contributed refunds | `hero_decision`, `resolve_uniform`, `resolve_flop`, the adapter's legality check |
+  | Identity (`def()`) | today's postflop rebuild values — `stacks`, `contributions`, `folded`, `pot`, `button`, `big_blind`, `preflop = false`, `terminal` unchanged from `:518-529` — with `board` and `board_size` taken from `cursor.board()` | `same_root`, `cache_key`, `root_pot`, the certifier, `publicSeed` |
+
+  Keeping the identity def's non-board fields **exactly as the rebuild computes
+  them today** is what preserves flop behaviour: a flop query produces the same
+  `stacks`/`contributions`/`pot` it produced before, so every existing
+  `same_root` outcome is unchanged, and only the board comparison moves — which
+  is the point of the RFC. A turn query differs only in `board_size`, which is
+  the single property the whole design rests on and which AC1 tests directly.
+
+  Mechanically this needs a way to attach an identity def to a cursor copy —
+  a constructor or member taking `(runtime state, identity def)` — because
+  `def_` is private and the plain constructor re-derives `pending` from
+  `street_committed`. That seam is part of the same commit as the board change,
+  not a follow-up: landing the cursor without it disables the resident path at
+  every street.
 
   The cursor already *is* the decision node: `reconstructHandState` replays
   every transition event through `cursor = cursor.after_card(...)` and
@@ -230,15 +277,25 @@ board; `build_v2_game` keeps refusing a shape no artifact can yet hold:
   `GameState::pot()` uses `net_contributed()`
   (`engine/include/bs/game_definition.hpp:210`). A heads-up turn with gross
   `{30,20}` and pot 45 throws `unmatched contributions at closed-street root`.
-  The cursor carries the correct net values, so this divergence disappears with
-  it. A field-by-field comparison is in AC1.
-- The cursor path must still be pinned: `out.state` is a
-  `std::optional<poker::GameState>` (`engine/src/protocol/mappers.hpp:65-70`),
-  the cursor is a local in the replay (`:337`), and only the preflop branch
-  currently returns a state (`:503`). The postflop branch assigns
-  `std::move(cursor)`, and `out.hero_actor` (`:159`, validated against the
-  cursor at `:411`) becomes the source of actor identity rather than a
-  re-derivation.
+  The cursor's runtime carries the correct net values, so `pot()` is right.
+  `def().pot` is a separate question: it is the root pot the identity consumers
+  read (`resolver.cpp:123`, `certifier.cpp:120`, `cache_key` at
+  `:57-66`, `publicSeed`), and it stays whatever the identity def says. The
+  design keeps the identity def's `pot` exactly as today's rebuild computes it,
+  so no identity consumer moves; the divergence is fixed for `pot()` and
+  deliberately preserved for `def().pot`, which is what makes flop behaviour
+  unchanged. AC1 asserts both.
+- **The preflop branch is unchanged, and that is a requirement, not an
+  observation.** It returns the hand-start `rootState` built from `rootDef`
+  (`:494-503`), which is what the preflop blueprint's identity expects and why
+  `same_root` matches it. Returning the cursor there would publish a state whose
+  `pending` and `actor` reflect the replayed actions instead of the hand start.
+  The postflop branch is the only one that changes.
+- `out.state` is a `std::optional<poker::GameState>`
+  (`engine/src/protocol/mappers.hpp:65-70`) and the cursor is a local in the
+  replay (`:337`); `out.hero_actor` (`:159`, validated against the cursor at
+  `:411`) is the actor source, consistent with what the attached runtime
+  carries.
 - `same_root` in both places compares **`board_size`, then all `board_size`
   cards**. The size equality alone is not enough: two four-card states that
   differ only in `board[3]` both have `board_size == 4`, so a three-card loop
@@ -383,9 +440,29 @@ criteria require the work to finish with room to spare rather than at the
 ceiling. Raising `maximumMs` is not proposed here — it would change every
 decision at every street and needs its own gate.
 
-A snapshot is one **actionable postflop state** (`room.next === "act"` with
-`board_size >= 4`) recorded in a session journal. "At least two tables" is
-identified by distinct `room.id` (falling back to `room.name`).
+A snapshot is one **actionable postflop state** (`room.next === "act"`)
+recorded in a session journal. "At least two tables" is identified by distinct
+`room.id` (falling back to `room.name`).
+
+**The corpus carries two strata, and the flop stratum is not optional.** An
+earlier draft defined a snapshot as `board_size >= 4`, which is turn-only, and
+then ran stage 1's flop before/after count "on the same corpus". A regression
+that stopped a *flop* query matching its resident record would not have appeared
+in a single measurement, and AC5's "served from a resident record is
+behavior-identical" would have been satisfied vacuously — nothing would be
+served from a resident record. The corpus is therefore stratified:
+
+| Stratum | Requirement | What it can detect |
+| --- | --- | --- |
+| Flop (`board_size == 3`) | >= 20 per seat count, 2..6 | loss of resident matching, `publicSeed`/`cache_key` drift, stage 1's error-to-strategy change |
+| Turn/river (`board_size >= 4`) | >= 20 per seat count, 2..6 | the RFC's subject |
+
+Both strata come from the same two-table requirement. The flop stratum is also
+guarded in-tree by the existing fixture at
+`platforms/river-club/tests/w1-resident-wiring.test.ts:505-543`, which asserts a
+blueprint-served flop decision and fails if the resident path stops matching —
+that test runs on every `npm run check`, so the regression is caught even
+without the corpus.
 
 ### What a turn decision becomes, and why the current path breaks
 
@@ -589,9 +666,10 @@ replay**, not surfaced to an operator in real time.
    this RFC does not claim the result is better.** What it claims is narrower:
    the decision stops being made for the wrong game — a flop board, and on a
    checked-to line the wrong seat, both of which the current checkpointing
-   rebuild produces — and the outcome becomes attributable. Whether a uniform-prior subgame solve beats the current
-   wrong-but-fast flop decision at five and six seats is **unmeasured** and this
-   RFC supplies no evidence for it. *Mitigation:* the Stage 3 replay records
+   rebuild produces — and the outcome becomes attributable. Whether a
+   uniform-prior subgame solve beats the current wrong-but-fast flop decision at
+   five and six seats is **unmeasured** and this RFC supplies no evidence for
+   it. *Mitigation:* the Stage 3 replay records
    action, source, and latency per seat count, so the difference is visible
    rather than assumed — but a reader should treat the quality question as open,
    not settled by the correctness argument.
@@ -607,7 +685,14 @@ replay**, not surfaced to an operator in real time.
    *Mitigation:* AC1 lists each known site with its own test, and a
    `board_size >= 4` fixture is run through every entry point named in the
    resident and protocol sources.
-4. **A four-card state reaches code that assumes a three-card board.**
+4. **The two-view state is a new coupling and can drift.** `def()` and the
+   runtime now describe different points in the hand by design, and a consumer
+   that reads the wrong one gets a plausible but wrong answer — the failure this
+   design exists to prevent arriving from the other direction. *Mitigation:* the
+   consumer table above names which view each caller reads, AC1 asserts the
+   identity def's contents field by field, and the flop fixture in AC5 fails
+   loudly if any identity consumer starts reading runtime values.
+5. **A four-card state reaches code that assumes a three-card board.**
    `GameState::board()` now yields four or five cards from an adapter-built
    state, and any remaining `i < 3` or `3 + street` arithmetic that this RFC
    missed reads the wrong card. *Mitigation:* AC1's fixture asserts the exact
@@ -660,8 +745,9 @@ replay**, not surfaced to an operator in real time.
 2. **Baseline pin and site enumeration.** Add the failing-baseline test and
    enumerate every identity/truncation site with its own test. Gate: the
    baseline test fails as expected and the list is complete against a grep.
-3. **Board and mid-street preservation.** Adapter (board **and**
-   returns the replay cursor), `same_root` (both),
+3. **Board preservation and the two-view state.** Adapter (cursor runtime plus
+   a decision-node identity def, in **one commit** — landing the runtime without
+   the def disables the resident path at every street), `same_root` (both),
    `canonical_query_board` narrowing, reach loops (both), record paths,
    prefix-board builder, board assembly. Gate: preservation, identity, and
    hero-attribution tests pass; the flop path is unchanged.
@@ -731,10 +817,21 @@ whoever schedules the work.
   | Reach loop #1 (`public_reach.cpp:140`) | direct |
   | Reach loop #2 (`public_reach.cpp:164`) | direct |
   | Record paths `:355,544,549,574-576,621,628,672,679` | direct (assert `board_size`) |
-  | Postflop state source (`:504-532`) | direct: cursor returned, no `GameDef` rebuild |
-  | Gross-vs-net contributions (`:527`, refund case) | direct: net values preserved |
+  | Postflop runtime source (`:504-532`) | direct: cursor runtime returned |
+  | **Decision-node identity def** | direct: see the assertions below |
+  | Gross-vs-net contributions (`:527`, refund case) | direct: net in runtime, and in the identity def |
   | Prefix builder (`:861-872`) | integration, synthetic record |
   | Board assembly (`:1087-1093`, `:1191-1198`) | integration, synthetic record |
+
+  The identity row is the one that would otherwise pass while the design is
+  broken, so its assertions are enumerated rather than described. For a turn
+  snapshot, `out.state` must satisfy: `def().board_size == board().size()`;
+  `def().board` equals `board()` element for element; `def().preflop == false`;
+  `def().pot == pot()`; and — the property the whole design rests on — a **flop**
+  query against a flop-rooted record still **matches** `same_root`, while the
+  same record compared to a turn query differs only in `board_size`. A test that
+  only asserts "the cursor is returned" would be green with `def()` left at the
+  preflop root and the resident path dead at every street.
 
   The two anonymous-namespace rows require a **new seam**, and the RFC says so
   unconditionally: `Record` is forward-declared and `records_` is private
@@ -755,6 +852,7 @@ whoever schedules the work.
   in Node (the adapter surfaces both reasons unchanged).
 - **AC4**: The 200-snapshot corpus (>= 20 per seat count, 2..6, >= 2 tables by
   `room.id`) is replayed with production resident roots and library.
+  The corpus is the two-stratum set defined above.
   "Before" is a named pre-change revision recorded in
   `docs/plans/rfc0032-replay.md` with its exact command and a preserved binary,
   since Stage 2 lands the change before Stage 3 runs; "after" is the same
@@ -787,6 +885,15 @@ whoever schedules the work.
   flop query that currently errors into an `approximate` strategy. AC5 asserts
   the resident path byte-identically and requires stage 1's before/after count
   for the other, rather than claiming a no-op it does not perform.
+
+  **This AC cannot be satisfied vacuously.** It is a claim about responses that
+  *do* come from a resident record, so the check must show they still do. The
+  in-tree flop fixture
+  (`platforms/river-club/tests/w1-resident-wiring.test.ts:485-515`) asserts a
+  blueprint-served flop decision with the fixture's digest and guarantee level,
+  and fails if the resident path stops matching; AC5 requires that test to pass
+  unchanged. Without it, "no resident-served response changed" would be true
+  the moment none were served at all.
 
 ## Decision
 
