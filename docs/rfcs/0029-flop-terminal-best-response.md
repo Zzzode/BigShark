@@ -1,10 +1,10 @@
 ---
 rfc: "0029"
 subject: "Make the Stage-6 Walkers Model Frontier Leaves and Measure the Resident Path"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark maintainers"
 created: "2026-10-20"
-updated: "2026-10-20"
+updated: "2026-10-21"
 owners: "stage6 evaluation, engine resident, engine benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -305,7 +305,9 @@ its own decision (see Dependency Rules).
 
 ### Three definitions, labelled
 
-The n-seat BB/seat/hand rule is implemented once, in the offline eval target.
+The n-seat BB/seat/hand rule is implemented once, in **`bigshark_solver`** —
+not in the offline eval target, which `bigshark-subgame-nash-conv` does not link
+(`engine/CMakeLists.txt:594-599`). See AC5.
 Because the pooled walk is exact on its fixtures, the result is a single number
 with **no interval**: an enumeration over the joint-deal support has no sampling
 error. Only the Monte Carlo learned-deviation estimator produces intervals, and
@@ -386,7 +388,10 @@ not "the driver passes an evaluator"; it is:
 Making the parameter required rather than defaulted is deliberate: a defaulted
 `NoFrontier` would let a new frontier-bearing caller silently throw at runtime
 instead of failing to compile, which is the failure mode this RFC exists to
-remove. AC1 asserts the count so the migration is checked, not estimated.
+remove. AC1 does **not** assert a site count — an earlier revision claimed it
+did, which was false — so the migration total above is the checked figure and a
+grep over the four entry-point names is the verification, recorded with the
+change rather than delegated to an AC that does not exist.
 
 ### Reference document
 
@@ -416,8 +421,10 @@ registered in `docs/README.md` in the same change.
 
 - No persisted format changes. No library, checkpoint, or artifact is rewritten.
 - Walk signatures gain a required evaluator parameter, and the four public
-  oracle entry points do too. 42 call expressions migrate, every one passing
-  `NoFrontier` except the frontier-exercising tests and the new driver. Callers
+  oracle entry points do too. **34** call expressions migrate, **every one**
+  passing `NoFrontier`; the exception list is empty, because no existing call
+  site anywhere sets `TerminalDepth::Flop` (the new driver is the only caller
+  that passes a real evaluator). Callers
   over showdown-terminal trees behave exactly as before, and `Frontier` is
   unreachable in a showdown-terminal tree
   (`engine/src/poker/game_definition.cpp:739-742` gates it on
@@ -496,9 +503,12 @@ registered in `docs/README.md` in the same change.
 ## Rollout Plan
 
 1. **Frontier and exhaustive switches.** Five walks plus the simulator and
-   practice table. First run `-Werror=switch` over the target and record any
-   pre-existing non-exhaustive switch it surfaces (for example in
-   `translator.cpp` or `adapter.cpp`); those are in-scope fixes, not surprises.
+   practice table. Run `-Werror=switch` over the target. It is **preventive**:
+   `translator.cpp`'s three switches (`:127, :189, :208`) are already exhaustive
+   and default-free over `ActionType`, `adapter.cpp:75` is exhaustive over
+   `Street`, and `adapter.cpp:26`'s `default:` is over a `std::size_t`, where
+   `-Wswitch` never applies. The stage gate is "the build is green with the flag
+   on", not "existing findings are fixed" — none are expected.
    Gate: phase-coverage test and termination test pass; existing numbers
    unchanged.
 2. **Adapter, driver, and fixture.** Both `BehaviorPolicy` implementations,
@@ -530,15 +540,26 @@ catches a mistake there.
 
 1. **Which abstracted game is the standing reproduction target?** Decided here
    rather than deferred: the target is a **2-seat flop-rooted flop-terminal
-   game with a 4-combo-per-seat range, `stack = 10`, `contribution = 2`** (a
-   5 BB game). It is the smallest game where the pooled walk enumerates and a
-   frontier leaf is still reached, and it is the deepest stack at which the
-   deviation menu contains the library's menu — measured: 0 uncontained nodes at
-   2 and 5 BB, 1 at 7 BB, 29 at 20 BB, 394 at 100 BB (see AC4). Its NashConv is a
+   game with a 4-combo-per-seat range, `stack = 10`, `contribution = 2`,
+   `big_blind = 2`** (a 5 BB game). It is the smallest game where the pooled walk
+   enumerates and a frontier leaf is still reached, and it sits at the
+   containment boundary: with `big_blind = 2` and `contribution = 2` the count is
+   0 at stacks 4-10 and 1 at stack 11, so the margin is **one chip**. The
+   reference document states the invariant — no re-raise node with an aggressive
+   action is legal at this depth — rather than the samples, because that is
+   checkable; and it notes that changing `big_blind`, `contribution`, or adding
+   an ante re-opens the divergence at unchanged `stack`. `big_blind = 2` is the
+   `make_def` default (`engine/src/flop_library/flop_library.cpp:48,78`), so the
+   default is safe, but it is pinned here rather than left implicit. Its NashConv is a
    property of that abstracted game, not of the shipped library, and the
    reference document says so. A deeper fixture needs the
    `declared_behavior_menu` base-term fix first; a full-range six-seat figure is
-   out of scope (Non-Goals).
+   out of scope (Non-Goals). The flop class is the fixture's manifest
+   `canonical_board[0]` for that 4-combo range, and it must not be one of the
+   class's `undealable_boards` (`engine/src/flop_library/flop_library.cpp:293-318`);
+   at two seats and four combos the dealability condition (2 × seat_count usable
+   cards off the board) is trivially met, so any class the range covers will do
+   and the reference document names the one chosen.
 2. **Should `declared_behavior_menu` include `actor_committed`?** It currently
    omits it (`engine/src/behavior/behavior_policy.cpp:75-77`) while the tree adds
    it (`engine/src/abstraction/abstraction.cpp:211,225`), so the reference
@@ -600,9 +621,18 @@ catches a mistake there.
 - **AC4**: `bigshark-stage6-resident-nash-conv` produces a single NashConv
   number (no interval: the pooled walk is exact on its fixture) with the
   evaluator's identity, for the 2-seat 4-combo fixture named in Open Question 1
-  (`stack = 10`, `contribution = 2`), **with zero policy misses**, **with a
-  measured uncontained-node count of 0**, and with both recorded in the reference
-  document. The uncontained count is part of the AC rather than a diagnostic
+  (`stack = 10`, `contribution = 2`, `big_blind = 2`), **with zero policy
+  misses**, **with a measured uncontained-node count of 0**, and with both
+  recorded in the reference document. The count is defined precisely enough for
+  a second implementer to reproduce: over every action node reachable from the
+  fixture root under the abstract tree's own menus
+  (`bs::tree::abstract_node_menu`, `engine/include/bs/abstract_tree.hpp:41`), the
+  number whose menu contains an action absent from
+  `declared_behavior_menu` at that state
+  (`engine/include/bs/behavior_policy.hpp:104`). Both functions are already
+  public, so no new seam is needed. At the pinned fixture the aggressive-only
+  and all-actions traversals agree (0); they diverge at depth (394 vs 638 at
+  100 BB), which is why the traversal is named rather than assumed. The uncontained count is part of the AC rather than a diagnostic
   because the fixture's depth is the only thing making containment true: the
   declared deviation menu omits `actor_committed` and diverges at every re-raise
   node, so a deeper fixture would silently print a negative figure (see the
@@ -634,8 +664,28 @@ catches a mistake there.
   declared menu while remaining legal: at 100 BB, a bet-to-3 → raise-to-11 node
   gives a tree menu of `Raise 11/15/23/200` against a declared menu of
   `Raise 11/12/16/20/28/200`. Measured over the 2-seat flop-terminal graph, the
-  uncontained-node count grows with depth: 0 at 2 and 5 BB, 1 at 7 BB, 5 at
-  10 BB, 29 at 20 BB, 141 at 50 BB, 394 at 100 BB.
+  uncontained-node count grows with depth. The counts depend on the traversal,
+  so both are stated — an earlier revision printed only the first and thereby
+  understated the divergence by about 38% at depth:
+
+  | stack | aggressive-action walk | all-actions walk |
+  | --- | --- | --- |
+  | 2 BB (4) | 0 | 0 |
+  | 5 BB (10) | 0 | 0 |
+  | 7 BB (14) | 1 | 2 |
+  | 10 BB (20) | 5 | 10 |
+  | 20 BB (40) | 29 | 56 |
+  | 50 BB (100) | 141 | 242 |
+  | 100 BB (200) | 394 | 638 |
+
+  **The count is defined against the all-actions walk**, since that is the AC's
+  quantity: every action node reachable from the fixture root under the abstract
+  tree's own menus (`bs::tree::abstract_node_menu`, public at
+  `engine/include/bs/abstract_tree.hpp:41`), counted when its menu contains an
+  action absent from `declared_behavior_menu` at that state
+  (`engine/include/bs/behavior_policy.hpp:104`). At the pinned fixture the two
+  traversals agree (0), so the choice does not move the AC — but the figure the
+  reference document records must come from the named one.
 
   So AC4's containment assertion **is satisfiable only for a shallow fixture**,
   and the RFC never pinned `stack`/`contribution`. That is a fixture finding the
@@ -697,4 +747,40 @@ catches a mistake there.
 
 ## Decision
 
-Pending independent approval-agent review.
+```text
+Author agent: BigShark maintainers
+Approved by: independent-approval-agent/opensource-deepseek-v4_1_flash/2026-10-21
+Decision date: 2026-10-21
+Review outcome: Approved
+Reviewed scope: Third revision in full, with five standalone probes compiled
+  against the repository's own sources (game_definition, abstraction,
+  behavior_policy, multiway_sampler, abstract_tree). The reviewer enumerated the
+  complete reachable action graph at the pinned fixture and compared the tree's
+  ActionAbstraction::identity() menu against declared_behavior_menu at every
+  node; swept stack depth across the 5/6 BB containment boundary; re-tested
+  containment under all three reachable BuildParams.action values; censused the
+  AbstractTree's node kinds; and enumerated the 4-combo joint deals.
+Review summary: Approved on the third round. Both attack points resolved in the
+  RFC's favour and by measurement rather than argument. The 4-combo range cannot
+  change the answer, because AbstractTree takes no ranges
+  (abstract_tree.hpp:198-199) and deals enter only at enumerate_joint_deals
+  (multiway_sampler.cpp:46), so containment is a function of (GameDef,
+  ActionAbstraction) alone; the pinned fixture measured 0 uncontained nodes
+  across 36 action nodes with 8 frontier leaves reached, and 0 under all three
+  action-abstraction choices. The seven blocking and minor findings from round
+  two were verified fixed, including the 34-site migration count, the empty
+  NoFrontier exception list, and the base-term diagnosis of the declared-menu
+  divergence. Five residual MINOR findings were applied before recording this
+  decision: the containment table now reports both traversals and the AC names
+  the all-actions one it means; the pinned fixture's margin is stated as an
+  invariant (0 at stacks 4-10, 1 at 11, with big_blind and contribution pinned)
+  rather than as samples; AC4's count is defined precisely enough to reproduce;
+  the stale "42 call expressions" and inverted exception list in Compatibility
+  are corrected; and the implemented-once location, the phantom AC1 count
+  assertion, and the -Wswitch expectation are all made consistent with the rest
+  of the document.
+Remaining risks: the fixture sits one chip from the containment boundary, so the
+  invariant is recorded rather than the samples. The reference document, not
+  this RFC, owns the exact trained figures. The reviewer did not build the
+  fixture library or run the full Engine Build Contract; those remain AC6.
+```
