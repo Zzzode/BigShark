@@ -356,9 +356,32 @@ The two contracts are therefore stated separately and neither is implicit:
 
 The lenient branch is a **named gap with a named consequence**, not a silent
 default: it is the packed path, it is recorded as Open Question 3, and AC1
-asserts its behaviour rather than pretending it away. Both branches still
-reject a *recognized* family carrying a malformed token; only an unrecognized
-identity falls back.
+asserts its behaviour rather than pretending it away.
+
+**The lenient fallback accepts the empty id and nothing else.** A prior revision
+said "unrecognized or empty", which is ambiguous in the one way that matters: a
+tokenless line has a *recognized* name, version, and schedule with a valid
+recomputable digest, so it is neither unrecognized nor malformed, and an
+implementer could route it through the fallback. That would reconstruct cap 0
+for `artifacts/preflop-profile-6way` — the exact artifact whose manifest says 1
+— at the one production call site (`engine/src/resolver/subgame_resolver.cpp:601`).
+It is reachable: `ResidentBlueprintSource::game()` returns the record's game
+(`engine/src/resident/resident_policy.cpp:1159`) and the eager SQLite path
+populates `record.game.action_id` from the manifest (`:624-626`).
+
+| Input | Strict gates | Lenient reconstruction |
+| --- | --- | --- |
+| empty id (packed) | n/a — never matched | **fallback, cap 0** (the packed gap) |
+| recognized family, explicit token | admit if all rows pass | parse and forward the cap |
+| recognized family, **tokenless** | reject | **reject** — cap unknown, fail closed |
+| recognized family, malformed token | reject | reject |
+| unrecognized name/version | reject | fallback, cap 0 |
+
+The empty id is a *known absence* (the packed header stores no parameters, so
+there is nothing to read). A tokenless line is an *unknown value* (parameters
+exist but omit the cap). Conflating them is what made the earlier revision
+silently mint 0. Because stage 1 removes every tokenless artifact from the
+shipped set, rejecting here costs nothing and closes the hole.
 
 The strict predicate **fails closed** on anything it cannot parse. The parameter line
 is order-sensitive and deterministic (`engine/src/abstraction/abstraction.cpp:110-131`),
@@ -474,17 +497,38 @@ Every byte is little-endian, matching the rest of the format. Non-action nodes
 contribute their index, kind, and a zero action count, so a node-kind change
 also moves the witness.
 
-**Terminal payloads are deliberately omitted, and this is sufficient for the
-builder.** The witness does not hash stack/pot settlements or frontier values. A
-`GameDef` stack or contribution change reaches the hash through a menu first:
+**Terminal payloads are deliberately omitted, and the limit of that choice must
+be stated precisely.** The witness hashes node index, kind, and menu; it does not
+hash stack or pot settlements. A prior revision argued that a stack or
+contribution change always reaches the hash through a menu first, because
 `cover_total` and the pot-fraction targets derive from the opponent's stack and
-the pot (`engine/src/abstraction/abstraction.cpp:210,245`), and the flop
-builder fixes `kDefaultBigBlind` (`engine/src/flop_library/flop_library.cpp:536`),
-so no accepted parameter change can move a terminal's chips while leaving every
-menu byte-identical. The omission is a statement about this builder's parameter
-space, not a general one: a future caller that varies a terminal-only field
-would need it hashed, and that caller must revisit this section rather than
-assume the witness covers it.
+the pot (`engine/src/abstraction/abstraction.cpp:210,245`). That holds **at the
+shipping scale** and fails at the builder's own defaults.
+
+The builder defaults to `stack = 4`, `contribution = 2`
+(`engine/benchmarks/flop_library_builder.cpp:65-66`), with `kDefaultBigBlind = 2`
+(`engine/src/flop_library/flop_library.cpp:48`). At that scale every declared
+fraction clamps onto the all-in cap, so the menus stop varying:
+
+| contribution | pot | root menu |
+| --- | --- | --- |
+| 2 | 4 | `[2, 3, 4]` |
+| 3 | 6 | `[2, 4]` |
+| 5 | 10 | `[2, 4]` |
+| 6 | 12 | `[2, 4]` |
+
+From contribution 3 onward the root menu is identical while the pot differs.
+At the shipped scale (stack 200) a 2 → 3 change does move menus
+(`[2,3,6,200]` vs `[2,5,9,200]`), so the shipped configuration is covered.
+
+Consequence, stated rather than argued away: in the clamp regime a pot-only
+change is invisible to both `validate_initial` and the witness — node count,
+kind, and menus are all unchanged — so rows trained at one pot could be reused at
+another. This is a **pre-existing property of the witness's coverage, not a
+regression**, and it is why the guarantee is worded as "rejects any difference
+that moves an ordinal or a menu", never "rejects any difference". A caller that
+varies a terminal-only field, or that builds at small stacks, must extend the
+hash; this RFC does not do that and does not claim it.
 
 On resume the builder recomputes the witness for its own tree and requires
 equality **in `train_one_class`, before `state.rows = ckpt.rows`
@@ -533,9 +577,8 @@ parent path does the same at
 `engine/benchmarks/flop_library_builder.cpp:294-305`). The outcome matches the
 intent — the class retrains — but a prior draft called it a refusal, which is a
 different code path with a different operator-visible message. This is distinct
-from the witness and digest mismatches, which are uncaught
-`std::runtime_error`s that abort the whole build (AC4). No `.bswarm` file
-exists at the time of writing.
+from the witness and digest mismatches, which discard the checkpoint and retrain
+the class (see below). No `.bswarm` file exists at the time of writing.
 
 ### Mid-street roots
 
@@ -618,6 +661,11 @@ vacuous for a `uint8_t`.)
   corrupt and their classes retrain, as `preflight_resume` does for any
   unreadable header (`engine/src/flop_library/flop_library.cpp:241-251`).
 - **`.sections/build.json` already carries the cap** and needs no change.
+- **The shipped six-way library stays cap-0 at turn/river continuation, even
+  after its stage-1 rebuild.** The packed header stores a digest and no
+  parameter line, so nothing in the RFC changes what `MmapLibrary` can recover;
+  the rebuild gives it a new digest, not a cap. Readers must not treat "rebuilt"
+  as "fixed". Closing it needs the parameters in the header (Open Question 3).
 - **No compatibility shim.** Per the no-legacy rule there is no dual-cap
   reader and no feature flag.
 - **Documentation**: `docs/design/gto-engine.md` gains the cap and witness, and
@@ -685,7 +733,9 @@ vacuous for a `uint8_t`.)
    input with a message naming the missing token and the manifest key, rather
    than silently running at cap 0 — a tokenless run would build a cap-0 tree
    and report a NashConv for a tree the artifact was not trained on, which is
-   worse than failing. No other load path recomputes the action digest
+   worse than failing. **Intentional consequence:** the benchmark cannot run
+   against any pre-rebuild artifact until stage 1 has rebuilt it. That is the
+   point of the gate, and it is stated here so it is not discovered mid-stage. No other load path recomputes the action digest
    (`strategy_artifact.cpp` recomputes only the card digest at `:2088` and
    `:2878`), so the "inert records" claim for stale artifacts otherwise holds.
 3. **The witness is computed differently in two places.** *Mitigation:* one
@@ -736,9 +786,10 @@ vacuous for a `uint8_t`.)
    candidate; `preflop_nash_conv` runs against the 6way artifact; no
    `set_max_raises_per_street` reference remains.
 2. **Tree-shape witness.** BSWARM01 version 2, header 192, the hash function
-   and its stored-constant test. Gate: the defect-B refusal test passes and
-   asserts the abort, and the cap-change variant refuses earlier at the
-   abstraction digest.
+   and its stored-constant test. Gate: the defect-B test passes — the direct
+   `train_nseat` call accepts the shifted rows, the builder discards the
+   checkpoint and retrains, and a second `--resume` run succeeds — and the
+   cap-change variant is caught earlier at the abstraction digest.
 3. **Mid-street roots.** `GameDef` field, the `GameState` constructor
    assignment, and the seeding in `build_subgame_def_from_node`; no schema
    change. Gate: the mid-street test passes and no artifact pin moves.
@@ -787,7 +838,10 @@ halts it.
   path that populates `record.game.action_id` at `resident_policy.cpp:545-547`
   and `:624-626` — reconstructs cap 1, where today it returns cap 0. The test
   also asserts the **gap remains**: an `MmapLibrary`-backed game reconstructs
-  cap 0, so the RFC cannot be read as having fixed the packed path. This is an
+  cap 0, so the RFC cannot be read as having fixed the packed path. And it
+  asserts the tokenless case is **refused**, not silently read as 0: a
+  parameter line with a recognized name, version, schedule, and digest but no
+  `|max-raises=` token throws rather than returning cap 0. This is an
   `NSeatPolicy`/`resolve()` integration test, because
   `reconstruct_action_abstraction` is private
   (`engine/include/bs/subgame_resolver.hpp:171`).
@@ -836,8 +890,12 @@ halts it.
   passing one: a missing token, an empty value, a value above 255, a
   non-canonical spelling (`01`, `+1`, ` 1`), a non-final token, a duplicated
   token, a wrong version, and a parameter line whose digest does not recompute.
-  Each asserts refusal. The lenient reconstruction branch asserts its named
-  exception: an unrecognized identity falls back to cap 0 rather than throwing.
+  Each asserts refusal. The lenient reconstruction branch asserts its two named
+  outcomes: an **empty** identity falls back to cap 0 (the packed gap), and an
+  **unrecognized** name or version also falls back. A recognized family with a
+  **tokenless** line refuses — the case that separates "known absence" from
+  "unknown value", and the one that would otherwise reconstruct cap 0 for
+  `artifacts/preflop-profile-6way`.
 - **AC9**: Stage 1's local pre-publication check reports every `.db` under
   `artifacts/` carrying explicit `|max-raises=` tokens, and its output is
   recorded as stage evidence. This cannot be a repository test: `artifacts/` is
