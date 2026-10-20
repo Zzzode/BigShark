@@ -56,7 +56,7 @@ defect is per-walker, not uniform.
 tree-layout index resolved by `NSeatPolicy::lookup(tree, state, seat, own)`
 (`:152-167`). The deployed path is
 `ResidentPolicySet::hero_decision` → `find_row_words` → `find_bucket`
-(`engine/src/resident/resident_policy.cpp:1096-1210`). The measurement stack
+(`engine/src/resident/resident_policy.cpp:1024-1142`). The measurement stack
 consumes `stage6::BehaviorPolicy` keyed by `InfosetKey` (own cards plus framed
 public history tokens, `engine/include/bs/stage6/infoset_key.hpp:26-52`). The
 only `NSeatPolicy` → `BehaviorPolicy` bridge is test-private
@@ -162,18 +162,18 @@ interchangeable.
   phase and the walker. A zero-value return and an infinite loop are both
   unacceptable.
 - **Measure the served path.** The adapter wraps `hero_decision`, so
-  canonicalization and ledger construction are inside the measurement.
+  canonicalization and the zero-reach post-filter are inside the measurement.
 - **One number, one definition, and label the other.**
 - **An estimate is labelled an estimate** in code, output, and docs.
 
 ## Proposed Design
 
-### Walker enumeration and the throwing default
+### Walker enumeration and exhaustive switches
 
 Add a `Frontier` case to each of the five walks. The phase switches carry **no
 `default`**: every enumerator is listed explicitly, `Frontier` included, so
 `-Wswitch` fires for a future sixth value. That is the repository's existing
-precedent — `engine/src/common/guarantee.cpp:29-40` switches exhaustively with
+precedent — `engine/src/policy/guarantee.cpp:29-38` switches exhaustively with
 no `default` and falls through to a named result
 (`engine/CMakeLists.txt:628-630`).
 
@@ -211,8 +211,10 @@ earlier draft, which called the dependency required and then invited `nullptr`.
 
 **G1/AC2 become measurable** through two mechanisms, because the walks are in
 anonymous namespaces and have no public seam:
-(a) `-Werror=switch` on the stage-6 eval target and on the simulator and
-practice targets, so a future phase addition fails the build; and
+(a) `-Werror=switch` on `bigshark_stage6_eval` and `bigshark_practice` — the
+simulator compiles inside `bigshark_stage6_eval`
+(`engine/CMakeLists.txt:703`), so there is no separate simulator target — so a
+future phase addition fails the build; and
 (b) a table-driven test that drives each **named public entry point** with one
 state per phase and asserts either a finite result or the named throw.
 
@@ -328,8 +330,8 @@ registered in `docs/README.md` in the same change.
 1. **Add frontier support only.** Leaves the library unmeasurable; the adapter is
    the point.
 2. **Add the adapter over `find_bucket`.** Cheaper, but resolves the wrong bucket
-   for any non-canonical flop and skips the ledger construction the served path
-   performs. Rejected: it would measure something the engine does not run.
+   for any non-canonical flop and skips the canonicalization and zero-reach
+   post-filter the served path performs. Rejected: it would measure something the engine does not run.
 3. **Reimplement the resident lookup inside the harness.** Same objection, plus
    drift risk.
 4. **Make the evaluator optional (`nullptr`).** Rejected: it repeats the pattern
@@ -342,8 +344,10 @@ registered in `docs/README.md` in the same change.
 
 1. **The MC estimator's known weakness recurs.** The chart-reach campaign already
    produced a null result
-   (`docs/plans/0004-0006-implementation.md:4991-5046`). *Mitigation:* report the
-   miss count and decision source; a refusal or a wide miss count is a result.
+   (`docs/plans/0004-0006-implementation.md:4991-5046`). *Mitigation:* the exact
+   path reports its evaluator identity, the adapter reports its miss count, and
+   the MC estimator is where an interval applies; each number is reported with
+   the method that produced it.
 2. **Frontier handling changes existing small-game numbers.** *Mitigation:* a
    showdown-terminal fixture must reproduce its recorded value bitwise.
 3. **The four-card frontier multiplies cost by `52 - 3 - 2N`.** *Mitigation:* state it, and
@@ -412,21 +416,28 @@ rollout until explained.
 
 ## Acceptance Criteria
 
-- **AC1**: The five named walks plus the simulator and practice table handle
-  `Phase::Frontier` through a required evaluator reference, and every phase
-  switch has a throwing default.
+- **AC1**: The five named walks handle `Phase::Frontier` through a required
+  evaluator reference; `HandSimulator` and `PracticeTable` throw the named
+  error instead; and **no** phase switch has a `default`, so `-Wswitch` remains
+  live for a future enumerator.
 - **AC2**: A table-driven test drives each named public entry point with one
-  state per `poker::Phase`; a flop-terminal definition runs to completion in the
-  simulator and practice table; `-Werror=switch` is enabled on the affected
-  targets.
+  state per `poker::Phase`; a **preflop-rooted** flop-terminal definition makes
+  `HandSimulator` and `PracticeTable` throw the named error instead of looping;
+  `-Werror=switch` is enabled on `bigshark_stage6_eval` and
+  `bigshark_practice`.
 - **AC3**: `NSeatBehaviorPolicy` matches a direct `NSeatPolicy::lookup` on every
   information set of a named fixture; `ResidentBehaviorPolicy` matches a recorded
   `hero_decision` trace — not a `find_bucket` call — and holds one
-  `ResidentScratch` per thread.
+  `ResidentScratch` per thread. The trace is produced from a **2-seat library
+  built for this RFC** with the flop library builder (whose defaults are
+  `player-count 2` and a 40-combo premium range, so a smaller custom range is
+  available). `same_root` requires equal `player_count` and `pot`
+  (`engine/src/resident/resident_policy.cpp:55`), so the shipped six-seat
+  artifact cannot serve this fixture and is not used by any AC.
 - **AC4**: The documented command produces a single NashConv number (no
-  interval: the pooled walk is exact on its fixture), with miss count, evaluator
-  identity, and decision source, for the 2-seat 4-combo fixture named in Open
-  Question 1.
+  interval: the pooled walk is exact on its fixture) with the evaluator's
+  identity, and the adapter reports its policy miss count alongside, for the
+  2-seat 4-combo fixture named in Open Question 1.
 - **AC5**: One BB/seat/hand formula exists in the n-seat code; the two
   pot-relative harnesses carry comments naming their different definition, and
   `docs/reference/exploitability.md` states both and is registered in

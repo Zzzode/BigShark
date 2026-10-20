@@ -163,8 +163,12 @@ content, because the digest is order-sensitive and `make_declared_id` currently
 appends `cover-seeds=` last (`engine/src/abstraction/abstraction.cpp:125-128`):
 
 ```text
-<canonical schedule>[|cover-seeds=...]|max-raises=<N>
+<canonical schedule>[cover-seeds=...]|max-raises=<N>
 ```
+
+`cover-seeds=` keeps its current spelling with **no** separator, because
+changing it would move the declared digest for a second, unrelated reason. Only
+the new token is `|`-prefixed.
 
 `reconstruct_action_abstraction`
 (`engine/src/resolver/subgame_resolver.cpp:112-117`) parses the trailing token
@@ -174,7 +178,14 @@ blueprint built with `--raise-cap 1`, so turn/river continuation menus are
 uncapped today.
 
 `set_max_raises_per_street` is **removed**. Every producer passes the cap into
-the constructor — five code sites, named in Motivation. That is the point: a
+the constructor — five code sites, named in Motivation. Because `max_raises`
+keeps a `0` default (see Risk 2), `identity_action_id()` — which is
+`ActionAbstraction::identity().id()` (`engine/src/abstraction/abstraction.cpp:156-158`)
+and is used as a default member initializer at `engine/include/bs/solve.hpp:193`,
+compared against `tree.action_id()` at `engine/src/solver/solve.cpp:26,82` —
+continues to mean the cap-0 identity. A tree built with a nonzero cap therefore
+has a different `action_id()` than `identity_action_id()`, which is correct: they
+are different abstractions. That is the point: a
 setter that must remember to re-mint the digest is exactly how the value was
 lost.
 
@@ -219,7 +230,9 @@ contribute their index, kind, and a zero action count, so a node-kind change
 also moves the witness.
 
 On resume the builder recomputes the witness for its own tree and requires
-equality before training starts:
+equality **in `train_one_class`, before `state.rows = ckpt.rows`
+(`engine/src/flop_library/flop_library.cpp:373`)** — not later inside
+`validate_initial`, which would already have accepted rows:
 
 ```text
 checkpoint tree shape does not match the current tree
@@ -229,8 +242,9 @@ checkpoint tree shape does not match the current tree
 A cap difference is one instance of a shape mismatch. The witness is **strictly
 stronger for row validity** than a cap field — it also catches a sizing or
 stack change that alters any action target or the tree shape, and a node-kind
-change — and it never rejects a resume whose rows are valid, including two different caps that happen to produce identical trees,
-which is the correct outcome.
+change — and it never rejects a resume whose rows are valid, including two
+different caps that happen to produce identical trees, which is the correct
+outcome.
 
 The checkpoint extension is a persisted-format change: a version-1 file is
 refused and its class retrains, which under RFC 0028's rules is the normal
@@ -270,6 +284,17 @@ The count therefore lives in memory for the duration of a resolve. If a future
 proposal needs it persisted, that proposal takes the v4 path and names its
 consumer — it is not smuggled in here.
 
+**`same_game_def` does compare it.** That predicate is documented as "the ONE
+root/game identity predicate ... Compares every field that changes the game"
+(`engine/include/bs/game_definition.hpp:172-178`), and this field changes legal
+actions — it gates the cap at `engine/src/tree/abstract_tree.cpp:154-156`.
+`NSeatPolicy::lookup` returns null unless
+`poker::same_game_def(game_, tree.def())`
+(`engine/src/gto/nseat_trainer.cpp:1143`), so without the comparison a count-0
+policy could match a count-2 tree, which is the same class of defect this RFC
+exists to close. Comparison is identity-only: no persisted surface moves, and
+`validate(GameDef)` bounds the field to `0..255`.
+
 ## Dependency Rules
 
 - `bs::abstraction` owns the cap and its identity; no consumer re-derives one.
@@ -286,8 +311,9 @@ consumer — it is not smuggled in here.
 - **`.sections/build.json` already carries the cap** and needs no change.
 - **No compatibility shim.** Per the no-legacy rule there is no dual-cap
   reader and no feature flag.
-- **Documentation**: `docs/design/gto-engine.md` gains the cap and witness in
-  the same change, per the repository documentation rules.
+- **Documentation**: `docs/design/gto-engine.md` gains the cap and witness, and
+  the comment at `engine/include/bs/flop_library.hpp:59-62` — which currently
+  states the cap is not part of the digest — is corrected in the same change.
 
 ## Security and Operational Impact
 
@@ -317,9 +343,18 @@ consumer — it is not smuggled in here.
 1. **The rebuild invalidates every artifact for a correctness fix.** *Mitigation:*
    the rebuild is reproducible from pinned parameters, and the RFC states the
    cost up front rather than presenting the change as free.
-2. **The constructor change touches five code sites.** *Mitigation:* the
-   compiler finds every call site once the setter is removed; there is no
-   silent path.
+2. **The constructor change is far larger than the setter list.** Five is the
+   setter count. Making `max_raises` mandatory on `ActionAbstraction(...)`,
+   `identity(...)`, and `declared(...)` would touch **88** `identity()` and
+   **31** `declared(...)` call sites plus **22** `identity_action_id`
+   references, across tests, benchmarks, and production headers
+   (`flop_library.hpp:148,163` use `identity()` as default arguments;
+   `stage6/trainer.hpp:97`, `stage6/candidate_policy.hpp:53`,
+   `postflop_config.cpp:50`, `solve.hpp:193`). *Resolution:* `max_raises`
+   **keeps a default of `0`** on all three entry points, so existing call sites
+   compile unchanged and represent "no cap"; only the five producers that shape
+   a strategy pass a value. The digest still distinguishes them, because the
+   default is part of the hashed parameter line.
 3. **The witness is computed differently in two places.** *Mitigation:* one
    function, one test that recomputes it for a known tree and compares to a
    stored constant.
@@ -340,8 +375,9 @@ consumer — it is not smuggled in here.
   previously resumed stale rows, and must now refuse once.
 - **Mid-street root.** A subgame rebuilt mid-street reports the same legal
   action count as the live state.
-- **Project gates**: full Engine Build Contract, ASan, and an explicit
-  `grep` for `set_max_raises_per_street` returning zero hits.
+- **Project gates**: full Engine Build Contract, ASan, and a `grep` for
+  `set_max_raises_per_street` over `engine/`, `apps/`, `bin/`, and `tools/`
+  returning zero hits, with historical RFC text exempt (see AC2).
 
 ## Rollout Plan
 
@@ -386,6 +422,9 @@ halts it.
 - **AC1**: The raise cap is part of the action-abstraction digest; a
   cap-differing pair has differing digests, and
   `reconstruct_action_abstraction` recovers the cap from a persisted identity.
+  The test asserts the **real** case, not only a synthetic round trip: a
+  blueprint built with `--raise-cap 1` reconstructs cap 1, where today it
+  returns cap 0.
 - **AC2**: `set_max_raises_per_street` no longer exists, and a grep over
   `engine/`, `apps/`, `bin/`, and `tools/` returns zero hits. Historical RFC
   text is exempt: `docs/rfcs/0025-off-tree-decision-handling.md:238` quotes the
@@ -399,8 +438,9 @@ halts it.
 - **AC5**: A mid-street subgame root reports the same legal action count as the
   live state, and no artifact schema, DDL, or round-trip pin moves.
 - **AC6**: The full Engine Build Contract passes, ASan is clean,
-  `check-rfcs` / `check-docs` pass, and `docs/design/gto-engine.md` documents
-  the cap and the witness.
+  `check-rfcs` / `check-docs` pass, `docs/design/gto-engine.md` documents the
+  cap and the witness, and the `flop_library.hpp:59-62` comment no longer
+  claims the cap is excluded from the digest.
 
 ## Decision
 
