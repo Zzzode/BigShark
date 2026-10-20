@@ -148,16 +148,16 @@ public constructors take it:
 // The cap is std::uint8_t throughout, matching the existing setter and member
 // (engine/include/bs/abstraction.hpp:238-239); the RFC does not widen it.
 // Minters: the cap joins the hashed parameters.
-AbstractionId make_id(const SizeSchedule& schedule, std::uint8_t max_raises);
+AbstractionId make_id(const SizeSchedule& schedule, std::uint8_t max_raises = 0);
 AbstractionId make_declared_id(const SizeSchedule& schedule,
                                abstraction::CoverSeeds seeds,
-                               std::uint8_t max_raises);
+                               std::uint8_t max_raises = 0);
 
 // Consumed surface (engine/include/bs/abstraction.hpp:220-231).
-explicit ActionAbstraction(SizeSchedule schedule, std::uint8_t max_raises);
-static ActionAbstraction identity(std::uint8_t max_raises);
+explicit ActionAbstraction(SizeSchedule schedule, std::uint8_t max_raises = 0);
+static ActionAbstraction identity(std::uint8_t max_raises = 0);
 static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds,
-                                  std::uint8_t max_raises);
+                                  std::uint8_t max_raises = 0);
 ```
 
 The parameter line gains a canonical token appended **after** the existing
@@ -199,6 +199,49 @@ The golden digest `0x422c245239c7a527` moves. It is pinned at
 not republished; they remain as inert records and are named here so a reader is
 not surprised by a stale digest.
 
+### The admissibility gates
+
+Making the cap part of the digest would silently disable every identity-family
+tree with a nonzero cap, because three gates test **exact equality** against the
+cap-0 identity:
+
+- `validate_request` (`engine/src/gto/nseat_trainer.cpp:870-873`) admits a tree
+  only if `tree.action_id() == identity_action_id()` or
+  `is_declared_coarse_action_id(...)`;
+- `engine/src/gto/solve.cpp:26-29` and `:82-85` do the same.
+
+`is_declared_coarse_action_id` matches by **name** only
+(`engine/src/abstraction/abstraction.cpp:160-162`), so coarse trees survive. But
+an identity tree built with `identity(1)` keeps the name
+`rfc0007-pot-fractions` and gains `|max-raises=1`: it is neither equal to the
+cap-0 id nor coarse.
+
+Two consequences are reachable today:
+
+1. `resolve_flop` builds `identity()` with cap 1
+   (`engine/src/resolver/subgame_resolver.cpp:504-505`) and calls `train_nseat`
+   (`:652`), whose `train_impl` calls `validate_request`
+   (`engine/src/gto/nseat_trainer.cpp:929`). The throw is caught as
+   `std::exception` and converted to `SubgameResolveStatus::InvalidInput`, so
+   **every RFC 0025 flop-rooted depth-limited resolve silently stops working**.
+2. The flop-library builder at `--raise-cap 1` — the configuration recorded by
+   the published `flop-library-6way-fullrange` manifest — throws and fails the
+   build.
+
+The design therefore adds an **identity-family predicate** and replaces the
+three exact-equality tests with it:
+
+```cpp
+// True for any id whose name is the identity family's, regardless of the cap.
+bool is_identity_action_family(const AbstractionId& id);
+```
+
+A differing **schedule** under the identity name must still be refused — that is
+the existing intent, recorded at `engine/src/gto/nseat_trainer.cpp:868-869` — so
+the predicate matches the family *and* the canonical schedule, and admits only a
+differing cap. This is the first place the new parameter parser becomes
+load-bearing, and it is the highest-risk item in the change.
+
 ### Tree-shape witness
 
 The sealed checkpoint records a 64-bit FNV-1a witness over the materialized
@@ -233,7 +276,7 @@ also moves the witness.
 
 On resume the builder recomputes the witness for its own tree and requires
 equality **in `train_one_class`, before `state.rows = ckpt.rows`
-(`engine/src/flop_library/flop_library.cpp:373`)** — not later inside
+(`engine/src/flop_library/flop_library.cpp:372`)** — not later inside
 `validate_initial`, which would already have accepted rows:
 
 ```text
@@ -256,14 +299,14 @@ discard path. No `.bswarm` file exists at the time of writing.
 
 `GameDef` gains `raises_this_street`, `GameState(const GameDef&)` assigns it to
 `raises_this_street_` (`engine/src/poker/game_definition.cpp:294+`; accessor at
-`/include/bs/game_definition.hpp:240`), and `build_subgame_def_from_node` seeds
+`engine/include/bs/game_definition.hpp:240`), and `build_subgame_def_from_node` seeds
 it from the source node
 (`engine/src/resolver/subgame_resolver.cpp:340-377`). Without the constructor
 assignment the new field would be inert.
 
-**It is not persisted, and this is deliberate.** A prior draft added
-`same_game_def`, `insert_game_v2`/`read_game_v2`, and `validate_game_v2` to the
-scope. Three problems make that wrong:
+**It is not persisted, and this is deliberate.** A prior draft also added
+`insert_game_v2`/`read_game_v2` and `validate_game_v2` to the scope. Three
+problems make *persistence* wrong:
 
 1. `kSchemaDdlV3` reuses `kSchemaDdlV2[1]` for the `game` table verbatim
    (`engine/src/artifacts/strategy_artifact.cpp:861-873`) and
@@ -276,17 +319,20 @@ scope. Three problems make that wrong:
    nothing in `engine/src/resolver` or the host writes a policy artifact — every
    artifact-producing path is street-start. A persisted field with no reader is
    a speculative surface.
-3. It would be incoherent alone: `same_game_def` compares `street_committed`,
-   `raise_rights`, and `last_full_raise`
+3. It would be incoherent alone: `same_game_def` already compares
+   `street_committed`, `raise_rights`, and `last_full_raise`
    (`engine/src/poker/game_definition.cpp:283-286`) and none of those is
-   persisted, so a mid-street definition already cannot round-trip. Adding one
-   of the four does not make it round-trip.
+   persisted, so a mid-street definition already cannot round-trip. Persisting
+   one of the four does not make it round-trip.
 
 The count therefore lives in memory for the duration of a resolve. If a future
 proposal needs it persisted, that proposal takes the v4 path and names its
 consumer — it is not smuggled in here.
 
-**`same_game_def` does compare it.** That predicate is documented as "the ONE
+**`same_game_def` does compare it — a separate decision from persistence.** That
+predicate has four consumers (`nseat_trainer.cpp:1143`,
+`root_value_extractor.cpp:185`, `continuation_range.cpp:133`,
+`seat_policy.cpp:192`) and is documented as "the ONE
 root/game identity predicate ... Compares every field that changes the game"
 (`engine/include/bs/game_definition.hpp:172-178`), and this field changes legal
 actions — it gates the cap at `engine/src/tree/abstract_tree.cpp:154-156`.
@@ -295,7 +341,13 @@ actions — it gates the cap at `engine/src/tree/abstract_tree.cpp:154-156`.
 (`engine/src/gto/nseat_trainer.cpp:1143`), so without the comparison a count-0
 policy could match a count-2 tree, which is the same class of defect this RFC
 exists to close. Comparison is identity-only: no persisted surface moves, and
-`validate(GameDef)` bounds the field to `0..255`.
+`validate(GameDef)` adds the cross-field rule that matters: a nonzero count
+requires a mid-street root — some `street_committed > 0` — mirroring the
+existing mid-street convention at `engine/src/poker/game_definition.cpp:108-160`.
+A nonzero count with every `street_committed == 0` would be a street-start root
+that the cap gate (`engine/src/tree/abstract_tree.cpp:154-156`) treats as
+already capped, suppressing betting illegally. (A plain `0..255` bound is
+vacuous for a `uint8_t`.)
 
 ## Dependency Rules
 
@@ -348,7 +400,7 @@ exists to close. Comparison is identity-only: no persisted surface moves, and
 2. **The constructor change is far larger than the setter list.** Five is the
    setter count. Making `max_raises` mandatory on `ActionAbstraction(...)`,
    `identity(...)`, and `declared(...)` would touch **88** `identity()` and
-   **31** `declared(...)` call sites plus **22** `identity_action_id`
+   **30** `declared(...)` call sites plus **22** `identity_action_id`
    references, across tests, benchmarks, and production headers
    (`flop_library.hpp:148,163` use `identity()` as default arguments;
    `stage6/trainer.hpp:97`, `stage6/candidate_policy.hpp:53`,
@@ -427,19 +479,25 @@ halts it.
   The test asserts the **real** case, not only a synthetic round trip: a
   blueprint built with `--raise-cap 1` reconstructs cap 1, where today it
   returns cap 0.
-- **AC2**: `set_max_raises_per_street` no longer exists, and a grep over
+- **AC2**: An identity-family tree built with a nonzero cap is admitted:
+  `train_nseat` trains it, and `resolve_flop` still returns a solved candidate
+  rather than `SubgameResolveStatus::InvalidInput`. A custom **schedule** under
+  the identity name is still refused. A `--raise-cap 1` flop-library build
+  completes.
+- **AC3**: `set_max_raises_per_street` no longer exists, and a grep over
   `engine/`, `apps/`, `bin/`, and `tools/` returns zero hits. Historical RFC
   text is exempt: `docs/rfcs/0025-off-tree-decision-handling.md:238` quotes the
   call and accepted RFCs are immutable, the same exemption RFC 0028 AC5 took.
-- **AC3**: A checkpoint written for a different tree shape is refused by name;
+- **AC4**: A checkpoint written for a different tree shape is refused by name;
   the `.sections`-absent sequence that previously resumed stale rows now
   produces exactly one refusal.
-- **AC4**: The tree-shape witness matches a stored constant for a known tree,
+- **AC5**: The tree-shape witness matches a stored constant for a known tree,
   and changing a node's action target, a node's kind, or the tree size each
   changes it.
-- **AC5**: A mid-street subgame root reports the same legal action count as the
-  live state, and no artifact schema, DDL, or round-trip pin moves.
-- **AC6**: The full Engine Build Contract passes, ASan is clean,
+- **AC6**: A mid-street subgame root reports the same legal action count as the
+  live state; `validate` rejects a nonzero count on a street-start root; and no
+  artifact schema, DDL, or round-trip pin moves.
+- **AC7**: The full Engine Build Contract passes, ASan is clean,
   `check-rfcs` / `check-docs` pass, `docs/design/gto-engine.md` documents the
   cap and the witness, and the `flop_library.hpp:59-62` comment no longer
   claims the cap is excluded from the digest.

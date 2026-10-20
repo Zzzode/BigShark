@@ -79,7 +79,9 @@ interchangeable.
 
 - **G1**: Every walker over a tree that can contain frontier leaves either
   models them through a supplied evaluator or throws naming the phase. The
-  simulator and practice table terminate instead of spinning.
+  simulator terminates instead of spinning; the practice table gains the same
+  exhaustive switch, and although it cannot currently be handed a flop-terminal
+  definition, a future one cannot spin.
 - **G2**: A measurement adapter reads the **resident serving path**, not a
   lookup that happens to be beneath it. The demonstrated number is on a named
   abstracted game, not on the shipped six-seat library; see Non-Goals.
@@ -201,7 +203,8 @@ rather than showing one snippet:
 | `exact_oracle::recurse` | `std::array<double,10>` | evaluator value per seat, unweighted (the caller weights) |
 | `exact_oracle::br_group` | `PooledValue{value, mass}` | evaluator value × `view.reach`, and add `view.reach` to `mass` |
 | `LearnWalk`/`LegWalk`/`PairWalk` | `std::array<double,10>` (pair: on both legs) | evaluator value, then the existing zero-sum check at `br_estimator.cpp:333` applies |
-| `HandSimulator`, `PracticeTable` | none (they advance state) | **throw the named error**; neither accepts a frontier evaluator (`simulator.hpp:58-61`, `practice_table.hpp:90`) |
+| `HandSimulator` | none (it advances state) | **throws the named error**; it accepts a `GameDef`, so a flop-terminal definition reaches this today (`simulator.hpp:58-65`) |
+| `PracticeTable` | none (it advances state) | **throws the named error** if ever reached. It cannot be reached today: `PracticeConfig` has no terminal-depth field (`practice_table.hpp:79-86`) and the file-local `make_def` never sets `terminal` (`practice_table.cpp:66-90`), so it stays at the `TerminalDepth::River` default. The switch still gains the case so a future flop-terminal configuration cannot spin. |
 
 The evaluator is a **required reference** in the walk signatures, not a
 nullable pointer. A tree that cannot contain frontier leaves passes an explicit
@@ -286,6 +289,32 @@ The two pot-relative harnesses keep their formula — they price a subgame gadge
 in pot units — and each gains a comment naming its definition. No existing
 number is reinterpreted.
 
+### The measurement driver
+
+AC4 needs a binary that does not exist. No current target links
+`bigshark_stage6_eval` (which owns the exact oracle and the adapter) with
+`bigshark_resident`: `bigshark-subgame-nash-conv` links only `bigshark_solver`
+and takes an `NSeatPolicy` rather than a `BehaviorPolicy`
+(`engine/CMakeLists.txt:594-601`), and `bigshark-stage6-measurement-driver`
+links eval and train but loads no library and never calls the exact oracle.
+`exact_*_utility` is currently called only from `engine/tests/` and
+`br_estimator.cpp:865`.
+
+This RFC adds `bigshark-stage6-resident-nash-conv`, an offline binary linking
+`bigshark_stage6_eval` + `bigshark_resident`, with the signature:
+
+```text
+bigshark-stage6-resident-nash-conv --library <dir> --fixture <name>
+                                   [--players N] [--iterations M]
+```
+
+It builds the named fixture's `GameDef`, wraps the resident set in
+`ResidentBehaviorPolicy`, runs `exact_best_response_utility` and
+`exact_oracle_utility`, and prints the NashConv figure with the evaluator
+identity and the adapter's miss count. It is introduced in Rollout stage 2 and
+must be added to the offline guard's include closure, since the `nm` scan only
+covers linked symbols.
+
 ### Reference document
 
 `docs/reference/exploitability.md` (new) records both definitions, which
@@ -342,12 +371,12 @@ registered in `docs/README.md` in the same change.
 
 ## Risks
 
-1. **The MC estimator's known weakness recurs.** The chart-reach campaign already
-   produced a null result
-   (`docs/plans/0004-0006-implementation.md:4991-5046`). *Mitigation:* the exact
-   path reports its evaluator identity, the adapter reports its miss count, and
-   the MC estimator is where an interval applies; each number is reported with
-   the method that produced it.
+1. **The MC estimator's known weakness would recur if it were used.** No AC
+   exercises it — AC4's path is the exact pooled walk — but a future MC run
+   should expect the null result the chart-reach campaign already produced
+   (`docs/plans/0004-0006-implementation.md:4991-5046`). *Mitigation:* that is
+   why this RFC does not build an MC path; each reported number names the method
+   that produced it.
 2. **Frontier handling changes existing small-game numbers.** *Mitigation:* a
    showdown-terminal fixture must reproduce its recorded value bitwise.
 3. **The four-card frontier multiplies cost by `52 - 3 - 2N`.** *Mitigation:* state it, and
@@ -364,7 +393,8 @@ registered in `docs/README.md` in the same change.
   simulator rejects any other shape,
   `engine/include/bs/stage6/simulator.hpp:63-65`) throws the named error instead
   of looping. This is a different fixture from Open Question 1's flop-rooted
-  target, which exercises only the oracle, estimator, and end-to-end paths.
+  target. The practice table is covered by constructing a `Frontier` state
+  directly, since no configuration can reach one.
 - **Regression.** Existing showdown-terminal fixtures reproduce their recorded
   values within the tolerance those tests already use.
 - **Adapter equivalence.** `NSeatBehaviorPolicy` answers identically to a direct
@@ -383,13 +413,16 @@ registered in `docs/README.md` in the same change.
    `translator.cpp` or `adapter.cpp`); those are in-scope fixes, not surprises.
    Gate: phase-coverage test and termination test pass; existing numbers
    unchanged.
-2. **Adapter.** Both `BehaviorPolicy` implementations and their equivalence
-   tests. Gate: equivalence tests pass and the offline guard covers the new
-   header.
+2. **Adapter, driver, and fixture.** Both `BehaviorPolicy` implementations,
+   their equivalence tests, the `bigshark-stage6-resident-nash-conv` binary, and
+   the 4-combo fixture library built through the library API. Gate: equivalence
+   tests pass, the offline guard covers the new header, and the driver runs on
+   the fixture with zero policy misses.
 3. **Definitions and reference doc.** Implement the single BB/hand rule, comment
    the pot-relative pair, write and register the reference document. Gate:
    `check-docs` covers the new file.
-4. **Reproduction.** Run the documented command on the named abstracted game.
+4. **Reproduction.** Run `bigshark-stage6-resident-nash-conv` on the named
+   abstracted game and record the figure with its evaluator identity.
 
 Stop conditions: any change to an existing showdown-terminal number halts the
 rollout until explained.
@@ -422,22 +455,32 @@ rollout until explained.
   live for a future enumerator.
 - **AC2**: A table-driven test drives each named public entry point with one
   state per `poker::Phase`; a **preflop-rooted** flop-terminal definition makes
-  `HandSimulator` and `PracticeTable` throw the named error instead of looping;
-  `-Werror=switch` is enabled on `bigshark_stage6_eval` and
-  `bigshark_practice`.
+  `HandSimulator` throw the named error instead of looping. `PracticeTable`'s
+  switch is covered by a directly-constructed `Frontier` state, because no
+  `PracticeConfig` can produce one today. `-Werror=switch` is enabled on
+  `bigshark_stage6_eval` and `bigshark_practice`.
 - **AC3**: `NSeatBehaviorPolicy` matches a direct `NSeatPolicy::lookup` on every
   information set of a named fixture; `ResidentBehaviorPolicy` matches a recorded
   `hero_decision` trace — not a `find_bucket` call — and holds one
   `ResidentScratch` per thread. The trace is produced from a **2-seat library
-  built for this RFC** with the flop library builder (whose defaults are
-  `player-count 2` and a 40-combo premium range, so a smaller custom range is
-  available). `same_root` requires equal `player_count` and `pot`
+  built for this RFC**. Note that the builder's CLI cannot produce it: `--range`
+  accepts only `premium` or `full`
+  (`engine/benchmarks/flop_library_builder.cpp:122-133`), so the fixture library
+  is built through the library API with an explicit 4-combo
+  `BuildParams.range` (`engine/include/bs/flop_library.hpp:155-168`), via a
+  small fixture driver committed with this RFC. `same_root` requires equal `player_count` and `pot`
   (`engine/src/resident/resident_policy.cpp:55`), so the shipped six-seat
   artifact cannot serve this fixture and is not used by any AC.
-- **AC4**: The documented command produces a single NashConv number (no
-  interval: the pooled walk is exact on its fixture) with the evaluator's
-  identity, and the adapter reports its policy miss count alongside, for the
-  2-seat 4-combo fixture named in Open Question 1.
+- **AC4**: `bigshark-stage6-resident-nash-conv` produces a single NashConv
+  number (no interval: the pooled walk is exact on its fixture) with the
+  evaluator's identity, for the 2-seat 4-combo fixture named in Open Question 1,
+  **with zero policy misses**. The fixture's `GameDef` is the library's declared
+  root verbatim — the same `player_count`, `pot`, `big_blind`, `button`,
+  per-seat `stacks`/`contributions`/`folded`, and canonical flop prefix that
+  `make_def` wrote (`engine/src/flop_library/flop_library.cpp:73-92`), derived
+  from the manifest. `same_root` requires all of them
+  (`engine/src/resident/resident_policy.cpp:53-87`), and a mismatch would make
+  every lookup miss while still "producing a number" that measures the fallback.
 - **AC5**: One BB/seat/hand formula exists in the n-seat code; the two
   pot-relative harnesses carry comments naming their different definition, and
   `docs/reference/exploitability.md` states both and is registered in
