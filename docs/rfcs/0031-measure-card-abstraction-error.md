@@ -24,7 +24,7 @@ remaining 696,500 nodes carry **2.93 distinct probability vectors per node and
 was learned, adjacent buckets do differentiate. Whether a finer scheme is worth
 its cost therefore depends on whether the untrained majority is a consequence of
 the abstraction or of the training budget. This RFC builds the measurement that
-answers that, and adopts a new scheme only if the measured abstraction loss
+answers that, and adopts a new scheme only if the measured difference
 justifies it.
 
 ## Motivation
@@ -73,11 +73,14 @@ four RFCs old. This RFC closes it.
 
 ## Goals
 
-- **G1**: A reproducible measurement of the strategy loss attributable to the
-  postflop card abstraction, at a named fixture set, with an interval.
-- **G2**: An ablation over at least three granularities (tiers, a concretely
-  specified intermediate, and identity-or-projection) at two iteration counts,
-  so the comparison isolates the abstraction and not the budget.
+- **G1**: A reproducible measurement of full-game exploitability for each
+  scheme relative to a shared uniform control, at a named fixture set, with an
+  interval — and of the difference between schemes, which is what isolates
+  granularity.
+- **G2**: An ablation over two trainable granularities (tiers and a concretely
+  specified intermediate) at two iteration counts, plus a labelled projection
+  for the untrainable third, so the comparison isolates the abstraction and not
+  the budget.
 - **G3**: A decision rule declared *before* the measurement, as explicit
   inequalities over intervals: what gap would justify a finer scheme, and what
   would justify keeping tiers.
@@ -173,28 +176,37 @@ four RFCs old. This RFC closes it.
 
 ### Measurement
 
-The quantity of interest is the **abstraction gap**: what a scheme costs
-relative to the game it approximates. It is a difference of two
-best-response values taken in the *unabstracted* game against two different
-policies:
+The measured quantity is the **full-game exploitability of the trained policy,
+relative to a uniform control**. It is a difference of two full-game
+best-response values taken in the *unabstracted* tree:
 
 ```text
-abstraction_gap(scheme) = BR_full(policy_trained_at_scheme)
-                        - BR_full(policy_uniform)
+expl(scheme) = BR_full(policy_trained_at_scheme) - BR_full(policy_uniform)
 ```
 
-where `BR_full` is a full-game best response computed in the unabstracted
-tree, evaluated on the same fixture set.
+where `BR_full` is a full-game best response computed in the unabstracted tree
+on the same fixture set.
 
-An earlier draft of this RFC subtracted `BR(uniform)` from `BR(trained)`,
-which does not measure abstraction at all: the uniform term is
-scheme-independent, so ordering schemes by it reduces to ordering them by
-`-BR(trained)` — an exploitability comparison with a constant added. The
-formulation above is the one implemented.
+This is deliberately **not** called an abstraction gap. A prior draft of this
+RFC first wrote `BR(uniform) - BR(trained)`, criticised it because the uniform
+term is scheme-independent, and then replaced it with the same expression
+negated — which keeps the defect. Since the uniform control rides the same
+fixed menu (Design Principle "ablate one variable"), `expl(scheme)` orders
+schemes identically to `BR_full(trained)`; it is an exploitability comparison
+with a constant subtracted. The RFC now says so instead of mislabelling it.
 
-`policy_uniform` is the control: it fixes the scale by telling us what the
-worst policy costs in the same metric. A scheme whose gap is close to the
-control's has bought nothing.
+The comparison that *does* isolate granularity is the **difference of the
+per-scheme quantities**, `expl(tiers) - expl(intermediate)`, because the shared
+control cancels. That difference is what the adoption rule evaluates. The
+absolute value of `expl` is retained only to state how far each policy is from
+the control.
+
+A true abstraction gap — `BR_full(π_abstract) - v(abstract_game)` — would need a
+value for the abstract game itself. Nothing in the repository computes one, and
+this RFC does not claim to; that is a separate proposal.
+
+`policy_uniform` is the control: it fixes a scale and tells us what the worst
+policy costs in the same metric.
 
 Reported per seat, normalized in BB/hand per RFC 0029's canonical definition,
 with a 95% interval and the policy miss count. The interval's width is part of
@@ -203,44 +215,63 @@ the result: a wide interval is a finding, not a failure.
 Three granularities:
 
 1. `CategoryTiersV1` — the current production scheme, buckets 1..9.
-2. An intermediate, specified concretely: the made-hand category **combined
-   with a draw flag** derived from `own_card_token`'s rank/suit-multiplicity
-   decomposition. This RFC names it `TiersDrawV1` and fixes its bucket count
-   before the run, because the decision rule compares against it. Note that
-   `OwnCardToken` as it exists (`abstraction.cpp:358-376`) is *board-blind* —
-   it describes a holding, not a holding-plus-board situation — so it cannot
-   serve as a postflop scheme unchanged; the implementer must define the
-   board-dependent part and record the resulting bucket count, which must fit
+2. An intermediate, `TiersDrawV1`: the made-hand category combined with a draw
+   flag. `OwnCardToken` (`engine/src/abstraction/abstraction.cpp:358-376`,
+   tested at `engine/tests/test_abstraction.cpp:781-916`) is implemented but
+   **board-blind** — it describes a holding, not a holding-plus-board
+   situation — so it cannot serve as a postflop scheme unchanged. **The exact
+   bucket function and its bucket count are a Stage 2 deliverable recorded and
+   reviewed before any Stage 3 run**; changing them afterwards invalidates the
+   run, because the rule's threshold is relative to them. The count must fit
    `uint16`.
-3. `Identity`, only where the fixture is small enough to train. It is not
-   currently representable (see Current State), and making it representable is
-   explicitly out of scope; this rung is therefore reported as a projection
-   where it cannot be run, and labelled so.
+3. `Identity`, reported as a **labelled projection**, never trained. It is not
+   representable today (see Current State) and making it representable is out of
+   scope.
 
-Fixed at two iteration counts per cell, so the ranking is not a budget
-artifact.
+Fixed at two iteration counts per cell, so the ranking is not a budget artifact.
+
+**A qualifier the headline needs.** At the trained nodes, 2.04 of the 4.47 rows
+are still uniform fallback, and 36.1% of trained nodes have exactly one learned
+row. The differentiation claim is directionally supported — learned rows per
+learned vector is about 1.00, i.e. distinct learned rows do not collapse onto
+each other — but the aggregate 2.93 "distinct vectors per trained node" counts
+the fallback as a vector. The RFC states both numbers rather than the flattering
+one.
 
 ### Adoption criteria declared in advance
 
-Let `gap(s)` be the measured abstraction gap of scheme `s` with 95% interval
-`[lo(s), hi(s)]`, and let `bytes(s)` be the total `.bin` size of a library
-built entirely under `s` on a stated class set. Then, evaluated only when
-`gap(tiers) > 0`:
+Let `expl(s)` be the measured quantity above for scheme `s`, with 95% interval
+`[lo(s), hi(s)]`, and let `bytes(s)` be the total `.bin` size of a library built
+entirely under `s` on a stated class set. The rule is an **absolute difference**
+with a minimum effect size, so it has a defined outcome for every sign of
+`expl(tiers)` — a precondition such as `expl(tiers) > 0` would leave the
+adoption test unevaluated exactly when a finer scheme might still help:
 
-- **Adopt the intermediate** if `hi(TiersDrawV1) < lo(tiers)` **and**
-  `gap(TiersDrawV1) < (2/3) * gap(tiers)` **and**
-  `bytes(TiersDrawV1) <= 2 * bytes(tiers)`.
-- **Keep tiers** if `hi(tiers) <= lo(TiersDrawV1)`, or if
-  `gap(tiers) - gap(TiersDrawV1) < (1/3) * gap(tiers)`, or if
-  `bytes(TiersDrawV1) > 2 * bytes(tiers)`.
-- **Inconclusive otherwise**, and recorded as such; the material answer is that
-  the fixture set or the interval width is inadequate, which is itself a
-  finding this RFC must report rather than resolve.
+```text
+improvement = expl(tiers) - expl(TiersDrawV1)
+minimum     = max(0.01 BB/hand, 0.5 * |expl(tiers)|)
+```
+
+- **Adopt `TiersDrawV1`** if `hi(tiers) < lo(TiersDrawV1)` **and**
+  `improvement >= minimum` **and** `bytes(TiersDrawV1) <= 2 * bytes(tiers)`.
+- **Keep tiers** if `lo(tiers) >= hi(TiersDrawV1)` (tiers is better), or if
+  `improvement < minimum`, or if `bytes(TiersDrawV1) > 2 * bytes(tiers)`.
+- **Inconclusive otherwise**, recorded as such: the material answer is that the
+  fixture set or the interval width is inadequate, which this RFC must report
+  rather than resolve.
+
+The `0.01 BB/hand` floor is the absolute minimum effect the thresholds document
+already treats as meaningful
+(`docs/plans/sixmax-gto-thresholds.md:82-102`); the relative half keeps the rule
+sane when the baseline is small. If `expl(tiers) <= 0` — tiers already beats the
+uniform control — the rule still runs, and the outcome is recorded either way;
+lower exploitability is better and a negative baseline does not by itself block
+adoption.
 
 Per-lookup cost is a gate, not a trade-off: a scheme whose measured
 `card_bucket` cost exceeds **150 ns/combo** (twice the ~75 ns/combo the
-public-belief replay budget assumes) is rejected regardless of its gap. The
-replay issues up to 1,326 `card_bucket` calls per observed action
+public-belief replay budget assumes) is rejected regardless of its improvement.
+The replay issues up to 1,326 `card_bucket` calls per observed action
 (`engine/src/resident/resident_policy.cpp:877-894`, via `find_row_words` at
 `:887`), so this is a real budget and not a formality.
 
@@ -283,8 +314,8 @@ the three places that gate a *build* rather than a *load*:
    compared on resume instead of merely being stored — today
    `engine/src/flop_library/flop_library.cpp:366-372` compares only the
    canonicalization digest.
-3. The JSON manifest records it next to the digest, for human inspection and
-   for the runner's source-selection logic.
+3. The JSON manifest records it next to the digest, for human inspection. No
+   consumer selects sources by bucket scheme today, and this RFC adds none.
 
 No `.bin` field is added and no version bump is needed.
 
@@ -302,10 +333,16 @@ No `.bin` field is added and no version bump is needed.
 ## Compatibility and Migration
 
 - **No published artifact is invalidated by this RFC.** The library format
-  already carries the scheme; the added fields live in `build.json` and the
-  manifest, both of which are regenerated on the next build and neither of
-  which is read by the serve path. The 188.4 MB `library.bin` and its RFC 0027
-  byte-identical reproduction are unaffected.
+  already carries the scheme. The added fields are additive: `build.json` is a
+  build-time file, and `manifest.json` is read by the engine host at startup
+  (`apps/engine-host/main.cpp:558-582,606-646`) but by key, so an unknown field
+  is ignored. The 188.4 MB `library.bin` and its RFC 0027 byte-identical
+  reproduction are unaffected.
+- **In-flight builds must be discarded.** Adding `card_bucket_kind` to
+  `BuildIdentity` makes `read_identity` throw on an existing
+  `.sections/build.json` that lacks it. That is the intended No-Legacy outcome,
+  but it means a partially built directory is restarted, not seamlessly
+  continued.
 - If a finer scheme is later adopted *by a follow-up RFC*, every class section,
   the packer's bitwise-identity assertion, and the exhaustive verify tool are
   regenerated at that point (RFC 0026 AC2 covered 1.37B rows). This RFC does
@@ -354,8 +391,9 @@ No `.bin` field is added and no version bump is needed.
    the shape of the curve, not as a shipping option.
 4. **The identity widening touches every `card_bucket` caller.** There are 11
    call expressions in `engine/src` (9 passing `kNSeatCardKind`) plus 7 in
-   `engine/benchmarks`; the enumeration is in Rollout stage 1 and each is
-   covered by a test that fails on a scheme mismatch.
+   `engine/benchmarks`. Identity pinning changes no caller signature, so the
+   risk is a missed *test*, not a missed call site; Rollout stage 1 covers each
+   with a mismatch test.
 
 ## Verification Plan
 
@@ -363,7 +401,7 @@ No `.bin` field is added and no version bump is needed.
   baseline numbers and the segmented trained/untrained table from the pinned
   artifact sha256, and an independent recomputation agrees.
 - **Ablation run** at three granularities and two iteration counts, on a
-  recorded fixture set, reporting the abstraction gap with 95% intervals and
+  recorded fixture set, reporting `expl` with 95% intervals and
   miss counts.
 - **Identity tests.** A library built under tiers and one built under the
   intermediate have different identities and cannot be mixed.
@@ -383,9 +421,11 @@ No `.bin` field is added and no version bump is needed.
 1. **Identity pinning.** Add the scheme to `build.json`, the sealed resume
    check, and the manifest; refuse cross-scheme mixes. The 11 `card_bucket`
    call expressions in `engine/src` and 7 in `engine/benchmarks` are
-   enumerated here and each gets a mismatch test. Gate: identity and resume
-   tests pass with the current scheme unchanged, and no number moves. This
-   stage is independent of RFC 0029.
+   counted here (11 + 7) and enumerated in the implementation plan, with a
+   mismatch test per call site. No caller changes signature: this stage adds
+   identity fields only. Gate: identity and resume tests pass with the current
+   scheme unchanged, and no number moves. This stage is independent of RFC
+   0029.
 2. **Specify and wire `TiersDrawV1`.** Define the board-dependent draw flag,
    record its bucket count, confirm it fits `uint16`, and register it. Gate: it
    is selectable and its buckets are enumerable and bounded. Independent of
@@ -426,9 +466,10 @@ without an intentional rebuild halts the rollout.
 - **AC1**: A committed tool reproduces all five baseline statistics from the
   pinned artifact (`sha256 b67e3cb3…20b4`) with their exact definitions, and
   the segmented trained/untrained table matches.
-- **AC2**: The abstraction gap is measured for at least three granularities at
-  two iteration counts on a recorded fixture set, with 95% intervals and miss
-  counts.
+- **AC2**: `expl` is measured for `CategoryTiersV1` and `TiersDrawV1` at two
+  iteration counts on a recorded fixture set, with 95% intervals and miss
+  counts; `Identity` is reported as a labelled projection. Two granularities are
+  measured and the third is projected, because rung 3 cannot be trained.
 - **AC3**: The decision rule was declared before the run, and the outcome is
   recorded as adopt / keep / inconclusive against it.
 - **AC4**: The bucket scheme is recorded in `.sections/build.json`, compared on
