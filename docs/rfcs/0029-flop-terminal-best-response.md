@@ -14,8 +14,8 @@ superseded-by: ""
 
 ## Summary
 
-The stage-6 evaluation stack cannot measure the policy the engine ships, for
-two independent reasons. Its walks do not model `Phase::Frontier`, so a
+The stage-6 evaluation stack cannot measure the resident serving path, for two
+independent reasons. Its walks do not model `Phase::Frontier`, so a
 flop-terminal game either returns zeros, dereferences an empty optional, or
 spins forever; and no adapter converts the resident serving path into the
 `stage6::BehaviorPolicy` those walks consume. This RFC fixes both, settles the
@@ -63,9 +63,13 @@ only `NSeatPolicy` → `BehaviorPolicy` bridge is test-private
 (`NSeatBehaviorAdapter`, `engine/tests/test_postflop_frontier.cpp:253`).
 
 Two obstacles are worth naming because they shape the design. `find_bucket` is
-**not** the serving entry point: the resident path canonicalizes the hero cards,
-maps the board through `class_id_for_board`, and builds a ledger that
-`find_bucket` does not (`resident_policy.cpp:753-760,1096-1210`). And
+**not** the serving entry point. `hero_decision`
+(`engine/src/resident/resident_policy.cpp:1024-1142`) canonicalizes the query
+flop and the hero cards (`:1039-1044`, `:1066-1071`), resolves the root, calls
+`find_row_words` → `find_bucket`, and then post-filters zero-reach hero combos
+(`:1106-1110`). A direct `find_bucket` call on concrete cards skips the
+canonicalization and the post-filter. (`class_id_for_board` is *not* part of
+that path; its only caller is `engine/tests/test_flop_library.cpp:159`.) And
 `solver::InformationKey` (`std::vector<std::uint64_t>`,
 `engine/include/bs/heads_up_solver.hpp:83,96`) and stage-6 `InfosetKey` use
 different layouts with `+1` offsets and per-street count framing; they are not
@@ -77,11 +81,12 @@ interchangeable.
   models them through a supplied evaluator or throws naming the phase. The
   simulator and practice table terminate instead of spinning.
 - **G2**: A measurement adapter reads the **resident serving path**, not a
-  lookup that happens to be beneath it.
+  lookup that happens to be beneath it. The demonstrated number is on a named
+  abstracted game, not on the shipped six-seat library; see Non-Goals.
 - **G3**: The two exploitability definitions in the tree are documented and
   labelled, and the n-seat one is implemented once.
 - **G4**: A documented command reproduces a NashConv figure for a named,
-  abstracted game, with its interval and miss count.
+  abstracted game, with its miss count.
 
 ## Non-Goals
 
@@ -138,7 +143,9 @@ interchangeable.
   (`engine/src/poker/game_definition.cpp:591`) sets `Phase::Deal`, and
   `after_card` (`:735-746`) sets `Frontier` only after a card is dealt. So the
   oracle and estimator deal one turn card and call the evaluator once per turn
-  card — 49 times per line. The value is equivalent by linearity because the
+  card — `52 - 3 - 2N` times per line, because board and every seat's hole
+  cards are excluded (`engine/src/stage6/exact_oracle.cpp:104-113`): 45 at two
+  seats, 37 at six. The value is equivalent by linearity because the
   4-card evaluator enumerates rivers, but the cost is real and the tree-side
   counterpart is `AbstractTree`'s `FlopDeal` leaf
   (`engine/src/tree/abstract_tree.cpp:310-316`).
@@ -163,16 +170,28 @@ interchangeable.
 
 ### Walker enumeration and the throwing default
 
-Add a `Frontier` case to each of the five walks, and a throwing `default` to
-every phase switch, including the simulator and practice table:
+Add a `Frontier` case to each of the five walks. The phase switches carry **no
+`default`**: every enumerator is listed explicitly, `Frontier` included, so
+`-Wswitch` fires for a future sixth value. That is the repository's existing
+precedent — `engine/src/common/guarantee.cpp:29-40` switches exhaustively with
+no `default` and falls through to a named result
+(`engine/CMakeLists.txt:628-630`).
 
 ```cpp
+case poker::Phase::Action:  ...
+case poker::Phase::Deal:    ...
+case poker::Phase::Folded:  ...
+case poker::Phase::Showdown:...
 case poker::Phase::Frontier:
   return settle_frontier(state, *frontier, log);
-default:
-  throw std::logic_error("walk does not model phase " +
-                         std::to_string(static_cast<int>(state.phase())));
+// no default: -Wswitch catches a new enumerator at compile time
 ```
+
+A throwing `default` was the earlier draft. It cannot coexist with
+`-Werror=switch`: with a `default` present, `-Wswitch` does not fire, so the
+build-time guard becomes vacuous. Verified with a standalone `g++ -std=c++23
+-Wall -Wextra -Werror=switch` probe — an enum switch with `default` produces no
+diagnostic for an unhandled enumerator.
 
 Each walker has a different settlement contract, and the RFC specifies them
 rather than showing one snippet:
@@ -182,7 +201,7 @@ rather than showing one snippet:
 | `exact_oracle::recurse` | `std::array<double,10>` | evaluator value per seat, unweighted (the caller weights) |
 | `exact_oracle::br_group` | `PooledValue{value, mass}` | evaluator value × `view.reach`, and add `view.reach` to `mass` |
 | `LearnWalk`/`LegWalk`/`PairWalk` | `std::array<double,10>` (pair: on both legs) | evaluator value, then the existing zero-sum check at `br_estimator.cpp:333` applies |
-| `HandSimulator`, `PracticeTable` | none (they advance state) | treat as terminal: settle and exit the loop |
+| `HandSimulator`, `PracticeTable` | none (they advance state) | **throw the named error**; neither accepts a frontier evaluator (`simulator.hpp:58-61`, `practice_table.hpp:90`) |
 
 The evaluator is a **required reference** in the walk signatures, not a
 nullable pointer. A tree that cannot contain frontier leaves passes an explicit
@@ -206,17 +225,27 @@ The seam is the served lookup, not `find_bucket`:
 class ResidentBehaviorPolicy final : public stage6::BehaviorPolicy {
  public:
   ResidentBehaviorPolicy(ResidentPolicySet& resident,
-                         const poker::GameDef& query_def,
                          const std::array<int, 2>& hero);
   // BehaviorPolicy: answer the stage-6 InfosetKey by converting it to the
   // resident call's inputs and running the full serving path.
 };
 ```
 
-The conversion is specified, not assumed. `InfosetKey` carries `own[2]` plus
-framed public tokens; the adapter reconstructs the `GameState` the resident call
-needs from the query definition plus the token stream, then calls
-`hero_decision`. It does **not** call `find_bucket`.
+The conversion is specified, not assumed. `distribution()` already receives the
+live `GameState` (and `state.def()` is public,
+`engine/include/bs/game_definition.hpp:226`), so the adapter does **not**
+reconstruct a state. What it must synthesize is the
+`std::span<const poker::PublicAction>` history from `ctx.hand_log`, which is a
+per-street `HandLog` of `LoggedAction`
+(`engine/include/bs/behavior_policy.hpp:57`). The constructor therefore takes the
+resident set and the hero cards, not a query definition.
+
+**Thread safety is part of the contract.** `hero_decision` mutates a
+`ResidentScratch` of about 340 KiB
+(`engine/include/bs/resident_policy.hpp:192`), and the n-seat benchmark
+parallelizes walks across deals
+(`engine/benchmarks/subgame_nash_conv.cpp:538-548`). The adapter owns one scratch
+per thread; a shared instance would data-race.
 
 For the trainer-side comparison, a second adapter takes an `NSeatPolicy`:
 
@@ -241,7 +270,11 @@ its own decision (see Dependency Rules).
 
 ### Two definitions, labelled
 
-The n-seat BB/seat/hand rule is implemented once, in the offline eval target:
+The n-seat BB/seat/hand rule is implemented once, in the offline eval target.
+Because the pooled walk is exact on its fixtures, the result is a single number
+with **no interval**: an enumeration over the joint-deal support has no sampling
+error. Only the Monte Carlo learned-deviation estimator produces intervals, and
+it is not the path AC4 exercises.
 
 ```text
 nash_conv_bb_per_hand = sum_seats(BR[seat] - profile[seat]) / live_seats / big_blind
@@ -276,13 +309,17 @@ registered in `docs/README.md` in the same change.
 - Walk signatures gain a required evaluator parameter. Callers over
   showdown-terminal trees pass `NoFrontier` and behave exactly as before.
 - The two pot-relative harnesses are unchanged in behavior and gain comments.
+- No Legacy Code is satisfied explicitly: no flag selects an old and a new
+  walk, no versioned path is retained, and `NoFrontier` is an assertion type
+  that throws rather than a fallback. No persisted format changes.
 
 ## Security and Operational Impact
 
 - Offline only; no credentials, no network, no live play.
 - Cost: the exact pooled walk is exponential. A four-card frontier multiplies
-  per-line evaluator calls by the turn-card count (49), so a fixture that ran in
-  seconds at a three-card leaf may take minutes.
+  per-line evaluator calls by the available-card count (`52 - 3 - 2N`, so 45 at
+  two seats and 37 at six), so a fixture that ran in seconds at a three-card
+  leaf may take a minute.
 - Observability: each run prints the fixture set, seat count, deal count,
   policy miss count, the evaluator identity, and the normalization used.
 
@@ -306,10 +343,10 @@ registered in `docs/README.md` in the same change.
 1. **The MC estimator's known weakness recurs.** The chart-reach campaign already
    produced a null result
    (`docs/plans/0004-0006-implementation.md:4991-5046`). *Mitigation:* report the
-   interval and miss count; a wide interval is a result.
+   miss count and decision source; a refusal or a wide miss count is a result.
 2. **Frontier handling changes existing small-game numbers.** *Mitigation:* a
    showdown-terminal fixture must reproduce its recorded value bitwise.
-3. **The four-card frontier multiplies cost by 49.** *Mitigation:* state it, and
+3. **The four-card frontier multiplies cost by `52 - 3 - 2N`.** *Mitigation:* state it, and
    let the tree-side `FlopDeal` leaf be the optimization if the cost bites.
 4. **The evaluator differs from training's.** *Mitigation:* use the same
    constructed type, and require the zero-sum check at frontier settlement.
@@ -319,23 +356,29 @@ registered in `docs/README.md` in the same change.
 - **Phase coverage.** A table-driven test drives each named public entry point
   with one state per `poker::Phase` and asserts a finite result or the named
   throw; `-Werror=switch` is enabled on the affected targets.
-- **Simulator termination.** A flop-terminal definition runs to completion
-  instead of looping.
+- **Simulator termination.** A **preflop-rooted** flop-terminal definition (the
+  simulator rejects any other shape,
+  `engine/include/bs/stage6/simulator.hpp:63-65`) throws the named error instead
+  of looping. This is a different fixture from Open Question 1's flop-rooted
+  target, which exercises only the oracle, estimator, and end-to-end paths.
 - **Regression.** Existing showdown-terminal fixtures reproduce their recorded
   values within the tolerance those tests already use.
 - **Adapter equivalence.** `NSeatBehaviorPolicy` answers identically to a direct
   `NSeatPolicy::lookup` on every information set of a named fixture;
   `ResidentBehaviorPolicy`'s answers match a recorded `hero_decision` trace.
 - **End-to-end.** The documented command runs on a named abstracted game and
-  prints a NashConv figure with interval, miss count, and evaluator identity.
+  prints a NashConv figure with miss count, evaluator identity, and decision source.
 - **Project gates**: full Engine Build Contract, ASan, `check-rfcs` /
   `check-docs`.
 
 ## Rollout Plan
 
-1. **Frontier and the throwing default.** Five walks plus the simulator and
-   practice table. Gate: phase-coverage test and termination test pass; existing
-   numbers unchanged.
+1. **Frontier and exhaustive switches.** Five walks plus the simulator and
+   practice table. First run `-Werror=switch` over the target and record any
+   pre-existing non-exhaustive switch it surfaces (for example in
+   `translator.cpp` or `adapter.cpp`); those are in-scope fixes, not surprises.
+   Gate: phase-coverage test and termination test pass; existing numbers
+   unchanged.
 2. **Adapter.** Both `BehaviorPolicy` implementations and their equivalence
    tests. Gate: equivalence tests pass and the offline guard covers the new
    header.
@@ -349,9 +392,10 @@ rollout until explained.
 
 ## Rollback Plan
 
-- Stages 1-3 are additive; reverting restores the previous behavior. The only
-  behavioral changes are that silent failures become exceptions and the
-  simulator terminates.
+- Stage 1 is a **signature break** across every walk call site (the evaluator
+  becomes a required reference), so it is not additive. Once callers migrate,
+  stages 2-3 cannot be reverted independently: rollback is a single revert of
+  the whole change.
 - No persisted data is touched.
 
 ## Open Questions
@@ -376,11 +420,13 @@ rollout until explained.
   simulator and practice table; `-Werror=switch` is enabled on the affected
   targets.
 - **AC3**: `NSeatBehaviorPolicy` matches a direct `NSeatPolicy::lookup` on every
-  information set of a named fixture, and `ResidentBehaviorPolicy` matches a
-  recorded `hero_decision` trace — not a `find_bucket` call.
-- **AC4**: The documented command produces a NashConv figure, with interval,
-  miss count, and evaluator identity, for the 2-seat 4-combo fixture named in
-  Open Question 1.
+  information set of a named fixture; `ResidentBehaviorPolicy` matches a recorded
+  `hero_decision` trace — not a `find_bucket` call — and holds one
+  `ResidentScratch` per thread.
+- **AC4**: The documented command produces a single NashConv number (no
+  interval: the pooled walk is exact on its fixture), with miss count, evaluator
+  identity, and decision source, for the 2-seat 4-combo fixture named in Open
+  Question 1.
 - **AC5**: One BB/seat/hand formula exists in the n-seat code; the two
   pot-relative harnesses carry comments naming their different definition, and
   `docs/reference/exploitability.md` states both and is registered in
