@@ -53,6 +53,8 @@ integration, and development documentation.
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [RFC 0009 implementation](plans/0009-implementation.md) | Current | Unified engine delivery stages W1-W5, status, and evidence |
 | Plan | [RFC 0009 W2c-ii state layer](plans/0009-w2c-ii-state-layer.md) | Current | N-seat belief state layer design, generalization, and certification |
+| Plan | [RFC 0029 implementation](plans/0029-implementation.md) | Current | Frontier walks, oracle API migration, resident measurement driver, and the deferred measurement gate |
+| Plan | [RFC 0032 implementation](plans/0032-implementation.md) | Current | Digest repair first, then board preservation with the two-view state, labelling, and the deferred replay gate |
 | Plan | [GTO delivery roadmap](plans/gto-delivery-roadmap.md) | Proposed | Complete follow-up scope, dependencies, acceptance evidence, and outstanding decisions |
 | Plan | [Complete six-max GTO delivery](plans/sixmax-gto-delivery.md) | Current | Whole-feature In Progress status, audited blockers, task dependencies, and no partial-completion claims |
 | Plan | [Six-max GTO qualification](plans/sixmax-gto-qualification.md) | Proposed | Independent coverage, quality and resource gates; thresholds and complete-feature sign-off remain unapproved |
