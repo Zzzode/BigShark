@@ -84,23 +84,61 @@ artifact, no client change.
 
 ## Stage 1 — Baseline pin and site enumeration
 
-Status: not started.
+Status: implemented and committed.
 
 ### Tasks
 
-1. Add the failing-baseline test: a turn snapshot currently yields a
-   `board_size = 3` game. It must fail before stage 2.
-2. While the baseline fixture is being built, record whether a turn
-   check-through line actually **hits** a resident row today. This is the one
-   step the accepted RFC leaves unproven, and the baseline pin is the cheapest
-   place to settle it. The answer belongs in the RFC's Implemented record.
-3. Enumerate every identity/truncation site against a grep, per AC1's table.
+1. **Baseline pin — done.** `testTurnBaselineIsTruncated` in
+   `engine/tests/test_conformance.cpp` drives a hand-replayed turn check-through
+   request (`turnCheckThroughRequest`) through `reconstructHandState` and asserts
+   the current shape: the wire carries four board cards and declares the turn,
+   while the rebuilt state has a three-card board, street `Flop`, and a
+   flop-rooted def.
+
+   The assertion is phrased as the current behaviour **on purpose**, so the test
+   passes while the defect exists instead of turning the suite red for a stage.
+   Stage 2 flips it in the same commit that fixes the adapter, which makes it a
+   ready-made guard for the fixed behaviour rather than a test to be deleted.
+   This supersedes the "must fail before stage 2" wording: that phrasing would
+   have required a red suite between two commits, which this repository does not
+   accept.
+
+2. **The unproven step from the accepted RFC is now settled.** A turn
+   check-through line **does construct** a state today — `reconstructHandState`
+   returns `ReplayMiss::None` — it just constructs the wrong one. So the RFC's
+   Fact (the prefix-board replay processes turn events against a three-card
+   span) is reachable in principle. Whether it then *hits* a resident row still
+   depends on the shipped library and cannot be settled without one configured;
+   that belongs to stage 4's corpus, and the RFC's Implemented record must say so
+   rather than claim it.
+
+3. **Site enumeration — done, and it found two sites AC1 had missed.** A grep
+   over `board_size = 3`, `i < 3`, and `3 + prefix_street` across
+   `engine/src/resident`, `engine/src/resolver`, and `engine/src/protocol`:
+
+   | Site | Kind |
+   | --- | --- |
+   | `resident_mapper.cpp:521` | the adapter clamp (stage 2) |
+   | `resident_policy.cpp:500`, `:576` | record construction, `board_size = 3` |
+   | `seat_policy.cpp:75` | `to_unified_game`, `board_size = 3` |
+   | `public_reach.cpp:140`, `:164` | both reach loops |
+   | `resident_policy.cpp:73`, `:77` | `same_root` identity loops |
+   | `counterfactual_reach.cpp:32` | `same_root` identity loop |
+   | `resident_policy.cpp:861`, `:868` | prefix-board builder |
+   | `resident_policy.cpp:1089`, `:1193` | board assembly |
+   | **`resolver.cpp:57-59`** | **`cache_key` hashes only three identity cards** |
+   | **`apps/engine-host/main.cpp:403-407`** | **`publicSeed` hashes only three** |
+   | `mmap_library.cpp:650` | packed-header reserved bytes, not a board |
+
+   The last two table rows of the RFC's AC1 gained entries as a result: under
+   the two-view design both are identity-def readers, so both must hash all
+   `board_size` cards or two distinct roots share a cache entry and a resolver
+   seed.
 
 ### Gates
 
-The baseline test fails as expected; the enumeration matches a grep over
-`board_size = 3`, `i < 3`, and `3 + prefix_street` across `engine/src/resident`
-and `engine/src/protocol`.
+`test_conformance` green, including the new baseline pin; the enumeration above
+matches a fresh grep.
 
 ## Stage 2 — Board preservation and the two-view state
 

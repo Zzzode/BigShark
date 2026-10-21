@@ -148,8 +148,9 @@ std::uint32_t bucket_ceiling(abstraction::CardBucketKind kind) {
     case abstraction::CardBucketKind::Preflop169:
       return 169;  // preflop 0..168; the postflop fallback is a subset
     case abstraction::CardBucketKind::Identity:
-      fail("sealed checkpoint: the Identity card kind is not supported; its bucket "
-           "values are evaluator scores with no declared range");
+      fail(
+          "sealed checkpoint: the Identity card kind is not supported; its bucket "
+          "values are evaluator scores with no declared range");
   }
   fail("sealed checkpoint: unknown card bucket kind");
 }

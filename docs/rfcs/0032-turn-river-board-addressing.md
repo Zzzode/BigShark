@@ -462,10 +462,17 @@ an earlier draft both miscounted them and asked for tests that cannot exist:
   matches — which after the change a 4/5-card query cannot do, and `build()` is
   the only constructor (`:270-272`). There is no seam, so a test cannot "reach"
   them and copying the logic into a test would not exercise the site.
-- Two sites the earlier draft's list missed: the second three-card loop in
-  `ReachModel::initialize` (`engine/src/resident/public_reach.cpp:164`) and the
-  lazy flop-library record path that assigns `board_size = 3` at
-  `resident_policy.cpp:574-576`. The record enumeration was also short: the
+- Sites the earlier draft's list missed, found by the stage-1 grep rather than
+  by reading: the second three-card loop in `ReachModel::initialize`
+  (`engine/src/resident/public_reach.cpp:164`), the lazy flop-library record path
+  that assigns `board_size = 3` at `resident_policy.cpp:574-576`, and — the one
+  that matters — **`cache_key` mixes only `def.board[0..2]`
+  (`engine/src/resolver/resolver.cpp:57-59`)** while `publicSeed` mixes the same
+  three (`apps/engine-host/main.cpp:403-407`). Both are identity-def readers, so
+  under the two-view design they must hash all `board_size` cards or two distinct
+  roots will share a cache entry and a resolver seed. The grep found the first;
+  the same reading applies to `publicSeed`, which already mixes `def.board`
+  three times by design and must follow the identity def's size. The record enumeration was also short: the
   eager legacy paths use `solver::to_unified_game` at `:628` and `:679`, which
   hardcodes three cards (`engine/src/solver/seat_policy.cpp:75`), in addition to
   `:355`, `:544`, `:549`, `:621`, and `:672`.
@@ -957,6 +964,7 @@ whoever schedules the work.
   | `canonical_query_board` narrowing (`:753-761`) | direct |
   | Reach loop #1 (`public_reach.cpp:140`) | direct |
   | Reach loop #2 (`public_reach.cpp:164`) | direct |
+  | Resolver cache key (`resolver.cpp:57-59`) | direct: all `board_size` identity cards |
   | Record paths `:355,544,549,574-576,621,628,672,679` | direct (assert `board_size`) |
   | Postflop runtime source (`:504-532`) | direct: cursor runtime returned |
   | **Decision-node identity def** | direct: see the assertions below |

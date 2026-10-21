@@ -15,9 +15,9 @@
 #include <array>
 #include <bs/game_definition.hpp>
 #include <bs/protocol.hpp>
+#include <bs/resolver.hpp>
 #include <cstdint>
 #include <cstdio>
-#include <bs/resolver.hpp>
 #include <string>
 #include <utility>
 #include <vector>
@@ -29,6 +29,7 @@ namespace {
 namespace pv2 = bs::pv2;
 using bs::EnvelopeOutcome;
 using bs::EnvelopeResult;
+using bs::ReconstructedState;
 using bs::ReplayMiss;
 
 int failures = 0;
@@ -270,6 +271,108 @@ pv2::DecisionRequest vector1Request(pv2::SolverMode mode = pv2::SOLVER_MODE_HEUR
   setProvenance(state, 9);
   setOptions(&request, mode);
   return request;
+}
+
+// ===========================================================================
+// Turn check-through line — the RFC 0032 baseline fixture.
+// Same 6-max cash hand as vector 1, played one street further: the flop is
+// checked through and the turn is dealt. Hero (seat 2) checks the turn to the
+// button (seat 0), who then bets 8. Every seat has contributed equally and no
+// refund occurred, so this is exactly the shape whose rebuilt postflop def does
+// construct today.
+// ===========================================================================
+
+pv2::DecisionRequest turnCheckThroughRequest(pv2::SolverMode mode = pv2::SOLVER_MODE_HEURISTIC) {
+  pv2::DecisionRequest request;
+  pv2::HandState* state = request.mutable_state();
+  setGameDefinition(state, 6, 1, 2, 6);
+  state->set_hand_id("turn-checkthrough");
+  state->set_decision_index(2);
+  state->set_street(pv2::STREET_TURN);
+  state->set_button_seat(0);
+  state->set_hero_seat(2);
+
+  addPlayer(state, 0, 200, 186, 8, 14, 0, pv2::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 1, 200, 199, 0, 1, 0, pv2::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 2, 200, 194, 0, 6, 0, pv2::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 3, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 4, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 5, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
+
+  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_HEARTS);
+  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_DIAMONDS);
+
+  // Board: As Kd 7c 9s.
+  *state->add_board() = card(pv2::RANK_ACE, pv2::SUIT_SPADES);
+  *state->add_board() = card(pv2::RANK_KING, pv2::SUIT_DIAMONDS);
+  *state->add_board() = card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS);
+  *state->add_board() = card(pv2::RANK_NINE, pv2::SUIT_SPADES);
+
+  pv2::PotState* pot = state->mutable_pot();
+  pot->set_phase(pv2::POT_PHASE_ACTION);
+  addLayer(pot, 1, 3, {0, 2}, pv2::LAYER_STATUS_PENDING);
+  addLayer(pot, 6, 10, {0, 2}, pv2::LAYER_STATUS_PENDING);
+  addLayer(pot, 14, 8, {0}, pv2::LAYER_STATUS_PENDING);
+  pot->set_pot_total(21);
+
+  addForced(state, 1, pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
+  addForced(state, 2, pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
+
+  addAction(state, 1, pv2::STREET_PREFLOP, 3, pv2::ACTION_TYPE_FOLD, 3, 200);
+  addAction(state, 2, pv2::STREET_PREFLOP, 4, pv2::ACTION_TYPE_FOLD, 3, 200);
+  addAction(state, 3, pv2::STREET_PREFLOP, 5, pv2::ACTION_TYPE_FOLD, 3, 200);
+  addAction(state, 4, pv2::STREET_PREFLOP, 0, pv2::ACTION_TYPE_RAISE, 3, 194, false, 6);
+  addAction(state, 5, pv2::STREET_PREFLOP, 1, pv2::ACTION_TYPE_FOLD, 9, 199);
+  addAction(state, 6, pv2::STREET_PREFLOP, 2, pv2::ACTION_TYPE_CALL, 9, 194, false, std::nullopt,
+            4);
+  addBoardDeal(state, 7, pv2::STREET_FLOP,
+               {card(pv2::RANK_ACE, pv2::SUIT_SPADES), card(pv2::RANK_KING, pv2::SUIT_DIAMONDS),
+                card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS)});
+  // Flop checked through: seat 2 acts first (clockwise of the button, with the
+  // blinds and folded seats skipped), then the button closes the street.
+  addAction(state, 8, pv2::STREET_FLOP, 2, pv2::ACTION_TYPE_CHECK, 13, 194);
+  addAction(state, 9, pv2::STREET_FLOP, 0, pv2::ACTION_TYPE_CHECK, 13, 194);
+  addBoardDeal(state, 10, pv2::STREET_TURN, {card(pv2::RANK_NINE, pv2::SUIT_SPADES)});
+  // Turn: hero checks, the button bets 8.
+  addAction(state, 11, pv2::STREET_TURN, 2, pv2::ACTION_TYPE_CHECK, 13, 194);
+  addAction(state, 12, pv2::STREET_TURN, 0, pv2::ACTION_TYPE_BET, 13, 186, false, 8);
+
+  addLegal(state, pv2::ACTION_TYPE_FOLD);
+  addLegal(state, pv2::ACTION_TYPE_CALL);
+  addLegal(state, pv2::ACTION_TYPE_RAISE, 16, 194);
+  state->set_to_call(8);
+
+  setProvenance(state, 12);
+  setOptions(&request, mode);
+  return request;
+}
+
+// RFC 0032 AC2 baseline. On a turn check-through line the adapter collapses the
+// snapshot to a flop-street-start state: the reconstructed board is three cards
+// and the street is the flop, even though the request declares a four-card turn.
+// This is the defect the RFC pins before changing it.
+//
+// The assertion is phrased as the CURRENT shape on purpose, so this test passes
+// while the bug exists. Stage 2 flips it in the same commit that fixes the
+// adapter, which makes this a ready-made guard for the fixed behaviour rather
+// than a test that has to be deleted.
+void testTurnBaselineIsTruncated() {
+  pv2::DecisionRequest req = turnCheckThroughRequest();
+  ReplayMiss miss = ReplayMiss::None;
+  ReconstructedState recon;
+  check(reconstructHandState(req, recon, miss), "turn baseline: reconstruction succeeds");
+  check(miss == ReplayMiss::None, "turn baseline: no replay miss");
+  check(recon.state.has_value(), "turn baseline: a state was produced");
+  const bs::poker::GameState& state = *recon.state;
+  check(req.state().board_size() == 4, "turn baseline: the wire carries four board cards");
+  check(req.state().street() == pv2::STREET_TURN, "turn baseline: the wire declares the turn");
+  check(state.board().size() == 3, "turn baseline: the rebuilt board is TRUNCATED to three cards");
+  check(state.street() == bs::poker::Street::Flop, "turn baseline: the rebuilt street is the FLOP");
+  check(state.def().board_size == 3, "turn baseline: the rebuilt def is flop-rooted");
+  // The defect's second half: a three-card def cannot match a record rooted one
+  // street later, yet the prefix-board replay would process turn events against
+  // it. Recorded here as the shape, not as a match assertion, because whether a
+  // turn line HITS a resident row today depends on the shipped library.
 }
 
 // ===========================================================================
@@ -568,8 +671,7 @@ class ResolvingHostServices final : public bs::HostServices {
 
   bs::ResolveResult resolvingDecision(const bs::poker::GameState&,
                                       std::span<const bs::poker::PublicAction>,
-                                      const std::array<int, 2>&,
-                                      std::string_view,
+                                      const std::array<int, 2>&, std::string_view,
                                       std::uint32_t) const noexcept override {
     bs::ResolveResult result;
     result.outcome = bs::ResolveOutcome::Approximate;
@@ -585,8 +687,8 @@ class ResolvingHostServices final : public bs::HostServices {
 
  private:
   std::string digest_;
-  mutable std::vector<bs::poker::Action> row_actions_{
-      {bs::poker::ActionType::Fold, 0}, {bs::poker::ActionType::Call, 0}};
+  mutable std::vector<bs::poker::Action> row_actions_{{bs::poker::ActionType::Fold, 0},
+                                                      {bs::poker::ActionType::Call, 0}};
   mutable std::vector<double> row_probabilities_{0.5, 0.5};
   mutable bs::BlueprintRow row_;
 };
@@ -596,8 +698,7 @@ void testSubgameRowWithoutArtifact() {
   // is legal at that node.
   ResolvingHostServices host{""};
   pv2::DecisionRequest req = vector1Request(pv2::SOLVER_MODE_AUTOMATIC);
-  const pv2::Envelope response =
-      respondWith(envelopeFor("no-artifact", std::move(req)), host);
+  const pv2::Envelope response = respondWith(envelopeFor("no-artifact", std::move(req)), host);
   check(response.has_decision_response(), "subgame: decision response present");
   const pv2::DecisionResponse& dr = response.decision_response();
   check(!dr.has_error(), "subgame: a solved row with no artifact is not an error");
@@ -614,12 +715,10 @@ void testSubgameRowWithoutArtifact() {
 void testResidentRowWithMalformedDigest() {
   ResolvingHostServices host{"not-a-sha256"};
   pv2::DecisionRequest req = vector1Request(pv2::SOLVER_MODE_AUTOMATIC);
-  const pv2::Envelope response =
-      respondWith(envelopeFor("bad-digest", std::move(req)), host);
+  const pv2::Envelope response = respondWith(envelopeFor("bad-digest", std::move(req)), host);
   const pv2::DecisionResponse& dr = response.decision_response();
   check(dr.has_error(), "malformed digest: still an error");
-  check(dr.error().code() == pv2::ERROR_CODE_INTERNAL,
-        "malformed digest: ERROR_CODE_INTERNAL");
+  check(dr.error().code() == pv2::ERROR_CODE_INTERNAL, "malformed digest: ERROR_CODE_INTERNAL");
 }
 
 void testVector2Replay() {
@@ -838,6 +937,7 @@ int main() {
   testVector2Replay();
   testVector3();
   testSubgameRowWithoutArtifact();
+  testTurnBaselineIsTruncated();
   testResidentRowWithMalformedDigest();
   testUnsupportedProtocol();
   testMissingRequestId();
