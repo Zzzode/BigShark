@@ -28,7 +28,9 @@ folded into the board work.
 
 ## Stage 0 — Digest contract repair
 
-Status: not started.
+Status: implemented and committed (see the commit for this plan). Documentation
+updated in the same change: `docs/reference/protobuf-engine-protocol.md` now
+states the presence semantics of `SolverMetadata.artifact_sha256`.
 
 ### Tasks
 

@@ -188,8 +188,13 @@ pv2::DecisionResponse mapExpandedResponseImpl(const pv2::DecisionRequest& reques
   if (!blueprintRowIsLegal(request, row))
     throw MappingError(pv2::ERROR_CODE_UNSUPPORTED_FEATURE,
                        "blueprint action is outside the requested legal action window", false);
-  if (row.artifact_sha256.size() != 64)
-    throw MappingError(pv2::ERROR_CODE_INTERNAL, "resident answer lacks an artifact digest",
+  // RFC 0032: the field is `optional string` with a 64-hex pattern. A row with
+  // no artifact (a uniform-prior subgame, which RFC 0025 specifies carries
+  // artifact_sha256 = "") reports the field ABSENT; a row that does have an
+  // artifact must report a well-formed one. A present-but-malformed digest stays
+  // an error, so a resident row that lost its digest is still caught.
+  if (!row.artifact_sha256.empty() && row.artifact_sha256.size() != 64)
+    throw MappingError(pv2::ERROR_CODE_INTERNAL, "resident answer carries a malformed digest",
                        /*retryable=*/true);
 
   pv2::DecisionResponse response;
@@ -243,9 +248,21 @@ pv2::DecisionResponse mapExpandedResponseImpl(const pv2::DecisionRequest& reques
   pv2::SolverMetadata* metadata = expanded->mutable_solver();
   metadata->set_source(source);
   metadata->set_solve_time_us(0);
-  metadata->set_cache_hit(source == pv2::SOLVER_SOURCE_BLUEPRINT);
-  metadata->set_reason_code(sourceCode(source));
-  metadata->set_artifact_sha256(std::string(row.artifact_sha256));
+  // RFC 0032: `source` alone cannot separate a certified blueprint lookup from
+  // a uniform-prior subgame, because both map to SOLVER_SOURCE_BLUEPRINT when
+  // the resolve is not certified. The row's own identity decides: a subgame row
+  // carries no artifact and the subgame-resolve diagnostic token. Such a row is
+  // a solve, not a cache lookup, so it reports the resolving reason code and
+  // cache_hit = false (RFC 0025 specifies exactly this).
+  const bool subgame_row = row.artifact_sha256.empty();
+  const bool blueprint_lookup = !subgame_row && source == pv2::SOLVER_SOURCE_BLUEPRINT;
+  metadata->set_cache_hit(blueprint_lookup);
+  metadata->set_reason_code(subgame_row ? sourceCode(pv2::SOLVER_SOURCE_RESOLVING)
+                                        : sourceCode(source));
+  // Absence, not an empty value: `set_artifact_sha256("")` would be presence
+  // with a zero-length value, which the field's pattern forbids.
+  if (!row.artifact_sha256.empty())
+    metadata->set_artifact_sha256(std::string(row.artifact_sha256));
   metadata->set_guarantee_level(guaranteeToken(level));
   metadata->set_utility_profile(pv2::UTILITY_PROFILE_CASH_CHIP);
   if (!row.diagnostic.empty())

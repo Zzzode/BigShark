@@ -17,7 +17,9 @@
 #include <bs/protocol.hpp>
 #include <cstdint>
 #include <cstdio>
+#include <bs/resolver.hpp>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "../src/protocol/mappers.hpp"
@@ -186,6 +188,14 @@ std::string capabilitiesEnvelope(const std::string& id) {
 
 pv2::Envelope respond(const std::string& frame) {
   const EnvelopeResult result = bs::handleEnvelope(frame);
+  check(result.outcome == EnvelopeOutcome::Respond, "host responds");
+  pv2::Envelope response;
+  check(response.ParseFromString(result.response), "response parses");
+  return response;
+}
+
+pv2::Envelope respondWith(const std::string& frame, const bs::HostServices& services) {
+  const EnvelopeResult result = bs::handleEnvelope(frame, services);
   check(result.outcome == EnvelopeOutcome::Respond, "host responds");
   pv2::Envelope response;
   check(response.ParseFromString(result.response), "response parses");
@@ -533,6 +543,85 @@ void testVector1() {
         "vector 1 artifact sha256 present for blueprint");
 }
 
+// RFC 0032 stage 0: a subgame-served row carries NO artifact. The wire must
+// report the digest field ABSENT (has_artifact_sha256() == false), not present
+// with a zero-length value, and must not report a cache hit. A present but
+// malformed digest is still an error, so a resident row that lost its digest
+// stays caught.
+class ResolvingHostServices final : public bs::HostServices {
+ public:
+  explicit ResolvingHostServices(std::string digest) : digest_(std::move(digest)) {}
+
+  bool blueprintAdvertised() const noexcept override { return true; }
+
+  bs::BlueprintResult blueprintHeroDecision(const bs::poker::GameState&,
+                                            std::span<const bs::poker::PublicAction>,
+                                            const std::array<int, 2>&,
+                                            std::string_view) const noexcept override {
+    bs::BlueprintResult result;
+    result.hit = false;
+    result.miss = bs::BlueprintMiss::RootNotSupported;
+    return result;
+  }
+
+  bool resolvingAdvertised() const noexcept override { return true; }
+
+  bs::ResolveResult resolvingDecision(const bs::poker::GameState&,
+                                      std::span<const bs::poker::PublicAction>,
+                                      const std::array<int, 2>&,
+                                      std::string_view,
+                                      std::uint32_t) const noexcept override {
+    bs::ResolveResult result;
+    result.outcome = bs::ResolveOutcome::Approximate;
+    result.miss = bs::BlueprintMiss::None;
+    row_.actions = row_actions_.data();
+    row_.probabilities = row_probabilities_.data();
+    row_.size = row_actions_.size();
+    row_.artifact_sha256 = digest_;
+    row_.diagnostic = bs::resolver::kSubgameResolveToken;
+    result.row = row_;
+    return result;
+  }
+
+ private:
+  std::string digest_;
+  mutable std::vector<bs::poker::Action> row_actions_{
+      {bs::poker::ActionType::Fold, 0}, {bs::poker::ActionType::Call, 0}};
+  mutable std::vector<double> row_probabilities_{0.5, 0.5};
+  mutable bs::BlueprintRow row_;
+};
+
+void testSubgameRowWithoutArtifact() {
+  // Vector 1 is a flop decision with fold and call legal, so the synthetic row
+  // is legal at that node.
+  ResolvingHostServices host{""};
+  pv2::DecisionRequest req = vector1Request(pv2::SOLVER_MODE_AUTOMATIC);
+  const pv2::Envelope response =
+      respondWith(envelopeFor("no-artifact", std::move(req)), host);
+  check(response.has_decision_response(), "subgame: decision response present");
+  const pv2::DecisionResponse& dr = response.decision_response();
+  check(!dr.has_error(), "subgame: a solved row with no artifact is not an error");
+  check(dr.has_expanded_strategy(), "subgame: expanded strategy present");
+  const pv2::SolverMetadata& meta = dr.expanded_strategy().solver();
+  check(!meta.has_artifact_sha256(), "subgame: digest is ABSENT, not empty");
+  check(meta.diagnostic_reason() == bs::resolver::kSubgameResolveToken,
+        "subgame: diagnostic token preserved");
+  check(meta.guarantee_level() == "approximate", "subgame: approximate guarantee");
+  check(!meta.cache_hit(), "subgame: a solve is not a cache hit");
+  check(meta.reason_code() == "resolving", "subgame: reason code is resolving");
+}
+
+void testResidentRowWithMalformedDigest() {
+  ResolvingHostServices host{"not-a-sha256"};
+  pv2::DecisionRequest req = vector1Request(pv2::SOLVER_MODE_AUTOMATIC);
+  const pv2::Envelope response =
+      respondWith(envelopeFor("bad-digest", std::move(req)), host);
+  const pv2::DecisionResponse& dr = response.decision_response();
+  check(dr.has_error(), "malformed digest: still an error");
+  check(dr.error().code() == pv2::ERROR_CODE_INTERNAL,
+        "malformed digest: ERROR_CODE_INTERNAL");
+}
+
 void testVector2Replay() {
   // Vector 2 is a replay/settlement verification vector. The hand is heads-up
   // with one player all-in after the flop, so no DecisionRequest is emitted in
@@ -748,6 +837,8 @@ int main() {
   testVector1();
   testVector2Replay();
   testVector3();
+  testSubgameRowWithoutArtifact();
+  testResidentRowWithMalformedDigest();
   testUnsupportedProtocol();
   testMissingRequestId();
   testButtonRotation();

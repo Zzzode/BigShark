@@ -1,7 +1,7 @@
 ---
 rfc: "0032"
 subject: "Preserve the Full Board Through the Decision Pipeline"
-status: "Accepted"
+status: "Implementing"
 authors: "BigShark maintainers"
 created: "2026-10-20"
 updated: "2026-10-21"

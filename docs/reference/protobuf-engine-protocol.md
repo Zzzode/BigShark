@@ -51,6 +51,16 @@ The response contains either:
   metadata; or
 - a structured engine error with field violations and retryability.
 
+`SolverMetadata.artifact_sha256` is `optional string` with a `^[a-f0-9]{64}$`
+pattern, and its **presence** is meaningful. A row served from a resident
+artifact reports the digest. A row with no artifact behind it — a uniform-prior
+subgame solve — reports the field **absent** and carries the
+`subgame-resolve:approximate` diagnostic with `cache_hit = false` and reason
+code `resolving`; this follows RFC 0025, which specifies an empty digest for
+that path. The field is never present with a zero-length value, because the
+pattern forbids it and a present-but-malformed digest is rejected as an internal
+error.
+
 All chip amounts use `uint64`. Protobuf-ES exposes them as JavaScript
 `bigint`. Expected value uses `sint64` because it may be negative. Provider
 credentials, revisions, display names, and localized event text are excluded.
