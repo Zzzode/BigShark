@@ -801,3 +801,43 @@ the flag surfaced three live unhandled-switch defects rather than none, and the
 first implementation of the three walks' frontier settlement skipped the
 zero-sum check the AC requires (now fixed and pinned by
 `test_frontier_settlement_zero_sum`).
+
+Stages 2 and 3 landed on 2026-10-22. `bigshark-stage6-resident-nash-conv`
+produces the AC4 figure for the pinned fixture:
+
+```text
+NashConv       : 2.711476 chips/hand (summed over 2 live seats)
+exploitability : 1.355738 chips/hand = 0.677869 bb/hand
+served/misses  : 1056 / 0
+uncontained    : 0 action nodes
+```
+
+All four AC4 clauses are satisfied by measurement: one figure, zero misses, a
+measured uncontained count of 0, and both identities. AC3 is measured against
+`NSeatPolicy::lookup` directly on 1651 information sets, with the adapter
+required to refuse on the 37199 nodes the source does not cover. AC5's shared
+formula lives in `bs::solver` and `subgame_nash_conv.cpp` calls it.
+
+Four design corrections came out of building the driver, and they are recorded
+rather than smoothed over because each one would have produced a plausible wrong
+number:
+
+- A `FlopDeal` leaf is not a chance node. It collapses the three-card runout into
+  one frontier leaf carrying the completed flop, and routing it into the chance
+  arm skipped every branch and produced 0.488865 — a credible-looking figure
+  built on fold terminals alone. Settled directly, the figure is 2.711476. The
+  driver now asserts the strategy profile is zero-sum and refuses to print one
+  that is not, which is what makes this error class visible.
+
+- The exact oracle cannot measure this fixture. It recurses the raw L1 game,
+  which contains action sequences the four-combo library never trained, so the
+  resident path reports `off-tree-amount`. The driver walks the abstract tree
+  instead, which is also the tree the uncontained census counts.
+- The deal enumeration must use the artifact's four-combo range, not the
+  library's forty-combo premium profile; the latter is `untrained-combo` on the
+  first decision.
+- The best response must pool by information set. A per-deal maximum is the
+  omniscient bound.
+
+The stage-4 measurement run remains blocked: it needs a live replay corpus that
+does not exist in the tree.

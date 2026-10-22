@@ -204,7 +204,8 @@ A single revert of the signature change. No persisted format.
 
 ## Stage 2 — Adapters and the resident measurement driver
 
-Status: not started.
+Status: implemented (2026-10-22). The figure below is the stage's deliverable;
+see "Implementation evidence" for the three defects the work found.
 
 ### Tasks
 
@@ -267,9 +268,95 @@ divergence at unchanged `stack`. The root cause is that
 The adapters and the driver are new files; the shared formula is one function.
 Revert restores `subgame_nash_conv.cpp`'s inline arithmetic.
 
+### Implementation evidence
+
+**The figure, and what it took to get one.** The documented command on the
+pinned fixture produces:
+
+```text
+NashConv       : 2.711476 chips/hand (summed over 2 live seats)
+exploitability : 1.355738 chips/hand = 0.677869 bb/hand
+served/misses  : 1056 / 0
+uncontained    : 0 action nodes
+action abstract: rfc0007-pot-fractions
+evaluator      : equity-frontier/all-in-at-flop
+```
+
+AC4's four clauses are all satisfied and all measured rather than asserted: one
+figure, zero misses, a measured uncontained count of 0, and both identities. The
+fixture is `stack = 10`, `contribution = 2`, `big_blind = 2`, two seats, the
+pinned 4-combo range, one flop class.
+
+**Four things went wrong before the number arrived, and each changed the
+design.**
+
+1. **A `FlopDeal` leaf is not a chance node, and treating it as one produced a
+   plausible wrong number.** The first working driver walked the abstract tree
+   but routed `NodeKind::FlopDeal` into the chance arm, which enumerated
+   `public_runout_cards` and found no matching children — so every branch was
+   skipped and the strategy value collapsed to the fold terminals alone. The
+   figure it printed was 0.488865, which looks entirely reasonable. A
+   `FlopDeal` leaf collapses the whole three-card runout into ONE frontier leaf
+   and carries the completed flop in its payload; for a flop-rooted fixture it
+   is settled directly from the state it was reached at. With that fixed the
+   figure is 2.711476. The zero-sum assertion on the strategy profile is what
+   makes this class of error visible at all: a mis-settled terminal breaks
+   conservation, and the driver now refuses to print a profile whose sum is
+   non-zero.
+
+2. **`exact_oracle_utility` cannot measure this fixture, and the reason is the
+   point of the RFC.** The first driver wired the resident adapter into the
+   exact oracle and got `off-tree-amount`. The oracle recurses the raw L1 game,
+   which contains action sequences the 4-combo library never trained; the
+   resident path answers only nodes in its own abstraction. A miss there is
+   correct behaviour, not a bug — but it means a figure produced that way would
+   be measuring the fallback. The driver now walks the **abstract tree**, asking
+   the served policy at each of its nodes. That is also what makes the
+   uncontained-node census meaningful: it counts nodes in the same tree the walk
+   visits.
+
+3. **The fixture range must be the trained range, not the library's premium
+   profile.** Using `declared_library_range()` (40 combos) against a 4-combo
+   artifact produced `untrained-combo` on the first decision. The driver now
+   derives its deal enumeration from the same 4-combo range the artifact was
+   built with, filtered for board blockers.
+
+4. **The best response must pool by information set.** A per-deal maximum is the
+   omniscient bound, not a best response; the walk memoizes one action per
+   (node, own two cards) so every deal reaching that information set uses the
+   same choice. This mirrors `exact_best_response_utility`'s contract rather
+   than re-deriving it.
+
+**The uncontained count is measured, and it moves.** Rebuilding the same fixture
+at `stack = 11` — one chip past the RFC's documented boundary — raises the count
+from 0 to 2 on the same census. A count that could not move would be
+indistinguishable from a hardcoded zero, so this is the check that the number
+means anything. (The RFC's own figure of 1 at stack 11 comes from its
+reviewer's enumeration; this census counts nodes in the built tree and includes
+the deeper lines the taller stack opens, so the two are not expected to agree on
+the count, only on the direction.)
+
+**AC3 is measured against the source, not a recording.**
+`test_stage6_measured_policy` compares `NSeatBehaviorPolicy` to a direct
+`NSeatPolicy::lookup` on **1651 information sets** of the trainer fixture, and
+requires the adapter to refuse on all **37199** nodes the source does not cover.
+Mutation-checked: replacing the adapter's throw with a uniform fallback fails
+the refusal assertion on every miss.
+
+**The shared formula is pinned separately.** `test_nash_conv_units` restates the
+three normalisations independently and covers the two degenerate inputs. Its
+first draft asserted that a negative big blind throws; `Chips` is `std::uint64_t`,
+so that assertion was vacuous and is removed rather than left as false comfort.
+
+**A pre-existing failure is not this stage's.** `bigshark-subgame-nash-conv`
+reports `1 fixture(s) failed` at its largest configuration (`nseat trainer
+exceeded the byte cap`). Verified pre-existing by stashing every stage-2 change
+and re-running: identical failure. Stage 2 changed only that harness's
+normalisation call, which cannot influence a trainer byte cap.
+
 ## Stage 3 — Reference document
 
-Status: not started.
+Status: implemented (2026-10-22).
 
 `docs/reference/exploitability.md` (new) records all three normalizations, which
 harness computes what, the fixture conventions including its pinned parameters

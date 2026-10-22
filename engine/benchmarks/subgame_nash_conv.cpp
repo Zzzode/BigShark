@@ -43,6 +43,7 @@
 #include <bs/equity_frontier.hpp>
 #include <bs/eval.hpp>
 #include <bs/game_definition.hpp>
+#include <bs/nash_conv_units.hpp>
 #include <bs/nseat_trainer.hpp>
 #include <bs/prng.hpp>
 #include <chrono>
@@ -503,7 +504,6 @@ double compute_pooled_br_value(const AbstractTree& tree, const NSeatPolicy* poli
 NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* policy,
                                  const std::vector<std::array<int, 2>>& range, const GameDef& def,
                                  const FrontierEvaluator* frontier = nullptr) {
-  const double bb = static_cast<double>(def.big_blind);
   const std::size_t seat_count = def.player_count;
 
   // Filter out hands that block the board — they cannot be dealt in a real
@@ -527,10 +527,6 @@ NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* po
   result.br_value.resize(seat_count);
   result.joint_deals = deals.size();
   result.fallbacks = total_fallbacks;
-  std::size_t live_seats = 0;
-  for (std::size_t p = 0; p < seat_count; ++p)
-    if (!def.folded[p])
-      ++live_seats;
 
   // Per-traverser best response is independent: parallelize across traversers.
   // Each thread writes to a distinct element of strategy_value/br_value.
@@ -549,8 +545,9 @@ NashConvResult compute_nash_conv(const AbstractTree& tree, const NSeatPolicy* po
     nash_conv += result.br_value[p] - result.strategy_value[p];
   }
   result.nash_conv = nash_conv;
-  result.exploitability = result.nash_conv / static_cast<double>(live_seats);
-  result.exploitability_bb = result.exploitability / bb;
+  const bs::solver::NashConvNormalisation units = bs::solver::normalise_nash_conv(def, nash_conv);
+  result.exploitability = units.exploitability;
+  result.exploitability_bb = units.exploitability_bb;
   return result;
 }
 

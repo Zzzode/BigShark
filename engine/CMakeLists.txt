@@ -324,6 +324,7 @@ add_library(bigshark_solver STATIC
   src/gto/equity_frontier.cpp
   src/gto/postflop_frontier.cpp
   src/gto/postflop_config.cpp
+  src/gto/nash_conv_units.cpp
   src/gto/root_value_extractor.cpp
   src/gto/frontier_table_codec.cpp
   src/gto/nseat_policy_codec.cpp
@@ -438,6 +439,20 @@ add_executable(bigshark-stage6-measurement-driver
 )
 target_link_libraries(bigshark-stage6-measurement-driver PRIVATE
   bigshark_stage6_eval bigshark_stage6_train
+)
+
+# RFC 0029 stage 2: the resident-path NashConv measurement driver. Links the
+# eval surface (exact oracle, BehaviorPolicy) with the resident serving path and
+# the flop library, and reports one figure for a named fixture with the
+# evaluator identity, both miss counts, and the measured uncontained-node count.
+# Manual evidence binary, NOT a CTest.
+add_executable(bigshark-stage6-resident-nash-conv
+  benchmarks/stage6_resident_nash_conv.cpp
+)
+target_link_libraries(bigshark-stage6-resident-nash-conv PRIVATE
+  bigshark_stage6_measured
+  bigshark_flop_library
+  bigshark_yyjson
 )
 
 # RFC 0004 Stage 4 frozen release matrix (schema_version 3 CSV): frozen flop
@@ -716,6 +731,26 @@ target_link_libraries(bigshark_stage6_eval
 # new Phase value fails the build instead of silently falling through a switch.
 target_compile_options(bigshark_stage6_eval PRIVATE -Werror=switch)
 
+# RFC 0029 stage 2: BehaviorPolicy adapters over the two policy sources the
+# measurement can drive — a trained NSeatPolicy and the resident serving path.
+# A leaf target, because it is the one stage-6 module that must see BOTH the
+# offline eval surface and the resident set: folding these into
+# bigshark_stage6_eval would make every eval consumer link the resident stack,
+# and folding them into bigshark_resident would invert the dependency. The name
+# starts with bigshark_stage6, so the offline guard already forbids it from the
+# service, either protocol, and the host.
+add_library(bigshark_stage6_measured STATIC
+  src/stage6/measured_policy.cpp
+)
+target_include_directories(bigshark_stage6_measured
+  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_link_libraries(bigshark_stage6_measured
+  PUBLIC bigshark_stage6_eval
+  PUBLIC bigshark_resident
+)
+target_compile_options(bigshark_stage6_measured PRIVATE -Werror=switch)
+
 # RFC 0008 stage 6 R12 step 7: the multiplayer external-sampling MCCFR
 # trainer. It is a SIBLING of eval, never a dependent: the trainer produces the
 # frozen postflop candidate artifacts but must not reach the deployed policy,
@@ -796,6 +831,15 @@ if(BUILD_TESTING)
 
   # RFC 0008 stage 6 Revision 3: geometry bucketing (key, totality, no-mix
   # guard, reduced representative).
+  # RFC 0029 AC3: the adapters against their sources over a fully enumerated
+  # fixture tree. The enumeration is the point — every reachable action node is
+  # compared — so this runs ~150 s and gets an explicit allowance rather than
+  # the default.
+  add_executable(test_stage6_measured_policy tests/test_stage6_measured_policy.cpp)
+  target_link_libraries(test_stage6_measured_policy PRIVATE bigshark_stage6_measured)
+  add_test(NAME stage6_measured_policy COMMAND test_stage6_measured_policy)
+  set_tests_properties(stage6_measured_policy PROPERTIES TIMEOUT 900)
+
   add_executable(test_stage6_geometry tests/test_stage6_geometry.cpp)
   target_link_libraries(test_stage6_geometry PRIVATE bigshark_stage6_eval)
   # bigshark_tree arrives transitively (PUBLIC dep of bigshark_solver); it is
@@ -1063,6 +1107,12 @@ if(BUILD_TESTING)
   add_executable(test_settlement tests/test_settlement.cpp)
   target_link_libraries(test_settlement PRIVATE bigshark_poker)
   add_test(NAME settlement COMMAND test_settlement)
+
+  # RFC 0029: the one general-sum NashConv normalisation both measurement
+  # harnesses report, so a divisor change cannot land in one and not the other.
+  add_executable(test_nash_conv_units tests/test_nash_conv_units.cpp)
+  target_link_libraries(test_nash_conv_units PRIVATE bigshark_solver)
+  add_test(NAME nash_conv_units COMMAND test_nash_conv_units)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)

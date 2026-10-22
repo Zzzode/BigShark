@@ -2203,6 +2203,51 @@ and the two throw-only walkers enumerate every phase and carry no `default`.
 Turning it on found three live gaps in `br_estimator.cpp` (the three walks had no
 `Frontier` arm), not hypothetical ones.
 
+#### The measurement adapters and the resident driver (RFC 0029 stage 2)
+
+Two `BehaviorPolicy` adapters close the gap between the walks' interface and the
+policy sources a measurement can drive: `NSeatBehaviorPolicy` over a trained
+`solver::NSeatPolicy` (resolving through `NSeatPolicy::lookup` with the trained
+tree, because node addressing is not derivable from cards) and
+`ResidentBehaviorPolicy` over `resident::ResidentPolicySet`.
+
+The resident adapter calls `hero_decision`, not a narrower index query. That is
+the whole point: an adapter over `find_bucket` would measure blueprint storage,
+while `hero_decision` runs the public-belief propagation, the hero-private
+blocker filter, and the canonical relabel a live decision actually pays for. A
+figure produced the other way would not describe what the server does.
+
+Both adapters **fail closed**: a miss throws and increments a counter, never
+substituting uniform or check/call. A fallback would let a harness publish a
+figure that measures the fallback while claiming to measure the policy, so AC4's
+zero-miss requirement is bound to an error rather than a number.
+
+`hero_decision` writes a ~340 KiB `ResidentScratch`, so each worker thread
+needs its own adapter. The driver walks one fixture sequentially and therefore
+holds one; a parallel driver would need one per thread, which is why the
+requirement is stated on the adapter rather than discovered as a data race.
+
+They live in a leaf target, `bigshark_stage6_measured`, because they are the one
+stage-6 module that must see both the offline eval surface and the resident set.
+Folding them into `bigshark_stage6_eval` would make every eval consumer link the
+resident stack; folding them into `bigshark_resident` would invert the
+dependency. The name starts with `bigshark_stage6`, so the offline guard already
+forbids it from the service, either protocol, and the host.
+
+**The driver measures the abstract tree, not the raw game.** Its first version
+wired the resident adapter into `exact_oracle_utility` and got
+`off-tree-amount`: the oracle recurses the raw L1 game, which contains action
+sequences the library never trained, while the resident path answers only nodes
+in its own abstraction. Those misses are correct behaviour, but a figure
+produced through them would be measuring the fallback. The driver walks the
+`AbstractTree`, asking the served policy at each of its nodes — which is also
+what makes the uncontained-node census meaningful, since it counts nodes in the
+same tree the walk visits.
+
+Its best response pools by information set: one action per (node, own two
+cards), used by every deal reaching that key. A per-deal maximum would be the
+omniscient bound, not a best response.
+
 #### The practice table's phase dispatch seam
 
 `PracticeTable::play_hand` cannot be handed a constructed state: it builds its
