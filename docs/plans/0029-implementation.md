@@ -21,7 +21,8 @@ change those.
 
 ## Stage 1 — Walk signatures and the oracle API
 
-Status: not started.
+Status: implemented (2026-10-22). Verified by `ctest` and the 34-site grep
+recorded below; stage 2 has not started.
 
 This stage is a signature break, so it is not additive: once callers migrate, it
 cannot be reverted independently of stages 2-3.
@@ -53,8 +54,14 @@ cannot be reverted independently of stages 2-3.
 3. **`PracticeTable` phase-dispatch extraction.** The private `while (true)`
    switch (`engine/src/stage6/practice_table.cpp:252-253`) cannot be handed a
    constructed state. Extract it into a testable free function taking
-   `(GameState, HumanAgent&, observers)`; `play_hand` becomes a wrapper. This is
-   part of the change, not a refactor option — without it AC2 is unimplementable.
+   `(GameState, const PracticeHand&, const HumanAgent&, SplitMix64&,
+   PracticeObserver*)`; `play_hand` becomes a wrapper. The plan's original
+   signature `(GameState, HumanAgent&, observers)` is not sufficient: the
+   dispatch also reads the hole cards, the runout, the human seat, the hand id,
+   and one bot policy per seat, none of which the `GameState` carries — so those
+   moved into a `PracticeHand` argument rather than being re-derived inside the
+   function from state the caller cannot supply. This is part of the change, not
+   a refactor option — without it AC2 is unimplementable.
 
 4. **The four public oracle entry points** gain a required
    `const FrontierEvaluator&` and thread it into the internal walks
@@ -83,6 +90,113 @@ cannot be reverted independently of stages 2-3.
 `ctest` green; `-Werror=switch` builds clean; the 34-site grep recorded; existing
 showdown-terminal fixtures reproduce their recorded values within the tolerance
 those tests already use.
+
+### Implementation evidence
+
+**The 34-site grep, exactly as the plan predicted:**
+
+| File | Oracle entry-point call expressions |
+| --- | --- |
+| `engine/tests/test_stage6_simulator.cpp` | 14 |
+| `engine/tests/test_stage6_br_estimator.cpp` | 17 |
+| `engine/tests/test_postflop_frontier.cpp` | 1 |
+| `engine/tests/test_postflop_templates.cpp` | 1 |
+| `engine/src/stage6/br_estimator.cpp` | 1 |
+| **Total** | **34** |
+
+Counted by matching each of the four names to its balanced parenthesised
+argument list and checking the list contains an evaluator, so a comment that
+merely mentions a name is not counted.
+
+A further 42 expressions pass an evaluator too — the `mc_*`,
+`estimate_deviation_gains`, and `learn_exact_frozen_best_response` entry points,
+which gained the same parameter because they thread it into the three walks or
+into the oracle. Over the same six files with the same balanced-call rule and
+allowing any evaluator argument (the controls in `test_frontier_settlement_zero_sum`
+pass named evaluators rather than `NoFrontier`), the total is 76 and none is
+missing one. That is beyond the plan's "four names" enumeration, not a deviation
+from it: those functions had no way to reach a frontier leaf without it, and one
+of them was actively wrong (see the fifth-entry-point note below).
+
+**`-Werror=switch` found three live defects, not preventive-only.** The plan
+predicted no existing findings. In fact `br_estimator.cpp`'s `LearnWalk`,
+`LegWalk`, and `PairWalk` each switched on `Phase` with no `Frontier` arm, which
+is precisely the silent fall-through the flag exists to catch. All three now have
+the arm. The flag stays where the plan put it — `bigshark_stage6_eval` and
+`bigshark_practice` — and every phase switch in that scope carries no `default:`.
+
+**`PracticeTable` needed a second assertion the flag cannot provide.**
+`-Werror=switch` proves the `Frontier` arm exists; it cannot prove the arm
+behaves. `run_practice_hand` is the seam that makes behaviour testable, and
+`test_phase_dispatch_reaches_frontier` drives a *constructed* flop-terminal state
+through it. Mutation-checked: replacing the throw with a fold settlement fails
+exactly three assertions (`a constructed flop-terminal state throws instead of
+spinning`, `the frontier throw names the frontier leaf`, `a mid-deal constructed
+state also reaches the frontier throw`) and leaves the rest green.
+
+**A fifth public entry point had the same defect as the walks.** The plan
+enumerated four oracle entry points plus the three MC ones. A fifth,
+`learn_exact_frozen_best_response`, hardcoded `bs::gto::NoFrontier{}` inside its
+own body while calling `exact_best_response_utility` — so a flop-terminal caller
+would compile cleanly and then throw at the first frontier leaf, precisely the
+runtime failure the required-reference design exists to prevent. It now takes the
+evaluator too, and its 10 test call sites pass `NoFrontier`. This is the same
+class of bug as the missing zero-sum check: an internal default that quietly
+contradicts the signature contract.
+
+**The three walks AND both oracle settlements hold the frontier value to the
+zero-sum check.** Table row 3 of this stage's contract says "evaluator value,
+then the existing zero-sum check", and AC4 separately requires the check "in the
+oracle and in the estimator". The first implementation did neither correctly:
+`WalkBase::settle` returned the evaluator's vector before reaching the check, and
+neither `exact_oracle::recurse` nor `exact_oracle::br_group` had any check at
+all, even though `exact_oracle.hpp` documents the returned vector as zero-sum.
+All three are fixed. `test_frontier_settlement_zero_sum` drives a real
+three-seat preflop-rooted flop-terminal fixture through all three settlements
+with paired controls:
+
+- a zero-sum evaluator, which must be accepted — with a positive-control
+  assertion per walk that it was actually consulted (and, for the estimator,
+  that the leaf carried three board cards), so a walk that never reaches the
+  frontier branch cannot pass vacuously;
+- one biased by a single chip, which must abort with an error naming zero-sum.
+
+`br_group` checks zero-sum **per deal, before applying `weight * reach`**: the
+pool weights each deal differently, so a check on the pooled total would let
+compensating errors at two deals cancel and pass.
+
+The negative control caught this test's own first fixture, which split the pot as
+`pot/n` per seat and therefore summed to `pot`, not zero: the check rejected it
+and the positive control failed. That is the check doing its job on a real
+mistake, and the fixture is now zero-sum by construction.
+
+**`HandSimulator` needed the same construction.** `test_simulator_flop_terminal_throws`
+builds the preflop-rooted flop-terminal `GameDef` from
+`test_game_definition.cpp:case_flop_terminal_frontier`, runs it through a real
+`HandSimulator`, and requires `stage6_sim_error` naming the frontier. Mutation
+checked: changing the thrown message fails exactly the naming assertion.
+
+**Sanitizer evidence.** `asan` was run on every target this stage touches.
+`stage6_simulator` and `stage6_practice` pass clean under ASan+UBSan, including
+the new frontier tests. `stage6_br_estimator` completed under ASan+UBSan with
+`STAGE6 BR ESTIMATOR TESTS PASSED` and no sanitizer diagnostic — a 48-minute run
+against 6 minutes in release, so it was run separately rather than inside
+`ctest`. One pre-existing interaction is recorded rather than hidden:
+`test_stage6_practice` aborts inside ASan's `annotate_contiguous_container` check
+when `EngineProcess::start()` copies a `GetCapabilitiesResponse`
+(`engine/src/practice/engine_process.cpp:174`) — a vendored-protobuf
+`RepeatedField` copy in code this stage does not touch. With
+`detect_container_overflow=0` the suite passes, which locates the abort in that
+pre-existing interaction rather than in the new dispatch seam.
+
+**A pre-existing gap was not papered over.** `HandSimulator::run` validates seat
+and hole counts but never reads `def.terminal` or `def.board_size`; the frontier
+throw is reached only because the state machine produces the phase. That is
+correct for a river-terminal def and sufficient for the AC — the phase is the
+single source of truth — but it means a malformed flop-terminal def with an
+inconsistent board size would report the generic frontier error, not a specific
+one. Recorded rather than fixed: the AC asks for the named throw, and a
+defensive pre-check would be a second, untested path.
 
 ### Rollback
 

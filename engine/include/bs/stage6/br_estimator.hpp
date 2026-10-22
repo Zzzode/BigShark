@@ -34,6 +34,7 @@
 #include <array>
 #include <bs/abstraction.hpp>
 #include <bs/behavior_policy.hpp>
+#include <bs/frontier.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/multiway_sampler.hpp>
 #include <bs/prng.hpp>
@@ -226,7 +227,7 @@ FrozenBestResponseData mc_learn_frozen_best_response(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
-    std::span<const std::uint64_t> learn_seeds,
+    std::span<const std::uint64_t> learn_seeds, const gto::FrontierEvaluator& frontier,
     const bs::solver::JointDealTable* enumerated = nullptr, const BrEstimatorConfig& config = {},
     BrEstimatorCounts* counts = nullptr);
 
@@ -236,8 +237,9 @@ ConfirmPairOutput mc_confirm_pair(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser, std::uint64_t seed,
-    const FrozenBestResponseData& frozen, const bs::solver::JointDealTable* enumerated = nullptr,
-    const BrEstimatorConfig& config = {}, BrEstimatorCounts* counts = nullptr);
+    const gto::FrontierEvaluator& frontier, const FrozenBestResponseData& frozen,
+    const bs::solver::JointDealTable* enumerated = nullptr, const BrEstimatorConfig& config = {},
+    BrEstimatorCounts* counts = nullptr);
 
 // Primary entry point. `policies` has one BehaviorPolicy per seat and must
 // outlive the call. learn_seeds/confirm_seeds are disjoint nonempty lists;
@@ -250,7 +252,7 @@ BrEstimatorResult estimate_deviation_gains(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::span<const std::uint64_t> learn_seeds,
-    std::span<const std::uint64_t> confirm_seeds,
+    std::span<const std::uint64_t> confirm_seeds, const gto::FrontierEvaluator& frontier,
     const bs::solver::JointDealTable* enumerated = nullptr, const BrEstimatorConfig& config = {});
 
 // Exact-freeze validation driver: runs the approved exact pooled
@@ -258,9 +260,15 @@ BrEstimatorResult estimate_deviation_gains(
 // (the oracle walk stays the single source of pooling truth). Wrap the result
 // in FrozenBestResponsePolicy and exact_oracle_utility must equal
 // exact_best_response_utility.
+//
+// RFC 0029: `frontier` is threaded through to `exact_best_response_utility`
+// rather than hardcoded to `NoFrontier`. A flop- or street-terminal caller must
+// supply a real evaluator here too, or it would compile and then throw at the
+// first frontier leaf — the failure mode the required parameter prevents.
 FrozenBestResponseData learn_exact_frozen_best_response(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
-    const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser);
+    const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
+    const gto::FrontierEvaluator& frontier);
 
 }  // namespace bs::stage6

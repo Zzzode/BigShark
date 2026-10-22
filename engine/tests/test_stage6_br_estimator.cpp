@@ -223,9 +223,11 @@ void test_exact_freeze_equals_oracle() {
   CheckCallPolicy passive;
   std::vector<const BehaviorPolicy*> pp{&passive, &passive, &passive};
 
-  const std::array<double, 10> profile = exact_oracle_utility(def, ranges, pp, nullptr);
+  const std::array<double, 10> profile =
+      exact_oracle_utility(def, ranges, pp, bs::gto::NoFrontier{}, nullptr);
   for (std::size_t traverser = 0; traverser < 3; ++traverser) {
-    FrozenBestResponseData frozen = learn_exact_frozen_best_response(def, ranges, pp, traverser);
+    FrozenBestResponseData frozen =
+        learn_exact_frozen_best_response(def, ranges, pp, traverser, bs::gto::NoFrontier{});
     check(frozen.stabilized && frozen.epochs_run == 1,
           "the exact freeze is reported as a one-pass stabilized table");
     check(frozen.actions.size() == frozen.menus.size(),
@@ -235,9 +237,10 @@ void test_exact_freeze_equals_oracle() {
     FrozenBestResponsePolicy policy(std::move(frozen));
     std::vector<const BehaviorPolicy*> joint{pp[0], pp[1], pp[2]};
     joint[traverser] = &policy;
-    const std::array<double, 10> via_frozen = exact_oracle_utility(def, ranges, joint, nullptr);
+    const std::array<double, 10> via_frozen =
+        exact_oracle_utility(def, ranges, joint, bs::gto::NoFrontier{}, nullptr);
     const std::array<double, 10> br =
-        exact_best_response_utility(def, ranges, pp, traverser, nullptr);
+        exact_best_response_utility(def, ranges, pp, traverser, bs::gto::NoFrontier{}, nullptr);
     for (std::size_t s = 0; s < 3; ++s)
       check(std::abs(via_frozen[s] - br[s]) < 1e-9,
             "the frozen table evaluated exactly equals the pooled best response");
@@ -253,13 +256,15 @@ void test_exact_freeze_strict_pooling() {
   std::vector<const BehaviorPolicy*> pp{&passive, &passive, &passive};
   double max_gap = 0.0;
   for (std::size_t traverser = 0; traverser < 3; ++traverser) {
-    FrozenBestResponseData frozen = learn_exact_frozen_best_response(def, ranges, pp, traverser);
+    FrozenBestResponseData frozen =
+        learn_exact_frozen_best_response(def, ranges, pp, traverser, bs::gto::NoFrontier{});
     FrozenBestResponsePolicy policy(std::move(frozen));
     std::vector<const BehaviorPolicy*> joint{pp[0], pp[1], pp[2]};
     joint[traverser] = &policy;
-    const std::array<double, 10> pooled = exact_oracle_utility(def, ranges, joint, nullptr);
-    const std::array<double, 10> omni =
-        exact_omniscient_deviation_utility(def, ranges, pp, traverser, nullptr);
+    const std::array<double, 10> pooled =
+        exact_oracle_utility(def, ranges, joint, bs::gto::NoFrontier{}, nullptr);
+    const std::array<double, 10> omni = exact_omniscient_deviation_utility(
+        def, ranges, pp, traverser, bs::gto::NoFrontier{}, nullptr);
     check(omni[traverser] + 1e-9 >= pooled[traverser],
           "exact freeze value never exceeds the omniscient upper bound");
     max_gap = std::max(max_gap, omni[traverser] - pooled[traverser]);
@@ -289,12 +294,13 @@ McGate run_mc_gate(const GameDef& def, const std::vector<std::vector<MultiwayWei
   const std::vector<std::uint64_t> confirm = confirm_seeds(confirm_count);
   BrEstimatorConfig config;
   config.require_stabilization = true;
-  BrEstimatorResult result =
-      estimate_deviation_gains(def, ranges, policies, learn, confirm, &table, config);
+  BrEstimatorResult result = estimate_deviation_gains(def, ranges, policies, learn, confirm,
+                                                      bs::gto::NoFrontier{}, &table, config);
 
-  const std::array<double, 10> profile = exact_oracle_utility(def, ranges, policies, nullptr);
+  const std::array<double, 10> profile =
+      exact_oracle_utility(def, ranges, policies, bs::gto::NoFrontier{}, nullptr);
   const std::array<double, 10> br =
-      exact_best_response_utility(def, ranges, policies, traverser, nullptr);
+      exact_best_response_utility(def, ranges, policies, traverser, bs::gto::NoFrontier{}, nullptr);
   const double exact_gain = br[traverser] - profile[traverser];
   std::vector<double> residual;
   residual.reserve(confirm.size());
@@ -374,15 +380,18 @@ void test_mc_gain_with_runout_chance() {
   const std::vector<std::uint64_t> confirm = confirm_seeds(4000);
   BrEstimatorConfig config;
   for (std::size_t t = 0; t < 3; ++t) {
-    FrozenBestResponseData frozen = learn_exact_frozen_best_response(def, ranges, pp, t);
-    const std::array<double, 10> profile = exact_oracle_utility(def, ranges, pp, nullptr);
-    const std::array<double, 10> br = exact_best_response_utility(def, ranges, pp, t, nullptr);
+    FrozenBestResponseData frozen =
+        learn_exact_frozen_best_response(def, ranges, pp, t, bs::gto::NoFrontier{});
+    const std::array<double, 10> profile =
+        exact_oracle_utility(def, ranges, pp, bs::gto::NoFrontier{}, nullptr);
+    const std::array<double, 10> br =
+        exact_best_response_utility(def, ranges, pp, t, bs::gto::NoFrontier{}, nullptr);
     const double exact_gain = br[t] - profile[t];
     std::vector<double> gains;
     gains.reserve(confirm.size());
     for (std::uint64_t seed : confirm) {
-      ConfirmPairOutput pair =
-          mc_confirm_pair(def, ranges, pp, t, seed, frozen, &table, config, nullptr);
+      ConfirmPairOutput pair = mc_confirm_pair(def, ranges, pp, t, seed, bs::gto::NoFrontier{},
+                                               frozen, &table, config, nullptr);
       gains.push_back(pair.best_utility[t] - pair.profile_utility[t]);
     }
     std::vector<double> residual;
@@ -409,19 +418,21 @@ void test_mc_learn_with_chance_branching() {
   const bs::solver::JointDealTable table = bs::solver::enumerate_joint_deals(ranges, board);
   CheckCallPolicy passive;
   std::vector<const BehaviorPolicy*> pp{&passive, &passive, &passive};
-  const std::array<double, 10> profile = exact_oracle_utility(def, ranges, pp, nullptr);
+  const std::array<double, 10> profile =
+      exact_oracle_utility(def, ranges, pp, bs::gto::NoFrontier{}, nullptr);
   const std::vector<std::uint64_t> confirm = confirm_seeds(1500);
 
   for (std::uint64_t base : {std::uint64_t{20000}, std::uint64_t{40000}, std::uint64_t{60000}}) {
     const std::vector<std::uint64_t> learn = seed_list(base, 6000);
     BrEstimatorConfig config;
     config.on_confirm_miss = FrozenMissPolicy::RecordMiss;
-    BrEstimatorResult result =
-        estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, config);
+    BrEstimatorResult result = estimate_deviation_gains(def, ranges, pp, learn, confirm,
+                                                        bs::gto::NoFrontier{}, &table, config);
     for (std::size_t t = 0; t < 3; ++t) {
       check(result.counts.confirm_misses_per_traverser[t] == 0,
             "6000 turn-rooted learn seeds saturate the 42-card river information sets");
-      const std::array<double, 10> br = exact_best_response_utility(def, ranges, pp, t, nullptr);
+      const std::array<double, 10> br =
+          exact_best_response_utility(def, ranges, pp, t, bs::gto::NoFrontier{}, nullptr);
       const double exact_gain = br[t] - profile[t];
       std::vector<double> residual;
       for (double g : result.gain[t])
@@ -459,9 +470,10 @@ void test_mc_never_reaches_omniscient() {
   double max_gap = -1.0;
   std::size_t wide_gap_seat = 0;
   for (std::size_t t = 0; t < 3; ++t) {
-    const std::array<double, 10> br = exact_best_response_utility(def, ranges, pp, t, nullptr);
+    const std::array<double, 10> br =
+        exact_best_response_utility(def, ranges, pp, t, bs::gto::NoFrontier{}, nullptr);
     const std::array<double, 10> omni =
-        exact_omniscient_deviation_utility(def, ranges, pp, t, nullptr);
+        exact_omniscient_deviation_utility(def, ranges, pp, t, bs::gto::NoFrontier{}, nullptr);
     const double gap = omni[t] - br[t];
     if (gap > max_gap) {
       max_gap = gap;
@@ -470,20 +482,23 @@ void test_mc_never_reaches_omniscient() {
   }
   check(std::abs(max_gap - 0.371601) < 1e-6, "the pinned 0.371601 pooled gap exists");
   for (std::size_t t = 0; t < 3; ++t) {
-    FrozenBestResponseData frozen = learn_exact_frozen_best_response(def, ranges, pp, t);
+    FrozenBestResponseData frozen =
+        learn_exact_frozen_best_response(def, ranges, pp, t, bs::gto::NoFrontier{});
     BrEstimatorConfig config;
     std::vector<double> gains;
     gains.reserve(confirm.size());
     for (std::uint64_t seed : confirm) {
-      ConfirmPairOutput pair =
-          mc_confirm_pair(def, ranges, pp, t, seed, frozen, &table, config, nullptr);
+      ConfirmPairOutput pair = mc_confirm_pair(def, ranges, pp, t, seed, bs::gto::NoFrontier{},
+                                               frozen, &table, config, nullptr);
       gains.push_back(pair.best_utility[t] - pair.profile_utility[t]);
     }
     const ConfidenceInterval gain_ci = confidence_interval_95(gains);
-    const std::array<double, 10> profile = exact_oracle_utility(def, ranges, pp, nullptr);
-    const std::array<double, 10> br = exact_best_response_utility(def, ranges, pp, t, nullptr);
+    const std::array<double, 10> profile =
+        exact_oracle_utility(def, ranges, pp, bs::gto::NoFrontier{}, nullptr);
+    const std::array<double, 10> br =
+        exact_best_response_utility(def, ranges, pp, t, bs::gto::NoFrontier{}, nullptr);
     const std::array<double, 10> omni =
-        exact_omniscient_deviation_utility(def, ranges, pp, t, nullptr);
+        exact_omniscient_deviation_utility(def, ranges, pp, t, bs::gto::NoFrontier{}, nullptr);
     const double exact_gain = br[t] - profile[t];
     std::vector<double> residual;
     for (double g : gains)
@@ -519,7 +534,8 @@ void test_disjoint_seed_lists() {
                           const std::vector<std::uint64_t>& confirm, const std::string& label) {
     bool threw = false;
     try {
-      (void)estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, config);
+      (void)estimate_deviation_gains(def, ranges, pp, learn, confirm, bs::gto::NoFrontier{}, &table,
+                                     config);
     } catch (const std::invalid_argument&) {
       threw = true;
     }
@@ -556,7 +572,8 @@ void test_infoset_miss_policy() {
   throwing.max_epochs = 8;
   bool missed = false;
   try {
-    (void)estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, throwing);
+    (void)estimate_deviation_gains(def, ranges, pp, learn, confirm, bs::gto::NoFrontier{}, &table,
+                                   throwing);
   } catch (const stage6_br_infoset_miss&) {
     missed = true;
   }
@@ -564,8 +581,8 @@ void test_infoset_miss_policy() {
 
   BrEstimatorConfig recording = throwing;
   recording.on_confirm_miss = FrozenMissPolicy::RecordMiss;
-  BrEstimatorResult result =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, recording);
+  BrEstimatorResult result = estimate_deviation_gains(def, ranges, pp, learn, confirm,
+                                                      bs::gto::NoFrontier{}, &table, recording);
   std::size_t total_misses = 0;
   for (std::size_t m : result.counts.confirm_misses_per_traverser)
     total_misses += m;
@@ -582,7 +599,7 @@ void test_frozen_policy_legality() {
   // information set and must serve a unit point mass there.
   constexpr std::size_t opener = 1;
   FrozenBestResponseData good_data =
-      learn_exact_frozen_best_response(def, three_seat_ranges(), pp, opener);
+      learn_exact_frozen_best_response(def, three_seat_ranges(), pp, opener, bs::gto::NoFrontier{});
   GameState root_state(def);
   HandLog root_log;
   const InfosetKey* root_key = nullptr;
@@ -606,14 +623,14 @@ void test_frozen_policy_legality() {
 
   // A corrupted table (target outside the legal interval) is rejected.
   FrozenBestResponseData corrupted =
-      learn_exact_frozen_best_response(def, three_seat_ranges(), pp, opener);
+      learn_exact_frozen_best_response(def, three_seat_ranges(), pp, opener, bs::gto::NoFrontier{});
   corrupted.actions.begin()->second = poker::Action{poker::ActionType::Raise, 999999};
   FrozenBestResponsePolicy bad(std::move(corrupted));
   std::vector<const BehaviorPolicy*> joint{&passive, &passive, &passive};
   joint[opener] = &bad;
   bool threw = false;
   try {
-    (void)exact_oracle_utility(def, three_seat_ranges(), joint, nullptr);
+    (void)exact_oracle_utility(def, three_seat_ranges(), joint, bs::gto::NoFrontier{}, nullptr);
   } catch (const stage6_br_error&) {
     threw = true;
   }
@@ -621,7 +638,7 @@ void test_frozen_policy_legality() {
 
   // A query at the wrong seat throws.
   const FrozenBestResponseData clean =
-      learn_exact_frozen_best_response(def, three_seat_ranges(), pp, opener);
+      learn_exact_frozen_best_response(def, three_seat_ranges(), pp, opener, bs::gto::NoFrontier{});
   FrozenBestResponsePolicy clean_policy(clean);
   bool wrong_seat = false;
   try {
@@ -651,7 +668,8 @@ void test_stabilization_guard() {
     config.require_stabilization = true;
     bool threw = false;
     try {
-      (void)estimate_deviation_gains(def, ranges, jp, learn, confirm, &table, config);
+      (void)estimate_deviation_gains(def, ranges, jp, learn, confirm, bs::gto::NoFrontier{}, &table,
+                                     config);
     } catch (const stage6_br_not_stabilized&) {
       threw = true;
     }
@@ -661,8 +679,8 @@ void test_stabilization_guard() {
     BrEstimatorConfig config;
     config.max_epochs = 1;
     config.require_stabilization = false;
-    BrEstimatorResult result =
-        estimate_deviation_gains(def, ranges, jp, learn, confirm, &table, config);
+    BrEstimatorResult result = estimate_deviation_gains(def, ranges, jp, learn, confirm,
+                                                        bs::gto::NoFrontier{}, &table, config);
     bool any_unstabilized = false;
     for (const FrozenBestResponseData& f : result.frozen)
       if (!f.stabilized)
@@ -687,8 +705,8 @@ void test_off_menu_profile_labeled() {
   config.max_epochs = 8;
   const std::vector<std::uint64_t> learn = seed_list(9000, 200);
   const std::vector<std::uint64_t> confirm = confirm_seeds(400);
-  BrEstimatorResult result =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, config);
+  BrEstimatorResult result = estimate_deviation_gains(def, ranges, pp, learn, confirm,
+                                                      bs::gto::NoFrontier{}, &table, config);
   for (std::size_t t = 0; t < 3; ++t) {
     for (double g : result.gain[t])
       check(std::isfinite(g), "off-menu profile gains are finite (of either sign)");
@@ -717,13 +735,13 @@ void test_paired_rollout_conservation_and_crn() {
   config.max_epochs = 8;
   const std::size_t traverser = 2;  // acts last, so a shared prefix always exists
   const FrozenBestResponseData frozen =
-      learn_exact_frozen_best_response(def, ranges, jp, traverser);
+      learn_exact_frozen_best_response(def, ranges, jp, traverser, bs::gto::NoFrontier{});
 
   std::size_t observed_divergence = 0;
   std::size_t runout_events = 0;
   for (std::uint64_t seed : confirm) {
-    ConfirmPairOutput pair =
-        mc_confirm_pair(def, ranges, jp, traverser, seed, frozen, &table, config, nullptr);
+    ConfirmPairOutput pair = mc_confirm_pair(
+        def, ranges, jp, traverser, seed, bs::gto::NoFrontier{}, frozen, &table, config, nullptr);
     double sb = 0.0, sp = 0.0;
     for (std::size_t i = 0; i < 3; ++i) {
       sb += pair.best_utility[i];
@@ -749,11 +767,12 @@ void test_paired_rollout_conservation_and_crn() {
   }
   check(runout_events > 0, "the flop-rooted rollouts recorded runout-card draws");
   // Same deal fingerprint across the two per-seat runs at one shared seed.
-  ConfirmPairOutput seat2 =
-      mc_confirm_pair(def, ranges, jp, 2, 17, frozen, &table, config, nullptr);
-  const FrozenBestResponseData frozen0 = learn_exact_frozen_best_response(def, ranges, jp, 0);
-  ConfirmPairOutput seat0 =
-      mc_confirm_pair(def, ranges, jp, 0, 17, frozen0, &table, config, nullptr);
+  ConfirmPairOutput seat2 = mc_confirm_pair(def, ranges, jp, 2, 17, bs::gto::NoFrontier{}, frozen,
+                                            &table, config, nullptr);
+  const FrozenBestResponseData frozen0 =
+      learn_exact_frozen_best_response(def, ranges, jp, 0, bs::gto::NoFrontier{});
+  ConfirmPairOutput seat0 = mc_confirm_pair(def, ranges, jp, 0, 17, bs::gto::NoFrontier{}, frozen0,
+                                            &table, config, nullptr);
   check(seat2.deal_fingerprint == seat0.deal_fingerprint && seat2.deal_fingerprint != 0,
         "per-traverser runs at one seed share the same joint deal");
   check(observed_divergence > 0, "the jam fixture forces best/profile divergence");
@@ -767,8 +786,8 @@ void test_paired_rollout_conservation_and_crn() {
   CheckCallPolicy passive;
   std::vector<const BehaviorPolicy*> pp{&passive, &passive, &passive};
   const std::vector<std::uint64_t> learn = seed_list(4000, 200);
-  BrEstimatorResult full =
-      estimate_deviation_gains(rdef, three_seat_ranges(), pp, learn, confirm, &rtable, config);
+  BrEstimatorResult full = estimate_deviation_gains(rdef, three_seat_ranges(), pp, learn, confirm,
+                                                    bs::gto::NoFrontier{}, &rtable, config);
   check(full.counts.paired_same_action_merges > 0,
         "some confirm nodes merge the frozen and profile action into one walk");
 }
@@ -784,10 +803,10 @@ void test_repeatability() {
   const std::vector<std::uint64_t> confirm = confirm_seeds(1000);
   BrEstimatorConfig config;
   config.max_epochs = 8;
-  const BrEstimatorResult a =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, config);
-  const BrEstimatorResult b =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, config);
+  const BrEstimatorResult a = estimate_deviation_gains(def, ranges, pp, learn, confirm,
+                                                       bs::gto::NoFrontier{}, &table, config);
+  const BrEstimatorResult b = estimate_deviation_gains(def, ranges, pp, learn, confirm,
+                                                       bs::gto::NoFrontier{}, &table, config);
   check(a.learn_seed_list_hash == b.learn_seed_list_hash &&
             a.confirm_seed_list_hash == b.confirm_seed_list_hash,
         "repeat runs name the same seed lists");
@@ -805,8 +824,8 @@ void test_repeatability() {
           "nashconv replicates are bitwise reproducible");
   // Traverser-loop order independence: learning seat 2 alone gives the same
   // frozen table as the full run's seat 2.
-  const FrozenBestResponseData alone =
-      mc_learn_frozen_best_response(def, ranges, pp, 2, learn, &table, config, nullptr);
+  const FrozenBestResponseData alone = mc_learn_frozen_best_response(
+      def, ranges, pp, 2, learn, bs::gto::NoFrontier{}, &table, config, nullptr);
   check(alone.content_hash() == a.frozen[2].content_hash(),
         "per-traverser learn output is independent of traverser loop order");
 }
@@ -853,8 +872,8 @@ void test_nashconv_scalar_statistics() {
   const std::vector<std::uint64_t> confirm = confirm_seeds(1000);
   BrEstimatorConfig config;
   config.max_epochs = 8;
-  const BrEstimatorResult r =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, config);
+  const BrEstimatorResult r = estimate_deviation_gains(def, ranges, pp, learn, confirm,
+                                                       bs::gto::NoFrontier{}, &table, config);
   for (std::size_t s = 0; s < confirm.size(); ++s) {
     double y = 0.0;
     for (std::size_t t = 0; t < 3; ++t)
@@ -1001,10 +1020,11 @@ void test_two_seat_nash_conv_crosscheck() {
   std::array<double, 2> profile_leg_sum{0.0, 0.0};
   std::array<double, 2> best_leg_sum{0.0, 0.0};
   for (std::size_t t = 0; t < 2; ++t) {
-    const FrozenBestResponseData frozen = learn_exact_frozen_best_response(def, ranges, pp, t);
+    const FrozenBestResponseData frozen =
+        learn_exact_frozen_best_response(def, ranges, pp, t, bs::gto::NoFrontier{});
     for (std::uint64_t seed : confirm) {
-      ConfirmPairOutput pair =
-          mc_confirm_pair(def, ranges, pp, t, seed, frozen, &table, config, nullptr);
+      ConfirmPairOutput pair = mc_confirm_pair(def, ranges, pp, t, seed, bs::gto::NoFrontier{},
+                                               frozen, &table, config, nullptr);
       gains[t].push_back(pair.best_utility[t] - pair.profile_utility[t]);
       profile_leg_sum[t] += pair.profile_utility[t];
       best_leg_sum[t] += pair.best_utility[t];
@@ -1063,7 +1083,8 @@ void test_coarse_deviation_space() {
     bad.coarse_action = nullptr;
     bool threw = false;
     try {
-      (void)estimate_deviation_gains(def, ranges, pp, seed_list(9000, 64), confirm, &table, bad);
+      (void)estimate_deviation_gains(def, ranges, pp, seed_list(9000, 64), confirm,
+                                     bs::gto::NoFrontier{}, &table, bad);
     } catch (const std::invalid_argument&) {
       threw = true;
     }
@@ -1075,13 +1096,13 @@ void test_coarse_deviation_space() {
   coarse_cfg.coarse_action = &coarse;
   coarse_cfg.on_confirm_miss = FrozenMissPolicy::RecordMiss;
   const std::vector<std::uint64_t> learn = seed_list(70000, 4000);
-  BrEstimatorResult coarse_result =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, coarse_cfg);
+  BrEstimatorResult coarse_result = estimate_deviation_gains(
+      def, ranges, pp, learn, confirm, bs::gto::NoFrontier{}, &table, coarse_cfg);
 
   BrEstimatorConfig declared_cfg;
   declared_cfg.on_confirm_miss = FrozenMissPolicy::RecordMiss;
-  BrEstimatorResult declared_result =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, declared_cfg);
+  BrEstimatorResult declared_result = estimate_deviation_gains(
+      def, ranges, pp, learn, confirm, bs::gto::NoFrontier{}, &table, declared_cfg);
 
   for (std::size_t t = 0; t < 3; ++t) {
     const FrozenBestResponseData& cf = coarse_result.frozen[t];
@@ -1131,14 +1152,188 @@ void test_coarse_deviation_space() {
         "coarse-game NashConv is bounded above by declared-menu NashConv");
 
   // A second coarse run stamps the same identity.
-  BrEstimatorResult again =
-      estimate_deviation_gains(def, ranges, pp, learn, confirm, &table, coarse_cfg);
+  BrEstimatorResult again = estimate_deviation_gains(def, ranges, pp, learn, confirm,
+                                                     bs::gto::NoFrontier{}, &table, coarse_cfg);
   for (std::size_t t = 0; t < 3; ++t)
     check(again.frozen[t].menu_identity_hash == coarse_result.frozen[t].menu_identity_hash,
           "the coarse menu identity is deterministic across runs");
 }
 
 }  // namespace
+
+// RFC 0029: the three walks settle a frontier leaf through the evaluator, and
+// the settlement is held to the same zero-sum check as the rules settlements.
+// This drives a real flop-terminal fixture — a preflop root whose finished flop
+// is a frontier leaf — through `estimate_deviation_gains` with evaluators that
+// deliberately violate the contract, and requires the estimator to refuse them
+// rather than emit a biased figure.
+//
+// The positive control matters as much as the negatives: without it, a walk
+// that never reached the frontier branch would pass every throwing assertion
+// for the wrong reason.
+void test_frontier_settlement_zero_sum() {
+  using bs::tree::TerminalPayload;
+
+  // Three seats, 20 chips each, blinds posted, flop-terminal from the preflop
+  // root. The board stays empty at the root, so the flop is dealt inside.
+  auto flop_terminal_def = [] {
+    GameDef d{};
+    d.player_count = 3;
+    d.button = 0;
+    d.big_blind = 2;
+    d.preflop = true;
+    d.stacks = {20, 20, 20, 0, 0, 0, 0, 0, 0, 0};
+    d.blinds_posted[1] = 1;  // SB
+    d.blinds_posted[2] = 2;  // BB
+    d.pot = 3;
+    d.board = {-1, -1, -1, -1, -1};
+    d.board_size = 0;
+    d.terminal = bs::poker::TerminalDepth::Flop;
+    return d;
+  };
+
+  // Records every call so the test can assert the evaluator was actually
+  // consulted, and splits the pot with an optional injected bias.
+  class RecordingEvaluator final : public bs::gto::FrontierEvaluator {
+   public:
+    explicit RecordingEvaluator(double bias) : bias_(bias) {}
+    mutable std::size_t calls = 0;
+    mutable std::size_t last_board_size = 0;
+
+    std::vector<double> evaluate(std::span<const int> board,
+                                 std::span<const std::array<int, 2>> hands,
+                                 const TerminalPayload& ledger) const override {
+      ++calls;
+      last_board_size = board.size();
+      std::vector<double> out(hands.size(), 0.0);
+      if (out.empty())
+        return out;
+      // ZERO-SUM by construction: every seat is charged pot/n and seat 0 is
+      // credited the whole pot, so the values sum to exactly zero whatever the
+      // seat count. The split carries no claim about poker correctness — the
+      // walk's contract is conservation, and that is what the bias violates.
+      const double pot = static_cast<double>(ledger.player_count);
+      const double each = pot / static_cast<double>(out.size());
+      for (double& v : out)
+        v = -each;
+      out[0] += pot;
+      out[0] += bias_;
+      return out;
+    }
+
+   private:
+    double bias_;
+  };
+
+  const std::vector<std::vector<MultiwayWeightedHand>> ranges{
+      {MultiwayWeightedHand{{card("As"), card("Ks")}, 1.0}},
+      {MultiwayWeightedHand{{card("Qd"), card("Jd")}, 1.0}},
+      {MultiwayWeightedHand{{card("Th"), card("9h")}, 1.0}},
+  };
+  CheckCallPolicy passive;
+  std::vector<const BehaviorPolicy*> policies{&passive, &passive, &passive};
+  const std::vector<std::uint64_t> learn = seed_list(31, 12);
+  const std::vector<std::uint64_t> confirm = confirm_seeds(6);
+  BrEstimatorConfig config;
+  config.require_stabilization = false;
+
+  // Positive control: a zero-sum evaluator is accepted and the walk reaches it.
+  {
+    RecordingEvaluator zero_sum(0.0);
+    bool ok = true;
+    std::string message;
+    try {
+      BrEstimatorResult r = estimate_deviation_gains(flop_terminal_def(), ranges, policies, learn,
+                                                     confirm, zero_sum, nullptr, config);
+      (void)r;
+    } catch (const std::exception& e) {
+      ok = false;
+      message = e.what();
+    }
+    check(ok, std::string("a zero-sum frontier evaluator is accepted: ") + message);
+    check(zero_sum.calls > 0, "the flop-terminal walk actually consulted the frontier evaluator");
+    check(zero_sum.last_board_size == 3, "the frontier leaf supplied a three-card flop");
+  }
+
+  // Negative control: an evaluator that invents a chip must be refused.
+  {
+    RecordingEvaluator leaky(1.0);
+    bool threw = false;
+    try {
+      (void)estimate_deviation_gains(flop_terminal_def(), ranges, policies, learn, confirm, leaky,
+                                     nullptr, config);
+    } catch (const stage6_br_error& e) {
+      threw = std::string(e.what()).find("zero-sum") != std::string::npos;
+    } catch (const std::exception&) {
+      threw = false;
+    }
+    check(threw, "a non-zero-sum frontier settlement aborts the measurement");
+  }
+
+  // AC4 requires the same check in the ORACLE. exact_oracle_utility walks the
+  // same fixture through `exact_oracle::recurse`, which has its own frontier
+  // branch and therefore its own settlement.
+  {
+    RecordingEvaluator zero_sum(0.0);
+    bool ok = true;
+    std::string message;
+    OracleCounts counts;
+    try {
+      (void)exact_oracle_utility(flop_terminal_def(), ranges, policies, zero_sum, &counts);
+    } catch (const std::exception& e) {
+      ok = false;
+      message = e.what();
+    }
+    check(ok, std::string("the oracle accepts a zero-sum frontier evaluator: ") + message);
+    check(zero_sum.calls > 0, "the oracle walk actually consulted the frontier evaluator");
+    // The counter is the only way a caller learns the walk settled frontier
+    // leaves at all, so it is asserted rather than left as bookkeeping.
+    check(counts.frontier_leaves > 0, "the oracle counted the frontier leaves it settled");
+    check(counts.fold_leaves == 0 && counts.showdown_leaves == 0,
+          "a flop-terminal fixture has no rules terminal, only frontier leaves");
+  }
+  {
+    RecordingEvaluator leaky(1.0);
+    bool threw = false;
+    try {
+      (void)exact_oracle_utility(flop_terminal_def(), ranges, policies, leaky, nullptr);
+    } catch (const std::runtime_error& e) {
+      threw = std::string(e.what()).find("zero-sum") != std::string::npos;
+    } catch (const std::exception&) {
+      threw = false;
+    }
+    check(threw, "a non-zero-sum frontier settlement is refused by the oracle");
+  }
+
+  // The pooled best-response walk has a THIRD frontier settlement with its own
+  // weighting, so it needs its own control: the check is applied per deal,
+  // before the weight, which a pooled-total check would not catch.
+  {
+    RecordingEvaluator zero_sum(0.0);
+    bool ok = true;
+    std::string message;
+    try {
+      (void)exact_best_response_utility(flop_terminal_def(), ranges, policies, 0, zero_sum,
+                                        nullptr);
+    } catch (const std::exception& e) {
+      ok = false;
+      message = e.what();
+    }
+    check(ok, std::string("the pooled walk accepts a zero-sum evaluator: ") + message);
+  }
+  {
+    RecordingEvaluator leaky(1.0);
+    bool threw = false;
+    try {
+      (void)exact_best_response_utility(flop_terminal_def(), ranges, policies, 0, leaky, nullptr);
+    } catch (const std::runtime_error& e) {
+      threw = std::string(e.what()).find("zero-sum") != std::string::npos;
+    } catch (const std::exception&) {
+      threw = false;
+    }
+    check(threw, "the pooled best-response walk refuses a non-zero-sum settlement");
+  }
+}
 
 int main(int argc, char** argv) {
   if (argc != 1) {
@@ -1163,6 +1358,7 @@ int main(int argc, char** argv) {
   test_mc_gain_with_runout_chance();
   test_mc_learn_with_chance_branching();
   test_mc_never_reaches_omniscient();
+  test_frontier_settlement_zero_sum();
   test_disjoint_seed_lists();
   test_infoset_miss_policy();
   test_frozen_policy_legality();

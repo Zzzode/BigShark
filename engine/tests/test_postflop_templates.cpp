@@ -331,7 +331,7 @@ int chance_oracle() {
       const auto policy = NSeatPolicy::from_parts(game, action.id(), rows);
       const std::vector<const BehaviorPolicy*> behaviors(game.player_count, &behavior);
       OracleCounts counts;
-      const auto oracle = exact_deal_utility(game, deal, behaviors, &counts);
+      const auto oracle = exact_deal_utility(game, deal, behaviors, bs::gto::NoFrontier{}, &counts);
       CHECK(counts.chance_nodes > 0);
       CHECK(counts.showdown_leaves > 0);
       CHECK(counts.fold_leaves > 0);

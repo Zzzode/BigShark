@@ -345,7 +345,8 @@ int test_root_value_crosscheck() {
 
     // Exact oracle (walks the L1 tree).
     const std::vector<HoleCards> holes = {d.h0, d.h1};
-    const std::array<double, 10> oracle = exact_deal_utility(def, holes, policies);
+    const std::array<double, 10> oracle =
+        exact_deal_utility(def, holes, policies, bs::gto::NoFrontier{});
 
     for (std::size_t s = 0; s < 2; ++s) {
       const double diff = std::abs(extracted[s] - oracle[s]);

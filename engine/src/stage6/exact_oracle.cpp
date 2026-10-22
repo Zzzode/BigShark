@@ -1,4 +1,5 @@
 #include <array>
+#include <bs/frontier.hpp>
 #include <bs/stage6/exact_oracle.hpp>
 #include <bs/stage6/infoset_key.hpp>
 #include <cmath>
@@ -37,7 +38,8 @@ std::vector<LoggedAction>& street_log_ref(HandLog& log, poker::Street street) {
 // joint-profile expectation.
 std::array<double, 10> recurse(poker::GameState state, const std::vector<HoleCards>& holes,
                                const std::vector<const BehaviorPolicy*>& policies, HandLog log,
-                               std::optional<std::size_t> omni_seat, OracleCounts& counts) {
+                               std::optional<std::size_t> omni_seat, OracleCounts& counts,
+                               const gto::FrontierEvaluator& frontier) {
   std::array<double, 10> value{};
   switch (state.phase()) {
     case poker::Phase::Action: {
@@ -58,7 +60,7 @@ std::array<double, 10> recurse(poker::GameState state, const std::vector<HoleCar
           street_log_ref(next_log, state.street()).push_back(LoggedAction{seat, action});
           const std::array<double, 10> child =
               recurse(state.after_action(seat, action), holes, policies, std::move(next_log),
-                      omni_seat, counts);
+                      omni_seat, counts, frontier);
           if (!have_best || child[seat] > value[seat]) {
             value = child;
             have_best = true;
@@ -93,7 +95,7 @@ std::array<double, 10> recurse(poker::GameState state, const std::vector<HoleCar
         street_log_ref(next_log, state.street()).push_back(LoggedAction{seat, pa.action});
         const std::array<double, 10> child =
             recurse(state.after_action(seat, pa.action), holes, policies, std::move(next_log),
-                    omni_seat, counts);
+                    omni_seat, counts, frontier);
         for (std::size_t s = 0; s < state.player_count(); ++s)
           value[s] += pa.probability * child[s];
       }
@@ -116,7 +118,7 @@ std::array<double, 10> recurse(poker::GameState state, const std::vector<HoleCar
       const double inv = 1.0 / static_cast<double>(available.size());
       for (int card : available) {
         const std::array<double, 10> child =
-            recurse(state.after_card(card), holes, policies, log, omni_seat, counts);
+            recurse(state.after_card(card), holes, policies, log, omni_seat, counts, frontier);
         for (std::size_t s = 0; s < state.player_count(); ++s)
           value[s] += inv * child[s];
       }
@@ -137,6 +139,32 @@ std::array<double, 10> recurse(poker::GameState state, const std::vector<HoleCar
       const poker::ContributionSettlement settlement = state.settle_showdown(live_holes);
       for (std::size_t s = 0; s < state.player_count(); ++s)
         value[s] = static_cast<double>(settlement.chip_utility[s]);
+      return value;
+    }
+    case poker::Phase::Frontier: {
+      // RFC 0029: the evaluator supplies per-seat chip utility, UNWEIGHTED.
+      // The caller applies the joint-deal weight, exactly as it does for the
+      // fold and showdown branches above.
+      //
+      // The zero-sum check is the same one AC4 requires of the estimator
+      // settlement: every reachable rules terminal contributes a zero-sum
+      // vector, and the header documents the returned expectation as zero-sum
+      // to floating precision, so a non-zero-sum evaluator would silently break
+      // the property the header promises rather than fail loudly.
+      ++counts.frontier_leaves;
+      const std::vector<double> seat_values =
+          frontier.evaluate(state.board(), holes, bs::tree::make_frontier_payload(state));
+      if (seat_values.size() < state.player_count())
+        throw std::runtime_error("frontier evaluator returned too few seat values");
+      double total = 0.0;
+      for (std::size_t s = 0; s < state.player_count(); ++s) {
+        if (!std::isfinite(seat_values[s]))
+          throw std::runtime_error("frontier evaluator returned a non-finite seat value");
+        value[s] = seat_values[s];
+        total += seat_values[s];
+      }
+      if (std::abs(total) > 1e-6)
+        throw std::runtime_error("frontier settlement is not zero-sum");
       return value;
     }
   }
@@ -181,7 +209,7 @@ std::size_t available_count(const poker::GameState& state, const BRView& v) {
 PooledValue br_group(poker::GameState state, std::vector<BRView> views,
                      const std::vector<const BehaviorPolicy*>& policies, HandLog log,
                      std::size_t traverser, OracleCounts& counts,
-                     ExactBrChoiceSink* sink = nullptr) {
+                     const gto::FrontierEvaluator& frontier, ExactBrChoiceSink* sink = nullptr) {
   PooledValue out;
   std::vector<BRView*> live;
   for (BRView& v : views)
@@ -216,8 +244,9 @@ PooledValue br_group(poker::GameState state, std::vector<BRView> views,
             children.push_back({v->holes, v->weight, v->reach});  // fixed action, reach unchanged
           HandLog next_log = log;
           street_log_ref(next_log, state.street()).push_back(LoggedAction{seat, action});
-          PooledValue child = br_group(state.after_action(seat, action), std::move(children),
-                                       policies, std::move(next_log), traverser, counts, sink);
+          PooledValue child =
+              br_group(state.after_action(seat, action), std::move(children), policies,
+                       std::move(next_log), traverser, counts, frontier, sink);
           if (!have_best || child.value[seat] > best.value[seat]) {
             best = std::move(child);
             best_action = action;
@@ -283,8 +312,9 @@ PooledValue br_group(poker::GameState state, std::vector<BRView> views,
           continue;
         HandLog next_log = log;
         street_log_ref(next_log, state.street()).push_back(LoggedAction{seat, action});
-        PooledValue child = br_group(state.after_action(seat, action), std::move(children),
-                                     policies, std::move(next_log), traverser, counts, sink);
+        PooledValue child =
+            br_group(state.after_action(seat, action), std::move(children), policies,
+                     std::move(next_log), traverser, counts, frontier, sink);
         for (std::size_t s = 0; s < state.player_count(); ++s)
           out.value[s] += child.value[s];
         out.mass += child.mass;
@@ -315,7 +345,7 @@ PooledValue br_group(poker::GameState state, std::vector<BRView> views,
         if (children.empty())
           continue;
         PooledValue child = br_group(state.after_card(card), std::move(children), policies, log,
-                                     traverser, counts, sink);
+                                     traverser, counts, frontier, sink);
         for (std::size_t s = 0; s < state.player_count(); ++s)
           out.value[s] += child.value[s];
         out.mass += child.mass;
@@ -346,6 +376,35 @@ PooledValue br_group(poker::GameState state, std::vector<BRView> views,
       }
       return out;
     }
+    case poker::Phase::Frontier: {
+      // RFC 0029: this walk POOLS views, so both the value and the mass are
+      // weighted by weight*reach. Its sibling branches above do the same; using
+      // `reach` alone would weight frontier leaves differently from fold and
+      // showdown leaves inside one pooled walk.
+      ++counts.frontier_leaves;
+      const bs::tree::TerminalPayload payload = bs::tree::make_frontier_payload(state);
+      for (BRView* v : live) {
+        const std::vector<double> seat_values = frontier.evaluate(state.board(), v->holes, payload);
+        if (seat_values.size() < state.player_count())
+          throw std::runtime_error("frontier evaluator returned too few seat values");
+        // Zero-sum is checked per DEAL, before the weight is applied: the pool
+        // weights each deal differently, so a check on the pooled total would
+        // let compensating errors at two deals cancel and pass.
+        double deal_total = 0.0;
+        for (std::size_t s = 0; s < state.player_count(); ++s) {
+          if (!std::isfinite(seat_values[s]))
+            throw std::runtime_error("frontier evaluator returned a non-finite seat value");
+          deal_total += seat_values[s];
+        }
+        if (std::abs(deal_total) > 1e-6)
+          throw std::runtime_error("frontier settlement is not zero-sum");
+        const double w = v->weight * v->reach;
+        out.mass += w;
+        for (std::size_t s = 0; s < state.player_count(); ++s)
+          out.value[s] += w * seat_values[s];
+      }
+      return out;
+    }
   }
   return out;
 }
@@ -355,19 +414,21 @@ PooledValue br_group(poker::GameState state, std::vector<BRView> views,
 std::array<double, 10> exact_deal_utility(const poker::GameDef& def,
                                           const std::vector<HoleCards>& holes,
                                           const std::vector<const BehaviorPolicy*>& policies,
+                                          const gto::FrontierEvaluator& frontier,
                                           OracleCounts* counts) {
   if (holes.size() != policies.size() || holes.size() != def.player_count)
     throw std::invalid_argument("oracle: one hole pair and policy per seat required");
   OracleCounts local;
   OracleCounts& c = counts ? *counts : local;
   poker::GameState state(def);
-  return recurse(std::move(state), holes, policies, HandLog{}, std::nullopt, c);
+  return recurse(std::move(state), holes, policies, HandLog{}, std::nullopt, c, frontier);
 }
 
 std::array<double, 10> exact_oracle_utility(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
-    const std::vector<const BehaviorPolicy*>& policies, OracleCounts* counts) {
+    const std::vector<const BehaviorPolicy*>& policies, const gto::FrontierEvaluator& frontier,
+    OracleCounts* counts) {
   if (ranges.size() != policies.size() || ranges.size() != def.player_count)
     throw std::invalid_argument("oracle: one range and policy per seat required");
   std::vector<int> board(def.board.begin(), def.board.begin() + def.board_size);
@@ -383,7 +444,7 @@ std::array<double, 10> exact_oracle_utility(
     for (const std::array<int, 2>& hand : deal.hands)
       holes.push_back(HoleCards{hand[0], hand[1]});
     const std::array<double, 10> per_deal =
-        recurse(poker::GameState(def), holes, policies, HandLog{}, std::nullopt, c);
+        recurse(poker::GameState(def), holes, policies, HandLog{}, std::nullopt, c, frontier);
     for (std::size_t s = 0; s < def.player_count; ++s)
       value[s] += deal.weight * per_deal[s];
   }
@@ -394,7 +455,7 @@ std::array<double, 10> exact_omniscient_deviation_utility(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
-    OracleCounts* counts) {
+    const gto::FrontierEvaluator& frontier, OracleCounts* counts) {
   if (ranges.size() != policies.size() || ranges.size() != def.player_count)
     throw std::invalid_argument("oracle: one range and policy per seat required");
   if (traverser >= policies.size())
@@ -413,7 +474,7 @@ std::array<double, 10> exact_omniscient_deviation_utility(
       holes.push_back(HoleCards{hand[0], hand[1]});
     const std::array<double, 10> per_deal =
         recurse(poker::GameState(def), holes, policies, HandLog{},
-                std::optional<std::size_t>{traverser}, c);
+                std::optional<std::size_t>{traverser}, c, frontier);
     for (std::size_t s = 0; s < def.player_count; ++s)
       value[s] += deal.weight * per_deal[s];
   }
@@ -423,8 +484,8 @@ std::array<double, 10> exact_omniscient_deviation_utility(
 std::array<double, 10> exact_best_response_utility(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
-    const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser, OracleCounts* counts,
-    ExactBrChoiceSink* sink) {
+    const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
+    const gto::FrontierEvaluator& frontier, OracleCounts* counts, ExactBrChoiceSink* sink) {
   if (ranges.size() != policies.size() || ranges.size() != def.player_count)
     throw std::invalid_argument("oracle: one range and policy per seat required");
   if (traverser >= policies.size())
@@ -453,8 +514,8 @@ std::array<double, 10> exact_best_response_utility(
   PooledValue total;
   for (auto& [key, views] : groups) {
     (void)key;
-    PooledValue g =
-        br_group(poker::GameState(def), std::move(views), policies, HandLog{}, traverser, c, sink);
+    PooledValue g = br_group(poker::GameState(def), std::move(views), policies, HandLog{},
+                             traverser, c, frontier, sink);
     for (std::size_t s = 0; s < def.player_count; ++s)
       total.value[s] += g.value[s];
     total.mass += g.mass;

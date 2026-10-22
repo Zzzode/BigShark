@@ -79,6 +79,30 @@ that has actually been dealt; bot hole cards and unrevealed runout cards are
 not reachable through the API. A showdown reveals only the cards of players who
 reached it live; a folded hand reveals nobody's cards.
 
+### The phase-dispatch seam (RFC 0029)
+
+The street-by-street dispatch is a free function, not a private loop:
+`run_practice_hand(GameState, const PracticeHand&, const HumanAgent&,
+bs::SplitMix64&, PracticeObserver*)` returns a `PracticeHandResult` holding the
+per-seat utility, the folded flag, the revealed board prefix, and the settled
+terminal state. `play_hand` is a thin wrapper that deals the cards, calls it,
+and updates session P/L and the button.
+
+The split exists because `play_hand` builds its own `GameState` from a
+file-local `make_def`, so nothing outside the class could ever hand the loop a
+state it did not deal itself. A test that needs a `Phase::Frontier` leaf — which
+no dealt hand produces, since `PracticeConfig` has no terminal-depth field and
+`make_def` never sets `terminal` — can now construct one and drive the dispatch
+directly. `PracticeHand` carries the hole cards, the five runout cards, the
+human seat, the hand id, one bot policy per seat, and the table the human agent
+renders from.
+
+A frontier leaf throws `std::runtime_error`: the table has no evaluator to
+consult and no rules settlement applies. The `Frontier` arm of the dispatch
+carries no `default:` label, and `-Werror=switch` is enabled on
+`bigshark_practice`, so a future `poker::Phase` enumerator fails the build
+rather than spinning through a loop with no arm for it.
+
 The core is built as the `bigshark_practice` static library linking only
 `bigshark_stage6_eval` (which provides the bot policies) and poker. The
 engine tier is a separate `bigshark_practice_engine` static library that

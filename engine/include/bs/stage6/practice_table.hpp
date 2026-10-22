@@ -19,6 +19,7 @@
 #include <bs/behavior_policy.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
+#include <bs/prng.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -64,6 +65,51 @@ struct PracticeObserver {
                            std::size_t /*hand_id*/,
                            const std::vector<std::pair<std::size_t, HoleCards>>& /*shown_holes*/) {}
 };
+
+// Everything one hand needs that the GameState does not carry. Public because
+// `run_practice_hand` is the seam a test drives directly (see its comment).
+struct PracticeHand {
+  // One hole pair per seat, indexed by seat. Read only by the acting seat's
+  // own decision and by showdown settlement; never rendered.
+  std::vector<HoleCards> holes;
+  // The five public cards, consumed one per Deal phase in deal order.
+  std::array<int, 5> board{};
+  std::size_t human_seat = 0;
+  std::uint64_t hand_id = 0;
+  // One policy per seat, indexed by seat. The human seat's entry is ignored; a
+  // null bot outside it is an error only when that seat has to act.
+  std::vector<const BehaviorPolicy*> bots;
+  // Handed to the HumanAgent as its last argument (the frontend reads the
+  // table's button/seat labels from it).
+  const class PracticeTable* table = nullptr;
+};
+
+// The terminal outcome of one hand.
+struct PracticeHandResult {
+  std::array<double, 10> utility{};
+  bool folded = false;
+  // The board prefix actually revealed, 0..5.
+  std::size_t revealed = 0;
+  // The state the hand ended in, so the caller can report the live players.
+  // GameState has no default constructor, so this is built once at the end.
+  poker::GameState terminal;
+
+  explicit PracticeHandResult(const poker::GameState& end) : terminal(end) {}
+};
+
+// RFC 0029: the hand's phase dispatch, extracted from
+// `PracticeTable::play_hand` so a test can hand it a CONSTRUCTED state — in
+// particular a `Phase::Frontier` one, which no shuffled hand reaches today —
+// instead of waiting for a real hand to get there.
+//
+// Runs `state` to its terminal and reports the per-seat chip utility; the
+// caller owns dealing, session accounting, and the hand-start/hand-end
+// observer callbacks. Throws `std::runtime_error` for a frontier leaf (the
+// table has no evaluator), a human/bot action that is not legal, or a
+// settlement that is not zero-sum.
+PracticeHandResult run_practice_hand(poker::GameState state, const PracticeHand& hand,
+                                     const HumanAgent& human, bs::SplitMix64& rng,
+                                     PracticeObserver* observer = nullptr);
 
 // Difficulty selects the bot roster. The labels are deliberately descriptive;
 // none of these is a solved equilibrium ("GTO") policy.
@@ -112,6 +158,12 @@ class PracticeTable {
   // is the only chance information a frontend gets: other seats' hole cards
   // are never exposed before the showdown, and unrevealed board cards stay
   // hidden. Between hands it retains the previous hand's completed board.
+  //
+  // It advances at COMPLETED streets (3, then 4, then 5), not per card: the
+  // engine deals the flop through three one-card phases, and every observer
+  // callback and human prompt happens at a completed street. The value is
+  // accurate inside `PracticeObserver::on_board`, so a view that renders from
+  // that callback sees the same prefix the callback was handed.
   std::vector<int> revealed_board() const;
 
   // Replaces the bot at `seat` with a caller-owned policy. Used by the

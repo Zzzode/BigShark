@@ -36,6 +36,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -59,6 +60,23 @@ class FrontierEvaluator {
   virtual std::vector<double> evaluate(std::span<const int> board,
                                        std::span<const std::array<int, 2>> hands,
                                        const bs::tree::TerminalPayload& ledger) const = 0;
+};
+
+// A required-reference assertion for callers whose game can never reach a
+// frontier leaf. Passing it is a compile-time declaration that the caller has
+// considered TerminalDepth and determined the walk never settles at a frontier;
+// every evaluate() throws rather than returning a value.
+//
+// This is deliberately NOT a default argument and NOT a flag selecting an
+// implementation. A default would let a frontier-bearing caller compile and then
+// throw at runtime, which is the failure mode the required parameter exists to
+// prevent (RFC 0029 stage 1).
+class NoFrontier final : public FrontierEvaluator {
+ public:
+  std::vector<double> evaluate(std::span<const int>, std::span<const std::array<int, 2>>,
+                               const bs::tree::TerminalPayload&) const override {
+    throw std::logic_error("NoFrontier evaluated: this walk cannot settle at a frontier leaf");
+  }
 };
 
 // RFC 0007 option A: a declared frontier table. An immutable map from

@@ -115,8 +115,14 @@ class DeviationEstimator {
   DeviationEstimator(const poker::GameDef& def,
                      const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
                      const std::vector<const BehaviorPolicy*>& policies,
-                     const bs::solver::JointDealTable* enumerated, const BrEstimatorConfig& config)
-      : def_(def), ranges_(ranges), policies_(policies), enumerated_(enumerated), cfg_(config) {
+                     const bs::solver::JointDealTable* enumerated, const BrEstimatorConfig& config,
+                     const gto::FrontierEvaluator& frontier)
+      : def_(def),
+        ranges_(ranges),
+        policies_(policies),
+        enumerated_(enumerated),
+        cfg_(config),
+        frontier_(frontier) {
     n_ = policies_.size();
     if (n_ < 2 || n_ > 10)
       throw std::invalid_argument("br estimator requires 2..10 seat policies");
@@ -219,6 +225,8 @@ class DeviationEstimator {
   const poker::GameDef& def() const { return def_; }
   std::size_t seats() const { return n_; }
   const BrEstimatorConfig& config() const { return cfg_; }
+  // RFC 0029: the walker's frontier settlement contract (see WalkBase::settle).
+  const gto::FrontierEvaluator& frontier() const { return frontier_; }
   const std::vector<const BehaviorPolicy*>& policies() const { return policies_; }
 
  private:
@@ -257,10 +265,11 @@ class DeviationEstimator {
     const std::vector<HoleCards>& holes;
     BrEstimatorCounts& counts;
     bool flop_checked = false;
+    const gto::FrontierEvaluator& frontier;
 
     WalkBase(DeviationEstimator& o, std::size_t t, std::uint64_t s, const std::vector<HoleCards>& h,
-             BrEstimatorCounts& c)
-        : owner(o), traverser(t), seed(s), holes(h), counts(c) {}
+             BrEstimatorCounts& c, const gto::FrontierEvaluator& f)
+        : owner(o), traverser(t), seed(s), holes(h), counts(c), frontier(f) {}
 
     std::uint64_t node_token(const poker::GameState& state, const HandLog& log) const {
       return public_history_hash(state, log);
@@ -313,6 +322,26 @@ class DeviationEstimator {
     std::array<double, 10> settle(const poker::GameState& state, bool folded) const {
       std::array<double, 10> utility{};
       long long sum = 0;
+      if (state.phase() == poker::Phase::Frontier) {
+        // RFC 0029: the evaluator supplies per-seat values, and they are held to
+        // the SAME zero-sum check as the rules settlements below. An evaluator
+        // that leaks or invents chips is a broken harness, not a legal outcome,
+        // and silently continuing would bias every downstream NashConv.
+        const std::vector<double> seat_values =
+            frontier.evaluate(state.board(), holes, bs::tree::make_frontier_payload(state));
+        if (seat_values.size() < owner.n_)
+          throw stage6_br_error("frontier evaluator returned too few seat values");
+        double total = 0.0;
+        for (std::size_t s = 0; s < owner.n_; ++s) {
+          if (!std::isfinite(seat_values[s]))
+            throw stage6_br_error("frontier evaluator returned a non-finite seat value");
+          utility[s] = seat_values[s];
+          total += seat_values[s];
+        }
+        if (std::abs(total) > 1e-6)
+          throw stage6_br_error("frontier settlement is not zero-sum");
+        return utility;
+      }
       if (folded) {
         const poker::ContributionSettlement settlement = state.settle_fold();
         for (std::size_t s = 0; s < owner.n_; ++s) {
@@ -348,7 +377,7 @@ class DeviationEstimator {
               const std::vector<HoleCards>& h, std::map<InfosetKey, std::vector<poker::Action>>& m,
               std::map<InfosetKey, poker::Action>& prev,
               std::map<InfosetKey, std::vector<QCell>>& qq, BrEstimatorCounts& c)
-        : WalkBase(o, t, s, h, c), menus(m), previous(prev), q(qq) {}
+        : WalkBase(o, t, s, h, c, o.frontier()), menus(m), previous(prev), q(qq) {}
 
     std::array<double, 10> run(poker::GameState state, HandLog log) {
       switch (state.phase()) {
@@ -359,6 +388,10 @@ class DeviationEstimator {
         case poker::Phase::Folded:
           return settle(state, true);
         case poker::Phase::Showdown:
+          return settle(state, false);
+        case poker::Phase::Frontier:
+          // RFC 0029: the evaluator supplies the leaf value; settle() applies
+          // the same zero-sum check the fold and showdown branches do.
           return settle(state, false);
         case poker::Phase::Action:
           break;
@@ -463,7 +496,7 @@ class DeviationEstimator {
     LegWalk(DeviationEstimator& o, std::size_t t, std::uint64_t s, const std::vector<HoleCards>& h,
             bool best, const FrozenBestResponseData& f, ConfirmPairOutput& out_param,
             BrEstimatorCounts& c)
-        : WalkBase(o, t, s, h, c), best_leg(best), frozen(f), out(out_param) {}
+        : WalkBase(o, t, s, h, c, o.frontier()), best_leg(best), frozen(f), out(out_param) {}
 
     poker::Action frozen_action(const poker::GameState& state, const HandLog& log,
                                 const poker::Action& profile_action) {
@@ -509,6 +542,10 @@ class DeviationEstimator {
         case poker::Phase::Folded:
           return settle(state, true);
         case poker::Phase::Showdown:
+          return settle(state, false);
+        case poker::Phase::Frontier:
+          // RFC 0029: the evaluator supplies the leaf value; settle() applies
+          // the same zero-sum check the fold and showdown branches do.
           return settle(state, false);
         case poker::Phase::Action:
           break;
@@ -557,7 +594,7 @@ class DeviationEstimator {
 
     PairWalk(DeviationEstimator& o, std::size_t t, std::uint64_t s, const std::vector<HoleCards>& h,
              const FrozenBestResponseData& f, ConfirmPairOutput& out_param, BrEstimatorCounts& c)
-        : WalkBase(o, t, s, h, c), frozen(f), out(out_param) {}
+        : WalkBase(o, t, s, h, c, o.frontier()), frozen(f), out(out_param) {}
 
     std::pair<std::array<double, 10>, std::array<double, 10>> run(poker::GameState state,
                                                                   HandLog log) {
@@ -583,6 +620,12 @@ class DeviationEstimator {
           return {u, u};
         }
         case poker::Phase::Showdown: {
+          const std::array<double, 10> u = settle(state, false);
+          return {u, u};
+        }
+        case poker::Phase::Frontier: {
+          // RFC 0029: one evaluator value serves both legs; a frontier leaf has
+          // no deviation, exactly as a showdown leaf does not.
           const std::array<double, 10> u = settle(state, false);
           return {u, u};
         }
@@ -668,6 +711,7 @@ class DeviationEstimator {
   const std::vector<const BehaviorPolicy*>& policies_;
   const bs::solver::JointDealTable* enumerated_ = nullptr;
   const BrEstimatorConfig& cfg_;
+  const gto::FrontierEvaluator& frontier_;
   std::size_t n_ = 0;
   std::vector<int> board_prefix_;
 };
@@ -728,15 +772,16 @@ FrozenBestResponseData mc_learn_frozen_best_response(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
-    std::span<const std::uint64_t> learn_seeds, const bs::solver::JointDealTable* enumerated,
-    const BrEstimatorConfig& config, BrEstimatorCounts* counts_out) {
+    std::span<const std::uint64_t> learn_seeds, const gto::FrontierEvaluator& frontier,
+    const bs::solver::JointDealTable* enumerated, const BrEstimatorConfig& config,
+    BrEstimatorCounts* counts_out) {
   if (learn_seeds.empty())
     throw std::invalid_argument("br estimator learn requires a nonempty seed list");
   if (traverser >= policies.size())
     throw std::invalid_argument("br estimator learn traverser is not a seated policy");
   BrEstimatorCounts local_counts;
   BrEstimatorCounts& counts = counts_out ? *counts_out : local_counts;
-  DeviationEstimator estimator(def, ranges, policies, enumerated, config);
+  DeviationEstimator estimator(def, ranges, policies, enumerated, config, frontier);
   return estimator.learn(traverser, learn_seeds, seed_list_hash(learn_seeds), counts);
 }
 
@@ -744,13 +789,14 @@ ConfirmPairOutput mc_confirm_pair(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser, std::uint64_t seed,
-    const FrozenBestResponseData& frozen, const bs::solver::JointDealTable* enumerated,
-    const BrEstimatorConfig& config, BrEstimatorCounts* counts_out) {
+    const gto::FrontierEvaluator& frontier, const FrozenBestResponseData& frozen,
+    const bs::solver::JointDealTable* enumerated, const BrEstimatorConfig& config,
+    BrEstimatorCounts* counts_out) {
   if (traverser >= policies.size())
     throw std::invalid_argument("br estimator confirm traverser is not a seated policy");
   BrEstimatorCounts local_counts;
   BrEstimatorCounts& counts = counts_out ? *counts_out : local_counts;
-  DeviationEstimator estimator(def, ranges, policies, enumerated, config);
+  DeviationEstimator estimator(def, ranges, policies, enumerated, config, frontier);
   ConfirmPairOutput out = estimator.confirm_pair(traverser, seed, frozen, counts);
   ++counts.confirm_rollouts;
   return out;
@@ -760,8 +806,8 @@ BrEstimatorResult estimate_deviation_gains(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::span<const std::uint64_t> learn_seeds,
-    std::span<const std::uint64_t> confirm_seeds, const bs::solver::JointDealTable* enumerated,
-    const BrEstimatorConfig& config) {
+    std::span<const std::uint64_t> confirm_seeds, const gto::FrontierEvaluator& frontier,
+    const bs::solver::JointDealTable* enumerated, const BrEstimatorConfig& config) {
   if (learn_seeds.empty() || confirm_seeds.empty())
     throw std::invalid_argument("br estimator requires nonempty learn and confirm seed lists");
   if (config.deviation_space == DeviationSpace::CoarseAbstraction &&
@@ -796,14 +842,15 @@ BrEstimatorResult estimate_deviation_gains(
 
   for (std::size_t traverser = 0; traverser < n; ++traverser) {
     BrEstimatorCounts traverser_counts;
-    result.frozen[traverser] = mc_learn_frozen_best_response(
-        def, ranges, policies, traverser, learn_seeds, enumerated, config, &traverser_counts);
+    result.frozen[traverser] =
+        mc_learn_frozen_best_response(def, ranges, policies, traverser, learn_seeds, frontier,
+                                      enumerated, config, &traverser_counts);
     std::size_t seed_index = 0;
     std::size_t traverser_misses = 0;
     for (std::uint64_t seed : confirm_seeds) {
       ConfirmPairOutput pair =
-          mc_confirm_pair(def, ranges, policies, traverser, seed, result.frozen[traverser],
-                          enumerated, config, &traverser_counts);
+          mc_confirm_pair(def, ranges, policies, traverser, seed, frontier,
+                          result.frozen[traverser], enumerated, config, &traverser_counts);
       traverser_misses += pair.misses;
       for (std::size_t s = 0; s < n; ++s) {
         if (!std::isfinite(pair.best_utility[s]) || !std::isfinite(pair.profile_utility[s]))
@@ -857,12 +904,13 @@ BrEstimatorResult estimate_deviation_gains(
 FrozenBestResponseData learn_exact_frozen_best_response(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
-    const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser) {
+    const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
+    const gto::FrontierEvaluator& frontier) {
   if (traverser >= policies.size())
     throw std::invalid_argument("exact freeze traverser is not a seated policy");
   ExactBrChoiceSink sink;
   OracleCounts counts;
-  (void)exact_best_response_utility(def, ranges, policies, traverser, &counts, &sink);
+  (void)exact_best_response_utility(def, ranges, policies, traverser, frontier, &counts, &sink);
 
   FrozenBestResponseData data;
   data.traverser = traverser;

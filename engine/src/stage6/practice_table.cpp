@@ -243,31 +243,101 @@ std::array<double, 10> PracticeTable::play_hand(PracticeObserver* observer) {
   if (observer)
     observer->on_hand_start(poker::GameState(def), hand_id, deal.holes[human]);
 
-  poker::GameState state(def);
+  PracticeHand hand;
+  hand.holes = deal.holes;
+  hand.board = deal.board;
+  hand.human_seat = human;
+  hand.hand_id = hand_id;
+  hand.bots.reserve(n);
+  for (std::size_t s = 0; s < n; ++s) {
+    // The human seat's slot is never consulted; only a bot seat that has to
+    // act is required to be non-null.
+    hand.bots.push_back(s == human ? nullptr : impl_->bots[s].get());
+  }
+  hand.table = this;
+
+  // Mirrors the dispatch's progress into the table's own counter BEFORE the
+  // matching observer callback, so `revealed_board()` stays accurate for a
+  // frontend that renders inside `on_board`. The dispatch owns no table state;
+  // this wrapper is the only thing that bridges the two.
+  struct RevealMirror final : PracticeObserver {
+    RevealMirror(PracticeObserver* o, std::size_t* r) : inner(o), revealed(r) {}
+    PracticeObserver* inner;
+    std::size_t* revealed;
+    void on_board(const poker::GameState& s) override {
+      *revealed = s.board().size();
+      if (inner)
+        inner->on_board(s);
+    }
+    void on_hand_start(const poker::GameState& s, std::size_t id, HoleCards hole) override {
+      if (inner)
+        inner->on_hand_start(s, id, hole);
+    }
+    void on_decision(const poker::GameState& s, std::size_t seat, bool is_human,
+                     const std::vector<PolicyAction>& dist, poker::Action action) override {
+      if (inner)
+        inner->on_decision(s, seat, is_human, dist, action);
+    }
+  } mirror{observer, &impl_->revealed};
+
+  PracticeHandResult result =
+      run_practice_hand(poker::GameState(def), hand, impl_->human, impl_->rng, &mirror);
+
+  for (std::size_t i = 0; i < n; ++i)
+    impl_->session[i] += result.utility[i];
+  // Only a showdown reveals cards: the live players that reached it. Hands won
+  // by a fold expose nobody's hole cards.
+  std::vector<std::pair<std::size_t, HoleCards>> shown;
+  if (!result.folded)
+    for (std::size_t s : result.terminal.live_players())
+      shown.emplace_back(s, deal.holes[s]);
+  if (observer)
+    observer->on_hand_end(result.terminal, result.utility, result.folded, hand_id, shown);
+  ++impl_->hands;
+  impl_->button = (impl_->button + 1) % n;
+  return result.utility;
+}
+
+PracticeHandResult run_practice_hand(poker::GameState state, const PracticeHand& hand,
+                                     const HumanAgent& human, bs::SplitMix64& rng,
+                                     PracticeObserver* observer) {
+  const std::size_t n = state.player_count();
+  if (hand.holes.size() != n)
+    throw std::runtime_error("practice hand requires one hole pair per seat");
+  if (hand.bots.size() != n)
+    throw std::runtime_error("practice hand requires one bot slot per seat");
+  if (hand.human_seat >= n)
+    throw std::runtime_error("practice hand human seat is outside the table");
+  if (!hand.table)
+    throw std::runtime_error("practice hand requires the table the human agent renders");
+
   HandLog log;
   std::uint64_t decisions = 0;
-  bool folded = false;
-  std::array<double, 10> utility{};
+  PracticeHandResult result(state);
+  result.revealed = state.board().size();
+  std::array<double, 10>& utility = result.utility;
 
+  // No `default`: -Werror=switch (bigshark_practice) makes a future `Phase`
+  // enumerator a build failure rather than a spin through this loop.
   while (true) {
     switch (state.phase()) {
       case poker::Phase::Action: {
         const std::size_t seat = *state.actor();
         const poker::LegalActions legal = state.legal();
-        poker::Action chosen;
+        poker::Action chosen{};
         std::vector<PolicyAction> observed;
-        const bool is_human = seat == human;
+        const bool is_human = seat == hand.human_seat;
         if (is_human) {
-          chosen = impl_->human(state, seat, deal.holes[seat], *this);
+          chosen = human(state, seat, hand.holes[seat], *hand.table);
         } else {
-          if (!impl_->bots[seat])
+          if (!hand.bots[seat])
             throw std::runtime_error(
                 "practice table: Engine tier requires set_bot before play_hand");
           PolicyContext ctx;
           ctx.hand_log = &log;
-          ctx.decision_seed = decision_seed(hand_id, decisions);
-          observed = impl_->bots[seat]->distribution(state, seat, deal.holes[seat], ctx);
-          chosen = sample_bot(observed, impl_->rng);
+          ctx.decision_seed = decision_seed(hand.hand_id, decisions);
+          observed = hand.bots[seat]->distribution(state, seat, hand.holes[seat], ctx);
+          chosen = sample_bot(observed, rng);
         }
         ++decisions;
         if (!legal.contains(chosen))
@@ -283,17 +353,17 @@ std::array<double, 10> PracticeTable::play_hand(PracticeObserver* observer) {
         const std::size_t want = state.board().size();  // next board index
         if (want >= 5)
           throw std::runtime_error("practice table: deal phase with a full board");
-        state = state.after_card(deal.board[want]);
-        impl_->revealed = state.board().size();
+        state = state.after_card(hand.board[want]);
+        result.revealed = state.board().size();
         // The engine reveals the flop through three one-card Deal phases;
         // notify observers only at the completed flop (3), turn (4), river (5).
-        if (observer && (impl_->revealed == 3 || impl_->revealed == 4 || impl_->revealed == 5))
+        if (observer && (result.revealed == 3 || result.revealed == 4 || result.revealed == 5))
           observer->on_board(state);
         break;
       }
       case poker::Phase::Folded: {
         const poker::ContributionSettlement s = state.settle_fold();
-        folded = true;
+        result.folded = true;
         long long sum = 0;
         for (std::size_t i = 0; i < n; ++i) {
           utility[i] = static_cast<double>(s.chip_utility[i]);
@@ -301,13 +371,14 @@ std::array<double, 10> PracticeTable::play_hand(PracticeObserver* observer) {
         }
         if (sum != 0)
           throw std::runtime_error("practice table fold settlement is not zero-sum");
-        goto done;
+        result.terminal = state;
+        return result;
       }
       case poker::Phase::Showdown: {
         std::vector<std::array<int, 2>> live_holes;
         live_holes.reserve(state.live_players().size());
         for (std::size_t s : state.live_players())
-          live_holes.push_back(deal.holes[s]);
+          live_holes.push_back(hand.holes[s]);
         const poker::ContributionSettlement s = state.settle_showdown(live_holes);
         long long sum = 0;
         for (std::size_t i = 0; i < n; ++i) {
@@ -316,25 +387,18 @@ std::array<double, 10> PracticeTable::play_hand(PracticeObserver* observer) {
         }
         if (sum != 0)
           throw std::runtime_error("practice table showdown settlement is not zero-sum");
-        goto done;
+        result.terminal = state;
+        return result;
+      }
+      case poker::Phase::Frontier: {
+        // RFC 0029: a frontier leaf has no rules settlement, and the practice
+        // table has no evaluator to consult. Throw rather than fall through the
+        // switch, which would loop forever on a state no case consumes.
+        throw std::runtime_error(
+            "practice table cannot settle a frontier leaf: the table has no frontier evaluator");
       }
     }
   }
-
-done:
-  for (std::size_t i = 0; i < n; ++i)
-    impl_->session[i] += utility[i];
-  // Only a showdown reveals cards: the live players that reached it. Hands won
-  // by a fold expose nobody's hole cards.
-  std::vector<std::pair<std::size_t, HoleCards>> shown;
-  if (!folded)
-    for (std::size_t s : state.live_players())
-      shown.emplace_back(s, deal.holes[s]);
-  if (observer)
-    observer->on_hand_end(state, utility, folded, hand_id, shown);
-  ++impl_->hands;
-  impl_->button = (impl_->button + 1) % n;
-  return utility;
 }
 
 }  // namespace bs::stage6

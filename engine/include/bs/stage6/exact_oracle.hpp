@@ -23,6 +23,7 @@
 
 #include <array>
 #include <bs/behavior_policy.hpp>
+#include <bs/frontier.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/multiway_sampler.hpp>
 #include <bs/stage6/infoset_key.hpp>
@@ -39,6 +40,9 @@ struct OracleCounts {
   std::uint64_t chance_nodes = 0;
   std::uint64_t fold_leaves = 0;
   std::uint64_t showdown_leaves = 0;
+  // RFC 0029: leaves settled by the FrontierEvaluator (flop- or street-terminal
+  // games only; zero for a River-terminal root, which never reaches one).
+  std::uint64_t frontier_leaves = 0;
   std::uint64_t joint_deals = 0;
 };
 
@@ -60,6 +64,7 @@ struct ExactBrChoiceSink {
 std::array<double, 10> exact_deal_utility(const poker::GameDef& rooted_or_preflop_def,
                                           const std::vector<HoleCards>& holes,
                                           const std::vector<const BehaviorPolicy*>& policies,
+                                          const gto::FrontierEvaluator& frontier,
                                           OracleCounts* counts = nullptr);
 
 // Exact expected utility N-vector averaged uniformly over every mutually
@@ -72,7 +77,8 @@ std::array<double, 10> exact_deal_utility(const poker::GameDef& rooted_or_preflo
 std::array<double, 10> exact_oracle_utility(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
-    const std::vector<const BehaviorPolicy*>& policies, OracleCounts* counts = nullptr);
+    const std::vector<const BehaviorPolicy*>& policies, const gto::FrontierEvaluator& frontier,
+    OracleCounts* counts = nullptr);
 
 // OMINSCIENT per-deal deviation utility (a diagnostic upper bound, NOT the
 // best response). At each traverser node it picks the best action SEPARATELY
@@ -86,7 +92,7 @@ std::array<double, 10> exact_omniscient_deviation_utility(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
-    OracleCounts* counts = nullptr);
+    const gto::FrontierEvaluator& frontier, OracleCounts* counts = nullptr);
 
 // EXACT best-response utility of one traverser against the N-1 fixed policies
 // over the joint hole-deal distribution in `ranges`. This is the R9 reference
@@ -111,6 +117,7 @@ std::array<double, 10> exact_best_response_utility(
     const poker::GameDef& def,
     const std::vector<std::vector<bs::solver::MultiwayWeightedHand>>& ranges,
     const std::vector<const BehaviorPolicy*>& policies, std::size_t traverser,
-    OracleCounts* counts = nullptr, ExactBrChoiceSink* choices = nullptr);
+    const gto::FrontierEvaluator& frontier, OracleCounts* counts = nullptr,
+    ExactBrChoiceSink* choices = nullptr);
 
 }  // namespace bs::stage6

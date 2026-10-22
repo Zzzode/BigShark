@@ -412,7 +412,8 @@ BrEstimatorResult measure_profile(const GeometryBucket& bucket,
     config.coarse_action = &coarse_action;
   }
   config.on_confirm_miss = FrozenMissPolicy::RecordMiss;
-  return estimate_deviation_gains(def, ranges, policies, learn, confirm, nullptr, config);
+  return estimate_deviation_gains(def, ranges, policies, learn, confirm, bs::gto::NoFrontier{},
+                                  nullptr, config);
 }
 
 int cmd_measure(std::size_t n, std::uint64_t iters, std::uint64_t seed, std::size_t limit,

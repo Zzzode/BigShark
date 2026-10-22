@@ -503,6 +503,169 @@ void test_six_seat_engine_tier() {
                 total_served + total_fallbacks);
 }
 
+// RFC 0029 AC2: the phase dispatch is reachable with a CONSTRUCTED state, so a
+// `Phase::Frontier` leaf can be driven directly instead of waiting for a dealt
+// hand to produce one (practice hands are river-terminal, so none ever does).
+//
+// Every case below starts from a preflop heads-up definition the test builds,
+// never from `play_hand`'s shuffle: that is the point of the extraction.
+void test_phase_dispatch_reaches_frontier() {
+  // A flop-terminal heads-up root: legal for GameState, and the only way to
+  // construct a Frontier phase.
+  auto flop_terminal_def = [] {
+    GameDef def{};
+    def.player_count = 2;
+    def.button = 1;
+    def.big_blind = 2;
+    def.stacks = {50, 50, 0, 0, 0, 0, 0, 0, 0, 0};
+    def.pot = 2;  // the two posted blinds
+    def.board = {-1, -1, -1, -1, -1};
+    def.board_size = 0;
+    def.preflop = true;
+    def.blinds_posted[def.button] = 1;      // SB on the button
+    def.blinds_posted[1 - def.button] = 2;  // BB
+    def.terminal = TerminalDepth::Flop;
+    return def;
+  };
+
+  // A table only so the HumanAgent's last argument is a real object; it never
+  // deals a hand here.
+  PracticeConfig cfg;
+  cfg.seats = 2;
+  cfg.human_seat = 0;
+  cfg.rng_seed = 7;
+  PracticeTable table(cfg, passive_human);
+
+  // The human is the button (seat 1), which acts FIRST preflop heads-up, so a
+  // folding human settles the Action case with no bot policy needed.
+  PassivePolicy passive_bot;
+
+  PracticeHand hand;
+  hand.holes = {HoleCards{0, 1}, HoleCards{2, 3}};
+  hand.board = {4, 5, 6, 7, 8};
+  hand.human_seat = 1;
+  hand.hand_id = 0;
+  hand.bots = {&passive_bot, nullptr};
+  hand.table = &table;
+
+  // Action: the dispatch handles a live action state and advances it. The
+  // human seat folds, so the hand settles and the result is zero-sum.
+  {
+    GameState state = GameState(flop_terminal_def());
+    bs::SplitMix64 rng(11);
+    const PracticeHandResult r = run_practice_hand(state, hand, folder, rng, nullptr);
+    check(r.folded, "the extracted dispatch settles a constructed fold");
+    check(std::abs(sum_n(r.utility, 2)) < 1e-9, "extracted fold utility is zero-sum");
+    check(r.revealed == 0, "a preflop fold reveals no board card");
+  }
+
+  // Deal: the same definition, played to the completed flop, reaches Frontier.
+  {
+    GameState state = GameState(flop_terminal_def());
+    const std::size_t button = state.def().button;
+    state = state.after_action(button, Action{ActionType::Call, 0});
+    state = state.after_action(1 - button, Action{ActionType::Check, 0});
+    check(state.phase() == Phase::Deal, "the preflop street closed into a deal");
+
+    bool threw = false;
+    std::string message;
+    try {
+      bs::SplitMix64 rng(11);
+      (void)run_practice_hand(state, hand, passive_human, rng, nullptr);
+    } catch (const std::runtime_error& e) {
+      threw = true;
+      message = e.what();
+    }
+    check(threw, "a constructed flop-terminal state throws instead of spinning");
+    check(message.find("frontier") != std::string::npos,
+          "the frontier throw names the frontier leaf");
+  }
+
+  // The dispatch drives the Deal phase itself when handed a state mid-deal:
+  // a partially dealt flop still lands on Frontier rather than spinning.
+  {
+    GameState state = GameState(flop_terminal_def());
+    const std::size_t button = state.def().button;
+    state = state.after_action(button, Action{ActionType::Call, 0});
+    state = state.after_action(1 - button, Action{ActionType::Check, 0});
+    state = state.after_card(hand.board[0]);
+    check(state.phase() == Phase::Deal, "a partially dealt flop is still dealing");
+    bool threw = false;
+    try {
+      bs::SplitMix64 rng(11);
+      (void)run_practice_hand(state, hand, passive_human, rng, nullptr);
+    } catch (const std::runtime_error&) {
+      threw = true;
+    }
+    check(threw, "a mid-deal constructed state also reaches the frontier throw");
+  }
+
+  // A showdown-terminal state still settles through the same entry point, so
+  // the extraction did not narrow what the dispatch accepts. Both seats check
+  // through every street; the human seat is the passive policy's twin.
+  {
+    GameDef def = flop_terminal_def();
+    def.terminal = TerminalDepth::River;
+    GameState state = GameState(def);
+    std::size_t dealt = 0;
+    for (int guard = 0; guard < 64; ++guard) {
+      if (state.phase() == Phase::Action) {
+        // Preflop the small blind owes the big blind, so "check" is not always
+        // legal; take the passive line the way a passive player would.
+        const LegalActions legal = state.legal();
+        const ActionType type = legal.check ? ActionType::Check : ActionType::Call;
+        state = state.after_action(*state.actor(), Action{type, 0});
+      } else if (state.phase() == Phase::Deal) {
+        state = state.after_card(hand.board[dealt++]);
+      } else {
+        break;
+      }
+    }
+    check(state.phase() == Phase::Showdown, "the river-terminal twin reaches a showdown");
+    bs::SplitMix64 rng(11);
+    const PracticeHandResult r = run_practice_hand(state, hand, passive_human, rng, nullptr);
+    check(!r.folded, "the showdown settlement reports a showdown, not a fold");
+    check(std::abs(sum_n(r.utility, 2)) < 1e-9, "showdown utility is zero-sum");
+    check(r.terminal.phase() == Phase::Showdown, "the result carries the settled terminal");
+  }
+}
+
+// The extraction moved the revealed-card counter out of `Impl` and into
+// `PracticeHandResult`, so the frontend contract needs its own guard: at every
+// `on_board` callback the table's `revealed_board()` must already show exactly
+// the cards the observer was just handed, and between hands it retains the
+// completed board rather than resetting early.
+void test_revealed_board_tracks_play_hand() {
+  struct BoardWatcher : PracticeObserver {
+    const PracticeTable* table = nullptr;
+    std::size_t checked = 0;
+    bool mismatch = false;
+    void on_board(const GameState& s) override {
+      ++checked;
+      const std::vector<int> shown = table->revealed_board();
+      if (shown.size() != s.board().size())
+        mismatch = true;
+      for (std::size_t i = 0; i < shown.size() && i < s.board().size(); ++i)
+        if (shown[i] != s.board()[i])
+          mismatch = true;
+    }
+  };
+
+  PracticeConfig cfg;
+  cfg.seats = 4;
+  cfg.human_seat = 0;
+  cfg.difficulty = PracticeDifficulty::Easy;
+  cfg.rng_seed = 88;
+  PracticeTable table(cfg, passive_human);
+  BoardWatcher w;
+  w.table = &table;
+  for (std::size_t h = 0; h < 12; ++h)
+    (void)table.play_hand(&w);
+  check(w.checked > 0, "at least one hand revealed a board to the observer");
+  check(!w.mismatch, "revealed_board agrees with the observer's board at every notification");
+  check(table.revealed_board().size() <= 5, "revealed_board never exceeds the five public cards");
+}
+
 }  // namespace
 
 int main() {
@@ -516,6 +679,8 @@ int main() {
   test_engine_tier_requires_set_bot();
   test_set_bot_rejects_bad_arguments();
   test_engine_tier_with_injected_policy();
+  test_phase_dispatch_reaches_frontier();
+  test_revealed_board_tracks_play_hand();
   test_engine_process_handshake();
   test_six_seat_engine_tier();
   if (failures) {

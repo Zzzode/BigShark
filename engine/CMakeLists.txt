@@ -712,6 +712,10 @@ target_link_libraries(bigshark_stage6_eval
   PRIVATE bigshark_poker bigshark_solver bigshark_policy ${BS_OPENSSL_CRYPTO_TARGET}
 )
 
+# RFC 0029: every Phase must be handled explicitly in the stage-6 walkers, so a
+# new Phase value fails the build instead of silently falling through a switch.
+target_compile_options(bigshark_stage6_eval PRIVATE -Werror=switch)
+
 # RFC 0008 stage 6 R12 step 7: the multiplayer external-sampling MCCFR
 # trainer. It is a SIBLING of eval, never a dependent: the trainer produces the
 # frozen postflop candidate artifacts but must not reach the deployed policy,
@@ -745,6 +749,7 @@ target_link_libraries(bigshark_practice
   PUBLIC  bigshark_stage6_eval
   PRIVATE bigshark_poker
 )
+target_compile_options(bigshark_practice PRIVATE -Werror=switch)
 
 # T7: engine-host-backed practice policy. Spawns the engine host and serves
 # bot decisions through the v2 framed-protocol pipeline. Kept separate from

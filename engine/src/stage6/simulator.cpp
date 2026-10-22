@@ -156,6 +156,13 @@ SimResult HandSimulator::run(const poker::GameDef& def, const std::vector<HoleCa
           throw stage6_sim_error("showdown settlement is not zero-sum");
         return result;
       }
+      case poker::Phase::Frontier: {
+        // RFC 0029: the simulator has no frontier evaluator. A flop- or
+        // street-terminal definition must fail loudly here rather than spin,
+        // which is what an absent case would do.
+        throw stage6_sim_error(
+            "simulator cannot settle a frontier leaf: no frontier evaluator is available");
+      }
     }
   }
 }

@@ -294,6 +294,46 @@ void test_simulator_rejects_illegal_policy() {
   check(threw, "an illegal policy action is a typed simulator error, not a clamp");
 }
 
+// RFC 0029 AC2: a PREFLOP-ROOTED flop-terminal definition must throw the named
+// simulator error instead of spinning, because the simulator has no frontier
+// evaluator. Before the case existed the loop had no arm for the phase, so this
+// hand spun forever; the definition below is the one test_game_definition.cpp
+// already proves reaches `Phase::Frontier`.
+void test_simulator_flop_terminal_throws() {
+  CheckCallPolicy policy;
+  std::vector<const BehaviorPolicy*> policies{&policy, &policy};
+
+  // Heads-up preflop root with flop-terminal depth, matching the construction
+  // in test_game_definition.cpp's case_flop_terminal_frontier().
+  GameDef def = preflop_def(2, 2, 50);
+  def.button = 1;
+  def.blinds_posted = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+  def.blinds_posted[def.button] = 1;      // SB on the button
+  def.blinds_posted[1 - def.button] = 2;  // BB
+  def.pot = 3;
+  def.terminal = bs::poker::TerminalDepth::Flop;
+
+  std::vector<HoleCards> holes{{{card("As"), card("Ks")}}, {{card("2d"), card("7d")}}};
+  std::array<int, 5> board{card("2c"), card("3d"), card("7h"), card("4s"), card("5s")};
+  bs::SplitMix64 rng(5);
+  HandSimulator sim(policies, nullptr, rng);
+
+  bool threw = false;
+  std::string message;
+  try {
+    (void)sim.run(def, holes, board, 0);
+  } catch (const stage6_sim_error& e) {
+    threw = true;
+    message = e.what();
+  } catch (const std::exception&) {
+    // Any other exception type is a failure of the named-error contract.
+    threw = false;
+  }
+  check(threw, "a preflop-rooted flop-terminal hand throws stage6_sim_error");
+  check(message.find("frontier") != std::string::npos,
+        "the simulator's frontier error names the missing evaluator");
+}
+
 void test_coverage_hash_and_membership() {
   GeometrySignature a;
   a.player_count = 3;
@@ -345,7 +385,8 @@ void run_oracle_fixture(const char* label, std::array<Chips, 3> stacks) {
   check(table.deals.size() >= 1, "oracle joint table has compatible deals");
   check(table.rejected_conflicts > 0, "oracle ranges force card-overlap rejection");
   OracleCounts counts;
-  const std::array<double, 10> u = exact_oracle_utility(def, ranges, policies, &counts);
+  const std::array<double, 10> u =
+      exact_oracle_utility(def, ranges, policies, bs::gto::NoFrontier{}, &counts);
   check(counts.joint_deals == table.deals.size(), "oracle walks every joint deal");
   check(counts.showdown_leaves > 0, "passive profiles reach showdown leaves");
   // Exact walk counts, independently re-derived per deal: 6 compatible deals;
@@ -374,12 +415,13 @@ void test_oracle_aggressive_sidepots() {
   CheckCallPolicy passive;
   std::vector<const BehaviorPolicy*> pp{&passive, &passive, &passive};
   OracleCounts pc;
-  (void)exact_oracle_utility(def, ranges, pp, &pc);
+  (void)exact_oracle_utility(def, ranges, pp, bs::gto::NoFrontier{}, &pc);
 
   JamPolicy jam;
   std::vector<const BehaviorPolicy*> jp{&jam, &jam, &jam};
   OracleCounts jc;
-  const std::array<double, 10> ju = exact_oracle_utility(def, ranges, jp, &jc);
+  const std::array<double, 10> ju =
+      exact_oracle_utility(def, ranges, jp, bs::gto::NoFrontier{}, &jc);
   check(std::abs(util_sum(ju, 3)) < 1e-7, "aggressive unequal-stack oracle stays zero-sum");
   check(jc.action_nodes != pc.action_nodes,
         "the aggressive policy explores a different tree than a check-down");
@@ -389,7 +431,7 @@ void test_oracle_aggressive_sidepots() {
   const std::vector<HoleCards> one{
       {{card("Ah"), card("Kh")}}, {{card("Ad"), card("Kd")}}, {{card("Ac"), card("Qc")}}};
   OracleCounts sc;
-  const std::array<double, 10> su = exact_deal_utility(def, one, jp, &sc);
+  const std::array<double, 10> su = exact_deal_utility(def, one, jp, bs::gto::NoFrontier{}, &sc);
   check(std::abs(util_sum(su, 3)) < 1e-9, "a single fixed deal settles zero-sum");
   check(sc.chance_nodes > 0, "the single deal averages over runout chance");
 }
@@ -489,7 +531,7 @@ void test_oracle_rejects_nan() {
       {{card("Ah"), card("Kh")}}, {{card("Ad"), card("Kd")}}, {{card("Ac"), card("Qc")}}};
   bool threw = false;
   try {
-    (void)exact_deal_utility(def, one, policies, nullptr);
+    (void)exact_deal_utility(def, one, policies, bs::gto::NoFrontier{}, nullptr);
   } catch (const std::runtime_error&) {
     threw = true;
   }
@@ -575,10 +617,12 @@ void test_exact_best_response_gain() {
   // best-WITHIN-menu gain is non-negative for every seat.
   std::vector<const BehaviorPolicy*> pp{&passive, &passive, &passive};
   OracleCounts pc;
-  const std::array<double, 10> profile = exact_oracle_utility(def, ranges, pp, &pc);
+  const std::array<double, 10> profile =
+      exact_oracle_utility(def, ranges, pp, bs::gto::NoFrontier{}, &pc);
   for (std::size_t seat = 0; seat < 3; ++seat) {
     OracleCounts bc;
-    const std::array<double, 10> br = exact_best_response_utility(def, ranges, pp, seat, &bc);
+    const std::array<double, 10> br =
+        exact_best_response_utility(def, ranges, pp, seat, bs::gto::NoFrontier{}, &bc);
     check(br[seat] + 1e-9 >= profile[seat],
           "menu-contained profile: pooled BR utility >= profile utility");
 
@@ -586,7 +630,7 @@ void test_exact_best_response_gain() {
     // E_z[max_a Q] >= max_a E_z[Q] (the max-expectation inequality).
     OracleCounts oc;
     const std::array<double, 10> omni =
-        exact_omniscient_deviation_utility(def, ranges, pp, seat, &oc);
+        exact_omniscient_deviation_utility(def, ranges, pp, seat, bs::gto::NoFrontier{}, &oc);
     check(omni[seat] + 1e-9 >= br[seat],
           "omniscient per-deal deviation upper-bounds the pooled best response");
   }
@@ -596,7 +640,8 @@ void test_exact_best_response_gain() {
   // seats keep their fixed policy; only the traverser deviates).
   std::vector<const BehaviorPolicy*> jp{&jam, &jam, &jam};
   OracleCounts bc0;
-  const std::array<double, 10> br0 = exact_best_response_utility(def, ranges, jp, 0, &bc0);
+  const std::array<double, 10> br0 =
+      exact_best_response_utility(def, ranges, jp, 0, bs::gto::NoFrontier{}, &bc0);
   check(std::isfinite(br0[0]) && std::isfinite(br0[1]) && std::isfinite(br0[2]),
         "best response utility is finite");
   check(std::abs(util_sum(br0, 3)) < 1e-7, "best-response outcome vector is zero-sum");
@@ -627,9 +672,10 @@ void test_pooled_br_does_not_peek() {
   double max_gap = 0.0;
   for (std::size_t seat = 0; seat < 3; ++seat) {
     OracleCounts bc, oc;
-    const std::array<double, 10> br = exact_best_response_utility(def, ranges, pp, seat, &bc);
+    const std::array<double, 10> br =
+        exact_best_response_utility(def, ranges, pp, seat, bs::gto::NoFrontier{}, &bc);
     const std::array<double, 10> omni =
-        exact_omniscient_deviation_utility(def, ranges, pp, seat, &oc);
+        exact_omniscient_deviation_utility(def, ranges, pp, seat, bs::gto::NoFrontier{}, &oc);
     check(omni[seat] + 1e-9 >= br[seat],
           "multi-holding game: omniscient bound >= pooled best response for every seat");
     check(std::abs(util_sum(br, 3)) < 1e-7, "pooled best response stays zero-sum");
@@ -711,20 +757,22 @@ void run_information_restriction_fixture(std::size_t responder_seat) {
 
   // Always-fold baseline: -2 in every world.
   OracleCounts pc;
-  const auto baseline = exact_oracle_utility(def, ranges, profile, &pc);
+  const auto baseline = exact_oracle_utility(def, ranges, profile, bs::gto::NoFrontier{}, &pc);
   check(std::abs(baseline[responder_seat] - (-2.0)) < 1e-9,
         "negative control: always-fold baseline is -2");
 
   // The legal pooled best response must call: pooled value 0, strictly above
   // folding's -2.  A pooled oracle that peeked would report 1 instead.
   OracleCounts bc;
-  const auto br = exact_best_response_utility(def, ranges, profile, responder_seat, &bc);
+  const auto br =
+      exact_best_response_utility(def, ranges, profile, responder_seat, bs::gto::NoFrontier{}, &bc);
   check(std::abs(br[responder_seat] - 0.0) < 1e-9,
         "negative control: pooled BR calls, value 0 (worlds pooled, not peeked)");
 
   // The omniscient per-deal deviation is the named illegal answer, 1.
   OracleCounts oc;
-  const auto omni = exact_omniscient_deviation_utility(def, ranges, profile, responder_seat, &oc);
+  const auto omni = exact_omniscient_deviation_utility(def, ranges, profile, responder_seat,
+                                                       bs::gto::NoFrontier{}, &oc);
   check(std::abs(omni[responder_seat] - 1.0) < 1e-9,
         "negative control: world-wise (omniscient) value is 1");
   check(omni[responder_seat] - br[responder_seat] > 0.5 - 1e-9,
@@ -761,6 +809,7 @@ int main() {
   test_simulator_coverage_total();
   test_simulator_two_seat_fold();
   test_simulator_rejects_illegal_policy();
+  test_simulator_flop_terminal_throws();
   test_coverage_hash_and_membership();
   test_chart_enumerator_covers_baseline_hands();
   test_deviator_reach_covers_jam_hands();

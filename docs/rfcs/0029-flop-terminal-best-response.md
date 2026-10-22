@@ -1,10 +1,10 @@
 ---
 rfc: "0029"
 subject: "Make the Stage-6 Walkers Model Frontier Leaves and Measure the Resident Path"
-status: "Accepted"
+status: "Implementing"
 authors: "BigShark maintainers"
 created: "2026-10-20"
-updated: "2026-10-21"
+updated: "2026-10-22"
 owners: "stage6 evaluation, engine resident, engine benchmarks"
 supersedes: ""
 superseded-by: ""
@@ -784,3 +784,20 @@ Remaining risks: the fixture sits one chip from the containment boundary, so the
   this RFC, owns the exact trained figures. The reviewer did not build the
   fixture library or run the full Engine Build Contract; those remain AC6.
 ```
+
+## Implementation Record
+
+Stage 1 (the signature break, `Phase::Frontier` in the five walks, the four
+public oracle entry points, the `PracticeTable` phase-dispatch extraction, and
+`-Werror=switch`) landed on 2026-10-22. The repository status moves from
+`Accepted` to `Implementing` at this point; it cannot reach `Implemented` from
+repository evidence, because AC4's headline figure requires a corpus that does
+not exist in the tree (`sessions/` is empty and gitignored) and the fixture
+library is this RFC's own deliverable.
+
+Evidence, including two findings the plan did not anticipate, is recorded in
+`docs/plans/0029-implementation.md` under "Stage 1 — Implementation evidence":
+the flag surfaced three live unhandled-switch defects rather than none, and the
+first implementation of the three walks' frontier settlement skipped the
+zero-sum check the AC requires (now fixed and pinned by
+`test_frontier_settlement_zero_sum`).

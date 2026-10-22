@@ -2159,6 +2159,66 @@ best response or an exploitability upper bound. Low gain with low response
 coverage does not certify quality. Historical per-hidden-deal maximum results
 and their incorrectly normalized values are not comparable to this estimator.
 
+### Frontier settlement in the measurement walks (RFC 0029 stage 1)
+
+Every measurement walk that can reach a terminal now handles
+`poker::Phase::Frontier` explicitly, through a **required**
+`const gto::FrontierEvaluator&` parameter rather than a nullable pointer or a
+default argument. A caller whose tree cannot contain a frontier leaf passes
+`gto::NoFrontier`, whose `evaluate()` throws: "this tree has no frontier" is an
+assertion the compiler and the test both see, not a null check a frontier-bearing
+caller can silently slip past. There is no value-returning fallback and no flag
+selecting an implementation.
+
+The settlement contract differs per walk, and the difference is where a wrong
+NashConv would come from:
+
+| Walker | Return | Frontier settlement |
+| --- | --- | --- |
+| `exact_oracle::recurse` | `std::array<double, 10>` | evaluator value per seat, **unweighted** (the caller applies the deal weight) |
+| `exact_oracle::br_group` | `PooledValue{value, mass}` | value and mass **both** scaled by `view.weight * view.reach` |
+| `LearnWalk` / `LegWalk` / `PairWalk` | `std::array<double, 10>` | evaluator value, then a zero-sum check |
+| `HandSimulator` | advances the state | throws `stage6_sim_error` |
+| `PracticeTable` | advances the state | throws `std::runtime_error` |
+
+**Every settlement checks zero-sum**, because every other terminal does: a
+rules fold or showdown produces a zero-sum chip vector, so a frontier leaf that
+does not is a broken evaluator rather than a legal outcome, and continuing would
+bias the figure silently. `br_group` checks it per deal BEFORE applying
+`weight * reach` — the pool weights deals differently, so a check on the pooled
+total would let compensating errors at two deals cancel. `test_frontier_settlement_zero_sum`
+pins all three settlements with a zero-sum control (asserting the evaluator was
+actually reached, so it cannot pass vacuously) and a one-chip bias that must abort.
+
+`br_group` is the row to get right. Its sibling leaves in the same pooled walk
+weight fold by `weight * reach` and showdown by `const double w = weight * reach`;
+scaling a frontier leaf by `reach` alone would mix two weightings inside one
+walk and yield a plausible-looking number with no error attached.
+
+`-Werror=switch` is enabled on `bigshark_stage6_eval` and `bigshark_practice`, so
+a future `Phase` enumerator is a build failure rather than a switch that falls
+through a loop with no arm for it. The flag is only meaningful without a
+`default:` label — with one present `-Wswitch` never fires — so the five walks
+and the two throw-only walkers enumerate every phase and carry no `default`.
+Turning it on found three live gaps in `br_estimator.cpp` (the three walks had no
+`Frontier` arm), not hypothetical ones.
+
+#### The practice table's phase dispatch seam
+
+`PracticeTable::play_hand` cannot be handed a constructed state: it builds its
+own `GameState` from a file-local `make_def` and contains the dispatch loop
+privately. `run_practice_hand(GameState, const PracticeHand&, const HumanAgent&,
+SplitMix64&, PracticeObserver*)` is that loop extracted, returning a
+`PracticeHandResult` with the per-seat utility, the folded flag, the revealed
+board prefix, and the settled terminal. `play_hand` is now a thin wrapper that
+deals, calls it, and does session accounting. The extraction exists so
+`test_stage6_practice` can drive a **constructed** flop-terminal state —
+`PracticeConfig` has no terminal-depth field and `make_def` never sets
+`terminal`, so no dealt hand ever reaches a frontier leaf on its own.
+
+`docs/development/practice-table.md` records the same seam from the operational
+side.
+
 ## Flop and Turn Policy
 
 The postflop evaluator combines:
