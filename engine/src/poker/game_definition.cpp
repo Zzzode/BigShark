@@ -717,6 +717,25 @@ GameState GameState::after_action(std::size_t player, Action action) const {
   return next;
 }
 
+GameState GameState::with_identity(GameState runtime, const GameDef& def) {
+  // Validate, do not bypass: the class's contract is "validate(def) first", and
+  // an identity that fails it would be hashed and certified against by
+  // same_root, cache_key, root_pot, publicSeed, and the certifier.
+  validate(def);
+  // The two views must describe the same hand. The identity's board is the
+  // runtime's board by definition (the runtime is authoritative for the cards);
+  // a mismatch means the caller attached an identity from another node.
+  if (def.board_size != runtime.board_size_)
+    throw std::invalid_argument("identity def board size does not match the runtime state");
+  for (std::uint8_t i = 0; i < def.board_size; ++i)
+    if (def.board[i] != runtime.board_[i])
+      throw std::invalid_argument("identity def board card does not match the runtime state");
+  if (def.player_count != runtime.def_.player_count)
+    throw std::invalid_argument("identity def seat count does not match the runtime state");
+  runtime.def_ = def;
+  return runtime;
+}
+
 GameState GameState::after_card(int card) const {
   require(phase_ == Phase::Deal, "no public card pending");
   std::array<bool, 52> used{};

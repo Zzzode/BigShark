@@ -78,6 +78,45 @@ The client (`clients/node/proto-engine-process-client.ts`) uses a ULEB128
 frame codec and capability-tuple handshake. Every envelope carries
 `protocolVersion = 3`.
 
+### Postflop state reconstruction (RFC 0032)
+
+Below the protocol layer the engine's resident adapter
+(`engine/src/protocol/resident_mapper.cpp`) rebuilds a `poker::GameState` from
+the snapshot by replaying the transition path. That state carries **two views**:
+
+- the **runtime** — the replay cursor's real board of any length, true pending
+  set, correct actor, live street commitments, and net-contributed refunds;
+- the **identity def** (`GameState::def()`) — the normalized root a resident
+  record is matched against: stacks, **net** contributions, folded flags, pot,
+  button, big blind, `preflop = false`, the terminal depth, the board, and, for
+  a mid-street node, `street_committed`, `raise_rights`, and `last_full_raise`.
+
+The preflop branch is deliberately unchanged: it returns the hand-start state,
+which is the identity the preflop blueprint expects. Only the postflop branch
+uses the two views.
+
+The identity def must pass `poker::validate`, because five consumers hash,
+compare, or certify against it (`same_root`, `root_pot`, the certifier,
+`cache_key`, and the resolver's public seed). That is why contributions are net
+rather than gross: `GameState::pot()` sums `net_contributed()`, and `validate`
+reconciles the declared pot against contributions.
+
+Two consequences worth knowing when reading a results log:
+
+- A **refunded** action node is always a street start. `refund_unmatched`
+  returns an excess only to the unique highest contributor, so every other live
+  seat is all in for less and the refunded seat is the only one with chips and
+  the only possible actor. An exhaustive walk over 3..202-chip stacks at 2..6
+  seats found no action node carrying both a refund and a live wager.
+- A **heads-up** hand never carries a refund at an action node: at two seats the
+  all-in flag survives the refund and the board then runs out with no further
+  action, so the refunded hand never reaches another decision point.
+
+Whether a four- or five-card identity then *hits* a resident row is a separate
+question: the packed library format still stores a three-card board, so a
+turn- or river-rooted record cannot yet be published. Stage 4 of the RFC's plan
+measures that against live snapshots.
+
 ## Action-History Reconstruction
 
 For heads-up river solving, the adapter:

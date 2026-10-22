@@ -513,22 +513,54 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
                                        }),
                         out.history.end());
 
-      GameDef flopDef{};
-      flopDef.player_count = seat_count;
-      flopDef.button = *rootButton;
-      flopDef.big_blind = bigBlind;
-      flopDef.preflop = false;
-      flopDef.board_size = 3;
-      flopDef.board = {cursor.board()[0], cursor.board()[1], cursor.board()[2]};
-      flopDef.pot = cursor.pot();
-      flopDef.terminal = rootDef.terminal;
+      // RFC 0032: carry the cursor's RUNTIME and attach a decision-node
+      // identity, instead of rebuilding both from a flop-shaped def.
+      //
+      // The rebuild this replaces copied gross `contributed` against a net
+      // `pot()`, so poker::validate rejected it for a heads-up node facing a
+      // bet and for any refunded hand; it also re-derived `pending` and the
+      // actor from three fields, which cannot express "this seat already acted"
+      // and so answered a checked-to turn for the wrong seat. The cursor already
+      // holds the real board, the true pending set, the correct actor, and the
+      // net ledger; only its `def()` is stale, because `after_action` and
+      // `after_card` never touch `def_`.
+      GameDef nodeDef{};
+      nodeDef.player_count = seat_count;
+      nodeDef.button = *rootButton;
+      nodeDef.big_blind = bigBlind;
+      nodeDef.preflop = false;
+      nodeDef.terminal = rootDef.terminal;
+      nodeDef.board_size = static_cast<std::uint8_t>(cursor.board().size());
+      for (std::size_t i = 0; i < cursor.board().size(); ++i)
+        nodeDef.board[i] = cursor.board()[i];
       for (std::size_t a = 0; a < seat_count; ++a) {
-        flopDef.stacks[a] = cursor.players()[a].stack;
-        flopDef.contributions[a] = cursor.players()[a].contributed;
-        flopDef.folded[a] = cursor.players()[a].folded;
+        const auto& seat = cursor.players()[a];
+        nodeDef.stacks[a] = seat.stack;
+        // NET, so the def reconciles with pot() (net_contributed() is
+        // contributed - refunded) and passes validate for a refunded hand.
+        nodeDef.contributions[a] = seat.net_contributed();
+        nodeDef.folded[a] = seat.folded;
+        // The mid-street fields are what make an unequal-contribution node
+        // valid: validate relaxes the two-seat equality rule only when
+        // mid_street, which it derives from street_committed > 0. Same rule
+        // build_subgame_def_from_node already uses.
+        nodeDef.street_committed[a] = seat.street_committed;
+        nodeDef.raise_rights[a] = seat.raise_rights;
       }
-      GameState flopState(flopDef);
-      out.state = std::move(flopState);
+      nodeDef.pot = cursor.pot();
+      // GameDef's sentinel for "street start" is 0 (the constructor substitutes
+      // big_blind); only a MID-STREET node carries a real increment, where
+      // validate requires >= big_blind. `last_full_raise() > 0` is not the test:
+      // a street-start node also reports big_blind there, so a refunded
+      // street-start node (unequal net contributions, no live wager) would carry
+      // a nonzero increment and `validate` would reject it. The rule is the same
+      // one build_subgame_def_from_node applies to the identical field set.
+      bool mid_street = false;
+      for (std::size_t a = 0; a < seat_count; ++a)
+        if (cursor.players()[a].street_committed > 0)
+          mid_street = true;
+      nodeDef.last_full_raise = mid_street ? cursor.last_full_raise() : 0;
+      out.state = GameState::with_identity(cursor, nodeDef);
     }
     out.hero_cards = heroCards;
     miss = ReplayMiss::None;

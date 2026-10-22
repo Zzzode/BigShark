@@ -170,7 +170,14 @@ ResolveResult lookupResolving(const HostServices& services, const ReconstructedS
 // both the blueprint and the resolver miss.
 bs::Decision operationalFallbackDecision(const pv2::DecisionRequest& request) {
   bs::Decision decision;
-  decision.reason = "operational-fallback";
+  // RFC 0032 stage 3: a postflop snapshot wider than a flop is a turn- or
+  // river-rooted decision. The resident library stores a three-card board, so a
+  // record cannot yet answer it; the fallback is still legal, but the log must
+  // say the root was unserved rather than presenting it as an ordinary
+  // mechanical decision. Preflop and flop keep the original token byte for
+  // byte, so existing counts and replay fixtures are unaffected.
+  decision.reason =
+      request.state().board_size() >= 4 ? "turn_root_unserved" : "operational-fallback";
   bool canCheck = false;
   bool canCall = false;
   for (const pv2::LegalAction& legal : request.state().legal_actions()) {

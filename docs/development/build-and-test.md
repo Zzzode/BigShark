@@ -133,6 +133,25 @@ phase time and resource counters. A private
 `test_stage6_br_estimator --two-seat-crosscheck` entry isolates that same case
 for diagnosis only; CTest's no-argument entry always runs the full suite.
 
+`resident` needs the same kind of allowance and does not have one. It takes
+about 308 seconds in release, and the sanitizer overhead measured across the
+rest of this suite is 18x-62x per case (median roughly 27x). Per-case timing in
+release shows where the cost sits: `resident projection` alone takes about 104
+seconds, the two three-seat belief fixtures about 78 and 75, and the remaining
+twenty cases together well under a minute. Under ASan those first three are the
+cases that exhaust the budget. Two operational
+notes for anyone re-running this: the suite prints per case, but an unwrapped
+`timeout ... > log` buffers it, so a zero-byte log means "buffered", not "stuck"
+— use `stdbuf -oL`; and the suite owns a fixed temp directory
+(`/tmp/bs-resident-test`), so a direct run and a CTest run must never overlap.
+
+The gap is in the test configuration, not in the product: the suite passes in
+release, and the code paths this RFC touched pass under ASan through
+`conformance`, the new `test_wide_board_root_identity` case, and a standalone
+sanitizer probe over the same fixture. Giving `resident` an explicit sanitizer
+allowance is the follow-up, recorded here rather than silently widening the
+default for every test.
+
 Real resident-root Node integration uses RFC 0023's same root-aware startup
 policy in every build, rather than a sanitizer-only test switch. Actual engine
 preflight completes before the original ten-second decision RPC assertions;

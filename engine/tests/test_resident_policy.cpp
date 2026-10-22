@@ -37,6 +37,7 @@
 
 #include "artifacts/artifact_internal.hpp"
 #include "gto/heads_up_solver_debug.hpp"
+#include "resident/public_reach.hpp"
 #include "resident/resident_index.hpp"
 
 using namespace bs::poker;
@@ -2840,6 +2841,111 @@ static bool test_codebook_layouts(const fs::path&) {
 // ---------------------------------------------------------------------------
 // Empty bounds: v1 artifacts are advertised for blueprint lookup only and the
 // public header exposes no bound, guarantee, or certification symbol.
+
+// ---------------------------------------------------------------------------
+// RFC 0032: the board-identity helpers cover the WHOLE board, not a three-card
+// prefix. Three properties, each with the site it pins:
+//
+//  1. `root_joint_mass` (public_reach.cpp:140) blocks every identity board card.
+//     This is the only file-local clamp that is decisive on its own:
+//     `ReachModel::initialize`'s identical clamp is masked in `public_belief`,
+//     because `replay_public_path` calls `observe_card` for each turn/river card
+//     and removes those combos anyway. `root_joint_mass` has no such backstop.
+//  2. `same_root` compares `board_size` before the cards, so a flop-shaped query
+//     is a different root from a five-card record.
+//  3. Two identities differing only in `board[3]` are different roots.
+//
+// The seam `install_synthetic_record_for_test` exists for (2) and (3): `build()`
+// refuses a four- or five-card def at build_v2_game, so a test cannot otherwise
+// place such a record. This is its single caller.
+// ---------------------------------------------------------------------------
+
+// Seat 0's only combos both contain the turn card (id 32 = 9c). Seat 1's combos
+// are disjoint from each other, from seat 0's, and from every other board card,
+// so the ONLY thing that can remove the joint deal is blocking the turn. Both
+// properties were measured: with the widened loop the mass is 0, with the old
+// three-card clamp it is 2, and the same fixture without the turn card yields 2
+// under both. The controls in the test keep that difference from decaying into
+// "the fixture is empty".
+static bs::solver::UnifiedGame synthetic_wide_board_game(std::size_t seats,
+                                                         bool turn_collision = true) {
+  bs::solver::UnifiedGame game;
+  game.def.player_count = seats;
+  game.def.button = 0;
+  game.def.big_blind = 2;
+  game.def.preflop = false;
+  game.def.terminal = bs::poker::TerminalDepth::River;
+  game.def.board_size = 5;
+  const std::array<int, 5> board{48, 44, 36, 32, 28};
+  for (std::size_t i = 0; i < 5; ++i)
+    game.def.board[i] = board[i];
+  // Every seat gets a DIFFERENT combo: giving two seats the same combo would
+  // leave no card-compatible deal and the mass would be zero for the wrong
+  // reason, which is what an earlier version of this fixture did. The combos
+  // are generated rather than tabulated so the fixture cannot index past the
+  // end of a short table at a seat count nobody happened to test.
+  for (std::size_t seat = 0; seat < seats; ++seat) {
+    game.def.stacks[seat] = 100;
+    game.def.contributions[seat] = 10;
+    const std::array<int, 2> cards =
+        (seat == 0 && turn_collision)
+            ? std::array<int, 2>{32, 33}
+            : std::array<int, 2>{static_cast<int>(2 * seat + 2), static_cast<int>(2 * seat + 3)};
+    game.ranges[seat].push_back(WeightedHand{cards, 1.0});
+  }
+  game.def.pot = 10 * seats;
+  return game;
+}
+
+static bool test_wide_board_root_identity() {
+  for (const std::size_t seats : {2, 3}) {
+    const bs::solver::UnifiedGame game = synthetic_wide_board_game(seats);
+
+    // (1) The five-card identity blocks the turn and leaves no joint deal.
+    // Measured against both controls: the same fixture WITHOUT the turn
+    // collision is positive, so the zero is caused by the turn card and not by
+    // the fixture being empty.
+    CHECK(!(bs::resident::root_joint_mass(game) > 0.0));
+    CHECK(bs::resident::root_joint_mass(
+              synthetic_wide_board_game(seats, /*turn_collision=*/false)) > 0.0);
+    // A three-card view of the colliding game is positive -- exactly the value
+    // the old `i < 3` clamp returned for the five-card root.
+    bs::solver::UnifiedGame flop_view = game;
+    flop_view.def.board_size = 3;
+    flop_view.def.board[3] = 0;
+    flop_view.def.board[4] = 0;
+    CHECK(bs::resident::root_joint_mass(flop_view) > 0.0);
+
+    // (2) and (3): root admission through a placed record.
+    bs::resident::ResidentPolicySet set;
+    set.install_synthetic_record_for_test(game, 0, 0);
+    CHECK(set.advertised_roots() == 1);
+
+    const bs::poker::GameState state(game.def);
+    bs::resident::ResidentScratch scratch;
+    // Admitted (not a root-identity miss) but the declared ranges leave no
+    // joint deal, because every combo shares the board's turn card.
+    const auto belief = set.public_belief(state, {}, std::nullopt, scratch);
+    CHECK(belief.reason != bs::resident::MissReason::RootIdentityMismatch);
+    CHECK(belief.reason == bs::resident::MissReason::EmptyJointRange);
+
+    // A flop-shaped query shares the three-card prefix but is a different root.
+    // Unpinned admission reports an unmatched root as `RootNotSupported`; the
+    // `RootIdentityMismatch` token belongs to the pinned-digest path only.
+    const bs::poker::GameState flop_state(flop_view.def);
+    CHECK(set.public_belief(flop_state, {}, std::nullopt, scratch).reason ==
+          bs::resident::MissReason::RootNotSupported);
+
+    // Two identities differing ONLY in board[3] are different roots.
+    bs::poker::GameDef sibling = game.def;
+    sibling.board[3] = 31;  // 9d
+    const bs::poker::GameState sibling_state(sibling);
+    CHECK(set.public_belief(sibling_state, {}, std::nullopt, scratch).reason ==
+          bs::resident::MissReason::RootNotSupported);
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 
 static bool test_blueprint_only() {
@@ -2902,6 +3008,7 @@ int main() {
       {"coverage misses", test_misses},
       {"index and continuity", test_index_and_continuity},
       {"codebook layouts", test_codebook_layouts},
+      {"wide board root identity", [](const fs::path&) { return test_wide_board_root_identity(); }},
       {"blueprint only", [](const fs::path&) { return test_blueprint_only(); }},
   };
 

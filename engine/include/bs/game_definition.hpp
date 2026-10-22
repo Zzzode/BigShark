@@ -223,6 +223,26 @@ class GameState {
   // 3..10 rules follow `MultiwayState`; the seat count selects the profile.
   explicit GameState(const GameDef& def);
 
+  // RFC 0032: attach a decision node's IDENTITY to an existing runtime without
+  // re-deriving that runtime.
+  //
+  // A state carries two views that diverge after the root: `def()` (the
+  // identity that `same_root`, the root pot, the certifier, the resolver cache
+  // key, and the public seed read) and the runtime (`board()`, `players()`,
+  // `actor()`, `pot()`). The plain constructor derives both from one definition, which
+  // cannot express a decision node reached by replay: `after_action` and
+  // `after_card` update the runtime and leave `def_` at the root, and a
+  // street-start re-derivation cannot say "this seat already acted".
+  //
+  // This attaches `def` as the identity of an existing runtime, which is only
+  // correct when `def` describes that runtime's node. It therefore VALIDATES
+  // `def` exactly as the constructor does — the class's documented contract is
+  // "validate first", and a state whose identity fails it would let five
+  // identity consumers hash and certify against an impossible game. It also
+  // requires `def` to agree with the runtime on the public board, or the two
+  // views would describe different hands.
+  static GameState with_identity(GameState runtime, const GameDef& def);
+
   const GameDef& def() const { return def_; }
   std::size_t player_count() const { return def_.player_count; }
   const std::array<GamePlayer, kMaxUnifiedSeats>& players() const { return players_; }

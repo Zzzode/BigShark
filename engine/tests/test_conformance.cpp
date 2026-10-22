@@ -356,25 +356,576 @@ pv2::DecisionRequest turnCheckThroughRequest(pv2::SolverMode mode = pv2::SOLVER_
 // while the bug exists. Stage 2 flips it in the same commit that fixes the
 // adapter, which makes this a ready-made guard for the fixed behaviour rather
 // than a test that has to be deleted.
-void testTurnBaselineIsTruncated() {
+void testTurnStatePreservesBoard() {
   pv2::DecisionRequest req = turnCheckThroughRequest();
   ReplayMiss miss = ReplayMiss::None;
   ReconstructedState recon;
-  check(reconstructHandState(req, recon, miss), "turn baseline: reconstruction succeeds");
-  check(miss == ReplayMiss::None, "turn baseline: no replay miss");
-  check(recon.state.has_value(), "turn baseline: a state was produced");
+  check(reconstructHandState(req, recon, miss), "turn: reconstruction succeeds");
+  check(miss == ReplayMiss::None, "turn: no replay miss");
+  check(recon.state.has_value(), "turn: a state was produced");
   const bs::poker::GameState& state = *recon.state;
-  check(req.state().board_size() == 4, "turn baseline: the wire carries four board cards");
-  check(req.state().street() == pv2::STREET_TURN, "turn baseline: the wire declares the turn");
-  check(state.board().size() == 3, "turn baseline: the rebuilt board is TRUNCATED to three cards");
-  check(state.street() == bs::poker::Street::Flop, "turn baseline: the rebuilt street is the FLOP");
-  check(state.def().board_size == 3, "turn baseline: the rebuilt def is flop-rooted");
-  // The defect's second half: a three-card def cannot match a record rooted one
-  // street later, yet the prefix-board replay would process turn events against
-  // it. Recorded here as the shape, not as a match assertion, because whether a
-  // turn line HITS a resident row today depends on the shipped library.
+  check(req.state().board_size() == 4, "turn: the wire carries four board cards");
+  check(req.state().street() == pv2::STREET_TURN, "turn: the wire declares the turn");
+  // RFC 0032: the rebuilt state is the cursor's runtime, so the board and the
+  // street are the wire's, not a three-card flop clamp.
+  check(state.board().size() == 4, "turn: the rebuilt board carries four cards");
+  check(state.street() == bs::poker::Street::Turn, "turn: the rebuilt street is the TURN");
+  check(state.def().board_size == 4, "turn: the identity def is turn-rooted");
+  for (std::size_t i = 0; i < state.board().size(); ++i) {
+    const pv2::Card& wire = req.state().board(static_cast<int>(i));
+    const int expected =
+        (static_cast<int>(wire.rank()) - 1) * 4 + (static_cast<int>(wire.suit()) - 1);
+    check(state.board()[i] == expected, "turn: identity board card " + std::to_string(i));
+  }
+  // Both views agree on the node's economics, and the actor is the seat the
+  // wire says is to act (the checked-to seat, which the flop clamp answered
+  // with the wrong seat).
+  check(state.def().pot == state.pot(), "turn: def().pot agrees with pot()");
+  check(state.def().contributions[state.actor().value_or(0)] ==
+            state.players()[state.actor().value_or(0)].net_contributed(),
+        "turn: identity contributions are NET");
+  // The two same_root halves must agree on the identity def of a re-derived
+  // state: same street and same cards is the match condition, and a flop-sized
+  // identity is a different root.
+  bs::poker::GameDef flopIdentity = state.def();
+  flopIdentity.board_size = 3;
+  check(!bs::poker::same_game_def(state.def(), flopIdentity),
+        "turn: a flop identity is not the same root as a turn identity");
+  check(state.def().board_size == state.board().size(),
+        "turn: identity board size equals the runtime board size");
 }
 
+// ===========================================================================
+// RFC 0032 AC1 — the decision-node identity matrix
+//
+// Every cell is a REAL hand replayed through engine GameState, projected onto
+// the wire, and pushed through the production adapter. Nothing about the
+// identity is hand-assembled: the board, the ledger, the pot layers and the
+// transition path all come from states the engine produced, so a cell passes
+// only if the production path produces the identity.
+//
+// AC1 describes the fixture set as the cross product of {heads-up, 6-max} x
+// {flop, turn, river} x {street-start, facing a bet} x {refund, no refund},
+// which is 24 cells. Two of the four axes are NOT independent, and the
+// measurement that shows it is worth recording because it decides how many
+// cells can exist at all:
+//
+//  * A refund returns an unmatched excess to the UNIQUE highest contributor and
+//    only down to the next commitment level, so every other live seat is all in
+//    for less. The refunded seat is therefore the only seat with chips and the
+//    only possible actor. A refunded ACTION node is always a street start —
+//    "facing a bet" with a refund cannot exist, because nobody is left to bet
+//    against. Exhaustive walk over 3..202-chip stacks at 2..6 seats: zero
+//    action nodes carry both a refund and a live wager.
+//  * Heads-up never refunds at an action node. At two seats the all-in flag is
+//    preserved across the refund and the board then runs out with no further
+//    action (`engine/src/poker/game_definition.cpp:565-576`), so the refunded
+//    hand never reaches another decision point.
+//
+// The 24 design points therefore reduce to:
+//
+//   hu   x 3 streets x {street-start, facing-bet}               9 cells, all run
+//   6max x 3 streets x {street-start, facing-bet}               6 cells, all run
+//   6max x 3 streets x {street-start + refund}                  3 cells, all run
+//   hu   x 3 streets x {anything + refund}                      3 cells, unreachable
+//   6max x 3 streets x {facing-bet + refund}                    3 cells, unreachable
+//
+// Nine unreachable, fifteen run. The heads-up group is skipped by name in the
+// loop; the facing-bet-with-refund shape has no enum entry at all, which is why
+// it cannot be selected by accident.
+// ===========================================================================
+
+enum class NodeShape { StreetStart, FacesBet, StreetStartRefund };
+
+struct MatrixCell {
+  std::size_t seats;
+  std::size_t board_size;
+  NodeShape shape;
+};
+
+std::string cellLabel(const MatrixCell& cell) {
+  const char* shape = cell.shape == NodeShape::StreetStart ? "street-start"
+                      : cell.shape == NodeShape::FacesBet  ? "facing-bet"
+                                                           : "street-start+refund";
+  return std::string(cell.seats == 2 ? "hu" : "6max") + "/b" + std::to_string(cell.board_size) +
+         "/" + shape;
+}
+
+pv2::Street wireStreet(bs::poker::Street street) {
+  switch (street) {
+    case bs::poker::Street::Preflop:
+      return pv2::STREET_PREFLOP;
+    case bs::poker::Street::Flop:
+      return pv2::STREET_FLOP;
+    case bs::poker::Street::Turn:
+      return pv2::STREET_TURN;
+    case bs::poker::Street::River:
+      return pv2::STREET_RIVER;
+  }
+  return pv2::STREET_UNSPECIFIED;
+}
+
+pv2::ActionType wireAction(bs::poker::ActionType type) {
+  switch (type) {
+    case bs::poker::ActionType::Fold:
+      return pv2::ACTION_TYPE_FOLD;
+    case bs::poker::ActionType::Check:
+      return pv2::ACTION_TYPE_CHECK;
+    case bs::poker::ActionType::Call:
+      return pv2::ACTION_TYPE_CALL;
+    case bs::poker::ActionType::Bet:
+      return pv2::ACTION_TYPE_BET;
+    case bs::poker::ActionType::Raise:
+      return pv2::ACTION_TYPE_RAISE;
+  }
+  return pv2::ACTION_TYPE_UNSPECIFIED;
+}
+
+pv2::Card wireCard(int id) {
+  pv2::Card out;
+  out.set_rank(static_cast<pv2::Rank>(id / 4 + 1));
+  out.set_suit(static_cast<pv2::Suit>(id % 4 + 1));
+  return out;
+}
+
+// One replayed step, in engine coordinates. `incremental` is what a CALL
+// actually paid, which the wire requires and the engine does not store.
+struct Step {
+  bool is_card = false;
+  int card = 0;
+  bs::poker::Street street = bs::poker::Street::Preflop;
+  std::size_t actor = 0;
+  bs::poker::Action action{};
+  bs::poker::Chips incremental = 0;
+  bs::poker::Chips pot_before = 0;
+  bs::poker::Chips stack_after = 0;
+  bool all_in = false;
+};
+
+struct Replay {
+  // No default GameState exists (its constructor validates), so the final state
+  // stays optional until the replay fills it.
+  std::optional<bs::poker::GameState> final_state;
+  std::vector<Step> steps;
+  std::array<bs::poker::Chips, bs::poker::kMaxUnifiedSeats> starting_stacks{};
+  std::array<bs::poker::Chips, bs::poker::kMaxUnifiedSeats> blinds{};
+  std::size_t small_blind_actor = 0;
+  std::size_t big_blind_actor = 0;
+  std::vector<std::uint32_t> rotated;  // engine actor index -> wire seat
+  std::uint32_t hero_wire = 0;
+  std::uint32_t button_wire = 0;
+};
+
+// Replay one cell. Throws std::runtime_error when a cell cannot reach the node
+// it claims, which is a fixture defect rather than a product failure.
+Replay replayCell(const MatrixCell& cell) {
+  using bs::poker::Action;
+  using bs::poker::ActionType;
+  using bs::poker::GameState;
+  using bs::poker::Phase;
+
+  const std::size_t seats = cell.seats;
+  const bool heads_up = seats == 2;
+  const std::uint32_t button_wire = heads_up ? 1 : 2;
+  const bool refunds = cell.shape == NodeShape::StreetStartRefund;
+
+  Replay replay;
+  replay.button_wire = button_wire;
+  for (std::size_t i = 0; i < seats; ++i)
+    replay.rotated.push_back(static_cast<std::uint32_t>(i));
+  // The adapter sorts by seat and rotates the button to actor 0.
+  std::rotate(replay.rotated.begin(),
+              std::find(replay.rotated.begin(), replay.rotated.end(), button_wire),
+              replay.rotated.end());
+  const std::vector<std::uint32_t>& rotated = replay.rotated;
+  std::unordered_map<std::uint32_t, std::size_t> actorOfWire;
+  for (std::size_t i = 0; i < seats; ++i)
+    actorOfWire[rotated[i]] = i;
+
+  bs::poker::GameDef rootDef{};
+  rootDef.player_count = seats;
+  rootDef.button = 0;
+  rootDef.big_blind = 2;
+  rootDef.preflop = true;
+  rootDef.terminal = bs::poker::TerminalDepth::River;
+  replay.small_blind_actor = bs::poker::small_blind_seat(rootDef);
+  replay.big_blind_actor = bs::poker::big_blind_seat(rootDef);
+  for (std::size_t i = 0; i < seats; ++i) {
+    replay.starting_stacks[i] = 200;
+    rootDef.stacks[i] = 200;
+  }
+  if (refunds) {
+    // The big blind is short and acts LAST preflop, so the hero's raise is the
+    // unique high commitment when the short seat calls all in for less.
+    replay.starting_stacks[replay.big_blind_actor] = 6;
+    rootDef.stacks[replay.big_blind_actor] = 6;
+  }
+  replay.blinds[replay.small_blind_actor] = 1;
+  replay.blinds[replay.big_blind_actor] = 2;
+  rootDef.blinds_posted = replay.blinds;
+  for (std::size_t i = 0; i < seats; ++i)
+    rootDef.pot += rootDef.blinds_posted[i];
+
+  // The refund cell needs the hero to be the preflop opener, because only the
+  // unique high contributor receives the excess back. At 6-max that is the seat
+  // after the big blind; at heads-up the button. Every other cell uses a plain
+  // middle seat, so the hero is neither a blind nor the short stack.
+  replay.hero_wire =
+      refunds ? rotated[bs::poker::preflop_first_actor(rootDef)] : (heads_up ? 0 : 3);
+  const std::uint32_t hero_wire = replay.hero_wire;
+  const std::size_t hero_actor = actorOfWire.at(hero_wire);
+
+  GameState state(rootDef);
+
+  const auto act = [&](ActionType type, bs::poker::Chips target) {
+    if (state.phase() != Phase::Action || !state.actor())
+      throw std::runtime_error("matrix fixture: no actor");
+    const std::size_t actor = *state.actor();
+    const Action action{type, target};
+    if (!state.legal().contains(action))
+      throw std::runtime_error("matrix fixture: illegal action");
+    Step step;
+    step.street = state.street();
+    step.actor = actor;
+    step.action = action;
+    step.pot_before = state.pot();
+    const bs::poker::Chips before = state.players()[actor].contributed;
+    state = state.after_action(actor, action);
+    step.incremental = state.players()[actor].contributed - before;
+    step.stack_after = state.players()[actor].stack;
+    step.all_in = state.players()[actor].all_in;
+    replay.steps.push_back(step);
+  };
+  const auto deal = [&](int card) {
+    if (state.phase() != Phase::Deal)
+      throw std::runtime_error("matrix fixture: expected the deal phase");
+    Step step;
+    step.is_card = true;
+    step.card = card;
+    state = state.after_card(card);
+    step.street = state.street();
+    replay.steps.push_back(step);
+  };
+  const auto check_through = [&] {
+    while (state.phase() == Phase::Action)
+      act(ActionType::Check, 0);
+  };
+
+  // ---- Preflop --------------------------------------------------------------
+  if (refunds) {
+    // The hero opens preflop at 6-max (the seat after the big blind). Raise to
+    // 20, fold everyone else, and let the short big blind call all in for 6.
+    // Street close refunds the 14 unmatched chips, leaving the hero as the only
+    // seat with chips -- the shape under test.
+    if (!state.actor() || *state.actor() != hero_actor)
+      throw std::runtime_error("matrix fixture: the hero does not open preflop at 6-max");
+    act(ActionType::Raise, 20);
+    while (state.phase() == Phase::Action) {
+      if (*state.actor() == replay.big_blind_actor)
+        act(ActionType::Call, 0);  // all in for less
+      else
+        act(ActionType::Fold, 0);
+    }
+  } else {
+    // Limp around: everyone completes, the big blind checks its option.
+    while (state.phase() == Phase::Action && state.street() == bs::poker::Street::Preflop)
+      act(state.legal().call ? ActionType::Call : ActionType::Check, 0);
+  }
+  if (state.phase() != Phase::Deal)
+    throw std::runtime_error("matrix fixture: preflop did not close");
+
+  // ---- Deal each street, acting on the target one ---------------------------
+  constexpr int kBoard[5] = {48, 44, 36, 32, 28};  // As Ks 9c 8c 7c
+  const auto on_target_street = [&] {
+    return state.street() == (cell.board_size == 3   ? bs::poker::Street::Flop
+                              : cell.board_size == 4 ? bs::poker::Street::Turn
+                                                     : bs::poker::Street::River);
+  };
+
+  // Deal the flop, then walk to the target street one completed street at a
+  // time. Streets before the target are check-throughs; the target street stops
+  // at the hero's decision node.
+  deal(kBoard[0]);
+  deal(kBoard[1]);
+  deal(kBoard[2]);
+  for (;;) {
+    if (state.phase() != Phase::Action)
+      throw std::runtime_error("matrix fixture: a completed board has no action");
+    if (on_target_street())
+      break;
+    check_through();
+    if (state.phase() != Phase::Deal)
+      throw std::runtime_error("matrix fixture: the street did not close");
+    deal(kBoard[state.board().size()]);
+  }
+
+  // ---- The requested node ---------------------------------------------------
+  if (refunds) {
+    // The hero is the only seat with chips, so it is the only actor and the node
+    // is a street start carrying a positive refunded ledger.
+    if (!state.actor() || *state.actor() != hero_actor)
+      throw std::runtime_error("matrix fixture: the refunded node is not the hero's");
+    if (state.players()[hero_actor].refunded == 0)
+      throw std::runtime_error("matrix fixture: expected a positive refund");
+  } else if (cell.shape == NodeShape::StreetStart) {
+    while (state.phase() == Phase::Action && state.actor() && *state.actor() != hero_actor)
+      act(ActionType::Check, 0);
+  } else {
+    // The hero opens the street, so it must CHECK first: a wager has to come
+    // from another seat, and only then can the action return to the hero. The
+    // checker that opens the round is the hero in both seat counts, which is
+    // exactly why an earlier version of this fixture silently produced
+    // street-start nodes for every facing-bet cell.
+    if (state.actor() && *state.actor() == hero_actor)
+      act(ActionType::Check, 0);
+    while (state.phase() == Phase::Action && state.actor() && *state.actor() != hero_actor) {
+      if ((*state.actor() + 1) % seats == hero_actor) {
+        act(ActionType::Bet, 4);
+        break;
+      }
+      act(ActionType::Check, 0);
+    }
+  }
+
+  if (!state.actor() || *state.actor() != hero_actor)
+    throw std::runtime_error("matrix fixture: hero is not the decision actor");
+  if (state.phase() != Phase::Action)
+    throw std::runtime_error("matrix fixture: decision node is not actionable");
+  if (!on_target_street())
+    throw std::runtime_error("matrix fixture: target street not reached");
+
+  replay.final_state = state;
+  return replay;
+}
+
+// Project a replayed cell onto the wire snapshot the adapter consumes.
+pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
+  const Replay replay = replayCell(cell);
+  if (!replay.final_state.has_value())
+    throw std::runtime_error("matrix fixture: replay produced no state");
+  const bs::poker::GameState& state = *replay.final_state;
+  const std::size_t seats = cell.seats;
+  const std::uint32_t button_wire = replay.button_wire;
+  const std::uint32_t hero_wire = replay.hero_wire;
+
+  pv2::DecisionRequest request;
+  pv2::HandState* wire = request.mutable_state();
+  setGameDefinition(wire, static_cast<std::uint32_t>(seats), 1, 2,
+                    static_cast<std::uint32_t>(seats));
+  wire->set_hand_id("matrix-" + cellLabel(cell));
+  wire->set_decision_index(static_cast<std::uint64_t>(replay.steps.size()));
+  wire->set_street(wireStreet(state.street()));
+  wire->set_button_seat(button_wire);
+  wire->set_hero_seat(hero_wire);
+  wire->set_to_call(state.legal().call_amount);
+
+  for (std::size_t i = 0; i < seats; ++i) {
+    const bs::poker::GamePlayer& seat = state.players()[i];
+    pv2::PlayerState* player = wire->add_players();
+    player->set_seat(replay.rotated[i]);
+    player->set_starting_stack(replay.starting_stacks[i]);
+    player->set_stack(seat.stack);
+    player->set_street_committed(seat.street_committed);
+    player->set_gross_contributed(seat.contributed);
+    player->set_refunded(seat.refunded);
+    player->set_status(seat.folded   ? pv2::PLAYER_STATUS_FOLDED
+                       : seat.all_in ? pv2::PLAYER_STATUS_ALL_IN
+                                     : pv2::PLAYER_STATUS_ACTIVE);
+  }
+  // 2h 2d is clear of every board card used above.
+  *wire->add_hero_hole_cards() = card(pv2::RANK_TWO, pv2::SUIT_HEARTS);
+  *wire->add_hero_hole_cards() = card(pv2::RANK_TWO, pv2::SUIT_DIAMONDS);
+  for (int id : state.board())
+    *wire->add_board() = wireCard(id);
+
+  // Pot layers: one per distinct net-contribution level, ascending.
+  pv2::PotState* pot = wire->mutable_pot();
+  pot->set_phase(pv2::POT_PHASE_ACTION);
+  {
+    std::vector<bs::poker::Chips> levels;
+    for (std::size_t i = 0; i < seats; ++i)
+      levels.push_back(state.players()[i].net_contributed());
+    std::sort(levels.begin(), levels.end());
+    levels.erase(std::unique(levels.begin(), levels.end()), levels.end());
+    bs::poker::Chips previous = 0;
+    for (bs::poker::Chips level : levels) {
+      if (level == 0)
+        continue;
+      bs::poker::Chips amount = 0;
+      std::vector<std::uint32_t> eligible;
+      for (std::size_t i = 0; i < seats; ++i) {
+        if (state.players()[i].net_contributed() < level)
+          continue;
+        amount += level - previous;
+        eligible.push_back(replay.rotated[i]);
+      }
+      if (amount > 0) {
+        pv2::PotLayer* layer = pot->add_layers();
+        layer->set_contribution_level(level);
+        layer->set_amount(amount);
+        for (std::uint32_t seat : eligible)
+          layer->add_eligible_seats(seat);
+        layer->set_status(pv2::LAYER_STATUS_PENDING);
+      }
+      previous = level;
+    }
+    pot->set_pot_total(state.pot());
+  }
+
+  for (std::size_t i = 0; i < seats; ++i) {
+    if (replay.blinds[i] == 0)
+      continue;
+    pv2::ForcedContribution* forced = wire->add_forced_contributions();
+    forced->set_seat(replay.rotated[i]);
+    forced->set_type(i == replay.small_blind_actor ? pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND
+                                                   : pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND);
+    forced->set_amount(replay.blinds[i]);
+  }
+
+  // Transition path: the replay's own steps, with the pot and stack each event
+  // actually saw.
+  std::uint64_t sequence = 1;
+  for (const Step& step : replay.steps) {
+    pv2::TransitionEvent* event = wire->add_transition_path();
+    event->set_sequence(sequence);
+    if (step.is_card) {
+      pv2::BoardDeal* deal = event->mutable_board_deal();
+      deal->set_street(wireStreet(step.street));
+      *deal->add_cards() = wireCard(step.card);
+      ++sequence;
+      continue;
+    }
+    pv2::ActionEvent* action = event->mutable_action();
+    action->set_sequence(sequence);
+    action->set_street(wireStreet(step.street));
+    action->set_actor_seat(replay.rotated[step.actor]);
+    action->set_action(wireAction(step.action.type));
+    action->set_pot_before(step.pot_before);
+    action->set_stack_after(step.stack_after);
+    action->set_all_in(step.all_in);
+    if (step.action.type == bs::poker::ActionType::Bet ||
+        step.action.type == bs::poker::ActionType::Raise) {
+      action->set_target_total(step.action.target_total);
+    } else if (step.action.type == bs::poker::ActionType::Call) {
+      action->set_incremental_amount(step.incremental);
+    }
+    ++sequence;
+  }
+
+  const bs::poker::LegalActions& legal = state.legal();
+  if (legal.fold)
+    addLegal(wire, pv2::ACTION_TYPE_FOLD);
+  if (legal.check)
+    addLegal(wire, pv2::ACTION_TYPE_CHECK);
+  if (legal.call)
+    addLegal(wire, pv2::ACTION_TYPE_CALL);
+  if (legal.aggressive) {
+    addLegal(wire,
+             legal.aggressive->type == bs::poker::ActionType::Bet ? pv2::ACTION_TYPE_BET
+                                                                  : pv2::ACTION_TYPE_RAISE,
+             legal.aggressive->minimum, legal.aggressive->maximum);
+  }
+
+  setProvenance(wire, static_cast<std::uint32_t>(wire->transition_path_size()));
+  setOptions(&request, pv2::SOLVER_MODE_HEURISTIC);
+  return request;
+}
+
+void testDecisionNodeIdentityMatrix() {
+  std::size_t cells = 0;
+  for (const std::size_t seats : {2, 6}) {
+    for (const std::size_t board_size : {3, 4, 5}) {
+      for (const NodeShape shape :
+           {NodeShape::StreetStart, NodeShape::FacesBet, NodeShape::StreetStartRefund}) {
+        // Heads-up never reaches a refunded decision node; see the header.
+        // SKIP (unreachable, not untested): hu/{flop,turn,river}/refund.
+        if (seats == 2 && shape == NodeShape::StreetStartRefund)
+          continue;
+        const MatrixCell cell{seats, board_size, shape};
+        const std::string label = cellLabel(cell);
+        pv2::DecisionRequest request;
+        try {
+          request = matrixRequest(cell);
+        } catch (const std::exception& error) {
+          check(false, label + ": fixture replay failed: " + error.what());
+          continue;
+        }
+        ++cells;
+        // The cell must be the shape it claims. Without this, a fixture that
+        // failed to place a wager would pass as a street start and every
+        // "facing a bet" assertion above would be vacuously true.
+        check(request.state().to_call() == (shape == NodeShape::FacesBet ? 4ULL : 0ULL),
+              label + ": to_call matches the requested shape");
+        ReplayMiss miss = ReplayMiss::None;
+        ReconstructedState recon;
+        check(reconstructHandState(request, recon, miss), label + ": adapter reconstructs");
+        check(miss == ReplayMiss::None, label + ": no replay miss");
+        if (!recon.state.has_value())
+          continue;
+        const bs::poker::GameState& state = *recon.state;
+        const bs::poker::GameDef& def = state.def();
+
+        // The identity contract from AC1's table, for every cell.
+        bool validated = true;
+        try {
+          bs::poker::validate(def);
+        } catch (const std::exception&) {
+          validated = false;
+        }
+        check(validated, label + ": identity def validates");
+        check(def.board_size == state.board().size(), label + ": identity board size");
+        for (std::size_t i = 0; i < state.board().size(); ++i)
+          check(def.board[i] == state.board()[i],
+                label + ": identity board card " + std::to_string(i));
+        check(!def.preflop, label + ": identity is postflop");
+        check(def.pot == state.pot(), label + ": def().pot == pot()");
+        check(state.actor().has_value() && *state.actor() == recon.hero_actor,
+              label + ": actor is the hero");
+        check(state.street() == (cell.board_size == 3   ? bs::poker::Street::Flop
+                                 : cell.board_size == 4 ? bs::poker::Street::Turn
+                                                        : bs::poker::Street::River),
+              label + ": street matches the board");
+        for (std::size_t s = 0; s < def.player_count; ++s)
+          check(def.contributions[s] == state.players()[s].net_contributed(),
+                label + ": identity contributions are NET");
+        if (shape == NodeShape::StreetStartRefund) {
+          // The refund must be visible in the RUNTIME ledger the adapter
+          // replayed, not merely in the wire snapshot the fixture wrote: this
+          // is what makes def().contributions a net figure rather than a copy.
+          bool any_refund = false;
+          for (std::size_t s = 0; s < def.player_count; ++s)
+            any_refund = any_refund || state.players()[s].refunded > 0;
+          check(any_refund, label + ": the runtime ledger carries the refund");
+          bs::poker::Chips gross = 0;
+          bs::poker::Chips net = 0;
+          for (std::size_t s = 0; s < def.player_count; ++s) {
+            gross += state.players()[s].contributed;
+            net += state.players()[s].net_contributed();
+          }
+          check(gross > net, label + ": gross exceeds net at a refunded node");
+        }
+
+        // The two same_root properties, on the street-start column only: a
+        // facing-a-bet def genuinely differs in contributions and pot, so it is
+        // not expected to match a street-start record. The flop comparison only
+        // means something when the identity is wider than a flop.
+        if (shape != NodeShape::FacesBet && cell.board_size > 3) {
+          bs::poker::GameDef flop = def;
+          flop.board_size = 3;
+          for (std::size_t i = 3; i < 5; ++i)
+            flop.board[i] = 0;
+          check(!bs::poker::same_game_def(def, flop),
+                label + ": a flop identity is a different root");
+          bs::poker::GameDef sibling = def;
+          sibling.board[3] = (def.board[3] + 1) % 52;
+          check(!bs::poker::same_game_def(def, sibling),
+                label + ": identities differing only in board[3] are different roots");
+        }
+      }
+    }
+  }
+  check(cells == 15, "matrix: 15 constructible cells ran");
+}
 // ===========================================================================
 // Vector 2 — capped call that triggers a refund on street closure
 // 6-max NLHE cash, blinds 1/2, unequal stacks. Button seat 0.
@@ -712,6 +1263,50 @@ void testSubgameRowWithoutArtifact() {
   check(meta.reason_code() == "resolving", "subgame: reason code is resolving");
 }
 
+// RFC 0032 stage 3: both lookup paths miss, so the labeled operational fallback
+// serves. The token names the root the resident library cannot answer, and it
+// must be reported for a turn/river snapshot and NOT for a flop one.
+class MissHostServices final : public bs::HostServices {
+ public:
+  bool blueprintAdvertised() const noexcept override { return true; }
+  bs::BlueprintResult blueprintHeroDecision(const bs::poker::GameState&,
+                                            std::span<const bs::poker::PublicAction>,
+                                            const std::array<int, 2>&,
+                                            std::string_view) const noexcept override {
+    bs::BlueprintResult result;
+    result.hit = false;
+    result.miss = bs::BlueprintMiss::RootNotSupported;
+    return result;
+  }
+  bool resolvingAdvertised() const noexcept override { return true; }
+  bs::ResolveResult resolvingDecision(const bs::poker::GameState&,
+                                      std::span<const bs::poker::PublicAction>,
+                                      const std::array<int, 2>&, std::string_view,
+                                      std::uint32_t) const noexcept override {
+    bs::ResolveResult result;
+    result.outcome = bs::ResolveOutcome::Unsupported;
+    result.miss = bs::BlueprintMiss::RootNotSupported;
+    return result;
+  }
+};
+
+void testOperationalFallbackLabelsUnservedRoot() {
+  MissHostServices host;
+  const auto reasonAt = [&](pv2::DecisionRequest req) {
+    const pv2::Envelope response = respondWith(envelopeFor("fallback", std::move(req)), host);
+    const pv2::DecisionResponse& dr = response.decision_response();
+    if (!dr.has_expanded_strategy())
+      return std::string("<no strategy>");
+    return dr.expanded_strategy().solver().diagnostic_reason();
+  };
+  // A flop snapshot keeps the original token, so existing counts are unchanged.
+  check(reasonAt(vector1Request(pv2::SOLVER_MODE_AUTOMATIC)) == "operational-fallback",
+        "fallback: a flop root keeps the original token");
+  // A four-card turn snapshot names the unserved root instead.
+  check(reasonAt(turnCheckThroughRequest(pv2::SOLVER_MODE_AUTOMATIC)) == "turn_root_unserved",
+        "fallback: a turn root is labelled turn_root_unserved");
+}
+
 void testResidentRowWithMalformedDigest() {
   ResolvingHostServices host{"not-a-sha256"};
   pv2::DecisionRequest req = vector1Request(pv2::SOLVER_MODE_AUTOMATIC);
@@ -937,7 +1532,9 @@ int main() {
   testVector2Replay();
   testVector3();
   testSubgameRowWithoutArtifact();
-  testTurnBaselineIsTruncated();
+  testTurnStatePreservesBoard();
+  testDecisionNodeIdentityMatrix();
+  testOperationalFallbackLabelsUnservedRoot();
   testResidentRowWithMalformedDigest();
   testUnsupportedProtocol();
   testMissingRequestId();

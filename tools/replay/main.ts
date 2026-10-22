@@ -25,7 +25,7 @@ console.log(`Replay source: ${source} | Snapshots: ${snapshots.length} | Malform
 if (source === 'synthetic') console.log('Historical coverage: NONE (fixed synthetic engineering corpus only)');
 else if (snapshots.length === 0) console.log('Historical coverage: NONE (no usable historical snapshots)');
 
-let n = 0, fallback = 0, illegal = 0, totalMs = 0, maxMs = 0;
+let n = 0, fallback = 0, illegal = 0, totalMs = 0, maxMs = 0, turnUnserved = 0;
 const mix: Partial<Record<Action, number>> = {};
 const samples: string[] = [];
 try {
@@ -37,6 +37,9 @@ try {
     const ms = Number(process.hrtime.bigint() - t0) / 1e6;
     totalMs += ms; maxMs = Math.max(maxMs, ms);
     if (decision.reason?.startsWith('safe-fallback')) fallback++;
+    // RFC 0032 stage 3: the adapter prefixes engine reasons with `cpp:`, so the
+    // counter matches on suffix rather than on the bare token.
+    if (decision.reason?.endsWith('turn_root_unserved')) turnUnserved++;
     const problem = decisionProblem(room, decision);
     if (problem) {
       illegal++;
@@ -48,7 +51,7 @@ try {
     if (samples.length < 10 && (decision.action === 'raise' || decision.action === 'bet')) samples.push(`${room.street} ${room.solver?.heroPosition ?? ''} ${decision.action} ${decision.amount}`);
   }
 } finally { closeEngine(); }
-console.log(`Decisions: ${n} | Illegal: ${illegal} | JS fallbacks: ${fallback} | Average ${(totalMs / Math.max(1, snapshots.length)).toFixed(2)}ms | Maximum ${maxMs.toFixed(1)}ms`);
+console.log(`Decisions: ${n} | Illegal: ${illegal} | JS fallbacks: ${fallback} | Turn/River roots unserved: ${turnUnserved} | Average ${(totalMs / Math.max(1, snapshots.length)).toFixed(2)}ms | Maximum ${maxMs.toFixed(1)}ms`);
 console.log('Action mix:', JSON.stringify(mix));
 console.log('Bet and raise samples:'); samples.forEach(s => console.log('  ', s));
 process.exit(replayExitCode(illegal, fallback));

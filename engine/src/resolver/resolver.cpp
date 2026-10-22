@@ -55,7 +55,11 @@ std::string cache_key(const ReachModel& model, const BlueprintSource& blueprint,
   out << kAlgorithmRevision << '|' << kUtilityIdentifier << '|' << blueprint.artifact_digest()
       << '|';
   const auto& def = model.node.def();
-  for (std::size_t i = 0; i < 3; ++i)
+  // RFC 0032: the identity board is the whole street, not a fixed flop. Three
+  // cards would let a turn and a river root share a cache entry whenever their
+  // flop agreed, and the cached candidate would then be served to a different
+  // public state.
+  for (std::size_t i = 0; i < def.board_size; ++i)
     out << def.board[i] << ',';
   out << '|';
   for (std::size_t p = 0; p < def.player_count; ++p)

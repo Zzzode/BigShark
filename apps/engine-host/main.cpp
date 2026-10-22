@@ -401,7 +401,9 @@ class ResidentHostServices final : public bs::HostServices {
     const std::string digest(source.artifact_digest());
     mix(digest.data(), digest.size());
     const auto& def = state.def();
-    mix(def.board.data(), 3 * sizeof(int));
+    // RFC 0032: mix the whole identity board. A fixed three cards would give a
+    // turn and a river root that share a flop the same resolver seed.
+    mix(def.board.data(), def.board_size * sizeof(int));
     mix(def.stacks.data(), def.player_count * sizeof(bs::poker::Chips));
     mix(def.contributions.data(), def.player_count * sizeof(bs::poker::Chips));
     mix(&def.pot, sizeof(def.pot));

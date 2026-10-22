@@ -8,6 +8,7 @@
 #include <bs/range.hpp>
 #include <bs/resident_policy.hpp>
 #include <bs/unified_game.hpp>
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -67,14 +68,27 @@ bool same_root(const GameDef& a, const GameDef& b,
   } else {
     if (a.board_size < 3 || b.board_size < 3)
       return false;
+    // RFC 0032: two postflop roots agree only if they are the SAME street and
+    // carry the same cards. Comparing a fixed three cards would let a turn or
+    // river query match a flop record (and vice versa) whenever the shared
+    // prefix happened to agree; comparing only the prefix would additionally
+    // let two distinct turn roots collide. Both halves are load-bearing: card
+    // id 0 is a real card, so a widened loop alone would match a flop record
+    // against a turn query whose turn card is card 0.
+    if (a.board_size != b.board_size)
+      return false;
     if (canonical_b) {
       // W4c-ii: the query's flop was canonicalized; compare against the class
-      // representative stored in the record.
+      // representative stored in the record. Only a flop query is
+      // canonicalized (canonical_query_board returns nullptr otherwise), and a
+      // suit relabel is only meaningful for a full three-card flop.
+      if (a.board_size != 3)
+        return false;
       for (std::size_t i = 0; i < 3; ++i)
         if (a.board[i] != (*canonical_b)[i])
           return false;
     } else {
-      for (std::size_t i = 0; i < 3; ++i)
+      for (std::size_t i = 0; i < a.board_size; ++i)
         if (a.board[i] != b.board[i])
           return false;
     }
@@ -316,6 +330,23 @@ struct ResidentPolicySet::LazyCache {
   std::list<std::string> lru;
   std::size_t capacity = 0;
 };
+
+void ResidentPolicySet::install_synthetic_record_for_test(solver::UnifiedGame game,
+                                                          std::size_t row_count,
+                                                          std::size_t probability_count) {
+  Record record;
+  record.result.status = RootStatus::Advertised;
+  record.result.information_sets = row_count;
+  record.result.probability_count = probability_count;
+  record.result.resident_bytes = 0;
+  record.game = std::move(game);
+  // No card abstraction: the synthetic record is an exact-board root, so the
+  // canonical flop equals the query flop and the relabel is the identity. A
+  // three-card artifact class would be meaningless over a longer board.
+  record.card_abstraction = std::nullopt;
+  record.advertised = true;
+  records_.push_back(std::move(record));
+}
 
 ResidentPolicySet::ResidentPolicySet() = default;
 ResidentPolicySet::~ResidentPolicySet() = default;
@@ -753,7 +784,10 @@ struct ResolvedRoot {
 const std::array<int, 3>* canonical_query_board(const ResidentPolicySet::Record& record,
                                                 const GameDef& query_def,
                                                 std::array<int, 3>& storage) {
-  if (!record.card_abstraction || query_def.board_size < 3)
+  // RFC 0032: the flop suit abstraction was reasoned about, and is persisted,
+  // for exactly three cards. A turn or river query is compared exactly, so a
+  // longer board must not reach the canonicalizer.
+  if (!record.card_abstraction || query_def.board_size != 3)
     return nullptr;
   storage =
       abstraction::canonicalize({query_def.board[0], query_def.board[1], query_def.board[2]}).board;
@@ -864,12 +898,18 @@ MissReason read_action_probabilities(const ResidentPolicySet& set,
   // class-policy rows. For v2 the relabel is the identity and the canonical
   // flop equals the query flop, so the board is byte-identical to the old
   // state.board() span.
+  // RFC 0032: build exactly prefix_board_size cards. ASan cannot catch a short
+  // span here — canonical_board_buf is a zero-initialized std::array and
+  // operator[] is only asserted under _GLIBCXX_ASSERTIONS, which no preset
+  // sets — so the length is asserted against the intended event street.
   std::size_t canon_size = 0;
   for (std::size_t i = 0; i < 3 && i < prefix_board_size; ++i)
     scratch.canonical_board_buf[canon_size++] = scratch.canonical_flop[i];
   for (std::size_t i = 3; i < prefix_board_size; ++i)
     scratch.canonical_board_buf[canon_size++] =
         relabel_card(state.board()[i], scratch.canonical_relabel);
+  assert(prefix_board_size <= scratch.canonical_board_buf.size());
+  assert(canon_size == prefix_board_size);
   const std::span<const int> prefix_board(scratch.canonical_board_buf.data(), canon_size);
   const std::size_t actor = event.seat;
 
@@ -1090,6 +1130,10 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
     canon_board_buf[canon_board_size++] = scratch.canonical_flop[i];
   for (std::size_t i = 3; i < state.board().size(); ++i)
     canon_board_buf[canon_board_size++] = relabel_card(state.board()[i], scratch.canonical_relabel);
+  // RFC 0032: the assembled board must cover the runtime board exactly. A
+  // short span would key the hero row against a board missing its turn or
+  // river card, and the zero-filled tail makes that invisible to ASan.
+  assert(canon_board_size == state.board().size());
   const std::span<const int> canon_board(canon_board_buf.data(), canon_board_size);
   if (!fill_key(scratch, *state.actor(), canon_hero, canon_board, history))
     return miss_answer(MissReason::OffTree);

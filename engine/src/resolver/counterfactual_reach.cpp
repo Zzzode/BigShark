@@ -27,9 +27,13 @@ bool same_root(const GameDef& a, const GameDef& b) {
   if (a.player_count != b.player_count || a.pot != b.pot || a.big_blind != b.big_blind ||
       a.button != b.button)
     return false;
-  if (a.board_size < 3 || b.board_size < 3)
+  // RFC 0032: same street and same cards. The street check is not redundant
+  // with the card loop — card id 0 is a real card, so two distinct turn roots
+  // differ only in the fourth card and a flop/turn pair with a legible prefix
+  // must not match.
+  if (a.board_size < 3 || a.board_size != b.board_size)
     return false;
-  for (std::size_t i = 0; i < 3; ++i)
+  for (std::size_t i = 0; i < a.board_size; ++i)
     if (a.board[i] != b.board[i])
       return false;
   for (std::size_t p = 0; p < a.player_count; ++p)

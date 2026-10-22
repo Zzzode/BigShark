@@ -137,7 +137,10 @@ double root_joint_mass(const solver::UnifiedGame& game) {
     return game.ranges[a].size() < game.ranges[b].size();
   });
   std::array<bool, 52> board_blocked{};
-  for (std::size_t i = 0; i < game.def.board_size && i < 3; ++i)
+  // RFC 0032: block every identity board card. The former `&& i < 3` clamp
+  // silently treated a turn or river root as a flop and left its last cards
+  // unblocked, so joint-deal mass could use a card already on the board.
+  for (std::size_t i = 0; i < game.def.board_size; ++i)
     board_blocked[static_cast<std::size_t>(game.def.board[i])] = true;
   std::array<bool, 52> used{};
   return joint_mass_recurse(game, board_blocked, order, 0, used, 1.0);
@@ -159,9 +162,11 @@ bool ReachModel::initialize(const solver::UnifiedGame& game) {
       scratch_.raw[player][combo] = hand.weight;
     }
   }
-  // Root flop filtering. Declared artifact ranges already exclude board
-  // cards, but the belief never trusts that implicitly.
-  for (std::size_t i = 0; i < game.def.board_size && i < 3; ++i)
+  // Root board filtering. Declared artifact ranges already exclude board
+  // cards, but the belief never trusts that implicitly. RFC 0032: filter the
+  // whole identity board; the former `&& i < 3` clamp left a turn or river
+  // root's last cards live in every seat's raw reach.
+  for (std::size_t i = 0; i < game.def.board_size; ++i)
     if (!observe_card(game.def.board[i]))
       return false;
   return renormalize();

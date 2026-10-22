@@ -142,7 +142,61 @@ matches a fresh grep.
 
 ## Stage 2 — Board preservation and the two-view state
 
-Status: not started.
+Status: implemented (single commit). The measurement that decided the fixture's
+shape is recorded here because it changes what the stage can claim.
+
+### What the measurement found
+
+AC1 describes the fixture set as the cross product of {heads-up, 6-max} x
+{flop, turn, river} x {street-start, facing a bet} x {refund, no refund}: 24
+cells. Two axes are not independent, and an exhaustive walk over 3..202-chip
+stacks at 2..6 seats (every reachable postflop action node, four stack depths)
+settled why:
+
+- **A refunded action node is always a street start.** `refund_unmatched`
+  returns an excess only to the unique highest contributor and only down to the
+  next commitment level, so every other live seat is all in for less. The
+  refunded seat is then the only seat with chips and the only possible actor.
+  Zero action nodes in the walk carried both a refund and a live wager, and the
+  refunded seat was never a non-actor.
+- **Heads-up never refunds at a decision node.** At two seats the all-in flag
+  survives the refund and the board runs out with no further action
+  (`game_definition.cpp:565-576`), so the refunded hand never reaches another
+  decision point. Every heads-up refunded node in the walk was terminal or a
+  deal.
+
+Fifteen cells are therefore constructible (heads-up {street-start, facing-bet}
+x 3 streets, plus 6-max {street-start, facing-bet, street-start+refund} x 3),
+and all fifteen run. Nine design points are unreachable: the three heads-up
+refund cells are skipped by name in the loop, and the six facing-bet-with-refund
+cells have no enum entry at all, so they cannot be selected by accident.
+
+### A defect the matrix caught in this stage's own seam
+
+The first version of the identity def copied `last_full_raise` whenever it was
+nonzero. `GameState::last_full_raise()` reports `big_blind` at a street start,
+and `GameDef`'s sentinel for "street start" is `0`, so a refunded street-start
+node (unequal net contributions, no live wager) carried an increment and
+`validate` rejected it with "a street-start root must not carry a last full
+raise". The rule is the one `build_subgame_def_from_node` already applies
+(`subgame_resolver.cpp:359-369`): carry the increment only when some
+`street_committed` is nonzero. The matrix's refund column exists for exactly
+this class of mistake.
+
+### Mutation checks
+
+The matrix was verified to fail against the defects it exists to catch: a
+gross-contribution identity produces six cell failures, and a three-card board
+clamp fails the turn/river cells along with the pre-existing board vectors. The
+`to_call == 4` assertion on facing-bet cells was added after an earlier fixture
+version silently produced street-start nodes for them, which would have made
+that whole column vacuously true.
+
+A sanitizer probe found a bounds error in the fixture helper itself: it indexed
+a three-entry per-seat card table, which is in range only at the seat counts the
+test happened to use. The helper now generates each seat's combo from the seat
+index, so the fixture is correct at every seat count rather than at the ones
+that were exercised.
 
 This is the largest stage and it must land as **one commit**. Landing the runtime
 without the identity def disables the resident path at every street.
@@ -188,12 +242,26 @@ without the identity def disables the resident path at every street.
 
 ### Gates
 
-The 24-cell fixture matrix from AC1 — {heads-up, 6-max} × {flop, turn, river} ×
-{street-start, facing a bet} × {refund, no refund} — with every cell validating,
-constructing, satisfying `out.state->actor() == out.hero_actor`, agreeing on the
-board, and satisfying `def().pot == pot()`; the two `same_root` properties on the
-street-start column only. Plus: no resident-served **flop** response changes
-(AC5), and `platforms/river-club/tests/w1-resident-wiring.test.ts:485-515` passes
+`testDecisionNodeIdentityMatrix` drives all fifteen constructible cells. Every
+cell asserts `validate(def())`, `def().board_size == board().size()`, board
+equality element for element, `!def().preflop`, `def().pot == pot()`,
+`actor() == hero_actor`, the expected street, net contributions, the runtime
+refund ledger on refund cells, and (facing-bet cells) `to_call == 4`, which is
+what stops a fixture that failed to place a wager from passing as a street
+start. The two `same_root` properties run on the street-start column only, and
+only for boards wider than a flop.
+
+The file-local sites AC1 lists are pinned by `test_wide_board_root_identity` in
+`test_resident_policy`, through the seam: a five-card root whose turn card
+appears in a declared range must have zero joint mass, while the same fixture
+without that collision is positive and a flop view of it is positive. That
+distinguishes a whole-board filter from the old three-card clamp, which was
+measured to return a positive mass for the same fixture. `ReachModel`'s
+identical clamp is masked, because `replay_public_path`'s `observe_card` removes
+those combos anyway; `root_joint_mass` has no such backstop.
+
+Plus: no resident-served **flop** response changes (AC5), and
+`platforms/river-club/tests/w1-resident-wiring.test.ts:485-515` passes
 unchanged.
 
 ### Rollback
@@ -203,7 +271,26 @@ direction.
 
 ## Stage 3 — Labelling
 
-Status: not started.
+Status: implemented. `operationalFallbackDecision` labels a snapshot with four or
+more board cards `turn_root_unserved`; a preflop or flop snapshot keeps
+`operational-fallback` byte for byte, so existing counts and replay fixtures are
+unaffected. `mapOperationalFallbackResponse` forwards `decision.reason` instead
+of a hardcoded literal, and `tools/replay/main.ts` counts the token on **suffix**
+because the adapter prefixes it with `cpp:`.
+
+The label was mutation-checked: restoring the hardcoded literal fails the turn
+cell and leaves the flop cell green, which is the property the test exists for.
+
+**The counter is zero on every available corpus, and that is correct but not
+evidence of the label.** The synthetic replay fixtures cannot build a decision
+request at all: `toDecisionRequest` rejects all six with `HISTORY_INCOMPLETE`
+(missing chip amounts in the supplied preflop history), so `decide` returns
+`safe-fallback:*` from the adapter's own outage path before any engine call is
+made. The engine's `turn_root_unserved` label is therefore proven by the native
+test in `test_conformance` and by ASan `conformance`, not by a replay count.
+Discharging stage 3's gate end to end needs a corpus whose transition path
+carries exact chip amounts, which is the same live-play requirement stage 4
+already has.
 
 ### Tasks
 

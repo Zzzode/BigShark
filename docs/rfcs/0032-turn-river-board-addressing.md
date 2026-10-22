@@ -1143,3 +1143,36 @@ Remaining risks: the do-not-modify surfaces are the mid-street fields on the
   remains unbounded and the RFC cannot reach Implemented without live play under
   separate authorization.
 ```
+
+### Implementation evidence (stage 2)
+
+Stage 2 changed the adapter, both `same_root` copies, the reach loops, the
+prefix-board builder, the board assembly, `cache_key`, and `publicSeed`, in one
+commit, as AC1 requires. Evidence: the full release suite, the sanitizer preset,
+and a mutation check per repaired site.
+
+**Erratum to this RFC's fixture description.** AC1 and the review record above
+describe the fixture set as the full 24-cell cross product. Implementation
+measured the same population exhaustively — every reachable postflop action node
+over 3..202-chip stacks at 2..6 seats, four stack depths — and found two axes are
+not independent:
+
+- a refunded action node is always a street start, because `refund_unmatched`
+  returns an excess only to the unique highest contributor, leaving every other
+  live seat all in for less, so the refunded seat is the only one with chips and
+  the only possible actor;
+- heads-up never carries a refund at a decision node, because at two seats the
+  all-in flag survives the refund and the board then runs out with no further
+  action.
+
+`testDecisionNodeIdentityMatrix` therefore drives the fifteen constructible
+cells and names the nine unreachable ones, rather than claiming twenty-four. The
+design is unaffected; only the matrix's size was overstated. The AC's
+four-column assertion table is what the test implements.
+
+**A defect this stage's own matrix caught.** The first identity def copied
+`last_full_raise` whenever it was nonzero. `GameState::last_full_raise()` reports
+`big_blind` at a street start while `GameDef`'s sentinel is `0`, so a refunded
+street-start node carried an increment that `validate` rejects. The fix applies
+the rule `build_subgame_def_from_node` already uses: carry the increment only
+when some `street_committed` is nonzero.

@@ -312,6 +312,23 @@ class ResidentPolicySet {
   // public only so the implementation's file-local helpers can name it.
   struct Record;
 
+  // RFC 0032 test seam: install ONE synthetic advertised record over an
+  // arbitrary board width. It exists because AC1's prefix-board builder and
+  // board-assembly sites are file-local, and `build()` refuses a four- or
+  // five-card def at build_v2_game, so a test cannot otherwise place a record
+  // for them to consume.
+  //
+  // Single caller: engine/tests/test_resident_policy.cpp. The record OWNS the
+  // game (it is moved in), so no external lifetime constraint is added. The
+  // record carries no index rows: it answers root admission and reach, which is
+  // what the two file-local sites need, and a row lookup against it misses.
+  //
+  // The seam is a construction entry point, NOT a compatibility path: `build()`
+  // does not call it, no runtime flag selects between it and `build()`, and it
+  // disappears once a turn-rooted record can be published and built normally.
+  void install_synthetic_record_for_test(solver::UnifiedGame game, std::size_t row_count,
+                                         std::size_t probability_count);
+
   // RFC 0012 Phase 2/3: row lookup dispatcher. mmap records go through
   // MmapLibrary::find, lazy records load on demand into the LRU cache, and
   // eager records use the ResidentIndex directly. Public so the TU's

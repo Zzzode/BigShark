@@ -380,8 +380,10 @@ pv2::DecisionResponse mapOperationalFallbackResponse(const pv2::DecisionRequest&
   metadata->set_source(pv2::SOLVER_SOURCE_OPERATIONAL_FALLBACK);
   metadata->set_solve_time_us(0);
   metadata->set_cache_hit(false);
-  metadata->set_reason_code("operational-fallback");
-  metadata->set_diagnostic_reason("operational-fallback");
+  // RFC 0032 stage 3: forward the fallback's own reason instead of a literal,
+  // so a turn- or river-rooted miss is distinguishable from an ordinary one.
+  metadata->set_reason_code(decision.reason);
+  metadata->set_diagnostic_reason(decision.reason);
   metadata->set_guarantee_level(guaranteeToken(bs::Guarantee::OperationalFallback));
   metadata->set_utility_profile(pv2::UTILITY_PROFILE_CASH_CHIP);
   return response;

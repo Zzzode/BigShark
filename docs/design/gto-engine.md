@@ -303,9 +303,16 @@ matching blueprint root identity for any physical button position. Resident
 blueprints are trained with button=0; the game is rotationally symmetric with
 respect to the button, so this preserves strategy identity. For preflop
 decisions the mapper builds a hand-start root GameState (starting stacks, zero
-contributions, blinds-only pot, no board); for postflop decisions it builds a
-flop-rooted GameState with preflop actions filtered from the history. In lazy
-mode, non-flop-library specs (e.g., the preflop profile) are probed for their
+contributions, blinds-only pot, no board). For postflop decisions it returns
+the replay cursor's runtime with a decision-node identity def attached (RFC
+0032): the runtime carries the real board of any length, the true pending set,
+the correct actor, live street commitments, and net-contributed refunds, while
+`def()` carries the normalized root that `same_root`, `root_pot`, the
+certifier, `cache_key`, and the public seed read. `GameState::with_identity` is
+the only way to attach an identity without re-deriving a runtime; it validates
+the def exactly as the constructor does and rejects an identity whose board
+disagrees with the runtime. Preflop actions are filtered from the service
+history. In lazy mode, non-flop-library specs (e.g., the preflop profile) are probed for their
 own GameDef at startup and set up for on-demand loading, instead of inheriting
 the flop library's shared game definition.
 

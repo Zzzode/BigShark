@@ -42,10 +42,10 @@ their own RFC.
 | [0026](0026-bucket-deduplicated-flop-library-format.md) | Bucket-Deduplicated Flop Library Resident Format | Implemented | Engine resident, artifact boundary, engine benchmarks |
 | [0027](0027-train-and-pack-direct.md) | Direct Train-and-Pack Flop Library Production | Implemented | Engine flop library, engine resident, artifact boundary, engine-host, engine benchmarks |
 | [0028](0028-sealed-warm-start-checkpoints.md) | Sealed Warm-Start Checkpoints | Implemented | Artifact boundary, engine flop library, engine solver, engine benchmarks |
-| [0029](0029-flop-terminal-best-response.md) | Make the Stage-6 Walkers Model Frontier Leaves and Measure the Resident Path | Proposed | Stage6 evaluation, engine resident, engine benchmarks |
+| [0029](0029-flop-terminal-best-response.md) | Make the Stage-6 Walkers Model Frontier Leaves and Measure the Resident Path | Accepted | Stage6 evaluation, engine resident, engine benchmarks |
 | [0030](0030-pin-raise-cap-in-identity.md) | Pin Strategy-Shaping Abstraction Parameters in Persisted Identity | Proposed | Engine abstraction, engine flop library, engine solver |
 | [0031](0031-measure-card-abstraction-error.md) | Measure Postflop Card-Abstraction Error Before Changing It | Accepted | Engine abstraction, engine solver, engine flop library |
-| [0032](0032-turn-river-board-addressing.md) | Preserve the Full Board Through the Decision Pipeline | Proposed | Engine resident, River adapter, engine protocol |
+| [0032](0032-turn-river-board-addressing.md) | Preserve the Full Board Through the Decision Pipeline | Implementing | Engine resident, River adapter, engine protocol |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.
