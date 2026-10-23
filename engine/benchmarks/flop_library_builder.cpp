@@ -11,8 +11,10 @@
 //   class-count   number of canonical classes to train (default 8)
 //   iterations    MCCFR iterations per class      (default 1000)
 //   player-count  seats in the game, 2..10         (default 2)
-//   stack         starting stack in chips          (default 4 = 2 BB)
+//   stack         starting stack in chips          (default 6 = 3 BB)
 //   contribution  preflop contribution in chips    (default 2 = 1 BB)
+//                 Chips behind at the root are stack - contribution, so the
+//                 default root is 4 behind with SPR 1 (RFC 0033).
 //   abstraction   'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)
 //
 // Options:
@@ -62,7 +64,8 @@ struct Args {
   std::size_t class_count = 8;
   std::uint64_t iterations = 1000;
   std::size_t player_count = 2;
-  bs::poker::Chips stack = 4;
+  // RFC 0033: a starting stack, not chips behind. 6 - 2 = 4 behind, SPR 1.
+  bs::poker::Chips stack = 6;
   bs::poker::Chips contribution = 2;
   bool coarse = false;
   bool full_range = false;  // 1,326 combos/seat instead of the 40-combo premium range
@@ -82,7 +85,8 @@ struct Args {
                "  class-count   number of canonical classes to train (default 8)\n"
                "  iterations    MCCFR iterations per class      (default 1000)\n"
                "  player-count  seats in the game, 2..10         (default 2)\n"
-               "  stack         starting stack in chips          (default 4 = 2 BB)\n"
+               "  stack         starting stack in chips          (default 6 = 3 BB; chips behind = "
+               "stack - contribution)\n"
                "  contribution  preflop contribution in chips    (default 2 = 1 BB)\n"
                "  abstraction   'identity' (default) or 'coarse' (RFC 0008 DeclaredOnly)\n"
                "options:\n"
@@ -176,7 +180,7 @@ bs::flop_library::BuildParams make_params(const Args& args) {
   params.class_count = args.class_count;
   params.iterations_per_class = args.iterations;
   params.seed = 20261002;
-  params.stack = args.stack;
+  params.starting_stack = args.stack;
   params.contribution = args.contribution;
   params.range = args.full_range ? bs::flop_library::declared_full_library_range()
                                  : bs::flop_library::declared_library_range();
@@ -273,45 +277,12 @@ int run_worker(const Args& args) {
 int run_parallel(const Args& args) {
   check_memory_budget(args.parallel);
   const bs::flop_library::BuildParams params = make_params(args);
-  // The parent must reject old raw state before spawning workers: the existing
-  // worker-failure cleanup removes checkpoint files from this dir. A torn
-  // checkpoint (truncated write, failed digest) is discarded so the class
-  // retrains, matching the in-worker preflight; only a structurally valid but
-  // incompatible checkpoint is a hard refusal. RFC 0028: this reads the sealed
-  // header only, so it does not decode a payload for every class before
-  // forking.
-  if (params.resume) {
-    for (std::size_t index = 0; index < params.class_count; ++index) {
-      char stem[64];
-      std::snprintf(stem, sizeof(stem), "class-%04zu-checkpoint.bswarm", index);
-      const auto path = args.out_dir / stem;
-      if (!std::filesystem::exists(path))
-        continue;
-      bs::artifacts::SealedCheckpointState checkpoint;
-      bool corrupt = false;
-      try {
-        checkpoint = bs::artifacts::inspect_sealed_checkpoint(path);
-      } catch (const bs::artifacts::SealedCheckpointError&) {
-        corrupt = true;
-      } catch (const std::runtime_error&) {
-        corrupt = true;
-      }
-      if (corrupt) {
-        std::error_code ec;
-        std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
-                     path.string().c_str());
-        std::filesystem::remove(path, ec);
-        continue;
-      }
-      if (checkpoint.algorithm_revision != bs::artifacts::kDefaultAlgorithmRevisionV2 ||
-          checkpoint.algorithm_revision_id != bs::solver::kNSeatAlgorithmRevision) {
-        std::fprintf(stderr,
-                     "incompatible checkpoint algorithm; refusing resume without modifying %s\n",
-                     path.string().c_str());
-        return 1;
-      }
-    }
-  }
+  // RFC 0033: one shared resume decision for every entry point. The inline
+  // scan this replaces was the reason the parallel path drifted from the
+  // serial one; the helper now owns torn/revision/stale/no-identity, reads
+  // sealed headers only (RFC 0028), and runs before any worker is forked.
+  bs::flop_library::preflight_resume(args.out_dir, params.class_count, params.iterations_per_class,
+                                     params.resume);
   // RFC 0027: the parent owns the build identity. Write it before spawning so
   // every worker validates the same layout/identity and a resume can compare.
   bs::flop_library::prepare_build_identity(args.out_dir, params, params.resume);
@@ -431,9 +402,9 @@ int main(int argc, char** argv) {
   const bs::flop_library::BuildParams params = make_params(args);
   const auto serial_start = std::chrono::steady_clock::now();
   const bs::flop_library::LibraryManifest manifest = bs::flop_library::build_library(
-      args.out_dir, params.class_count, params.iterations_per_class, params.seed, params.stack,
-      params.contribution, params.range, params.player_count, params.action, params.resume,
-      params.layout, params.range_name);
+      args.out_dir, params.class_count, params.iterations_per_class, params.seed,
+      params.starting_stack, params.contribution, params.range, params.player_count, params.action,
+      params.resume, params.layout, params.range_name);
   const auto serial_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - serial_start);
   std::printf("build: %.3f s total\n", static_cast<double>(serial_elapsed.count()) / 1000.0);

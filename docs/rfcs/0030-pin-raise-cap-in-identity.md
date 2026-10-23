@@ -657,6 +657,17 @@ vacuous for a `uint8_t`.)
   place, or against a copy of the pre-change binary preserved for it. RFC 0028's
   AC1 evidence — `186,880 = 184 + 2,808×28 + 5,688×19` — also becomes stale at a
   192-byte header and takes an errata note in its Implemented record.
+
+> **Erratum (2026-10-24).** The baseline moved before this RFC was implemented,
+> for a different reason: RFC 0033 corrected the flop library's stored root
+> ledger and retrained the six-way artifact. The current library is
+> `sha256 b5a480af97518d0493583312d2dda467fa01f98f547ac904099f206d4ba453aa`,
+> 188,411,904 bytes, root `stacks = 198 x6` / `contributions = 2 x6`. The
+> superseded `b67e3cb3…20b4` artifact is preserved outside the repository. Any
+> measurement baseline this RFC pins must now name the newer digest, and the
+> rebuild this RFC's Rollout stage 1 anticipates will invalidate that one in
+> turn.
+
 - **BSWARM01 goes to version 2**; version-1 checkpoints are discarded as
   corrupt and their classes retrain, as `preflight_resume` does for any
   unreadable header (`engine/src/flop_library/flop_library.cpp:241-251`).

@@ -293,13 +293,17 @@ std::vector<solver::WeightedHand> pinned_fixture_range() {
   };
 }
 
-// Builds the pinned fixture library through the library API. `stack = 10`,
-// `contribution = 2` are the RFC's numbers; `big_blind` is the library's fixed
-// default of 2, which the manifest records.
+// Builds the pinned fixture library through the library API. RFC 0029 pins the
+// fixture at 10 chips BEHIND with 2 contributed, so the starting stack is 12:
+// RFC 0033 made the builder argument a buy-in and derives chips behind as
+// `starting_stack - contribution`. The abstracted game, and therefore the
+// recorded NashConv and containment margin, is unchanged. `big_blind` is the
+// library's fixed default of 2, which the manifest records.
 flop_library::LibraryManifest build_fixture_library(const Options& opt) {
   fs::create_directories(opt.library_dir);
   return flop_library::build_library(opt.library_dir, opt.classes, opt.iterations, opt.seed,
-                                     /*stack=*/10, /*contribution=*/2, pinned_fixture_range(),
+                                     /*starting_stack=*/12, /*contribution=*/2,
+                                     pinned_fixture_range(),
                                      /*player_count=*/2);
 }
 

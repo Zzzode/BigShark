@@ -37,7 +37,7 @@ bool test_parallel_matches_serial(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   const std::size_t class_count = 8;
   const std::uint64_t iterations = 10;  // small: one 256-iteration chunk
-  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips stack = 6;     // RFC 0033: starting stack; 6 - 2 = 4 behind
   const bs::poker::Chips contribution = 2;
   const std::size_t player_count = 2;
   const std::uint64_t seed = 20261002;
@@ -55,7 +55,7 @@ bool test_parallel_matches_serial(const fs::path& dir) {
   params.class_count = class_count;
   params.iterations_per_class = iterations;
   params.seed = seed;
-  params.stack = stack;
+  params.starting_stack = stack;
   params.contribution = contribution;
   params.range = range;
   params.player_count = player_count;
@@ -103,7 +103,7 @@ bool test_resume_matches_fresh(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   const std::size_t class_count = 2;
   const std::uint64_t iterations = 300;  // two chunks: 256 + 44
-  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips stack = 6;      // RFC 0033: starting stack; 6 - 2 = 4 behind
   const bs::poker::Chips contribution = 2;
   const std::size_t player_count = 2;
   const std::uint64_t seed = 20261002;
@@ -137,7 +137,7 @@ bool test_resume_skips_published_classes(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   const std::size_t class_count = 3;
   const std::uint64_t iterations = 64;
-  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips stack = 6;  // RFC 0033: starting stack; 6 - 2 = 4 behind
   const bs::poker::Chips contribution = 2;
   const std::size_t player_count = 2;
   const std::uint64_t seed = 20261017;
@@ -170,7 +170,7 @@ bool test_merge_reuses_prior_manifest(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   const std::size_t class_count = 4;
   const std::uint64_t iterations = 16;
-  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips stack = 6;  // RFC 0033: starting stack; 6 - 2 = 4 behind
   const bs::poker::Chips contribution = 2;
   const std::size_t player_count = 2;
   const std::uint64_t seed = 20261017;
@@ -184,7 +184,7 @@ bool test_merge_reuses_prior_manifest(const fs::path& dir) {
   params.class_count = class_count;
   params.iterations_per_class = iterations;
   params.seed = seed;
-  params.stack = stack;
+  params.starting_stack = stack;
   params.contribution = contribution;
   params.range = range;
   params.player_count = player_count;
@@ -222,7 +222,7 @@ bool test_sealed_resume_at_interruption_points(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   const std::size_t class_count = 1;
   const std::uint64_t iterations = 1000;  // chunks at 256, 512, 768, 1000
-  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips stack = 6;       // RFC 0033: starting stack; 6 - 2 = 4 behind
   const bs::poker::Chips contribution = 2;
   const std::size_t player_count = 2;
   const std::uint64_t seed = 20261020;
@@ -237,13 +237,15 @@ bool test_sealed_resume_at_interruption_points(const fs::path& dir) {
   CHECK(!classes.empty());
   const std::array<int, 3> board = classes[0];
 
-  // Rebuild the exact game and tree the builder trains.
+  // Rebuild the exact game and tree the builder trains. RFC 0033: `stack` here
+  // is the starting stack, so chips behind are stack - contribution; the rows
+  // sealed below must project onto THIS tree or warm start rejects them.
   bs::poker::GameDef def;
   def.player_count = static_cast<std::uint8_t>(player_count);
   def.button = 0;
   def.big_blind = 2;
   for (std::size_t s = 0; s < player_count; ++s) {
-    def.stacks[s] = stack;
+    def.stacks[s] = stack - contribution;
     def.contributions[s] = contribution;
   }
   def.pot = static_cast<bs::poker::Chips>(player_count * contribution);
@@ -279,7 +281,7 @@ bool test_sealed_resume_at_interruption_points(const fs::path& dir) {
     params.class_count = class_count;
     params.iterations_per_class = iterations;
     params.seed = seed;
-    params.stack = stack;
+    params.starting_stack = stack;
     params.contribution = contribution;
     params.range = range;
     params.player_count = player_count;
@@ -328,7 +330,7 @@ bool test_sealed_resume_at_interruption_points(const fs::path& dir) {
     params.class_count = class_count;
     params.iterations_per_class = iterations;
     params.seed = seed;
-    params.stack = stack;
+    params.starting_stack = stack;
     params.contribution = contribution;
     params.range = range;
     params.player_count = player_count;
@@ -368,7 +370,7 @@ bool test_sealed_preflight_branches(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   const std::size_t class_count = 1;
   const std::uint64_t iterations = 16;
-  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips stack = 6;  // RFC 0033: starting stack; 6 - 2 = 4 behind
   const bs::poker::Chips contribution = 2;
   const std::size_t player_count = 2;
   const std::uint64_t seed = 20261020;
@@ -408,7 +410,7 @@ bool test_resume_at_durable_boundaries(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   const std::size_t class_count = 2;
   const std::uint64_t iterations = 64;
-  const bs::poker::Chips stack = 4;
+  const bs::poker::Chips stack = 6;  // RFC 0033: starting stack; 6 - 2 = 4 behind
   const bs::poker::Chips contribution = 2;
   const std::size_t player_count = 2;
   const std::uint64_t seed = 20261017;
@@ -426,7 +428,7 @@ bool test_resume_at_durable_boundaries(const fs::path& dir) {
     params.class_count = class_count;
     params.iterations_per_class = iterations;
     params.seed = seed;
-    params.stack = stack;
+    params.starting_stack = stack;
     params.contribution = contribution;
     params.range = range;
     params.player_count = player_count;
@@ -471,7 +473,7 @@ bool test_resume_rejects_layout_change(const fs::path& dir) {
   params.class_count = 1;
   params.iterations_per_class = 16;
   params.seed = 20261017;
-  params.stack = 4;
+  params.starting_stack = 6;  // RFC 0033: 6 - 2 = 4 behind, preserving SPR 1
   params.contribution = 2;
   params.range = range;
   params.player_count = 2;
@@ -480,7 +482,7 @@ bool test_resume_rejects_layout_change(const fs::path& dir) {
 
   bool threw = false;
   try {
-    (void)bs::flop_library::build_library(lib_dir, 1, 16, 20261017, 4, 2, range, 2,
+    (void)bs::flop_library::build_library(lib_dir, 1, 16, 20261017, 6, 2, range, 2,
                                           bs::abstraction::ActionAbstraction::identity(), true,
                                           bs::resident::ProbabilityLayout::Doubles);
   } catch (const std::runtime_error& error) {

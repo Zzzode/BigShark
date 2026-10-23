@@ -52,8 +52,13 @@ struct LibraryManifest {
   abstraction::AbstractionId action_id;  // identity or declared-coarse
   std::size_t player_count = 0;
   poker::Chips big_blind = 0;
-  poker::Chips stack = 0;         // remaining per seat (chips)
-  poker::Chips contribution = 0;  // per-seat pot contribution (chips)
+  // RFC 0033: the one root shape every class answers. same_root compares
+  // player_count, pot, big_blind, button, board, and per-seat
+  // (stacks, contributions, folded), so this is the whole reachable set.
+  std::uint32_t served_root_button = 0;
+  poker::Chips starting_stack = 0;  // buy-in per seat (chips)
+  poker::Chips stack = 0;           // chips behind at the root: starting_stack - contribution
+  poker::Chips contribution = 0;    // per-seat pot contribution (chips)
   std::uint64_t iterations_per_class = 0;
   std::uint64_t seed = 0;
   // RFC 0024: cap on full raises per street (0 = no cap). Recorded so the
@@ -142,7 +147,7 @@ bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
 // identity is checked against `.sections/build.json` first.
 LibraryManifest build_library(
     const std::filesystem::path& out_dir, std::size_t class_count,
-    std::uint64_t iterations_per_class, std::uint64_t seed, poker::Chips stack,
+    std::uint64_t iterations_per_class, std::uint64_t seed, poker::Chips starting_stack,
     poker::Chips contribution, const std::vector<solver::WeightedHand>& range,
     std::size_t player_count = 2,
     abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity(),
@@ -156,7 +161,8 @@ struct BuildParams {
   std::size_t class_count = 0;
   std::uint64_t iterations_per_class = 0;
   std::uint64_t seed = 0;
-  poker::Chips stack = 0;
+  // RFC 0033: the buy-in. The root's chips behind are stack - contribution.
+  poker::Chips starting_stack = 0;
   poker::Chips contribution = 0;
   std::vector<solver::WeightedHand> range;
   std::size_t player_count = 2;
@@ -171,6 +177,27 @@ struct BuildParams {
 // ascending combo_index order, each little-endian u32 combo_index followed by
 // the little-endian IEEE-754 bits of the weight, with no separators.
 std::uint64_t range_digest(const std::vector<solver::WeightedHand>& range);
+
+// RFC 0033: the resume decision, shared by the serial library path and the
+// parallel builder parent so the two cannot drift. Contract, applied in order:
+//
+//   1. torn checkpoint          -> discard and retrain
+//   2. incompatible revision    -> refuse
+//   3. incompatible digest/rows -> deferred to `train_one_class`, which runs
+//                                  them before the stale removal
+//   4. stale but complete       -> classify as disposable; removed later by
+//                                  `train_one_class`, never here
+//   5. valid state, no identity -> refuse
+//
+// Dispositions 2 and 4 can apply to the same file with opposite outcomes, so
+// the order is load-bearing. The section scan is what protects `library.bin`:
+// a completed class keeps its `.bsf` and deletes its checkpoint, so a
+// checkpoint-only guard would protect exactly the work that is discarded.
+// `iterations_per_class` is required to distinguish a stale-but-complete
+// checkpoint from one genuinely in flight; `inspect_sealed_checkpoint` returns
+// the completed count header-only.
+void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_count,
+                      std::uint64_t iterations_per_class, bool resume);
 
 // RFC 0027: establish `.sections/build.json` (the build identity) before any
 // worker starts. On a fresh build the parent writes it; on `--resume` it

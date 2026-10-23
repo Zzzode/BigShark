@@ -27,6 +27,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -256,7 +257,7 @@ bool test_incompatible_resume_preserves_files(const fs::path& dir) {
   // The builder's resume path refuses and leaves the checkpoint untouched.
   refused = false;
   try {
-    (void)bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 4, 2,
+    (void)bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 6, 2,
                                           bs::flop_library::declared_library_range(), 2, fx.action,
                                           true);
   } catch (const std::runtime_error& error) {
@@ -317,7 +318,7 @@ bool test_stale_but_complete(const fs::path& dir) {
   stale.completed_iterations = 32;  // exactly the class target below
   bs::artifacts::save_sealed_checkpoint(source_dir / "class-0000-checkpoint.bswarm", stale);
 
-  const auto manifest = bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 4, 2,
+  const auto manifest = bs::flop_library::build_library(source_dir, 1, 32, fx.seed, 6, 2,
                                                         bs::flop_library::declared_library_range(),
                                                         2, fx.action, true);
   CHECK(manifest.class_count == 1);
@@ -330,6 +331,96 @@ bool test_stale_but_complete(const fs::path& dir) {
 
 }  // namespace
 
+// RFC 0033: the shared resume guard. Three states no existing test covers,
+// because the RFC 0028 tests either carry a build.json or start empty.
+bool test_resume_guard(const fs::path& dir) {
+  Fixture fx;
+  const auto trained =
+      bs::solver::train_nseat(fx.tree, fx.ranges, 16, fx.seed, fx.limits, &fx.frontier);
+
+  auto refuses = [&](const fs::path& lib_dir, std::uint64_t iterations,
+                     std::string* message = nullptr) {
+    try {
+      bs::flop_library::preflight_resume(lib_dir, 1, iterations, /*resume=*/true);
+      return false;
+    } catch (const std::runtime_error& error) {
+      if (message)
+        *message = error.what();
+      return true;
+    }
+  };
+
+  // (1) Sections survive with no identity. This is the state a checkpoint-keyed
+  // guard lets through: every class completed, so no checkpoint remains, but
+  // the sections can still be packed under a fresh header.
+  {
+    const fs::path lib_dir = dir / "guard-sections";
+    fs::create_directories(lib_dir / ".sections");
+    std::ofstream out(lib_dir / ".sections" / "class-0000.bsf", std::ios::binary);
+    out << "placeholder";  // presence is the predicate; content is not read
+    out.close();
+    std::string message;
+    CHECK(refuses(lib_dir, /*iterations=*/32, &message));
+    CHECK(message.find("build.json is missing") != std::string::npos);
+    CHECK(message.find("class-0000.bsf") != std::string::npos);
+  }
+
+  // (2) A valid incomplete checkpoint with no identity would warm-start against
+  // an unknown root, so it must refuse.
+  {
+    const fs::path lib_dir = dir / "guard-live-checkpoint";
+    fs::create_directories(lib_dir);
+    bs::artifacts::SealedCheckpointState live = seal(fx, trained);
+    live.completed_iterations = 4;  // below the target: genuinely in flight
+    bs::artifacts::save_sealed_checkpoint(lib_dir / "class-0000-checkpoint.bswarm", live);
+    CHECK(refuses(lib_dir, /*iterations=*/32));
+  }
+
+  // (3) A stale-but-complete checkpoint is CLASSIFIED, not refused: the
+  // training path drops it before it can influence anything. This is the
+  // disposition split that keeps RFC 0028's stale contract intact.
+  {
+    const fs::path lib_dir = dir / "guard-stale-checkpoint";
+    fs::create_directories(lib_dir);
+    bs::artifacts::SealedCheckpointState stale = seal(fx, trained);
+    stale.completed_iterations = 32;  // at the target
+    bs::artifacts::save_sealed_checkpoint(lib_dir / "class-0000-checkpoint.bswarm", stale);
+    CHECK(!refuses(lib_dir, /*iterations=*/32));
+    // Classification must not remove it; the training path still owns removal.
+    CHECK(fs::exists(lib_dir / "class-0000-checkpoint.bswarm"));
+  }
+
+  // (4) Revision beats stale. A checkpoint that is both must refuse, not be
+  // dropped. No existing test reaches this intersection: the incompatible test
+  // trains below the target and the stale test uses a compatible revision.
+  {
+    const fs::path lib_dir = dir / "guard-revision-beats-stale";
+    fs::create_directories(lib_dir);
+    bs::artifacts::SealedCheckpointState both = seal(fx, trained);
+    both.completed_iterations = 32;  // stale ...
+    both.algorithm_revision_id = 1;  // ... and incompatible
+    both.algorithm_revision = bs::artifacts::sealed_revision_string(1);
+    bs::artifacts::save_sealed_checkpoint(lib_dir / "class-0000-checkpoint.bswarm", both);
+    std::string message;
+    CHECK(refuses(lib_dir, /*iterations=*/32, &message));
+    CHECK(message.find("incompatible checkpoint algorithm") != std::string::npos);
+  }
+
+  // (5) A torn checkpoint is discarded and the guard stays silent, preserving
+  // RFC 0028 AC4 (test_sealed_preflight_branches covers the full build path;
+  // this pins the guard alone).
+  {
+    const fs::path lib_dir = dir / "guard-torn";
+    fs::create_directories(lib_dir);
+    std::ofstream out(lib_dir / "class-0000-checkpoint.bswarm", std::ios::binary);
+    out << "BSWARM01";
+    out.close();
+    CHECK(!refuses(lib_dir, /*iterations=*/32));
+    CHECK(!fs::exists(lib_dir / "class-0000-checkpoint.bswarm"));
+  }
+  return true;
+}
+
 int main() {
   const fs::path dir = fs::temp_directory_path() / "bs-warm-start-test";
   std::error_code ec;
@@ -341,6 +432,7 @@ int main() {
   ok = test_checkpoint_overwrite(dir) && ok;
   ok = test_incompatible_resume_preserves_files(dir) && ok;
   ok = test_stale_but_complete(dir) && ok;
+  ok = test_resume_guard(dir) && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {

@@ -600,6 +600,27 @@ std::optional<std::filesystem::path> collectBinaryLibraryPath(int argc, char** a
   return binary;
 }
 
+// Reads one array field of `served_root` into a compact "a,b,c" list. An
+// absent or non-array field yields "-", so the printed line never invents a
+// value the manifest does not carry.
+std::string served_field_list(yyjson_val* served, const char* key) {
+  yyjson_val* arr = yyjson_is_obj(served) ? yyjson_obj_get(served, key) : nullptr;
+  if (!yyjson_is_arr(arr))
+    return "-";
+  std::string out;
+  const std::size_t n = yyjson_arr_size(arr);
+  for (std::size_t i = 0; i < n; ++i) {
+    if (i)
+      out += ',';
+    yyjson_val* v = yyjson_arr_get(arr, i);
+    if (yyjson_is_bool(v))
+      out += yyjson_get_bool(v) ? "1" : "0";
+    else
+      out += std::to_string(yyjson_get_uint(v));
+  }
+  return out;
+}
+
 // RFC 0027: verify a directory-resolved binary library at startup. The
 // manifest's digest must equal the sidecar, and the file hash must equal both.
 // An explicitly passed <file.bin> keeps its documented sidecar-only default
@@ -647,6 +668,17 @@ bool verify_pinned_binary_library(const std::filesystem::path& bin_path) {
   if (actual != pinned_hex) {
     std::cerr << "flop-library: content digest disagrees with manifest for " << bin_path << '\n';
     return false;
+  }
+  // RFC 0033: report the ONE root shape this library answers. Without this an
+  // operator sees a class count and concludes every flop state is served, when
+  // same_root admits exactly one ledger per class.
+  yyjson_val* served = yyjson_is_obj(root) ? yyjson_obj_get(root, "served_root") : nullptr;
+  if (yyjson_is_obj(served)) {
+    const std::string stacks = served_field_list(served, "stacks");
+    const std::string contribs = served_field_list(served, "contributions");
+    const std::string folded = served_field_list(served, "folded");
+    std::cerr << "resident-served-root " << bin_path.parent_path() << " stacks=" << stacks
+              << " contributions=" << contribs << " folded=" << folded << '\n';
   }
   return true;
 }

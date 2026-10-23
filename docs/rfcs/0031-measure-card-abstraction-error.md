@@ -12,6 +12,21 @@ superseded-by: ""
 
 # RFC 0031: Measure Postflop Card-Abstraction Error Before Changing It
 
+
+> **Erratum (2026-10-24): the pinned baseline artifact has been superseded.**
+> RFC 0033 corrected the flop library's stored root ledger — the old root
+> declared `stacks = 200 x6` alongside `contributions = 2 x6`, which is 1,212
+> chips in a 1,200-chip game and therefore unreachable from a real hand — and
+> retrained the six-way artifact. The current library is
+> `sha256 b5a480af97518d0493583312d2dda467fa01f98f547ac904099f206d4ba453aa`,
+> 188,411,904 bytes, root `stacks = 198 x6`. Every reference below to
+> `b67e3cb3…20b4` describes the superseded artifact; the superseded bytes are
+> preserved outside the repository so Stage 0 can still be reproduced against
+> them, but any statistic this RFC publishes must name which artifact it was
+> measured on. The card-abstraction digest is unchanged
+> (`af83bd016a92d2d6`), so the bucketing this RFC is about did not change — only
+> the root the rows were trained at.
+
 ## Summary
 
 The postflop card abstraction is the coarsest component in the strategy and has

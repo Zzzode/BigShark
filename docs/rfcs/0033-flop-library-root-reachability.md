@@ -1,7 +1,7 @@
 ---
 rfc: "0033"
 subject: "Make the Flop Library's Root Identity Reachable from a Real Hand"
-status: "Accepted"
+status: "Implementing"
 authors: "BigShark maintainers"
 created: "2026-10-22"
 updated: "2026-10-23"
@@ -967,6 +967,66 @@ previous convention, which is a re-run, not a restore.
 - Documentation states the served root plainly, so no reader infers full flop
   coverage from `advertised_roots = 1755`.
 - The full Engine Build Contract and documentation checks pass.
+
+## Implementation Record
+
+Status: Implementing. Stages 1-3 of the Rollout Plan have landed; the artifact
+rebuild (stage 2 of the plan's numbering) has not run.
+
+**Landed.** `make_def` derives `stacks = starting_stack - contribution` and
+rejects a starting stack that does not exceed the contribution
+(`engine/src/flop_library/flop_library.cpp`). `BuildParams::stack` and
+`BuildIdentity::stack` are renamed `starting_stack`; `LibraryManifest` keeps
+`stack` as chips behind and adds `starting_stack` plus a `served_root` object.
+`preflight_resume` is promoted out of the anonymous namespace to
+`bs/flop_library.hpp`, gains `iterations_per_class`, carries the four
+dispositions, defers the digest and empty-row refusals to `train_one_class`, and
+classifies rather than removes a stale checkpoint. `run_parallel` calls it
+instead of its inline duplicate. The host prints `resident-served-root` from the
+manifest's `served_root`.
+
+**Call sites re-expressed** (Design #3a): the 22 test call sites moved from
+`4, 2` to `6, 2`, preserving 4 chips behind and SPR 1; the stage-6 fixture moved
+from `10, 2` to `12, 2`, preserving 10 chips behind. One test reconstructed its
+own tree from `stack` directly and had to adopt the derivation; it failed with
+"nseat warm start has invalid row projection" until it did, which is exactly the
+silent-game-change hazard Design #3a names.
+
+**Verified.** `test_flop_library` asserts the header is chip-conserving
+(`pot + sum(stacks) == player_count * (stack + contribution)`) and pins the
+derivation and its rejection cases. `test_flop_library_parallel`,
+`test_warm_start`, and `test_flop_library` pass, so RFC 0028's torn /
+incompatible-revision / stale-but-complete contracts are intact.
+`test_resume_guard` adds the five states no earlier test reached, including
+revision-beats-stale. The stage-6 fixture reports `stack: 10`,
+`uncontained_nodes: 0`, `misses: 0`, `served: 1056` — the abstracted game is
+unchanged.
+
+**Pre-existing discrepancy, not caused by this change.** The recorded RFC 0029
+figure `nash_conv 2.711476` does not reproduce on this host: both the pre-change
+and post-change trees report `2.595987` at the driver's default 2000 iterations,
+with identical `stack`, `uncontained_nodes`, `misses`, and `served`. Verified by
+stashing every change in this RFC and re-running the same command. The
+reproduction gap predates RFC 0033 and is recorded rather than attributed.
+
+**Artifact rebuilt and deployed (2026-10-24).** The six-way full-range library
+was rebuilt with `--parallel 16 --range full --raise-cap 1` at 1,755 classes,
+1,000 iterations, `starting_stack 200`, `contribution 2`. Result:
+188,411,904 bytes,
+`sha256 b5a480af97518d0493583312d2dda467fa01f98f547ac904099f206d4ba453aa`,
+1,755/1,755 classes, 22,100/22,100 flops, root `stacks = 198 x6`,
+`contributions = 2 x6`, `pot = 12` — 1,200 chips, conserving. The superseded
+`b67e3cb3…20b4` artifact is preserved outside the repository as the rollback
+copy.
+
+Reachability re-measured against the deployed artifact: a real six-handed
+200-chip buy-in that limps to the flop now **matches**, where the same query
+missed before the change. A raised pot, a pot with folded seats, and any other
+buy-in still miss, which is the one-root-per-class scope limit this RFC records
+rather than fixes.
+
+Errata added to RFC 0030 and RFC 0031 naming the new digest, since both pinned
+the superseded artifact as a measurement baseline.
 
 ## Decision
 

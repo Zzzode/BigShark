@@ -155,7 +155,7 @@ bool test_lazy_loading(const fs::path& dir) {
   // produces them explicitly through the artifact writer below).
   const auto range = flop_library::declared_library_range();
   const flop_library::LibraryManifest manifest =
-      flop_library::build_library(dir, 2, 100, 42, 4, 2, range);
+      flop_library::build_library(dir, 2, 100, 42, 6, 2, range);
   CHECK(manifest.class_count == 2);
 
   const std::vector<std::string> artifact_names = write_sqlite_class_artifacts(dir, manifest, 100);
@@ -290,7 +290,7 @@ bool test_lazy_mmap_bypass(const fs::path& dir) {
   // Build a library, pack it, then verify that mmap mode works.
   const auto range = flop_library::declared_library_range();
   const flop_library::LibraryManifest manifest =
-      flop_library::build_library(dir / "lib", 2, 50, 99, 4, 2, range);
+      flop_library::build_library(dir / "lib", 2, 50, 99, 6, 2, range);
   CHECK(manifest.class_count == 2);
 
   // RFC 0027: the builder already wrote the packed library.

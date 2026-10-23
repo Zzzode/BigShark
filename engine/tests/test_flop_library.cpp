@@ -115,8 +115,9 @@ bool test_class_dealability() {
 bool test_build_library(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   // Shallow stacks (4 behind, 2 in per seat, pot 4) keep the tree small.
+  // RFC 0033: the argument is the starting stack, so 6 - 2 = 4 behind.
   const bs::flop_library::LibraryManifest manifest =
-      bs::flop_library::build_library(dir, 2, 100, 20261002, 4, 2, range);
+      bs::flop_library::build_library(dir, 2, 100, 20261002, 6, 2, range);
 
   CHECK(manifest.class_count == 2);
   CHECK(manifest.total_classes == 1755);
@@ -128,7 +129,8 @@ bool test_build_library(const fs::path& dir) {
   CHECK(manifest.seed == 20261002);
   CHECK(manifest.player_count == 2);
   CHECK(manifest.big_blind == 2);
-  CHECK(manifest.stack == 4);
+  CHECK(manifest.starting_stack == 6);
+  CHECK(manifest.stack == 4);  // chips behind = starting_stack - contribution
   CHECK(manifest.contribution == 2);
   CHECK(manifest.card_id == bs::abstraction::suit_canonicalization_id());
   CHECK(fs::exists(dir / "manifest.json"));
@@ -161,6 +163,22 @@ bool test_build_library(const fs::path& dir) {
     CHECK(library.canonical_board(static_cast<std::uint32_t>(class_id)) == entry.canonical_board);
   }
 
+  // RFC 0033: the stored root must be chip-conserving, which is what makes it
+  // reachable from a real hand. The header carries `stacks` (chips behind) and
+  // `contributions` separately, so their sum plus the pot must equal the
+  // buy-in times the seat count. The defect this RFC fixes recorded the buy-in
+  // in `stacks` while also recording the contribution, giving 1212 chips in a
+  // 1200-chip game.
+  {
+    const bs::poker::GameDef& header = library.game().def;
+    bs::poker::Chips total = header.pot;
+    for (std::size_t s = 0; s < header.player_count; ++s)
+      total += header.stacks[s];
+    CHECK(total == header.player_count * (manifest.stack + manifest.contribution));
+    CHECK(header.stacks[0] == manifest.stack);
+    CHECK(header.contributions[0] == manifest.contribution);
+  }
+
   // Independently recompute storage from the file itself.
   std::error_code ec;
   CHECK(fs::file_size(dir / manifest.library_bin, ec) == manifest.storage_bytes);
@@ -179,7 +197,7 @@ bool test_build_library_coarse(const fs::path& dir) {
   const auto action = bs::abstraction::ActionAbstraction::declared(
       bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly);
   const bs::flop_library::LibraryManifest manifest =
-      bs::flop_library::build_library(dir, 2, 100, 20261002, 4, 2, range, 2, action);
+      bs::flop_library::build_library(dir, 2, 100, 20261002, 6, 2, range, 2, action);
 
   CHECK(manifest.action_id.name == "rfc0008-declared-coarse");
   CHECK(manifest.action_id != bs::abstraction::identity_action_id());
@@ -203,7 +221,7 @@ bool test_build_library_raise_cap(const fs::path& dir) {
       bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly);
   action.set_max_raises_per_street(1);
   const bs::flop_library::LibraryManifest manifest =
-      bs::flop_library::build_library(dir, 1, 50, 20261002, 4, 2, range, 2, action);
+      bs::flop_library::build_library(dir, 1, 50, 20261002, 6, 2, range, 2, action);
 
   // The manifest struct carries the cap.
   CHECK(manifest.max_raises_per_street == 1);
@@ -218,12 +236,51 @@ bool test_build_library_raise_cap(const fs::path& dir) {
 
   // The uncapped default records zero.
   const bs::flop_library::LibraryManifest uncapped =
-      bs::flop_library::build_library(dir / "uncapped", 1, 50, 20261002, 4, 2, range, 2);
+      bs::flop_library::build_library(dir / "uncapped", 1, 50, 20261002, 6, 2, range, 2);
   CHECK(uncapped.max_raises_per_street == 0);
   return true;
 }
 
 }  // namespace
+
+// RFC 0033: the builder argument is a starting stack, and the root's chips
+// behind are derived from it. A starting stack that does not exceed the
+// contribution cannot produce a valid root and must be rejected rather than
+// silently clamped.
+bool test_starting_stack_derivation(const fs::path& dir) {
+  const auto range = bs::flop_library::declared_library_range();
+
+  bool threw = false;
+  try {
+    (void)bs::flop_library::build_library(dir / "equal", 1, 8, 7, 2, 2, range);
+  } catch (const std::invalid_argument& error) {
+    threw = std::string(error.what()).find("exceed") != std::string::npos;
+  }
+  CHECK(threw);
+
+  threw = false;
+  try {
+    (void)bs::flop_library::build_library(dir / "below", 1, 8, 7, 1, 2, range);
+  } catch (const std::invalid_argument& error) {
+    threw = std::string(error.what()).find("exceed") != std::string::npos;
+  }
+  CHECK(threw);
+
+  // A larger buy-in yields more chips behind at the same contribution.
+  const bs::flop_library::LibraryManifest small =
+      bs::flop_library::build_library(dir / "small", 1, 8, 7, 6, 2, range);
+  const bs::flop_library::LibraryManifest large =
+      bs::flop_library::build_library(dir / "large", 1, 8, 7, 12, 2, range);
+  CHECK(small.starting_stack == 6);
+  CHECK(small.stack == 4);
+  CHECK(large.starting_stack == 12);
+  CHECK(large.stack == 10);
+  CHECK(small.contribution == large.contribution);
+
+  // The two roots differ, so the same class must not answer both.
+  CHECK(small.library_bin_sha256 != large.library_bin_sha256);
+  return true;
+}
 
 int main() {
   const fs::path dir = fs::temp_directory_path() / "bs-flop-library-test";
@@ -239,6 +296,7 @@ int main() {
   ok = test_build_library(dir) && ok;
   ok = test_build_library_coarse(dir / "coarse") && ok;
   ok = test_build_library_raise_cap(dir / "raise-cap") && ok;
+  ok = test_starting_stack_derivation(dir) && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {

@@ -70,14 +70,21 @@ std::vector<solver::WeightedHand> filter_range(const std::vector<solver::Weighte
   return out;
 }
 
-poker::GameDef make_def(const std::array<int, 3>& board, poker::Chips stack,
+// RFC 0033: `starting_stack` is the buy-in, so the root's per-seat chips behind
+// are `starting_stack - contribution`. Recording `starting_stack` in `stacks`
+// while also recording `contribution` in `contributions` counts that
+// contribution twice, which makes the root chip-non-conserving and therefore
+// unreachable from any real hand.
+poker::GameDef make_def(const std::array<int, 3>& board, poker::Chips starting_stack,
                         poker::Chips contribution, std::size_t player_count) {
+  if (starting_stack <= contribution)
+    throw std::invalid_argument("make_def: starting stack must exceed the contribution");
   poker::GameDef def{};
   def.player_count = static_cast<std::uint8_t>(player_count);
   def.button = 0;
   def.big_blind = kDefaultBigBlind;
   for (std::size_t s = 0; s < player_count; ++s) {
-    def.stacks[s] = stack;
+    def.stacks[s] = starting_stack - contribution;
     def.contributions[s] = contribution;
   }
   def.pot = static_cast<poker::Chips>(player_count * contribution);
@@ -201,7 +208,7 @@ solver::UnifiedGame make_unified_game(const BuildParams& params,
   if (classes.empty())
     throw std::invalid_argument("make_unified_game: no classes");
   solver::UnifiedGame game;
-  game.def = make_def(classes[0], params.stack, params.contribution, params.player_count);
+  game.def = make_def(classes[0], params.starting_stack, params.contribution, params.player_count);
   game.def.board = {0, 0, 0, 0, 0};
   game.def.board_size = 3;  // the file-level identity is flop-rooted
   game.sizes = params.action.schedule();
@@ -223,38 +230,6 @@ std::vector<std::array<int, 3>> covered_boards(const std::vector<ClassEntry>& cl
 // start: remove it together with its journal so the class trains from
 // scratch rather than aborting the whole resume. A structurally valid
 // checkpoint with an incompatible algorithm revision is still a hard error.
-void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_count, bool resume) {
-  if (!resume)
-    return;
-  for (std::size_t index = 0; index < class_count; ++index) {
-    const auto path = out_dir / (class_stem(index) + "-checkpoint.bswarm");
-    std::error_code ec;
-    if (!std::filesystem::exists(path, ec))
-      continue;
-    artifacts::SealedCheckpointState checkpoint;
-    bool corrupt = false;
-    try {
-      // Header-only: the payload is decoded on the training path, where a
-      // mismatch is actionable. A failure here means the file cannot be a
-      // checkpoint this build wrote.
-      checkpoint = artifacts::inspect_sealed_checkpoint(path);
-    } catch (const artifacts::SealedCheckpointError&) {
-      corrupt = true;
-    } catch (const std::runtime_error&) {
-      corrupt = true;
-    }
-    if (corrupt) {
-      std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
-                   path.string().c_str());
-      std::filesystem::remove(path, ec);
-      continue;
-    }
-    if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2 ||
-        checkpoint.algorithm_revision_id != solver::kNSeatAlgorithmRevision)
-      throw std::runtime_error(
-          "incompatible checkpoint algorithm; refusing resume without modifying " + path.string());
-  }
-}
 
 // Exact search for `needed` pairwise vertex-disjoint edges in a small graph
 // (at most 40 range combos over the 52-card pool; the library asks for at most
@@ -335,7 +310,7 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
                            const std::array<int, 3>& board, const BuildParams& params,
                            const abstraction::AbstractionId& card_id, const std::string& tag) {
   const poker::GameDef def =
-      make_def(board, params.stack, params.contribution, params.player_count);
+      make_def(board, params.starting_stack, params.contribution, params.player_count);
   const std::vector<solver::WeightedHand> seat_range = filter_range(params.range, board);
   if (seat_range.empty())
     throw std::runtime_error("class " + std::to_string(class_index) + " has no off-board combos");
@@ -503,7 +478,11 @@ struct BuildIdentity {
   std::uint64_t range_digest = 0;
   std::size_t player_count = 0;
   poker::Chips big_blind = 0;
-  poker::Chips stack = 0;
+  // RFC 0033: the CLI argument, which is the starting stack (chips behind plus
+  // the contribution). Distinct from LibraryManifest::stack, which is chips
+  // behind at the root. The rename makes an old build.json fail closed on the
+  // missing key rather than be compared under a changed meaning.
+  poker::Chips starting_stack = 0;
   poker::Chips contribution = 0;
   std::uint8_t max_raises_per_street = 0;
   std::uint64_t iterations_per_class = 0;
@@ -534,7 +513,7 @@ BuildIdentity make_identity(const BuildParams& params, const abstraction::Abstra
   id.range_digest = range_digest(params.range);
   id.player_count = params.player_count;
   id.big_blind = kDefaultBigBlind;
-  id.stack = params.stack;
+  id.starting_stack = params.starting_stack;
   id.contribution = params.contribution;
   id.max_raises_per_street = params.action.max_raises_per_street();
   id.iterations_per_class = params.iterations_per_class;
@@ -556,7 +535,7 @@ std::string identity_json(const BuildIdentity& id) {
   out << "  \"range_digest\": \"" << digest_hex(id.range_digest) << "\",\n";
   out << "  \"player_count\": " << id.player_count << ",\n";
   out << "  \"big_blind\": " << id.big_blind << ",\n";
-  out << "  \"stack\": " << id.stack << ",\n";
+  out << "  \"starting_stack\": " << id.starting_stack << ",\n";
   out << "  \"contribution\": " << id.contribution << ",\n";
   out << "  \"max_raises_per_street\": " << static_cast<int>(id.max_raises_per_street) << ",\n";
   out << "  \"iterations_per_class\": " << id.iterations_per_class << ",\n";
@@ -606,7 +585,7 @@ BuildIdentity read_identity(const std::filesystem::path& path) {
   id.range_digest = std::strtoull(str_value("range_digest").c_str(), nullptr, 16);
   id.player_count = static_cast<std::size_t>(num_value("player_count"));
   id.big_blind = static_cast<poker::Chips>(num_value("big_blind"));
-  id.stack = static_cast<poker::Chips>(num_value("stack"));
+  id.starting_stack = static_cast<poker::Chips>(num_value("starting_stack"));
   id.contribution = static_cast<poker::Chips>(num_value("contribution"));
   id.max_raises_per_street = static_cast<std::uint8_t>(num_value("max_raises_per_street"));
   id.iterations_per_class = num_value("iterations_per_class");
@@ -655,8 +634,8 @@ void require_identity_match(const BuildIdentity& requested, const BuildIdentity&
     mismatch_num("player_count", requested.player_count, current.player_count);
   if (requested.big_blind != current.big_blind)
     mismatch_num("big_blind", requested.big_blind, current.big_blind);
-  if (requested.stack != current.stack)
-    mismatch_num("stack", requested.stack, current.stack);
+  if (requested.starting_stack != current.starting_stack)
+    mismatch_num("starting_stack", requested.starting_stack, current.starting_stack);
   if (requested.contribution != current.contribution)
     mismatch_num("contribution", requested.contribution, current.contribution);
   if (requested.max_raises_per_street != current.max_raises_per_street)
@@ -786,6 +765,87 @@ std::vector<FragmentClass> read_fragments(const std::filesystem::path& sections_
 
 }  // namespace
 
+// RFC 0033: the resume decision, shared by the serial library path and the
+// parallel builder parent so the two cannot drift. Its contract, in order:
+//
+//   1. torn checkpoint            -> discard and retrain
+//   2. incompatible revision      -> refuse
+//   3. incompatible digest/rows   -> deferred to train_one_class, which runs
+//                                    these before the stale removal
+//   4. stale but complete         -> classify as disposable (NOT removed here;
+//                                    train_one_class removes it after the
+//                                    digest and empty-row checks)
+//   5. valid state, no identity   -> refuse
+//
+// Dispositions 2 and 4 can apply to the same file with opposite outcomes, so
+// the order is load-bearing: revision and the deferred digest checks must win
+// over the stale classification, or a hard refusal would silently become a
+// full retrain.
+void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_count,
+                      std::uint64_t iterations_per_class, bool resume) {
+  if (!resume)
+    return;
+  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
+  const bool have_identity = std::filesystem::exists(sections_dir / "build.json");
+  std::vector<std::string> unidentified;
+  for (std::size_t index = 0; index < class_count; ++index) {
+    // A completed class keeps its section and deletes its checkpoint, so the
+    // two are complementary: the checkpoint scan alone protects the work that
+    // would be discarded anyway. Sections are published atomically, so a
+    // present .bsf is always complete and "valid" means "present".
+    const std::filesystem::path section = sections_dir / (class_stem(index) + ".bsf");
+    std::error_code ec;
+    if (!have_identity && std::filesystem::exists(section, ec))
+      unidentified.push_back(section.string());
+
+    const auto path = out_dir / (class_stem(index) + "-checkpoint.bswarm");
+    if (!std::filesystem::exists(path, ec))
+      continue;
+    artifacts::SealedCheckpointState checkpoint;
+    bool corrupt = false;
+    try {
+      // Header-only: the payload is decoded on the training path, where a
+      // mismatch is actionable. A failure here means the file cannot be a
+      // checkpoint this build wrote.
+      checkpoint = artifacts::inspect_sealed_checkpoint(path);
+    } catch (const artifacts::SealedCheckpointError&) {
+      corrupt = true;
+    } catch (const std::runtime_error&) {
+      corrupt = true;
+    }
+    if (corrupt) {
+      std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
+                   path.string().c_str());
+      std::filesystem::remove(path, ec);
+      continue;
+    }
+    // Disposition 2 before 4: a checkpoint can carry an incompatible revision
+    // AND be stale, and the refusal must not be downgraded to a retrain.
+    if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2 ||
+        checkpoint.algorithm_revision_id != solver::kNSeatAlgorithmRevision)
+      throw std::runtime_error(
+          "incompatible checkpoint algorithm; refusing resume without modifying " + path.string());
+    if (!have_identity) {
+      // Disposition 4: classified, not removed. Removing here would run ahead
+      // of the digest and empty-row checks in train_one_class, turning those
+      // refusals into a silent retrain.
+      if (checkpoint.completed_iterations >= iterations_per_class)
+        continue;
+      unidentified.push_back(path.string());
+    }
+  }
+  if (!have_identity && !unidentified.empty()) {
+    std::string list;
+    for (const std::string& name : unidentified)
+      list += "\n  " + name;
+    throw std::runtime_error(
+        "resume requested but .sections/build.json is missing while reusable state survives; "
+        "refusing rather than warm-starting against an unknown root. Delete these files or run "
+        "without --resume:" +
+        list);
+  }
+}
+
 bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
                        const std::vector<solver::WeightedHand>& range) {
   return class_is_dealable_impl(board, seat_count, range);
@@ -872,7 +932,7 @@ std::uint64_t range_digest(const std::vector<solver::WeightedHand>& range) {
 
 LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
                               std::uint64_t iterations_per_class, std::uint64_t seed,
-                              poker::Chips stack, poker::Chips contribution,
+                              poker::Chips starting_stack, poker::Chips contribution,
                               const std::vector<solver::WeightedHand>& range,
                               std::size_t player_count, abstraction::ActionAbstraction action,
                               bool resume, resident::ProbabilityLayout layout,
@@ -881,7 +941,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   params.class_count = class_count;
   params.iterations_per_class = iterations_per_class;
   params.seed = seed;
-  params.stack = stack;
+  params.starting_stack = starting_stack;
   params.contribution = contribution;
   params.range = range;
   params.player_count = player_count;
@@ -896,8 +956,10 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
     throw std::invalid_argument("iterations must be positive");
   if (range.empty())
     throw std::invalid_argument("range must be non-empty");
-  if (stack == 0 || contribution == 0)
-    throw std::invalid_argument("stack and contribution must be positive");
+  if (starting_stack == 0 || contribution == 0)
+    throw std::invalid_argument("starting_stack and contribution must be positive");
+  if (starting_stack <= contribution)
+    throw std::invalid_argument("starting_stack must exceed the contribution");
   if (player_count < 2 || player_count > 10)
     throw std::invalid_argument("player_count must be in [2, 10]");
 
@@ -917,7 +979,7 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
   const std::filesystem::path sections_dir = out_dir / kSectionsDir;
   const BuildIdentity requested = make_identity(params, card_id);
-  preflight_resume(out_dir, class_count, resume);
+  preflight_resume(out_dir, class_count, iterations_per_class, resume);
   // Sections without an identity record cannot be trusted for a resume.
   if (resume && !std::filesystem::exists(sections_dir / "build.json", ec))
     std::filesystem::remove_all(sections_dir, ec);
@@ -974,8 +1036,10 @@ void build_library_worker(const std::filesystem::path& out_dir, std::size_t work
     throw std::invalid_argument("iterations must be positive");
   if (params.range.empty())
     throw std::invalid_argument("range must be non-empty");
-  if (params.stack == 0 || params.contribution == 0)
-    throw std::invalid_argument("stack and contribution must be positive");
+  if (params.starting_stack == 0 || params.contribution == 0)
+    throw std::invalid_argument("starting_stack and contribution must be positive");
+  if (params.starting_stack <= params.contribution)
+    throw std::invalid_argument("starting_stack must exceed the contribution");
   if (params.player_count < 2 || params.player_count > 10)
     throw std::invalid_argument("player_count must be in [2, 10]");
 
@@ -1110,7 +1174,11 @@ LibraryManifest assemble_library(const std::filesystem::path& out_dir, const Bui
   manifest.player_count = params.player_count;
   manifest.max_raises_per_street = params.action.max_raises_per_street();
   manifest.big_blind = kDefaultBigBlind;
-  manifest.stack = params.stack;
+  // RFC 0033: `stack` keeps the chips-behind meaning every reader assumes; the
+  // buy-in is recorded separately as provenance.
+  manifest.stack = params.starting_stack - params.contribution;
+  manifest.starting_stack = params.starting_stack;
+  manifest.served_root_button = 0;  // make_def's fixed button
   manifest.contribution = params.contribution;
   manifest.iterations_per_class = params.iterations_per_class;
   manifest.seed = params.seed;
@@ -1155,6 +1223,7 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
   out << "  \"max_raises_per_street\": " << static_cast<int>(manifest.max_raises_per_street)
       << ",\n";
   out << "  \"big_blind\": " << manifest.big_blind << ",\n";
+  out << "  \"starting_stack\": " << manifest.starting_stack << ",\n";
   out << "  \"stack\": " << manifest.stack << ",\n";
   out << "  \"contribution\": " << manifest.contribution << ",\n";
   out << "  \"iterations_per_class\": " << manifest.iterations_per_class << ",\n";
@@ -1166,6 +1235,18 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
   out << "  \"library_bin_sha256\": \"" << manifest.library_bin_sha256 << "\",\n";
   out << "  \"library_bin_bytes\": " << manifest.library_bin_bytes << ",\n";
   out << "  \"codebook\": \"" << json_escape(manifest.codebook) << "\",\n";
+  // RFC 0033: name the one root shape every class answers. An operator who
+  // sees class_count == 1755 must not infer that every flop state is served.
+  out << "  \"served_root\": {\"button\": " << manifest.served_root_button << ", \"stacks\": [";
+  for (std::size_t s = 0; s < manifest.player_count; ++s)
+    out << (s ? ", " : "") << manifest.stack;
+  out << "], \"contributions\": [";
+  for (std::size_t s = 0; s < manifest.player_count; ++s)
+    out << (s ? ", " : "") << manifest.contribution;
+  out << "], \"folded\": [";
+  for (std::size_t s = 0; s < manifest.player_count; ++s)
+    out << (s ? ", false" : "false");
+  out << "]},\n";
   out << "  \"classes\": [\n";
   for (std::size_t i = 0; i < manifest.classes.size(); ++i) {
     const ClassEntry& e = manifest.classes[i];

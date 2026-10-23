@@ -935,10 +935,19 @@ abstraction. Each artifact is checkpointed, published (SHA-256), and probed;
 the checkpoint is removed so the directory holds only immutable policies.
 
 The builder CLI is `bigshark-flop-library-builder <output-dir> [class-count]
-[iterations] [player-count] [stack] [contribution] [abstraction]`. The stack
-and contribution default to 4 and 2 chips (2 BB effective, SPR 1). Deeper
-stacks are supported but grow the tree and artifact roughly linearly with the
-number of betting actions: at 10 BB (stack 20) a class has ~157K stored rows
+[iterations] [player-count] [stack] [contribution] [abstraction]`. **`stack` is
+the starting stack (the buy-in), not chips behind**: the root records
+`stacks = stack - contribution` and `contributions = contribution`, so the
+default 6 and 2 produce 4 chips behind with SPR 1 (RFC 0033). Before RFC 0033
+the builder recorded the buy-in in `stacks` *and* the contribution in
+`contributions`, which made the root chip-non-conserving — 1212 chips in a
+1200-chip game — and therefore unreachable from any real hand. The manifest
+records both `starting_stack` and the derived `stack`, and a `served_root`
+object naming the one ledger shape every class answers.
+
+Deeper stacks are supported but grow the tree and artifact roughly linearly with
+the number of betting actions: at 10 BB (a starting stack of 22, giving 20
+behind) a class has ~157K stored rows
 and ~16 MiB resident (vs ~13K rows and ~0.6 MiB at 2 BB), and the probability
 codebook falls back to doubles because the deeper tree produces more than 256
 distinct probability values (603 measured). A full 1,755-class library at 10 BB
@@ -1181,7 +1190,21 @@ the full-range generation packs from **440 GiB to 179.71 MiB** across all
 (rows scale with public nodes × distinct sealed buckets, not concrete
 combos). The full-range `.bin` was exhaustively verified lossless on
 2026-10-19: 1,755 classes, 1,938,640,886 stored rows, 12,383,280 holding/node
-checks, 0 mismatches. The packer is single-pass
+checks, 0 mismatches.
+
+**Rebuilt under RFC 0033 (2026-10-24).** The shipped library was retrained
+because the earlier generation's stored root was chip-non-conserving and could
+not be reached by a real hand. The current artifact is 188,411,904 bytes,
+`sha256 b5a480af97518d0493583312d2dda467fa01f98f547ac904099f206d4ba453aa`,
+1,755/1,755 classes covering 22,100/22,100 flops, 1,000 iterations per class,
+root `stacks = 198 x6`, `contributions = 2 x6`, `pot = 12` (1,200 chips — a real
+six-handed 100 BB buy-in), and the same action/card abstraction digests. The
+size differs from the 179.71 MiB figure above because the root is one chip
+shallower per seat, which changes the tree and therefore the rows; the digests
+of both abstractions are unchanged. The superseded artifact
+(`b67e3cb3...20b4`) is preserved outside the repository for rollback.
+
+The packer is single-pass
 (Codebook16 by default; a class exceeding its 65,535 distinct-value cap
 triggers one exact-Doubles rewrite), streaming one artifact at a time so
 peak memory stays bounded by one class. It fails loudly if two concrete rows
