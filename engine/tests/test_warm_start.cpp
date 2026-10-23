@@ -421,6 +421,108 @@ bool test_resume_guard(const fs::path& dir) {
   return true;
 }
 
+// RFC 0033: an old build.json carries `"stack"` instead of `"starting_stack"`.
+// read_identity must fail closed on the missing key rather than compare the
+// file under a changed meaning.
+bool test_old_build_identity_rejected(const fs::path& dir) {
+  const auto range = bs::flop_library::declared_library_range();
+  const fs::path lib_dir = dir / "old-identity";
+  fs::create_directories(lib_dir / ".sections");
+  // A pre-RFC-0033 identity: same values under the old key name.
+  std::ofstream out(lib_dir / ".sections" / "build.json");
+  out << "{\n"
+      << "  \"codebook\": \"codebook16\",\n"
+      << "  \"card_abstraction_digest\": \"0000000000000000\",\n"
+      << "  \"action_abstraction_digest\": \"0000000000000000\",\n"
+      << "  \"range\": \"declared\",\n"
+      << "  \"range_combo_count\": 40,\n"
+      << "  \"range_digest\": \"0000000000000000\",\n"
+      << "  \"player_count\": 2,\n"
+      << "  \"big_blind\": 2,\n"
+      << "  \"stack\": 6,\n"
+      << "  \"contribution\": 2,\n"
+      << "  \"max_raises_per_street\": 0,\n"
+      << "  \"iterations_per_class\": 8,\n"
+      << "  \"seed\": 1,\n"
+      << "  \"class_count\": 1,\n"
+      << "  \"total_classes\": 1755\n"
+      << "}\n";
+  out.close();
+
+  bs::flop_library::BuildParams params;
+  params.class_count = 1;
+  params.iterations_per_class = 8;
+  params.seed = 1;
+  params.starting_stack = 6;
+  params.contribution = 2;
+  params.range = range;
+  params.player_count = 2;
+
+  bool threw = false;
+  std::string message;
+  try {
+    bs::flop_library::prepare_build_identity(lib_dir, params, /*resume=*/true);
+  } catch (const std::runtime_error& error) {
+    threw = true;
+    message = error.what();
+  }
+  CHECK(threw);
+  CHECK(message.find("starting_stack") != std::string::npos);
+  return true;
+}
+
+// RFC 0033: the two checkpoint messages no test pinned before. Both fixtures
+// carry a build.json, because with no identity the guard refuses first and the
+// message under test is unreachable.
+bool test_checkpoint_messages_pinned(const fs::path& dir) {
+  Fixture fx;
+  const auto trained =
+      bs::solver::train_nseat(fx.tree, fx.ranges, 16, fx.seed, fx.limits, &fx.frontier);
+
+  auto build_with = [&](const fs::path& name, const bs::artifacts::SealedCheckpointState& ckpt,
+                        std::string* message) {
+    const fs::path lib_dir = dir / name;
+    fs::create_directories(lib_dir);
+    bs::flop_library::BuildParams params;
+    params.class_count = 1;
+    params.iterations_per_class = 32;
+    params.seed = 1;
+    params.starting_stack = 6;  // 6 - 2 = 4 behind, matching the Fixture tree
+    params.contribution = 2;
+    params.range = bs::flop_library::declared_library_range();
+    params.player_count = 2;
+    bs::flop_library::prepare_build_identity(lib_dir, params, /*resume=*/false);
+    bs::artifacts::save_sealed_checkpoint(lib_dir / "class-0000-checkpoint.bswarm", ckpt);
+    params.resume = true;
+    try {
+      bs::flop_library::build_library_worker(lib_dir, 0, 1, params);
+      return false;
+    } catch (const std::runtime_error& error) {
+      *message = error.what();
+      return true;
+    }
+  };
+
+  // Incompatible action-abstraction digest.
+  {
+    bs::artifacts::SealedCheckpointState bad = seal(fx, trained);
+    bad.abstraction_digest ^= 0xffffffffffffffffULL;
+    std::string message;
+    CHECK(build_with("digest-mismatch", bad, &message));
+    CHECK(message.find("action-abstraction digest mismatch") != std::string::npos);
+  }
+
+  // Empty training rows.
+  {
+    bs::artifacts::SealedCheckpointState empty = seal(fx, trained);
+    empty.rows.clear();
+    std::string message;
+    CHECK(build_with("empty-rows", empty, &message));
+    CHECK(message.find("carries no training rows") != std::string::npos);
+  }
+  return true;
+}
+
 int main() {
   const fs::path dir = fs::temp_directory_path() / "bs-warm-start-test";
   std::error_code ec;
@@ -433,6 +535,8 @@ int main() {
   ok = test_incompatible_resume_preserves_files(dir) && ok;
   ok = test_stale_but_complete(dir) && ok;
   ok = test_resume_guard(dir) && ok;
+  ok = test_old_build_identity_rejected(dir) && ok;
+  ok = test_checkpoint_messages_pinned(dir) && ok;
 
   fs::remove_all(dir, ec);
   if (!ok) {

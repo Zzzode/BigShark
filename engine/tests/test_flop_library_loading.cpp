@@ -375,6 +375,32 @@ void test_binary_cannot_mix_with_resident_root() {
 
 }  // namespace
 
+// RFC 0033: the startup line names the ONE root shape the library answers. An
+// operator who sees a class count must not infer that every flop state is
+// served, so the server must say which ledger it answers.
+void test_served_root_reported() {
+  const auto dir = make_temp_dir();
+  CHECK(!dir.empty());
+  write_file(dir / "library.bin", "BSFLIB02-test-bytes");
+  const std::string actual = sha256_of(dir / "library.bin");
+  write_file(dir / "library.bin.sha256", actual + "  library.bin\n");
+  const std::string manifest = R"({"library_bin":"library.bin","library_bin_sha256":")" + actual +
+                               R"(","classes":[],"served_root":{"button":0,)"
+                               R"("stacks":[198,198,198,198,198,198],)"
+                               R"("contributions":[2,2,2,2,2,2],)"
+                               R"("folded":[false,false,false,false,false,false]}})";
+  write_file(dir / "manifest.json", manifest);
+
+  const RunResult result = run_engine({"--flop-library", dir.string(), "--serve-proto"});
+  CHECK(result.exit_code == 0);
+  CHECK(result.stderr_output.find("resident-served-root") != std::string::npos);
+  CHECK(result.stderr_output.find("stacks=198,198,198,198,198,198") != std::string::npos);
+  CHECK(result.stderr_output.find("contributions=2,2,2,2,2,2") != std::string::npos);
+  CHECK(result.stderr_output.find("folded=0,0,0,0,0,0") != std::string::npos);
+
+  std::filesystem::remove_all(dir);
+}
+
 int main() {
   test_valid_manifest_starts_engine();
   test_nonexistent_directory();
@@ -388,6 +414,7 @@ int main() {
   test_binary_manifest_resolution();
   test_binary_manifest_digest_mismatch();
   test_binary_cannot_mix_with_resident_root();
+  test_served_root_reported();
 
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

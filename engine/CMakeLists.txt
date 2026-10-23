@@ -1206,6 +1206,22 @@ if(BUILD_TESTING)
   )
   add_test(NAME warm_start COMMAND test_warm_start)
 
+  # RFC 0033: the published-artifact check. Requires the bundled six-way library
+  # and asserts a REAL hand's flop root reaches it. The artifact is gitignored
+  # and CI does not fetch it, so this carries the `benchmark` label -- CI's only
+  # exclusion mechanism (tools/ci/verify-linux.sh runs `ctest -LE benchmark`) --
+  # and skips with a message when the file is absent. The label is the exclusion
+  # mechanism, not a claim that this measures performance. The CI gate for the
+  # same contract is test_flop_library, which builds its own library.
+  add_executable(test_bundled_flop_library tests/test_bundled_flop_library.cpp)
+  target_link_libraries(test_bundled_flop_library PRIVATE
+    bigshark_resident
+    bigshark_poker
+  )
+  add_test(NAME bundled_flop_library COMMAND test_bundled_flop_library)
+  set_tests_properties(bundled_flop_library PROPERTIES LABELS "benchmark"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
   # RFC 0012 Phase 2: consolidated binary format. Packs a small set of class
   # policies into a .bin file, mmaps it, and verifies round-trip fidelity
   # (row lookup, game identity, ranges, SHA-256 verification).

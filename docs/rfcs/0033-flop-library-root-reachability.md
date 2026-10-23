@@ -1028,6 +1028,20 @@ rather than fixes.
 Errata added to RFC 0030 and RFC 0031 naming the new digest, since both pinned
 the superseded artifact as a measurement baseline.
 
+**Acceptance coverage.** `test_bundled_flop_library` is the published-artifact
+test: it loads the shipped library, requires a real six-handed 200-chip limped
+flop to match, and requires a one-chip change and a raised pot to miss. It
+carries the `benchmark` label so CI's default pass excludes it, and skips with a
+message when the artifact is absent. It was verified to fail against the
+superseded library, which is what makes it a regression gate rather than a
+tautology. `test_resume_guard` covers the five guard states including
+revision-beats-stale; `test_old_build_identity_rejected` pins the renamed-key
+rejection; `test_checkpoint_messages_pinned` pins the digest and empty-row
+messages, which no test covered before; `test_served_root_reported` asserts the
+startup line. The convention gate that runs in CI without the artifact is
+`test_flop_library`, which builds its own library and asserts chip conservation
+in the packed header.
+
 ## Decision
 
 ```text
