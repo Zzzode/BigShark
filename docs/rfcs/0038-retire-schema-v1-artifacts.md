@@ -1,7 +1,7 @@
 ---
 rfc: "0038"
 subject: "Retire the schema-v1 heads-up artifact format and algorithm revision 1"
-status: "Proposed"
+status: "Accepted"
 authors: "BigShark maintainers"
 created: "2026-10-26"
 updated: "2026-10-26"
@@ -189,7 +189,7 @@ one public overload, one probe field, and three resident branches.
   fixture, the RFC 0020 hand-authored fixture, the preflop fixture) and
   stay untouched; only `:1787-1790` (the checkpoint-rejection probe) is
   heads-up and migrates. The scenarios cover golden margins, free-turn,
-  free-turn, the belief hook and matrix, streets/round-end, orphan seats,
+  the belief hook and matrix, streets/round-end, orphan seats,
   shared/zero-weight combos, probe byte accounting, miss coverage,
   continuation, the fully-blocked root, and root-only partial exports.
   The heads-up-only friend `detail::PolicyAssembler`
@@ -333,9 +333,17 @@ seat artifact:
 4. publish the result as a **flop-rooted, river-terminal schema-v2**
   artifact with `SeatCheckpointProvenance`
   (`prng_identifier = kFullTraversalPrngIdentifier`, matching the full
-  traversal that produced the rows, and the program's named
-  engine/algorithm revision). The resident accepts flop-rooted
-  (`board_size == 3`) v2 sources and `build_v2_game`
+  traversal that produced the rows). The rekey helper stamps a genuine
+  revision-2 seat identity on the result: `algorithm_revision = 2`,
+  `batch_size = 1`, `completed_epochs = completed_iterations` (the
+  `epochs_from_samples` invariant with batch 1), and
+  `information_sets` equal to the count of transferred rows (the v2
+  reader requires manifest count to equal stored rows). The only
+  exception is a hand-authored sparse fixture that deliberately uses an
+  explicit custom algorithm string (the
+  `test_folded_root_identity` route); such a string is named in the
+  test and never carries a revision-2 claim. The resident accepts
+  flop-rooted (`board_size == 3`) v2 sources and `build_v2_game`
   (`resident_policy.cpp:118-135`) is an identity copy at that shape, so
   the resident view and every fixed-board query are unchanged.
 
@@ -470,7 +478,7 @@ are untouched.
   `create_checkpoint`/`commit_checkpoint`/`publish_policy` overloads,
   `CheckpointProvenance`, the heads-up `PolicyAssembler`, or the
   `LoadedArtifact::result`/`ArtifactProbe::game` fields get a compile
-  error and must use the seat API; the such callers are exactly the
+  error and must use the seat API; such callers are exactly the
   fixture publisher, the lookup benchmark, and tests covered by this
   RFC. The `encode_public_key`/`decode_public_key` signatures lose
   their revision parameter; every surviving call passes revision 2
@@ -681,4 +689,53 @@ None.
 
 ## Decision
 
-Pending independent approval-agent review.
+```text
+Author agent: BigShark maintainers
+Approved by: rfc0038-approval-1 (independent approval agent, auto_model/alwaysday1_max;
+              same agent across all three rounds)
+Decision date: 2026-10-26
+Review outcome: Approved
+  Two minor non-blocking nits were folded into the Accepted text: the
+  rekey helper must stamp a genuine revision-2 seat identity
+  (algorithm_revision 2, batch_size 1, completed_epochs =
+  completed_iterations, information_sets = transferred row count;
+  custom algorithm strings only for explicitly named hand-authored
+  sparse fixtures), and two editorial fixes (a duplicated "free-turn"
+  phrase and a malformed article).
+Reviewed scope: Three rounds. Round 1 returned Changes Requested with
+  one blocker (both resident-lookup benchmark publishers are heads-up
+  v1, not a seat/v1 mix; deleting the benchmark would lose the only
+  resident latency/zero-allocation regression runner), three majors
+  (the bs_resident_fixture binary and its two real-binary w1 TS tests
+  were missing; roughly twenty test_resident_policy scenarios depend on
+  v1 fixtures; the deletion set omitted commit_checkpoint, the
+  revision-1 key codec, CheckpointProvenance, the heads-up
+  PolicyAssembler, and manifest defaults), and three minors. Round 2
+  returned Changes Requested with one blocker: the prescribed
+  train_nseat migration is infeasible for fixed-runout producers
+  (chance-sampled training emits only visited rows and cannot
+  full-chance materialize the benchmark tree); the revision requires
+  the rekey route (retain in-memory train_full, convert identity via
+  to_unified_game, transfer rows through SeatPolicyAssembler on
+  byte-identical information keys proven identical by
+  test_two_seat_byte_identity, publish a flop-rooted river-terminal v2
+  artifact), plus the test_seat_policy.cpp grammar-1 inventory, a
+  checkpoint-site factual correction, and numbering. Round 3 verified
+  the rekey route end to end in source (to_unified_game shape and
+  schedule copy, identity_action_id cap-0 menu preservation,
+  assembler emplace-only insertion, the v2 per-row validator, the
+  byte-identity proof, and the hand-authored sparse precedent),
+  re-audited the complete deletion and migration scope against the
+  plan's one-to-one scenario map, and ran both documentation checkers
+  green (38 RFCs, 433 files). The approval is design approval only; it
+  authorizes no spending, credentials, live play, or destructive
+  operations.
+Review summary: A locally closed, evidence-based removal of the last
+  persisted-format compatibility layer, with every v1 producer
+  migrated rather than deleted, objectively testable acceptance
+  criteria, and fail-closed UnsupportedVersion handling for stale
+  files. Remaining risk is implementation discipline (rev2 identity
+  fields, schedule-matched action id, row counts), guarded by the
+  one-to-one scenario map, the w1 real-binary TS tests, and the full
+  Engine Build Contract.
+```
