@@ -432,8 +432,38 @@ bool size_is_key_proportional() {
   }
   save_sealed_checkpoint(path, state);
   const auto size = fs::file_size(path);
-  // 12 keys, 24 actions: 184 + 12*28 + 24*19 = 184 + 336 + 456 = 976.
+  // 12 keys, 24 actions: 200 + 12*28 + 24*19 = 200 + 336 + 456 = 992.
   CHECK(size == kSealedCheckpointHeaderBytes + 12 * 28 + 24 * 19);
+  return true;
+}
+
+// RFC 0031: the TiersDrawV1 kind ordinal (3) and its 36-bucket ceiling
+// round-trip, so a checkpoint sealed under the draw-aware scheme decodes
+// back to that scheme rather than a foreign kind.
+bool round_trip_tiers_draw_kind() {
+  const fs::path dir = scratch("roundtrip-tiers-draw");
+  const fs::path path = dir / "class-0000-checkpoint.bswarm";
+  SealedCheckpointState state;
+  state.algorithm_revision_id = bs::solver::kNSeatAlgorithmRevision;
+  state.algorithm_revision =
+      bs::artifacts::sealed_revision_string(bs::solver::kNSeatAlgorithmRevision);
+  state.abstraction_digest = 0x1122334455667788ULL;
+  state.card_abstraction_digest =
+      bs::abstraction::card_abstraction_id(CardBucketKind::TiersDrawV1).digest;
+  state.completed_iterations = 32;
+  state.batch_size = 1;
+  state.completed_epochs = 1;
+  state.node_cap = 4096;
+  state.bucket_cap = 35;
+  state.key_kind = CardBucketKind::TiersDrawV1;
+  state.tree_shape_digest = 0x0123456789abcdefULL;
+  state.rows[{1, 10}] = make_row(2, 0.5, 11);     // flush-draw bucket
+  state.rows[{17, 200}] = make_row(3, 1.25, 12);  // straight + flush draw
+  save_sealed_checkpoint(path, state);
+  const SealedCheckpointState loaded = load_sealed_checkpoint(path);
+  CHECK(loaded.key_kind == CardBucketKind::TiersDrawV1);
+  CHECK(loaded.bucket_cap == 35);
+  CHECK(loaded.rows.size() == 2);
   return true;
 }
 
@@ -452,6 +482,7 @@ int main() {
       {"failed_write_preserves_previous", failed_write_preserves_previous},
       {"atomic_overwrite", atomic_overwrite},
       {"size_is_key_proportional", size_is_key_proportional},
+      {"round_trip_tiers_draw_kind", round_trip_tiers_draw_kind},
   };
   for (const Case& c : cases) {
     if (!c.fn()) {

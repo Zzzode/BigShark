@@ -116,6 +116,8 @@ int main(int argc, char** argv) {
   // Parse optional flags first, then positional arguments.
   std::size_t num_threads = 1;
   std::size_t cache_capacity = 128;
+  std::size_t max_infosets = 1'000'000;
+  std::size_t train_bytes = std::size_t{1} << 30;
   PostflopCacheLimits cache_limits;
   std::uint8_t raise_cap = 0;
   std::vector<char*> positional;
@@ -142,6 +144,10 @@ int main(int argc, char** argv) {
         return 1;
       }
       raise_cap = static_cast<std::uint8_t>(cap);
+    } else if (arg == "--max-infosets" && i + 1 < argc) {
+      max_infosets = static_cast<std::size_t>(std::atoll(argv[++i]));
+    } else if (arg == "--train-bytes" && i + 1 < argc) {
+      train_bytes = static_cast<std::size_t>(std::atoll(argv[++i]));
     } else {
       positional.push_back(argv[i]);
     }
@@ -167,7 +173,9 @@ int main(int argc, char** argv) {
                  "  --threads N: parallel CFR with N threads (default 1)\n"
                  "  --cache-capacity N: retained policy entry cap (default 128)\n"
                  "  --cache-bytes N: policy/load accounted-byte cap (default 1073741824)\n"
-                 "  --raise-cap N: cap raises per street, 0 = no cap (default 0)",
+                 "  --raise-cap N: cap raises per street, 0 = no cap (default 0)\n"
+                 "  --max-infosets N: trainer retained information-set cap (default 1000000)\n"
+                 "  --train-bytes N: trainer retained-row byte cap (default 1073741824)",
                  argv[0]);
     return 1;
   }
@@ -201,10 +209,9 @@ int main(int argc, char** argv) {
   // cap past ~16 BB. The coarse DeclaredOnly menu (RFC 0008) drops those forced
   // seeds so deeper multiway profiles stay buildable.
   ActionAbstraction action_abstraction =
-      coarse ? ActionAbstraction::declared(default_size_schedule(), CoverSeeds::DeclaredOnly)
-             : ActionAbstraction::identity();
-  if (raise_cap > 0)
-    action_abstraction.set_max_raises_per_street(raise_cap);
+      coarse ? ActionAbstraction::declared(default_size_schedule(), CoverSeeds::DeclaredOnly,
+                                           raise_cap)
+             : ActionAbstraction::identity(raise_cap);
   const AbstractTree tree(def, action_abstraction);
 
   // Frontier selector: equity by default, postflop-declared when a table is
@@ -224,11 +231,11 @@ int main(int argc, char** argv) {
       onthefly_evaluator = std::make_unique<OnTheFlyPostflopEvaluator>(
           *declared_table, std::filesystem::path(policy_dir), cache_capacity, cache_limits);
       frontier = onthefly_evaluator.get();
-      frontier_tag = "postflop-onthefly-v1";
+      frontier_tag = "postflop-onthefly";
     } else {
       postflop_evaluator = std::make_unique<PostflopFrontierEvaluator>(*declared_table);
       frontier = postflop_evaluator.get();
-      frontier_tag = "postflop-declared-table-v1";
+      frontier_tag = "postflop-declared-table";
     }
   }
 
@@ -254,6 +261,11 @@ int main(int argc, char** argv) {
   // The existing twelve-hour safety envelope does not certify throughput or
   // strategy quality. Complete means only that all requested samples finished.
   limits.wall = std::chrono::hours(12);
+  // Preflop169 retains up to 169 buckets per action node; the three-seat
+  // identity tree needs ~1.58M retained information sets, above the library
+  // default, so the operator passes explicit caps for that rebuild.
+  limits.max_information_sets = max_infosets;
+  limits.max_bytes = train_bytes;
 
   const auto start = std::chrono::steady_clock::now();
   const NSeatTrainingResult trained =
@@ -300,7 +312,7 @@ int main(int argc, char** argv) {
   postflop_evaluator.reset();
   declared_table.reset();
 
-  // Export to concrete seat-indexed rows (schema v2: no card_id for preflop).
+  // Export to concrete seat-indexed rows (schema-v2: no card_id for preflop).
   const auto export_started = Clock::now();
   const SeatTrainingResult exported = export_seat_policy(trained, tree, ranges);
   const double export_s = seconds_since(export_started);

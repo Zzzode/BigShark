@@ -145,6 +145,8 @@ std::uint32_t bucket_ceiling(abstraction::CardBucketKind kind) {
   switch (kind) {
     case abstraction::CardBucketKind::CategoryTiersV1:
       return 16;  // (score >> 20) & 0xF
+    case abstraction::CardBucketKind::TiersDrawV1:
+      return 35;  // dense (category - 1) * 4 + draw_code, 36 buckets
     case abstraction::CardBucketKind::Preflop169:
       return 169;  // preflop 0..168; the postflop fallback is a subset
     case abstraction::CardBucketKind::Identity:
@@ -348,8 +350,9 @@ Header decode_header(std::span<const std::uint8_t> bytes, const std::filesystem:
   if (h.header_bytes != kSealedCheckpointHeaderBytes)
     fail("sealed checkpoint: unexpected header length " + std::to_string(h.header_bytes) + where);
   const std::uint8_t kind = get_u8(bytes, kOffKeyKind);
-  // CardBucketKind is a two-valued-then-three enum; reject anything outside it
-  // rather than silently mapping a foreign value onto a valid kind.
+  // CardBucketKind ordinals are pinned (RFC 0031); reject anything outside
+  // the four-valued enum rather than silently mapping a foreign value onto a
+  // valid kind.
   switch (kind) {
     case 0:
       h.key_kind = abstraction::CardBucketKind::Identity;
@@ -359,6 +362,9 @@ Header decode_header(std::span<const std::uint8_t> bytes, const std::filesystem:
       break;
     case 2:
       h.key_kind = abstraction::CardBucketKind::Preflop169;
+      break;
+    case 3:
+      h.key_kind = abstraction::CardBucketKind::TiersDrawV1;
       break;
     default:
       fail("sealed checkpoint: unknown card bucket kind " + std::to_string(kind) + where);

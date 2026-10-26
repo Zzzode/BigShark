@@ -251,4 +251,13 @@ class AbstractTree {
   friend class TreeBuilder;
 };
 
+// RFC 0030: whole-tree shape witness. FNV-1a 64 over every node in index
+// order: node index (u32), node kind (u8), menu action count (u32), and for
+// each action in order its type (u8) and target total (u64, little-endian
+// semantics). A checkpoint resume recomputes this over its own tree and
+// hard-refuses a mismatch before adopting any row. The witness is sound, not
+// complete: it proves ordinal/menu identity and may over-reject a change
+// confined to an untrained subtree; it does not hash terminal payloads.
+std::uint64_t tree_shape_digest(const AbstractTree& tree);
+
 }  // namespace bs::tree

@@ -392,4 +392,30 @@ AbstractTree::AbstractTree(GameDef def, abstraction::ActionAbstraction action, T
   accounted_bytes_ = budget.bytes();
 }
 
+namespace {
+
+void fnv_update(std::uint64_t& hash, std::uint64_t value) {
+  for (int shift = 0; shift < 64; shift += 8) {
+    hash ^= static_cast<std::uint64_t>((value >> shift) & 0xffULL);
+    hash *= 0x100000001b3ULL;
+  }
+}
+
+}  // namespace
+
+std::uint64_t tree_shape_digest(const AbstractTree& tree) {
+  std::uint64_t hash = 0xcbf29ce484222325ULL;
+  for (std::size_t index = 0; index < tree.size(); ++index) {
+    const TreeNode& node = tree.node(index);
+    fnv_update(hash, static_cast<std::uint64_t>(index));
+    fnv_update(hash, static_cast<std::uint64_t>(static_cast<std::uint8_t>(node.kind)));
+    fnv_update(hash, static_cast<std::uint64_t>(node.actions.size()));
+    for (const poker::Action& action : node.actions) {
+      fnv_update(hash, static_cast<std::uint64_t>(static_cast<std::uint8_t>(action.type)));
+      fnv_update(hash, static_cast<std::uint64_t>(action.target_total));
+    }
+  }
+  return hash;
+}
+
 }  // namespace bs::tree

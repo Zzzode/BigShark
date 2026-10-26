@@ -47,21 +47,37 @@ int run(int argc, char** argv) {
   opts.max_file_bytes = 1ULL << 33;
   const auto loaded = bs::artifacts::load_artifact(artifact_path, opts);
   if (!loaded.bundle.nseat)
-    throw std::invalid_argument("artifact is not a v2/v3 nseat bundle");
+    throw std::invalid_argument("artifact is not a schema-v2/schema-v3 nseat bundle");
   const auto& policy = loaded.bundle.nseat->policy;
   const auto& def = policy.game();
   if (def.terminal != bs::poker::TerminalDepth::Flop || def.board_size != 0)
     throw std::invalid_argument("artifact must be preflop-rooted and flop-terminal");
-  // Reconstruct the stored menu contract, not a default identity tree.
-  auto action = bs::abstraction::ActionAbstraction(policy.sizes());
-  if (action.id() != policy.action_id()) {
-    action = bs::abstraction::ActionAbstraction::declared(
-        policy.sizes(), bs::abstraction::CoverSeeds::DeclaredOnly);
-    if (action.id() != policy.action_id())
-      action = bs::abstraction::ActionAbstraction::declared(policy.sizes(),
-                                                            bs::abstraction::CoverSeeds::MinAndCap);
+  // Reconstruct the stored menu contract, not a default identity tree. RFC
+  // 0030: the raise cap is part of the id parameters, so it is recovered from
+  // the persisted token rather than assumed 0. A recognized family whose
+  // parameters carry no token predates the pin and must be rebuilt (its
+  // sibling manifest names max_raises_per_street); measuring it at cap 0 would
+  // report a NashConv for the wrong tree.
+  const bs::abstraction::AbstractionId& stored_id = policy.action_id();
+  std::uint8_t cap = 0;
+  if (stored_id.name == "rfc0007-pot-fractions" || stored_id.name == "rfc0008-declared-coarse") {
+    try {
+      cap = bs::abstraction::parse_max_raises_token(stored_id.parameters);
+    } catch (const std::invalid_argument& error) {
+      throw std::invalid_argument(std::string(error.what()) +
+                                  "; rebuild the artifact with a current builder (the sibling "
+                                  "manifest.json records max_raises_per_street)");
+    }
   }
-  bs::abstraction::require_same_abstraction(action.id(), policy.action_id());
+  auto action = bs::abstraction::ActionAbstraction(policy.sizes(), cap);
+  if (action.id() != stored_id) {
+    action = bs::abstraction::ActionAbstraction::declared(
+        policy.sizes(), bs::abstraction::CoverSeeds::DeclaredOnly, cap);
+    if (action.id() != stored_id)
+      action = bs::abstraction::ActionAbstraction::declared(
+          policy.sizes(), bs::abstraction::CoverSeeds::MinAndCap, cap);
+  }
+  bs::abstraction::require_same_abstraction(action.id(), stored_id);
   const bs::tree::AbstractTree tree(def, action);
 
   bs::gto::EquityFrontierEvaluator equity_frontier;
@@ -78,11 +94,11 @@ int run(int argc, char** argv) {
       onthefly_evaluator = std::make_unique<bs::gto::OnTheFlyPostflopEvaluator>(
           *declared_table, std::filesystem::path(policy_dir));
       frontier = onthefly_evaluator.get();
-      frontier_tag = "postflop-onthefly-v1";
+      frontier_tag = "postflop-onthefly";
     } else {
       postflop_evaluator = std::make_unique<bs::gto::PostflopFrontierEvaluator>(*declared_table);
       frontier = postflop_evaluator.get();
-      frontier_tag = "postflop-declared-table-v1";
+      frontier_tag = "postflop-declared-table";
     }
   }
 

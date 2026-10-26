@@ -76,6 +76,25 @@ std::uint64_t fnv1a(const std::string& bytes) {
   return hash;
 }
 
+// RFC 0030 action-abstraction family names and the canonical raise-cap token.
+constexpr const char* kIdentityActionName = "rfc0007-pot-fractions";
+constexpr std::uint32_t kIdentityActionVersion = 1;
+constexpr const char* kCoarseActionName = "rfc0008-declared-coarse";
+constexpr std::uint32_t kCoarseActionVersion = 1;
+constexpr const char* kCapTokenPrefix = "|max-raises=";
+
+// Append the canonical RFC 0030 raise-cap token. The schedule/cover-seed
+// prefix already ends in a newline; the token is the final bytes and carries
+// no trailing newline, so the line has exactly one canonical spelling.
+void append_cap_token(std::string& parameters, std::uint8_t max_raises) {
+  parameters += kCapTokenPrefix;
+  parameters += std::to_string(static_cast<unsigned>(max_raises));
+}
+
+bool digest_recomputes(const AbstractionId& id) {
+  return id.digest == abstraction_digest(id.name, id.version, id.parameters);
+}
+
 }  // namespace
 
 SizeSchedule default_size_schedule() {
@@ -107,33 +126,39 @@ void require_same_abstraction(const AbstractionId& requested, const AbstractionI
     throw abstraction_mismatch(requested.to_string(), trained.to_string());
 }
 
-AbstractionId ActionAbstraction::make_id(const SizeSchedule& schedule) {
+AbstractionId ActionAbstraction::make_id(const SizeSchedule& schedule,
+                                         std::uint8_t max_raises_per_street) {
   AbstractionId id;
-  id.name = "rfc0007-pot-fractions";
-  id.version = 1;
+  id.name = kIdentityActionName;
+  id.version = kIdentityActionVersion;
   id.parameters = canonical_schedule(schedule);
+  append_cap_token(id.parameters, max_raises_per_street);
   id.digest = abstraction_digest(id.name, id.version, id.parameters);
   return id;
 }
 
-AbstractionId ActionAbstraction::make_declared_id(const SizeSchedule& schedule, CoverSeeds seeds) {
+AbstractionId ActionAbstraction::make_declared_id(const SizeSchedule& schedule, CoverSeeds seeds,
+                                                  std::uint8_t max_raises_per_street) {
   AbstractionId id;
-  id.name = "rfc0008-declared-coarse";
-  id.version = 1;
+  id.name = kCoarseActionName;
+  id.version = kCoarseActionVersion;
   // The cover-seed rule is part of the declared map: two coarse schedules that
   // differ only in whether the forced min/cap are offered must not share an id.
   std::string params = canonical_schedule(schedule);
   params += seeds == CoverSeeds::DeclaredOnly ? "cover-seeds=declared-only\n"
                                               : "cover-seeds=min-and-cap\n";
+  append_cap_token(params, max_raises_per_street);
   id.parameters = std::move(params);
   id.digest = abstraction_digest(id.name, id.version, id.parameters);
   return id;
 }
 
-ActionAbstraction ActionAbstraction::declared(SizeSchedule schedule, CoverSeeds seeds) {
+ActionAbstraction ActionAbstraction::declared(SizeSchedule schedule, CoverSeeds seeds,
+                                              std::uint8_t max_raises_per_street) {
   SizeSchedule reduced_schedule = reduced(std::move(schedule));
-  AbstractionId id = make_declared_id(reduced_schedule, seeds);
-  return ActionAbstraction(std::move(reduced_schedule), seeds, std::move(id));
+  AbstractionId id = make_declared_id(reduced_schedule, seeds, max_raises_per_street);
+  return ActionAbstraction(std::move(reduced_schedule), seeds, std::move(id),
+                           max_raises_per_street);
 }
 
 SizeSchedule ActionAbstraction::reduced(SizeSchedule schedule) {
@@ -157,8 +182,68 @@ AbstractionId identity_action_id() {
   return ActionAbstraction::identity().id();
 }
 
+std::uint8_t parse_max_raises_token(const std::string& parameters) {
+  const std::string prefix(kCapTokenPrefix);
+  const std::size_t first = parameters.find(prefix);
+  if (first == std::string::npos)
+    throw std::invalid_argument(
+        "action abstraction parameters carry no |max-raises= token; the cap is unknown");
+  if (parameters.find(prefix, first + prefix.size()) != std::string::npos)
+    throw std::invalid_argument("action abstraction parameters repeat the |max-raises= token");
+  if (parameters.rfind(prefix) != first)
+    throw std::invalid_argument("the |max-raises= token must be the final parameter");
+  const std::string value = parameters.substr(first + prefix.size());
+  if (value.empty())
+    throw std::invalid_argument("the |max-raises= token carries an empty value");
+  for (char c : value)
+    if (c < '0' || c > '9')
+      throw std::invalid_argument("the |max-raises= value must be a non-negative integer");
+  // Canonical decimal: no leading zero except the single digit "0", no sign.
+  if (value.size() > 1 && value[0] == '0')
+    throw std::invalid_argument("the |max-raises= value must use canonical decimal spelling");
+  // Max three digits and the uint8 range.
+  if (value.size() > 3 || std::strtoull(value.c_str(), nullptr, 10) > 255)
+    throw std::invalid_argument("the |max-raises= value must be in 0..255");
+  return static_cast<std::uint8_t>(std::strtoul(value.c_str(), nullptr, 10));
+}
+
+bool is_identity_action_family(const AbstractionId& id) {
+  if (id.name != kIdentityActionName || id.version != kIdentityActionVersion)
+    return false;
+  const std::size_t token = id.parameters.rfind(kCapTokenPrefix);
+  if (token == std::string::npos || id.parameters.find(kCapTokenPrefix, 0) != token)
+    return false;  // tokenless or duplicated
+  const std::string prefix_parameters = id.parameters.substr(0, token);
+  if (prefix_parameters != canonical_schedule(default_size_schedule()))
+    return false;  // custom schedules stay refused under the family name
+  try {
+    (void)parse_max_raises_token(id.parameters);
+  } catch (const std::invalid_argument&) {
+    return false;
+  }
+  return digest_recomputes(id);
+}
+
 bool is_declared_coarse_action_id(const AbstractionId& id) {
-  return id.name == "rfc0008-declared-coarse";
+  if (id.name != kCoarseActionName || id.version != kCoarseActionVersion)
+    return false;
+  const std::size_t token = id.parameters.rfind(kCapTokenPrefix);
+  if (token == std::string::npos || id.parameters.find(kCapTokenPrefix, 0) != token)
+    return false;  // tokenless or duplicated
+  // Coarse parameters are canonical-schedule bytes plus exactly one
+  // cover-seeds line; schedules vary, so the digest recomputation pins the
+  // schedule and this pins the declared shape.
+  const std::string before_cap = id.parameters.substr(0, token);
+  const bool declared_only = before_cap.ends_with("cover-seeds=declared-only\n");
+  const bool min_and_cap = before_cap.ends_with("cover-seeds=min-and-cap\n");
+  if (!declared_only && !min_and_cap || !before_cap.starts_with("size-v1\n"))
+    return false;
+  try {
+    (void)parse_max_raises_token(id.parameters);
+  } catch (const std::invalid_argument&) {
+    return false;
+  }
+  return digest_recomputes(id);
 }
 
 AbstractionId card_abstraction_id(CardBucketKind kind) {
@@ -178,6 +263,13 @@ AbstractionId card_abstraction_id(CardBucketKind kind) {
       id.name = "preflop-169";
       id.version = 1;
       id.parameters = "bucket=preflop-rank-suit;count=169;lossless=0";
+      break;
+    case CardBucketKind::TiersDrawV1:
+      id.name = "category-tiers-draw";
+      id.version = 1;
+      id.parameters =
+          "bucket=(hand-category-1)*4+draw-code;count=36;"
+          "draw=flush-four-suit|one-card-straight;streets=flop,turn;lossless=0";
       break;
   }
   id.digest = abstraction_digest(id.name, id.version, id.parameters);
@@ -273,11 +365,55 @@ std::uint32_t strength_bucket(const std::array<int, 2>& hole, std::span<const in
   return bs::evaluate(cards.data(), static_cast<int>(board.size()) + 2).score;
 }
 
+std::uint32_t tiers_draw_bucket(const std::array<int, 2>& hole, std::span<const int> board) {
+  // RFC 0031 TiersDrawV1: the made-hand category plus a board-dependent
+  // draw code. The code exists only while one card remains to come (flop
+  // and turn); preflop and river buckets carry 0.
+  const std::uint32_t category = (strength_bucket(hole, board) >> 20) & 0xF;  // 1..9
+  unsigned draw_code = 0;
+  if (board.size() == 3 || board.size() == 4) {
+    int suit_counts[4] = {0, 0, 0, 0};
+    std::uint16_t rank_mask = 0;
+    const auto add_card = [&](int card) {
+      ++suit_counts[card & 3];
+      rank_mask |= static_cast<std::uint16_t>(1u << (card >> 2));
+    };
+    add_card(hole[0]);
+    add_card(hole[1]);
+    for (int card : board)
+      add_card(card);
+    // A made flush needs five suited cards, so exactly four is precisely
+    // the one-card flush draw at five or six available cards.
+    bool flush_draw = false;
+    for (int count : suit_counts)
+      if (count == 4)
+        flush_draw = true;
+    // One-card straight draw: some absent rank completes five consecutive
+    // ranks (wheel included). Only meaningful below a made straight; a
+    // straight or better cannot improve by hitting a straight.
+    bool straight_draw = false;
+    if (category < 5) {
+      for (int rank = 0; rank < 13; ++rank) {
+        if (rank_mask & static_cast<std::uint16_t>(1u << rank))
+          continue;
+        if (bs::straightHigh(rank_mask | static_cast<std::uint16_t>(1u << rank))) {
+          straight_draw = true;
+          break;
+        }
+      }
+    }
+    draw_code = (flush_draw ? 1u : 0u) | (straight_draw ? 2u : 0u);
+  }
+  return (category - 1) * 4 + draw_code;  // dense 0..35
+}
+
 std::uint32_t card_bucket(CardBucketKind kind, const std::array<int, 2>& hole,
                           std::span<const int> board) {
   switch (kind) {
     case CardBucketKind::Identity:
       return strength_bucket(hole, board);
+    case CardBucketKind::TiersDrawV1:
+      return tiers_draw_bucket(hole, board);
     case CardBucketKind::CategoryTiersV1: {
       const std::uint32_t score = strength_bucket(hole, board);
       // The evaluator packs the category (1..9) in the top bits; same category

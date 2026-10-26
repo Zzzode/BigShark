@@ -23,7 +23,7 @@ SolveResult solve_nseat(const SolveRequest& request) {
     throw unsupported_tree_shape("n-seat CFR supports 2..10 seat trees");
   // The n-seat trainer accepts the identity and any declared-coarse action
   // abstraction (RFC 0008 DeclaredOnly menu); validate_request enforces this.
-  if (tree.action_id() != abstraction::identity_action_id() &&
+  if (!abstraction::is_identity_action_family(tree.action_id()) &&
       !abstraction::is_declared_coarse_action_id(tree.action_id()))
     throw unsupported_tree_shape(
         "n-seat CFR requires the identity or a declared-coarse action abstraction");
@@ -79,7 +79,7 @@ SolveResult solve_heads_up(const SolveRequest& request) {
   // Declared-coarse abstractions (RFC 0008 DeclaredOnly) are also accepted:
   // the heads-up trainer builds its menus from the schedule, and the tree's
   // abstract actions are already baked in by the AbstractTree construction.
-  if (tree.action_id() != abstraction::identity_action_id() &&
+  if (!abstraction::is_identity_action_family(tree.action_id()) &&
       !abstraction::is_declared_coarse_action_id(tree.action_id()))
     throw unsupported_tree_shape(
         "heads-up CFR requires the identity or a declared-coarse action abstraction");

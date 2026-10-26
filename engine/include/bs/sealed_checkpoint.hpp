@@ -66,6 +66,11 @@ struct SealedCheckpointState {
   std::uint32_t bucket_cap = 0;
   // The card kind the buckets were computed under.
   abstraction::CardBucketKind key_kind = solver::kNSeatCardKind;
+  // RFC 0030: BSWARM02 whole-tree shape witness (FNV-1a 64 over every node's
+  // index, kind, and ordered menu). A resume hard-refuses a mismatch before
+  // rows are adopted. Required on save and load; absent only when a caller is
+  // constructing state in memory.
+  std::optional<std::uint64_t> tree_shape_digest;
   std::map<solver::NSeatInformationKey, solver::NSeatRawRow> rows;
 };
 

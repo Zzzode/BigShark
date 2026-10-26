@@ -1696,6 +1696,50 @@ int mid_street_same_game_def() {
   b = a;
   b.raise_rights[1] = false;
   CHECK(!same_game_def(a, b));
+  // RFC 0030: the mid-street raise counter is part of root identity.
+  b = a;
+  b.raises_this_street = 1;
+  CHECK(!same_game_def(a, b));
+  return 0;
+}
+
+// RFC 0030: a nonzero raise counter is valid at a mid-street root and seeds
+// the GameState, but rejected at a street-start or preflop root.
+int raises_this_street_rules() {
+  GameDef mid = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  mid.contributions[0] = 3;
+  mid.street_committed[0] = 2;
+  mid.raise_rights[0] = false;
+  mid.raise_rights[1] = true;
+  mid.raise_rights[2] = true;
+  mid.last_full_raise = 2;
+  mid.raises_this_street = 1;
+  mid.pot = 5;
+  GameState state(mid);
+  CHECK(state.raises_this_street() == 1);
+
+  bool rejected = false;
+  GameDef street_start = make_rooted(3, 2, 2, 4, flat(3, 10), flat(3, 1));
+  street_start.raises_this_street = 1;  // no street_committed: street start
+  try {
+    validate(street_start);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
+
+  rejected = false;
+  GameDef preflop;
+  preflop.player_count = 3;
+  preflop.big_blind = 2;
+  preflop.preflop = true;
+  preflop.raises_this_street = 1;
+  try {
+    validate(preflop);
+  } catch (const std::invalid_argument&) {
+    rejected = true;
+  }
+  CHECK(rejected);
   return 0;
 }
 
@@ -1706,7 +1750,7 @@ int main() {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 21> cases{{
+  const std::array<Case, 22> cases{{
       {"sweep", sweep},
       {"differentiated_three_way_showdown_matches_shipped",
        differentiated_three_way_showdown_matches_shipped},
@@ -1731,6 +1775,7 @@ int main() {
       {"preflop_street_committed_rejected", preflop_street_committed_rejected},
       {"street_start_last_full_raise_rejected", street_start_last_full_raise_rejected},
       {"mid_street_same_game_def", mid_street_same_game_def},
+      {"raises_this_street_rules", raises_this_street_rules},
   }};
   int failures = 0;
   for (const Case& item : cases) {

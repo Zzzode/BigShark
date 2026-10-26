@@ -542,6 +542,27 @@ target_include_directories(bigshark-mmap-cold-open-bench PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# RFC 0031 Stage 0: flop-library segmentation statistics. Manual target,
+# NOT a CTest (operates on the large on-disk artifact library).
+add_executable(bigshark-flop-library-stats
+  benchmarks/flop_library_stats.cpp
+)
+target_link_libraries(bigshark-flop-library-stats PRIVATE
+  bigshark_resident
+)
+target_include_directories(bigshark-flop-library-stats PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# RFC 0031 AC5: per-lookup card_bucket cost (ns/call) for the measurable
+# bucket schemes against the ~75 ns replay budget. Manual target, NOT a CTest.
+add_executable(bigshark-card-bucket-cost
+  benchmarks/card_bucket_cost.cpp
+)
+target_link_libraries(bigshark-card-bucket-cost PRIVATE
+  bigshark_abstraction
+)
+
 # RFC 0009 W4b: offline preflop profile builder. Trains a full-range (1,326
 # combos/seat) heads-up preflop flop-terminal profile at a declared stack
 # depth and publishes a schema-v2 artifact. Manual target, NOT a CTest.

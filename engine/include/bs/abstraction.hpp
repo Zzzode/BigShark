@@ -122,13 +122,30 @@ void require_same_abstraction(const AbstractionId& requested, const AbstractionI
 
 // The declared identity action abstraction: the RFC 0007 per-street pot
 // fraction schedule. Its id parameters are the canonical serialization of
-// `default_size_schedule()`, so changing a fraction changes the digest.
+// `default_size_schedule()` plus the RFC 0030 `|max-raises=<N>` token, so
+// changing the raise cap changes the digest.
 AbstractionId identity_action_id();
 
+// RFC 0030: strict admissibility predicate for the identity action family.
+// True only for `rfc0007-pot-fractions` v1 with the canonical default
+// schedule, a well-formed trailing `|max-raises=<N>` token, and a digest that
+// recomputes from the parameters. A custom schedule, a tokenless legacy line,
+// or a hand-edited digest is refused.
+bool is_identity_action_family(const AbstractionId& id);
+
 // True when `id` names the declared-coarse action abstraction family
-// (RFC 0008 DeclaredOnly menu). The trainer accepts any schedule in this
-// family; the digest still pins the exact schedule for artifact compatibility.
+// (RFC 0008 DeclaredOnly menu). RFC 0030 made this strict: the name, version,
+// cover-seeds parameter, `|max-raises=<N>` token, and recomputed digest must
+// all agree. The trainer accepts any schedule in this family; the digest pins
+// the exact schedule for artifact compatibility.
 bool is_declared_coarse_action_id(const AbstractionId& id);
+
+// RFC 0030: parse the trailing `|max-raises=<N>` token off an action-
+// abstraction parameter line. Returns the cap (0..255). Throws
+// std::invalid_argument when the token is absent, duplicated, non-final,
+// non-numeric, non-canonically spelled (`01`, `+1`, padded), or out of range.
+// The pre-token content is ignored here and validated by the family caller.
+std::uint8_t parse_max_raises_token(const std::string& parameters);
 
 // Card abstraction families. `Identity` maps a holding to its current
 // made-hand evaluator score (strictly strength-order-preserving: it never
@@ -144,7 +161,20 @@ bool is_declared_coarse_action_id(const AbstractionId& id);
 // 78 offsuit = 169 buckets, computed directly from card ranks and suits
 // without the evaluator. At postflop (non-empty board) it falls back to
 // CategoryTiersV1, so river-terminal games are unaffected.
-enum class CardBucketKind { Identity, CategoryTiersV1, Preflop169 };
+// `TiersDrawV1` (RFC 0031) refines the postflop category with a two-bit
+// draw code evaluated on the flop and turn: bit 0 is a one-card flush
+// draw (exactly four cards of one suit), bit 1 is a one-card straight
+// draw (adding one unseen rank completes five consecutive ranks, wheel
+// included) for hands below a made straight. Buckets are dense
+// `(category - 1) * 4 + draw_code`, 36 values 0..35; the draw code is 0
+// preflop and on the river. The bucket function is the Stage-2 deliverable
+// recorded before any ablation; changing it invalidates the measurement.
+enum class CardBucketKind {
+  Identity = 0,
+  CategoryTiersV1 = 1,
+  Preflop169 = 2,
+  TiersDrawV1 = 3,
+};
 
 AbstractionId card_abstraction_id(CardBucketKind kind);
 
@@ -217,25 +247,26 @@ std::vector<poker::Action> build_multiway_action_menu(const poker::LegalActions&
 // identity schedule or its golden digest.
 class ActionAbstraction {
  public:
-  explicit ActionAbstraction(SizeSchedule schedule)
+  explicit ActionAbstraction(SizeSchedule schedule, std::uint8_t max_raises_per_street = 0)
       : schedule_(reduced(std::move(schedule))),
         seeds_(CoverSeeds::MinAndCap),
-        max_raises_per_street_(0),
-        id_(make_id(schedule_)) {}
+        max_raises_per_street_(max_raises_per_street),
+        id_(make_id(schedule_, max_raises_per_street)) {}
 
-  static ActionAbstraction identity() { return ActionAbstraction(default_size_schedule()); }
+  static ActionAbstraction identity(std::uint8_t max_raises_per_street = 0) {
+    return ActionAbstraction(default_size_schedule(), max_raises_per_street);
+  }
 
   // The declared-only coarse abstraction. `schedule` carries the coarse
   // fractions; `seeds` is serialized into the identity parameters so that
   // MinAndCap and DeclaredOnly mint distinct digests even at equal fractions.
-  static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds);
+  // RFC 0030: the raise cap joins the same parameters.
+  static ActionAbstraction declared(SizeSchedule schedule, CoverSeeds seeds,
+                                    std::uint8_t max_raises_per_street = 0);
 
-  // RFC 0024: set a cap on the number of full raises per street. Zero means
-  // no cap (the default). When the cap is reached, the menu suppresses
-  // aggressive actions (bet/raise) and offers only fold/check/call. This
-  // bounds the branching factor for multiway subgames, making 5-6 seat
-  // depth-limited trees feasible within the 1 GiB builder cap.
-  void set_max_raises_per_street(std::uint8_t cap) { max_raises_per_street_ = cap; }
+  // RFC 0024: the cap on full raises per street shapes the strategy and is
+  // pinned in the id at construction (RFC 0030); there is no post-construction
+  // setter that could forget to re-mint the digest. Zero means no cap.
   std::uint8_t max_raises_per_street() const noexcept { return max_raises_per_street_; }
 
   const AbstractionId& id() const noexcept { return id_; }
@@ -256,10 +287,16 @@ class ActionAbstraction {
   }
 
  private:
-  ActionAbstraction(SizeSchedule schedule, CoverSeeds seeds, AbstractionId id)
-      : schedule_(std::move(schedule)), seeds_(seeds), id_(std::move(id)) {}
-  static AbstractionId make_id(const SizeSchedule& schedule);
-  static AbstractionId make_declared_id(const SizeSchedule& schedule, CoverSeeds seeds);
+  ActionAbstraction(SizeSchedule schedule, CoverSeeds seeds, AbstractionId id,
+                    std::uint8_t max_raises_per_street)
+      : schedule_(std::move(schedule)),
+        seeds_(seeds),
+        max_raises_per_street_(max_raises_per_street),
+        id_(std::move(id)) {}
+  static AbstractionId make_id(const SizeSchedule& schedule,
+                               std::uint8_t max_raises_per_street = 0);
+  static AbstractionId make_declared_id(const SizeSchedule& schedule, CoverSeeds seeds,
+                                        std::uint8_t max_raises_per_street = 0);
   // Reduced form is part of declared identity: an unreduced fraction such as
   // 2/4 is normalized to 1/2 at declaration so the stored schedule and its
   // canonical id always agree (a zero component is rejected here).

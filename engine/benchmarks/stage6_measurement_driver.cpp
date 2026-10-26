@@ -251,7 +251,8 @@ struct TrainBudget {
 
 std::vector<TrainedBucket> train_buckets(std::size_t n, std::uint64_t iters, std::uint64_t seed,
                                          std::size_t limit, bool verbose, const TrainBudget& budget,
-                                         RangeProfile profile) {
+                                         RangeProfile profile,
+                                         bs::abstraction::CardBucketKind card_kind) {
   ProfileMatrix matrix = build_profile_matrix(n, profile);
   TrainSetup setup = make_setup(matrix.sigs);
 
@@ -268,7 +269,7 @@ std::vector<TrainedBucket> train_buckets(std::size_t n, std::uint64_t iters, std
 
   TrainingConfig config;
   config.action = setup.action;
-  config.card_kind = bs::abstraction::CardBucketKind::CategoryTiersV1;
+  config.card_kind = card_kind;
   config.iterations = iters;
   config.master_seed = seed;
   config.geometry_matrix_hash = setup.geometry_matrix_hash;
@@ -322,8 +323,10 @@ std::vector<TrainedBucket> train_buckets(std::size_t n, std::uint64_t iters, std
 }
 
 int cmd_train(std::size_t n, std::uint64_t iters, std::uint64_t seed, std::size_t limit,
-              const std::string& outdir, const TrainBudget& budget, RangeProfile profile) {
-  std::vector<TrainedBucket> trained = train_buckets(n, iters, seed, limit, true, budget, profile);
+              const std::string& outdir, const TrainBudget& budget, RangeProfile profile,
+              bs::abstraction::CardBucketKind card_kind) {
+  std::vector<TrainedBucket> trained =
+      train_buckets(n, iters, seed, limit, true, budget, profile, card_kind);
   const char* profile_name = profile == RangeProfile::ChartReach ? "chart-reach" : "uniform";
   std::printf("trained_buckets=%zu range_profile=%s\n", trained.size(), profile_name);
   if (!outdir.empty()) {
@@ -418,8 +421,9 @@ BrEstimatorResult measure_profile(const GeometryBucket& bucket,
 
 int cmd_measure(std::size_t n, std::uint64_t iters, std::uint64_t seed, std::size_t limit,
                 std::size_t learn_count, std::size_t confirm_count, const TrainBudget& budget,
-                bool exact_space, RangeProfile profile) {
-  std::vector<TrainedBucket> trained = train_buckets(n, iters, seed, limit, true, budget, profile);
+                bool exact_space, RangeProfile profile, bs::abstraction::CardBucketKind card_kind) {
+  std::vector<TrainedBucket> trained =
+      train_buckets(n, iters, seed, limit, true, budget, profile, card_kind);
   const bool chart_reach = profile == RangeProfile::ChartReach;
   const char* profile_name = chart_reach ? "chart-reach" : "uniform";
 
@@ -551,6 +555,7 @@ int main(int argc, char** argv) {
     std::uint64_t max_gib = 8;
     bool exact_space = false;
     std::string ranges_arg = "uniform";
+    std::string card_kind_arg = "tiers";
     for (int i = 2; i < argc; ++i) {
       const std::string arg = argv[i];
       auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -578,6 +583,18 @@ int main(int argc, char** argv) {
         exact_space = true;
       else if (arg == "--ranges")
         ranges_arg = next();
+      else if (arg == "--card-kind")
+        card_kind_arg = next();
+    }
+    bs::abstraction::CardBucketKind card_kind;
+    if (card_kind_arg == "tiers")
+      card_kind = bs::abstraction::CardBucketKind::CategoryTiersV1;
+    else if (card_kind_arg == "tiers-draw")
+      card_kind = bs::abstraction::CardBucketKind::TiersDrawV1;
+    else {
+      std::fprintf(stderr, "usage: --card-kind must be 'tiers' or 'tiers-draw' (got '%s')\n",
+                   card_kind_arg.c_str());
+      return 2;
     }
     RangeProfile profile;
     if (ranges_arg == "uniform")
@@ -590,7 +607,8 @@ int main(int argc, char** argv) {
       std::fprintf(stderr,
                    "usage: %s hashes|geometries|train|measure [--n N --iters K --seed S "
                    "--buckets K --learn L --confirm C --out dir --wall-seconds S "
-                   "--max-infosets M --max-gib G --exact] [--ranges uniform|chart-reach]\n",
+                   "--max-infosets M --max-gib G --exact] [--ranges uniform|chart-reach] "
+                   "[--card-kind tiers|tiers-draw]\n",
                    argv[0]);
       return 2;
     }
@@ -604,14 +622,15 @@ int main(int argc, char** argv) {
       // --ranges deliberately.
       return cmd_geometries(n);
     if (command == "train")
-      return cmd_train(n, iters, seed, limit, outdir, budget, profile);
+      return cmd_train(n, iters, seed, limit, outdir, budget, profile, card_kind);
     if (command == "measure")
       return cmd_measure(n, iters, seed, limit, learn_count, confirm_count, budget, exact_space,
-                         profile);
+                         profile, card_kind);
     std::fprintf(stderr,
                  "usage: %s hashes|geometries|train|measure [--n N --iters K --seed S "
                  "--buckets K --learn L --confirm C --out dir --wall-seconds S "
-                 "--max-infosets M --max-gib G --exact] [--ranges uniform|chart-reach]\n",
+                 "--max-infosets M --max-gib G --exact] [--ranges uniform|chart-reach] "
+                 "[--card-kind tiers|tiers-draw]\n",
                  argv[0]);
     return 2;
   } catch (const std::exception& e) {

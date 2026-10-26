@@ -1,0 +1,73 @@
+# RFC 0031 Stage 3 card-abstraction ablation
+# Fixture set: n=2 all 4 actionable buckets (exact pooled walk), two schemes
+# (tiers=CategoryTiersV1, tiers-draw=TiersDrawV1), two iteration counts
+# (1000, 10000), learn=confirm=64 seeds, uniform range profile, coarse game.
+### n=2 iters=1000 kind=tiers 07:03
+[geometry] n=2 deviator=0 walk_nodes=117 total_sigs=5
+[geometry] n=2 deviator=1 walk_nodes=33 total_sigs=5
+[train] n=2 profile=uniform bucket=n2 potbb4 live2 act2 iters=1000
+[train] n=2 profile=uniform bucket=n2 potbb5 live2 act2 iters=1000
+[train] n=2 profile=uniform bucket=n2 potbb6 live2 act2 iters=1000
+[train] n=2 profile=uniform bucket=n2 potbb7 live2 act2 iters=1000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n2 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n2 potbb4 live2 act2,candidate,2.000000,-1.763899,5.763899,-2.031250,-5.857255,1.794755,64,298,7350,0,uniform
+n2 potbb5 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n2 potbb5 live2 act2,candidate,0.156250,-0.339791,0.652291,0.812500,-1.190729,2.815729,64,307,6867,0,uniform
+n2 potbb6 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n2 potbb6 live2 act2,candidate,-6.062500,-14.462328,2.337328,6.718750,-2.630754,16.068254,64,321,6212,0,uniform
+n2 potbb7 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n2 potbb7 live2 act2,candidate,-5.093750,-13.191834,3.004334,5.921875,-3.293599,15.137349,64,297,5482,0,uniform
+### n=2 iters=1000 kind=tiers-draw 07:05
+[geometry] n=2 deviator=0 walk_nodes=117 total_sigs=5
+[geometry] n=2 deviator=1 walk_nodes=33 total_sigs=5
+[train] n=2 profile=uniform bucket=n2 potbb4 live2 act2 iters=1000
+[train] n=2 profile=uniform bucket=n2 potbb5 live2 act2 iters=1000
+[train] n=2 profile=uniform bucket=n2 potbb6 live2 act2 iters=1000
+[train] n=2 profile=uniform bucket=n2 potbb7 live2 act2 iters=1000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n2 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n2 potbb4 live2 act2,candidate,-0.312500,-1.385169,0.760169,0.281250,-0.733138,1.295638,64,305,7692,0,uniform
+n2 potbb5 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n2 potbb5 live2 act2,candidate,-0.078125,-0.864652,0.708402,1.046875,-1.563287,3.657037,64,304,7027,0,uniform
+n2 potbb6 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n2 potbb6 live2 act2,candidate,3.312500,-10.571903,17.196903,-2.656250,-17.161860,11.849360,64,286,6244,0,uniform
+n2 potbb7 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n2 potbb7 live2 act2,candidate,0.984375,-2.880142,4.848892,-0.156250,-3.720174,3.407674,64,291,6053,0,uniform
+### n=2 iters=10000 kind=tiers 07:06
+[geometry] n=2 deviator=0 walk_nodes=117 total_sigs=5
+[geometry] n=2 deviator=1 walk_nodes=33 total_sigs=5
+[train] n=2 profile=uniform bucket=n2 potbb4 live2 act2 iters=10000
+[train] n=2 profile=uniform bucket=n2 potbb5 live2 act2 iters=10000
+[train] n=2 profile=uniform bucket=n2 potbb6 live2 act2 iters=10000
+[train] n=2 profile=uniform bucket=n2 potbb7 live2 act2 iters=10000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n2 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n2 potbb4 live2 act2,candidate,2.437500,-2.561894,7.436894,-2.468750,-7.530572,2.593072,64,337,5586,0,uniform
+n2 potbb5 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n2 potbb5 live2 act2,candidate,-0.859375,-2.953487,1.234737,1.828125,-1.005150,4.661400,64,321,5398,0,uniform
+n2 potbb6 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n2 potbb6 live2 act2,candidate,-4.062500,-10.972335,2.847335,4.718750,-2.637835,12.075335,64,292,4102,0,uniform
+n2 potbb7 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n2 potbb7 live2 act2,candidate,3.234375,-3.428654,9.897404,-2.406250,-9.402242,4.589742,64,318,4177,0,uniform
+### n=2 iters=10000 kind=tiers-draw 07:08
+[geometry] n=2 deviator=0 walk_nodes=117 total_sigs=5
+[geometry] n=2 deviator=1 walk_nodes=33 total_sigs=5
+[train] n=2 profile=uniform bucket=n2 potbb4 live2 act2 iters=10000
+[train] n=2 profile=uniform bucket=n2 potbb5 live2 act2 iters=10000
+[train] n=2 profile=uniform bucket=n2 potbb6 live2 act2 iters=10000
+[train] n=2 profile=uniform bucket=n2 potbb7 live2 act2 iters=10000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n2 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n2 potbb4 live2 act2,candidate,0.187500,-0.872163,1.247163,-0.218750,-1.323794,0.886294,64,304,5108,0,uniform
+n2 potbb5 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n2 potbb5 live2 act2,candidate,0.390625,-0.288180,1.069430,0.578125,-1.484986,2.641236,64,315,4731,0,uniform
+n2 potbb6 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n2 potbb6 live2 act2,candidate,-0.937500,-2.885585,1.010585,1.593750,-1.635575,4.823075,64,298,4295,0,uniform
+n2 potbb7 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n2 potbb7 live2 act2,candidate,3.453125,-3.325759,10.232009,-2.625000,-9.664430,4.414430,64,323,4257,0,uniform
+### RFC0031_ABLATION_N2_DONE 07:09

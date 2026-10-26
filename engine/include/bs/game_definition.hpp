@@ -153,6 +153,14 @@ struct GameDef {
   // the big blind, so a nonzero value is validated `>= big_blind`.
   Chips last_full_raise = 0;
 
+  // Number of full bets/raises already made on the CURRENT street at the root
+  // (RFC 0030). Zero at every street-start and preflop root; nonzero only at a
+  // mid-street root, where the subgame resolver seeds it from the live node so
+  // the action-abstraction cap counts raises that happened before the root
+  // instead of resetting and allowing one raise too many. Memory-only: it is
+  // not persisted, like street_committed/raise_rights/last_full_raise.
+  std::uint8_t raises_this_street = 0;
+
   // Selects the two-seat preflop shape explicitly: blinds posted, no board,
   // the button acts first, and the big blind keeps its option after a limp.
   // For 3..10 seats the profile is implied by board emptiness instead, matching

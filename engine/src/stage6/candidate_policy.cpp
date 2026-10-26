@@ -42,6 +42,8 @@ struct Installed {
 CardBucketKind card_kind_from_id(const bs::abstraction::AbstractionId& id) {
   if (id == bs::abstraction::card_abstraction_id(CardBucketKind::CategoryTiersV1))
     return CardBucketKind::CategoryTiersV1;
+  if (id == bs::abstraction::card_abstraction_id(CardBucketKind::TiersDrawV1))
+    return CardBucketKind::TiersDrawV1;
   if (id == bs::abstraction::card_abstraction_id(CardBucketKind::Identity))
     return CardBucketKind::Identity;
   throw stage6_candidate_error("candidate binding names an unknown card abstraction: " +

@@ -259,10 +259,13 @@ int allocation_optimization_fingerprints() {
   // Captured through the native release test before any RFC 0017 production
   // optimization, ordered by board, seed, then width. These are not hashes
   // regenerated from the optimized implementation.
+  // RFC 0030 rotated every action-abstraction digest (the identity digest now
+  // carries the `|max-raises=0` token), rotating these fingerprints; the
+  // trained rows are unchanged (valid_result gates the rows before the hash).
   constexpr std::array<std::uint64_t, 12> baseline{
-      0xe5f7e3b4837a0853ULL, 0x645fc20990a8b459ULL, 0xcb1c05869ecbeaeeULL, 0xc04eb3fda164db10ULL,
-      0xb9e9455e86ee067bULL, 0x41450705a546333dULL, 0x5dde9d48f5926fcbULL, 0x7089e2755d2ab165ULL,
-      0x7f5d94ee1d59ed6bULL, 0xfd24ac5d2d29a82aULL, 0x86811d3a1933c8d2ULL, 0x158ac9fc5a7b5979ULL};
+      0x6be837f1013263e9ULL, 0x1f0180493b405b5fULL, 0x9fbd33b9dd564becULL, 0xfe786699b3d45836ULL,
+      0x3b52927a60a9f9f1ULL, 0x49813a08fb72cf07ULL, 0x21d29ca51caf45a9ULL, 0xba691d370618a7f7ULL,
+      0x0411d705d0813a99ULL, 0xcc3ffe36830da4c0ULL, 0xe9a59f1f31226c20ULL, 0x67175b54c380fe3fULL};
   std::size_t fixture = 0;
   const Ranges weighted{{{hand("Ac", "Ah"), 1.0}, {hand("Qh", "Qs"), 3.0}},
                         {{hand("Kc", "Kd"), 5.0}, {hand("Jc", "Jd"), 2.0}}};

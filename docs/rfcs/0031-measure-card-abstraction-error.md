@@ -1,10 +1,10 @@
 ---
 rfc: "0031"
 subject: "Measure Postflop Card-Abstraction Error Before Changing It"
-status: "Accepted"
+status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-20"
-updated: "2026-10-20"
+updated: "2026-10-25"
 owners: "engine abstraction, engine solver, engine flop library"
 supersedes: ""
 superseded-by: ""
@@ -519,6 +519,75 @@ without an intentional rebuild halts the rollout.
   ~75 ns/combo budget and the 150 ns/combo rejection gate.
 - **AC6**: The full Engine Build Contract passes, ASan is clean, and
   `check-rfcs` / `check-docs` pass.
+
+## Implementation Record
+
+Status: Implementing (2026-10-24). Stage 0's statistics tool is committed
+(`engine/benchmarks/flop_library_stats.cpp`); run against the shipped
+RFC 0033 library (`sha256 b5a480af…453aa`) it reports 1,642,680 public
+nodes, 945,898 untrained (57.58%), 696,782 trained, 2.9325 vectors per
+trained node, 1.5236 rows per distinct vector — matching the pinned
+baseline segmentation within the artifact change; exact reproduction of
+the pinned `b67e3cb3…20b4` numbers requires the backup preserved outside
+the repository. Stage 1 landed with RFC 0030: the bucket scheme is
+pinned in `.sections/build.json`, compared on sealed-checkpoint resume
+(ordinal in the BSWARM02 header, cross-kind refusal by name), and recorded
+in the manifest. Stage 2 landed on 2026-10-24: `TiersDrawV1` registered as
+`CardBucketKind` ordinal 3 — dense `(category-1)*4+draw_code` buckets
+(36 values; bit 0 = four-to-a-flush draw, bit 1 = one-card straight draw
+below a made straight; code zero preflop and on the river) — with the
+ceiling switch, the codec ordinal switch, and the packer range gate
+extended, the card abstraction id (`category-tiers-draw` v1) carrying a
+digest, and witnesses in `test_abstraction` and
+`test_sealed_checkpoint`. The n-seat training kind stays `Preflop169`;
+no artifact is trained or packed under the new scheme.
+
+Stage 3 enablement and AC5 (2026-10-25): the RFC 0029 candidate adapter
+(`candidate_policy.cpp::card_kind_from_id`) now recognizes
+`category-tiers-draw`, and the stage-6 measurement driver selects the
+training/measurement scheme through `--card-kind tiers|tiers-draw`, so the
+Stage-3 ablation runs without editing a constant. AC5's per-lookup cost is
+measured by the committed `bigshark-card-bucket-cost` benchmark over every
+non-blocked hole pair on representative flop/turn/river boards (20,000
+repetitions, median of three pinned-core runs, this host): tiers ~78 ns/call
+and identity ~78 ns/call at every street; TiersDrawV1 is 129-135 ns/call on
+the flop and turn (the flush/straight-draw scan) and 79-95 ns/call on the
+river (the draw code is zero there). Every scheme is below the 150 ns/call
+rejection gate; TiersDrawV1 clears AC5 at all streets. The Stage-3
+exploitability ablation (AC2/AC3) is running on the declared n=2 exact
+fixture set at two iteration counts; its result is recorded in the
+implementation plan and decides adopt/keep/inconclusive.
+
+Stage 3 result — KEEP tiers (2026-10-25). The ablation ran the declared
+fixture set (all four actionable n=2 geometry buckets, exact pooled walk,
+uniform ranges, learn=confirm=64 seeds, coarse-game candidate) for both
+schemes at 1,000 and 10,000 iterations; raw CSV is
+`docs/plans/ablation/rfc0031-n2.csv`. Summed over the fixture (BB=2 chips):
+
+| iterations | expl(tiers) BB (95% CI) | expl(TiersDrawV1) BB (95% CI) | improvement BB | minimum BB |
+| --- | --- | --- | --- | --- |
+| 1,000 | -4.50 [-14.88, 5.88] | 1.95 [-7.85, 11.76] | -6.45 | 1.50 |
+| 10,000 | 0.375 [-9.96, 10.71] | 1.55 [-3.69, 6.78] | -1.17 | 0.125 |
+
+The intervals overlap at both counts (strict-disjoint adopt branch never
+fires) and `improvement = expl(tiers) - expl(TiersDrawV1)` is NEGATIVE at
+both counts, below the positive minimum; the declared rule therefore
+resolves to **keep tiers**, not inconclusive. The measured spots are
+near-GTO shallow n=2 buckets (candidate NashConv hovers around zero and
+18k-27k candidate rows stay uniform at these iteration budgets), so the
+ablation does not claim tiers is optimal — it establishes that
+TiersDrawV1 gives no measured improvement on the exact fixture at either
+budget, which is the falsifiable question the RFC posed. No artifact is
+trained or packed under TiersDrawV1; the registered scheme stays available
+for a later, deeper fixture. The 2x byte-size branch is moot once the
+improvement branch fails. Production continues on the existing tier
+scheme with the scheme pinned end to end (Stage 1/2). The separate n=3
+sampled campaign (all 12 declared buckets, `rfc0031-n3.csv`) is
+**inconclusive with a positive direction**: point-estimate improvement is
++1.89 BB at 1,000 and +2.21 BB at 10,000 iterations, but the ~40 BB
+confidence intervals overlap, so the strict-disjoint adopt branch never
+fires; a higher-sample multiway campaign is the recorded path to revisit,
+not an adoption on this evidence.
 
 ## Decision
 

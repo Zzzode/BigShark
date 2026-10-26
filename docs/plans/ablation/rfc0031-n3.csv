@@ -1,0 +1,167 @@
+# RFC 0031 Stage 3 ablation, n=3 (all 12 actionable buckets, sampled BR)
+### n=3 iters=1000 kind=tiers 07:17
+[geometry] n=3 deviator=0 walk_nodes=758 total_sigs=61
+[geometry] n=3 deviator=1 walk_nodes=253 total_sigs=68
+[geometry] n=3 deviator=2 walk_nodes=245 total_sigs=78
+[train] n=3 profile=uniform bucket=n3 potbb10 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb11 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb14 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb4 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb5 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb6 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb6 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb7 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb8 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb8 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb9 live3 act3 iters=1000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n3 potbb10 live2 act2,baseline,-0.140625,-0.421642,0.140392,,,,64,328,0,0,uniform
+n3 potbb10 live2 act2,candidate,-2.984375,-10.515000,4.546250,2.843750,-4.695646,10.383146,64,318,4909,0,uniform
+n3 potbb11 live3 act3,baseline,0.125000,-1.015359,1.265359,,,,64,560,0,0,uniform
+n3 potbb11 live3 act3,candidate,-6.359375,-17.663202,4.944452,6.484375,-4.836054,17.804804,64,457,14790,0,uniform
+n3 potbb14 live3 act3,baseline,2.078125,-2.539485,6.695735,,,,64,567,0,0,uniform
+n3 potbb14 live3 act3,candidate,16.437500,-4.543605,37.418605,-14.359375,-35.943155,7.224405,64,440,10552,0,uniform
+n3 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb4 live2 act2,candidate,2.000000,-1.763899,5.763899,-2.031250,-5.857255,1.794755,64,298,7350,0,uniform
+n3 potbb5 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb5 live2 act2,candidate,3.171875,-2.558000,8.901750,-3.203125,-8.932244,2.525994,64,299,7141,0,uniform
+n3 potbb6 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n3 potbb6 live2 act2,candidate,-2.875000,-8.957683,3.207683,3.843750,-4.169933,11.857433,64,310,6669,0,uniform
+n3 potbb6 live3 act3,baseline,-0.343750,-1.030680,0.343180,,,,64,564,0,0,uniform
+n3 potbb6 live3 act3,candidate,1.671875,-3.237799,6.581549,-2.015625,-6.965768,2.934518,64,483,14180,0,uniform
+n3 potbb7 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n3 potbb7 live2 act2,candidate,-0.296875,-8.020745,7.426995,0.953125,-7.816753,9.723003,64,332,6243,0,uniform
+n3 potbb8 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n3 potbb8 live2 act2,candidate,-5.093750,-13.191834,3.004334,5.921875,-3.293599,15.137349,64,297,5482,0,uniform
+n3 potbb8 live3 act3,baseline,0.109375,-2.215691,2.434441,,,,64,559,0,0,uniform
+n3 potbb8 live3 act3,candidate,-4.531250,-14.709251,5.646751,4.640625,-6.059794,15.341044,64,460,15274,0,uniform
+n3 potbb9 live3 act3,baseline,-0.093750,-1.435399,1.247899,,,,64,560,0,0,uniform
+n3 potbb9 live3 act3,candidate,4.781250,-8.401075,17.963575,-4.875000,-18.123279,8.373279,64,446,12701,0,uniform
+### n=3 iters=1000 kind=tiers-draw 07:24
+[geometry] n=3 deviator=0 walk_nodes=758 total_sigs=61
+[geometry] n=3 deviator=1 walk_nodes=253 total_sigs=68
+[geometry] n=3 deviator=2 walk_nodes=245 total_sigs=78
+[train] n=3 profile=uniform bucket=n3 potbb10 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb11 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb14 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb4 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb5 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb6 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb6 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb7 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb8 live2 act2 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb8 live3 act3 iters=1000
+[train] n=3 profile=uniform bucket=n3 potbb9 live3 act3 iters=1000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n3 potbb10 live2 act2,baseline,-0.140625,-0.421642,0.140392,,,,64,328,0,0,uniform
+n3 potbb10 live2 act2,candidate,-6.953125,-15.379741,1.473491,6.812500,-1.626149,15.251149,64,317,5305,0,uniform
+n3 potbb11 live3 act3,baseline,0.125000,-1.015359,1.265359,,,,64,560,0,0,uniform
+n3 potbb11 live3 act3,candidate,-3.968750,-18.480009,10.542509,4.093750,-10.269518,18.457018,64,457,15343,0,uniform
+n3 potbb14 live3 act3,baseline,2.078125,-2.539485,6.695735,,,,64,567,0,0,uniform
+n3 potbb14 live3 act3,candidate,2.062500,-6.130202,10.255202,0.015625,-11.875504,11.906754,64,426,12204,0,uniform
+n3 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb4 live2 act2,candidate,-0.312500,-1.385169,0.760169,0.281250,-0.733138,1.295638,64,305,7692,0,uniform
+n3 potbb5 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb5 live2 act2,candidate,-0.437500,-1.536619,0.661619,0.406250,-0.636305,1.448805,64,304,7699,0,uniform
+n3 potbb6 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n3 potbb6 live2 act2,candidate,-2.796875,-8.879832,3.286082,3.765625,-4.248865,11.780115,64,302,7251,0,uniform
+n3 potbb6 live3 act3,baseline,-0.343750,-1.030680,0.343180,,,,64,564,0,0,uniform
+n3 potbb6 live3 act3,candidate,-2.406250,-9.226180,4.413680,2.062500,-4.837581,8.962581,64,454,16553,0,uniform
+n3 potbb7 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n3 potbb7 live2 act2,candidate,-6.875000,-15.677238,1.927238,7.531250,-2.173631,17.236131,64,284,6199,0,uniform
+n3 potbb8 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n3 potbb8 live2 act2,candidate,0.984375,-2.880142,4.848892,-0.156250,-3.720174,3.407674,64,291,6053,0,uniform
+n3 potbb8 live3 act3,baseline,0.109375,-2.215691,2.434441,,,,64,559,0,0,uniform
+n3 potbb8 live3 act3,candidate,-0.218750,-14.488747,14.051247,0.328125,-13.992489,14.648739,64,472,17581,0,uniform
+n3 potbb9 live3 act3,baseline,-0.093750,-1.435399,1.247899,,,,64,560,0,0,uniform
+n3 potbb9 live3 act3,candidate,23.062500,1.308302,44.816698,-23.156250,-45.326166,-0.986334,64,485,13896,0,uniform
+### n=3 iters=10000 kind=tiers 07:32
+[geometry] n=3 deviator=0 walk_nodes=758 total_sigs=61
+[geometry] n=3 deviator=1 walk_nodes=253 total_sigs=68
+[geometry] n=3 deviator=2 walk_nodes=245 total_sigs=78
+[train] n=3 profile=uniform bucket=n3 potbb10 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb11 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb14 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb4 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb5 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb6 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb6 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb7 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb8 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb8 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb9 live3 act3 iters=10000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n3 potbb10 live2 act2,baseline,-0.140625,-0.421642,0.140392,,,,64,328,0,0,uniform
+n3 potbb10 live2 act2,candidate,-3.125000,-13.345100,7.095100,2.984375,-7.242312,13.211062,64,310,3884,0,uniform
+n3 potbb11 live3 act3,baseline,0.125000,-1.015359,1.265359,,,,64,560,0,0,uniform
+n3 potbb11 live3 act3,candidate,1.265625,-1.263525,3.794775,-1.140625,-3.918587,1.637337,64,472,10091,0,uniform
+n3 potbb14 live3 act3,baseline,2.078125,-2.539485,6.695735,,,,64,567,0,0,uniform
+n3 potbb14 live3 act3,candidate,7.156250,-5.516659,19.829159,-5.078125,-18.635789,8.479539,64,465,8889,0,uniform
+n3 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb4 live2 act2,candidate,2.437500,-2.561894,7.436894,-2.468750,-7.530572,2.593072,64,337,5586,0,uniform
+n3 potbb5 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb5 live2 act2,candidate,1.812500,-3.389798,7.014798,-1.843750,-7.106306,3.418806,64,318,5379,0,uniform
+n3 potbb6 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n3 potbb6 live2 act2,candidate,0.156250,-0.339791,0.652291,0.812500,-1.190729,2.815729,64,336,4936,0,uniform
+n3 potbb6 live3 act3,baseline,-0.343750,-1.030680,0.343180,,,,64,564,0,0,uniform
+n3 potbb6 live3 act3,candidate,-1.468750,-8.043227,5.105727,1.125000,-5.490106,7.740106,64,476,11662,0,uniform
+n3 potbb7 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n3 potbb7 live2 act2,candidate,-3.203125,-9.084426,2.678176,3.859375,-3.323974,11.042724,64,313,3994,0,uniform
+n3 potbb8 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n3 potbb8 live2 act2,candidate,3.234375,-3.428654,9.897404,-2.406250,-9.402242,4.589742,64,318,4177,0,uniform
+n3 potbb8 live3 act3,baseline,0.109375,-2.215691,2.434441,,,,64,559,0,0,uniform
+n3 potbb8 live3 act3,candidate,-3.484375,-15.117546,8.148796,3.593750,-9.311295,16.498795,64,518,12910,0,uniform
+n3 potbb9 live3 act3,baseline,-0.093750,-1.435399,1.247899,,,,64,560,0,0,uniform
+n3 potbb9 live3 act3,candidate,-0.359375,-12.979275,12.260525,0.265625,-12.425560,12.956810,64,472,10782,0,uniform
+### n=3 iters=10000 kind=tiers-draw 07:40
+[geometry] n=3 deviator=0 walk_nodes=758 total_sigs=61
+[geometry] n=3 deviator=1 walk_nodes=253 total_sigs=68
+[geometry] n=3 deviator=2 walk_nodes=245 total_sigs=78
+[train] n=3 profile=uniform bucket=n3 potbb10 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb11 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb14 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb4 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb5 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb6 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb6 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb7 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb8 live2 act2 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb8 live3 act3 iters=10000
+[train] n=3 profile=uniform bucket=n3 potbb9 live3 act3 iters=10000
+# R11 coarse-game general-sum NashConv (deviation space = trainer coarse {1/2 bet,1x raise}; range_profile=uniform); estimate, no convergence guarantee
+bucket,profile,nashconv_mean,nashconv_lo,nashconv_hi,paired_d_mean,paired_d_lo,paired_d_hi,replicates,br_confirm_misses,candidate_uniform_rows,candidate_offtree_rows,range_profile
+n3 potbb10 live2 act2,baseline,-0.140625,-0.421642,0.140392,,,,64,328,0,0,uniform
+n3 potbb10 live2 act2,candidate,-0.031250,-13.564029,13.501529,-0.109375,-13.645092,13.426342,64,307,3583,0,uniform
+n3 potbb11 live3 act3,baseline,0.125000,-1.015359,1.265359,,,,64,560,0,0,uniform
+n3 potbb11 live3 act3,candidate,-0.828125,-4.434684,2.778434,0.953125,-2.827690,4.733940,64,463,9747,0,uniform
+n3 potbb14 live3 act3,baseline,2.078125,-2.539485,6.695735,,,,64,567,0,0,uniform
+n3 potbb14 live3 act3,candidate,2.328125,-14.619245,19.275495,-0.250000,-16.272987,15.772987,64,472,9458,0,uniform
+n3 potbb4 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb4 live2 act2,candidate,0.187500,-0.872163,1.247163,-0.218750,-1.323794,0.886294,64,304,5108,0,uniform
+n3 potbb5 live2 act2,baseline,-0.031250,-0.093698,0.031198,,,,64,335,0,0,uniform
+n3 potbb5 live2 act2,candidate,0.437500,-0.418457,1.293457,-0.468750,-1.379743,0.442243,64,314,5535,0,uniform
+n3 potbb6 live2 act2,baseline,0.968750,-0.967142,2.904642,,,,64,332,0,0,uniform
+n3 potbb6 live2 act2,candidate,0.390625,-0.288180,1.069430,0.578125,-1.628793,2.785043,64,314,4849,0,uniform
+n3 potbb6 live3 act3,baseline,-0.343750,-1.030680,0.343180,,,,64,564,0,0,uniform
+n3 potbb6 live3 act3,candidate,0.421875,-0.355150,1.198900,-0.765625,-1.793854,0.262604,64,472,12716,0,uniform
+n3 potbb7 live2 act2,baseline,0.656250,-0.655161,1.967661,,,,64,331,0,0,uniform
+n3 potbb7 live2 act2,candidate,-3.390625,-9.373511,2.592261,4.046875,-3.218806,11.312556,64,309,4331,0,uniform
+n3 potbb8 live2 act2,baseline,0.828125,-0.686770,2.343020,,,,64,332,0,0,uniform
+n3 potbb8 live2 act2,candidate,3.453125,-3.325759,10.232009,-2.625000,-9.664430,4.414430,64,323,4257,0,uniform
+n3 potbb8 live3 act3,baseline,0.109375,-2.215691,2.434441,,,,64,559,0,0,uniform
+n3 potbb8 live3 act3,candidate,-4.718750,-11.502532,2.065032,4.828125,-0.588813,10.245063,64,499,13015,0,uniform
+n3 potbb9 live3 act3,baseline,-0.093750,-1.435399,1.247899,,,,64,560,0,0,uniform
+n3 potbb9 live3 act3,candidate,1.750000,-4.748113,8.248113,-1.843750,-8.477354,4.789854,64,492,12048,0,uniform
+### RFC0031_ABLATION_N3_DONE 07:48
+# Decision note (2026-10-25): n=3 sampled ablation, all 12 declared buckets
+# (11 measured in this run), learn=confirm=64. improvement(tiers-draw over
+# tiers) is +1.89 BB at 1,000 and +2.21 BB at 10,000 iterations (point
+# estimates favor tiers-draw multiway), but the 95% intervals overlap by
+# ~40 BB at both counts, so the strict-disjoint adopt branch does not fire.
+# Per the RFC 0031 rule this cell is INCONCLUSIVE: a positive multiway
+# direction with inadequate precision. The primary exact n=2 fixture decides
+# KEEP tiers; a future higher-sample multiway campaign (more confirm seeds)
+# is the way to revisit. Byte-size branch moot only after a disjoint result.

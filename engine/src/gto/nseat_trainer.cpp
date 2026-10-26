@@ -862,12 +862,14 @@ void validate_request(const AbstractTree& tree,
   const poker::GameDef& def = tree.def();
   if (def.player_count < 2 || def.player_count > poker::kMaxUnifiedSeats)
     throw std::invalid_argument("nseat trainer supports 2..10 seats");
-  // The trainer accepts the identity action abstraction and any declared-coarse
-  // abstraction (RFC 0008 DeclaredOnly menu). The coarse path removes the
+  // The trainer accepts the identity action family at any pinned raise cap
+  // (RFC 0030: the cap is part of the digest) and any declared-coarse
+  // abstraction (RFC 0008 DeclaredOnly menu). Both predicates recompute the
+  // digest and refuse a tokenless/hand-edited id. The coarse path removes the
   // forced min-bet/jam seeds that explode the abstract tree at deeper stacks,
-  // making 10 BB+ library training practical. Custom-schedule identity-style
-  // abstractions (same name, different digest) are still refused.
-  if (tree.action_id() != abstraction::identity_action_id() &&
+  // making 10 BB+ library training practical. A custom schedule under either
+  // family name is still refused.
+  if (!abstraction::is_identity_action_family(tree.action_id()) &&
       !abstraction::is_declared_coarse_action_id(tree.action_id()))
     throw std::invalid_argument(
         "nseat trainer requires the identity or a declared-coarse action abstraction");

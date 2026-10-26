@@ -1007,6 +1007,24 @@ revision is a hard refusal. An unknown revision is deliberately *not* treated
 as corruption, because discarding it would silently discard a checkpoint an
 operator needs to inspect.
 
+**Raise-cap identity and the BSWARM02 tree witness (RFC 0030).** The per-street
+raise cap is part of the action-abstraction digest: the canonical parameters
+end in a `|max-raises=<N>` token, so two abstractions that differ only in cap
+hash differently and the live subgame resolver reconstructs the true cap from
+a persisted identity (a recognized tokenless or malformed parameter line
+fails closed rather than defaulting to 0). Sealed checkpoints use the
+`BSWARM02` magic with a 192-byte header that appends a 64-bit FNV-1a
+`tree_shape_digest`: a hash over every tree node's index, kind, and ordered
+menu. Before adopting any checkpoint rows, `train_one_class` recomputes the
+witness over its own tree and hard-refuses a mismatch (preserving the file),
+which is the only check proving a sealed row's node ordinal still names the
+same node — digests, revision, and node/bucket bounds cannot. The witness is
+sound, not complete: it proves ordinal/menu identity and may over-reject a
+change confined to an untrained subtree; it does not hash terminal payloads,
+so a pot-only change in the small-stack clamp regime (where every declared
+fraction jams) is outside its coverage by design. A `BSWARM01` file is foreign
+to the single codec and follows the corruption-discard path.
+
 RFC 0016 additionally requires the exact revision-two, batch-one algorithm
 identity before raw-state mapping or training. Revision-one and unknown
 checkpoints remain readable but cannot resume into the changed average/update

@@ -227,6 +227,10 @@ void validate(const GameDef& def) {
               "street-committed chips exceed total contributions");
     }
   }
+  // RFC 0030: the raise counter is meaningful only at a rooted mid-street
+  // decision; it is never carried at a preflop or street-start root.
+  if (def.preflop)
+    require(def.raises_this_street == 0, "a preflop root cannot carry raises made this street");
   if (mid_street) {
     require(def.last_full_raise >= def.big_blind,
             "a mid-street last full raise must be at least the big blind");
@@ -238,6 +242,8 @@ void validate(const GameDef& def) {
     require(facing_wager >= 1, "a mid-street root needs a seat still facing the wager");
   } else {
     require(def.last_full_raise == 0, "a street-start root must not carry a last full raise");
+    require(def.raises_this_street == 0,
+            "a street-start root must not carry raises made this street");
   }
 
   Chips total = def.pot;
@@ -272,7 +278,8 @@ bool same_game_def(const GameDef& a, const GameDef& b) {
   // on top of this predicate rather than folding them in here.
   if (a.player_count != b.player_count || a.button != b.button || a.big_blind != b.big_blind ||
       a.ante != b.ante || a.pot != b.pot || a.preflop != b.preflop || a.variant != b.variant ||
-      a.terminal != b.terminal || a.last_full_raise != b.last_full_raise)
+      a.terminal != b.terminal || a.last_full_raise != b.last_full_raise ||
+      a.raises_this_street != b.raises_this_street)
     return false;
   if (a.board_size != b.board_size)
     return false;
@@ -371,6 +378,10 @@ GameState::GameState(const GameDef& def) : def_(def) {
     // mid-street root carries the live last-full-raise so the root raise menu
     // (min-raise = high + last_full_raise) is correct.
     last_full_raise_ = def_.last_full_raise > 0 ? def_.last_full_raise : def_.big_blind;
+    // RFC 0030: a mid-street root carries the raises already made this street
+    // so the action-abstraction cap counts them; close_street/after_card reset
+    // this to zero, so only a reconstructed mid-street def seeds it.
+    raises_this_street_ = def_.raises_this_street;
     // A rooted board carries chips behind, so an empty stack here marks an
     // all-in seat from an earlier street. A seat may also start folded (the
     // subgame resolver rebuilds a GameDef from a mid-hand state); pending

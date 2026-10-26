@@ -211,7 +211,7 @@ int test_identity_and_typed_refusal() {
   // wrong shipped DEFAULT; this constant can. Any fraction (including the
   // preflop 3/2,2/1,3/1 opener) drifting silently changes the canonical text
   // and thus the digest.
-  CHECK(a.digest == 0x422c245239c7a527ULL);
+  CHECK(a.digest == 0xb0c87579be6094dcULL);
 
   // Pin the shipped preflop default explicitly (the entry a flop-rooted game
   // never reads): blind-relative openers, distinct from the postflop default.
@@ -438,6 +438,92 @@ int test_lossy_tier_bucket_merges() {
   return 0;
 }
 
+// RFC 0031 TiersDrawV1: category times four plus a two-bit draw code (flush
+// draw = 1, one-card straight draw = 2) on the flop/turn, zero preflop and
+// river. Each witness is constructed from named cards, and the full combo
+// range over representative boards stays inside the dense 0..35 range.
+int test_tiers_draw_bucket() {
+  using K = CardBucketKind;
+  const auto bucket = [&](const char* h0, const char* h1, std::vector<int> board) {
+    const std::array<int, 2> hole{card(h0), card(h1)};
+    return card_bucket(K::TiersDrawV1, hole, board);
+  };
+  const auto f = [&](std::array<const char*, 3> cs) {
+    return std::vector<int>{card(cs[0]), card(cs[1]), card(cs[2])};
+  };
+  const auto t = [&](std::array<const char*, 4> cs) {
+    return std::vector<int>{card(cs[0]), card(cs[1]), card(cs[2]), card(cs[3])};
+  };
+  const auto r = [&](std::array<const char*, 5> cs) {
+    return std::vector<int>{card(cs[0]), card(cs[1]), card(cs[2]), card(cs[3]), card(cs[4])};
+  };
+
+  // Preflop: draw code 0, so a high-card holding is 0 and a pair is 4.
+  CHECK(bucket("7c", "2d", {}) == 0);
+  CHECK(bucket("Ac", "Ah", {}) == 4);
+
+  // Flop: same high-card category splits by draw code.
+  CHECK(bucket("Ac", "Kd", f({"2s", "7h", "9c"})) == 0);   // no draw
+  CHECK(bucket("As", "Ks", f({"2s", "7s", "9d"})) == 1);   // flush draw
+  CHECK(bucket("5h", "6d", f({"7c", "8s", "2h"})) == 2);   // open-ended straight draw
+  CHECK(bucket("5h", "9d", f({"6c", "7s", "2h"})) == 2);   // gutshot straight draw
+  CHECK(bucket("5s", "6s", f({"7s", "8s", "2d"})) == 3);   // flush + straight draw
+  CHECK(bucket("5h", "6d", f({"7c", "8s", "9h"})) == 16);  // made straight: draw code 0
+  CHECK(bucket("5s", "6s", f({"7s", "8s", "9h"})) == 17);  // made straight + flush draw
+  CHECK(bucket("Js", "9s", f({"As", "Ks", "Qs"})) == 20);  // made flush: draw code 0
+
+  // Strong categories on the river carry draw code 0; these pin the dense
+  // category offsets 4*(category-1).
+  CHECK(bucket("5s", "Ah", r({"2c", "5d", "8h", "Ks", "Ad"})) == 8);   // two pair
+  CHECK(bucket("Kc", "Kh", r({"2c", "5d", "8h", "Ks", "Ad"})) == 12);  // trips
+  CHECK(bucket("2s", "8c", r({"2c", "2d", "8h", "Ks", "Ad"})) == 24);  // full house
+  CHECK(bucket("2s", "Kh", r({"2c", "2d", "2h", "Ks", "Ad"})) == 28);  // quads
+  CHECK(bucket("Ac", "Qh", r({"2c", "3c", "4c", "5c", "Kd"})) == 32);  // straight flush
+
+  // Turn: draws still live with one card to come.
+  CHECK(bucket("5h", "6d", t({"7c", "8s", "2h", "Kh"})) == 2);  // open-ended on the turn
+  CHECK(bucket("As", "Ks", t({"2s", "9s", "7d", "Qh"})) == 1);  // flush draw on the turn
+
+  // River: four suited cards with one card already blanked carry no draw.
+  CHECK(bucket("Ac", "Td", r({"2s", "7s", "9s", "Qs", "Kh"})) == 0);
+
+  // Enumeration: every non-blocked combo on representative flops stays inside
+  // the dense 0..35 range. Not all 36 values are reachable: full houses,
+  // quads, and straight flushes cannot coexist with a flush draw (five/six
+  // cards cannot hold both rank multiplicity and four of one suit), and the
+  // straight-draw bit is suppressed for categories >= 5.
+  const std::array<std::array<int, 3>, 6> flops{{
+      {{card("As"), card("Kc"), card("2h")}},  // rainbow unpaired
+      {{card("As"), card("Ks"), card("2h")}},  // two-tone
+      {{card("As"), card("Ks"), card("2s")}},  // monotone
+      {{card("As"), card("Ah"), card("Kc")}},  // paired
+      {{card("9h"), card("Td"), card("Js")}},  // connected
+      {{card("2c"), card("3d"), card("4h")}},  // wheel-connected
+  }};
+  std::size_t enumerated = 0;
+  for (const auto& flop : flops) {
+    const std::vector<int> board{flop[0], flop[1], flop[2]};
+    for (int combo = 0; combo < N_COMBOS; ++combo) {
+      const auto h = comboCards(combo);
+      if (h[0] == board[0] || h[1] == board[0] || h[0] == board[1] || h[1] == board[1] ||
+          h[0] == board[2] || h[1] == board[2])
+        continue;
+      const std::array<int, 2> hole{h[0], h[1]};
+      const std::uint32_t b = card_bucket(K::TiersDrawV1, hole, board);
+      CHECK(b <= 35);
+      ++enumerated;
+    }
+  }
+  CHECK(enumerated > 0);
+
+  // Identity: distinct from the other card kinds and digest-recomputing.
+  const AbstractionId draw_id = card_abstraction_id(K::TiersDrawV1);
+  CHECK(draw_id.name == "category-tiers-draw");
+  CHECK(draw_id.digest == abstraction_digest(draw_id.name, draw_id.version, draw_id.parameters));
+  CHECK(draw_id.digest != card_abstraction_id(K::CategoryTiersV1).digest);
+  return 0;
+}
+
 // The 3..10-seat menu caps to the DEEPEST cover over all other live, non-folded
 // seats, not the next actor's. A short seat B (cover 10) and a deep seat C
 // (cover 100) both face actor A's raise: clamping to B would silently delete the
@@ -553,7 +639,7 @@ int test_declared_only_coarse_menu() {
     CHECK(idn.cover_seeds() == CoverSeeds::MinAndCap);
     CHECK(idn.schedule() == default_size_schedule());
     CHECK(idn.id() == identity_action_id());
-    CHECK(idn.id().digest == 0x422c245239c7a527ULL);
+    CHECK(idn.id().digest == 0xb0c87579be6094dcULL);
   }
 
   // Empty fractions + DeclaredOnly => purely passive menu. Facing no wager the
@@ -939,17 +1025,70 @@ int test_suit_canonicalization_id() {
 
 }  // namespace
 
+int test_raise_cap_identity() {
+  // RFC 0030: the raise cap is part of the action-abstraction digest.
+  const AbstractionId cap0 = ActionAbstraction::identity(0).id();
+  const AbstractionId cap1 = ActionAbstraction::identity(1).id();
+  CHECK(cap0.digest != cap1.digest);
+  CHECK(cap0.parameters.ends_with("|max-raises=0"));
+  CHECK(cap1.parameters.ends_with("|max-raises=1"));
+  CHECK(parse_max_raises_token(cap1.parameters) == 1);
+  CHECK(parse_max_raises_token(cap0.parameters) == 0);
+  const AbstractionId coarse1 =
+      ActionAbstraction::declared(default_size_schedule(), CoverSeeds::DeclaredOnly, 1).id();
+  CHECK(coarse1.parameters.ends_with("cover-seeds=declared-only\n|max-raises=1"));
+  CHECK(parse_max_raises_token(coarse1.parameters) == 1);
+
+  // Family predicates admit valid members and reject tokenless/hand-edited ids.
+  CHECK(is_identity_action_family(cap0));
+  CHECK(is_identity_action_family(cap1));
+  CHECK(is_declared_coarse_action_id(coarse1));
+
+  auto rejects_token = [](const std::string& params) {
+    try {
+      (void)parse_max_raises_token(params);
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+  // The AC8 fail-closed cases.
+  const std::string base = cap1.parameters;
+  CHECK(rejects_token(base.substr(0, base.find("|max-raises="))));  // tokenless
+  CHECK(rejects_token(base.substr(0, base.find('=') + 1)));         // empty value
+  CHECK(rejects_token(base + "\nextra"));                           // suffix / token not final
+  CHECK(rejects_token(base + "256"));                               // 1256, above 255
+  CHECK(rejects_token(base + "x"));                                 // non-numeric
+  CHECK(rejects_token("size-v1\n|max-raises=01"));                  // non-canonical spelling
+  CHECK(rejects_token("size-v1\n|max-raises=+1"));
+  CHECK(rejects_token("size-v1\n|max-raises=1|max-raises=2"));  // duplicated
+
+  // A tokenless recognized-family id is not admitted by either family gate.
+  AbstractionId legacy = cap1;
+  legacy.parameters = base.substr(0, base.find("|max-raises="));
+  legacy.digest = abstraction_digest(legacy.name, legacy.version, legacy.parameters);
+  CHECK(!is_identity_action_family(legacy));
+
+  // A hand-edited digest fails closed even with a valid token.
+  AbstractionId tampered = cap1;
+  tampered.digest ^= 1;
+  CHECK(!is_identity_action_family(tampered));
+  return 0;
+}
+
+
 int main() {
   struct Case {
     const char* name;
     int (*fn)();
   };
-  const std::array<Case, 13> cases{{
+  const std::array<Case, 16> cases{{
       {"action_menu_math", test_action_menu_math},
       {"fraction_validation", test_fraction_validation},
       {"identity_and_typed_refusal", test_identity_and_typed_refusal},
       {"identity_card_bucket", test_identity_card_bucket},
       {"lossy_tier_bucket_merges", test_lossy_tier_bucket_merges},
+      {"tiers_draw_bucket", test_tiers_draw_bucket},
       {"multiway_cover_cap", test_multiway_cover_cap},
       {"declared_schedule_is_reduced", test_declared_schedule_is_reduced},
       {"declared_only_coarse_menu", test_declared_only_coarse_menu},
@@ -958,6 +1097,7 @@ int main() {
       {"own_card_token_roundtrip", test_own_card_token_roundtrip},
       {"own_card_token_fixtures", test_own_card_token_fixtures},
       {"suit_canonicalization_id", test_suit_canonicalization_id},
+      {"raise_cap_identity", test_raise_cap_identity},
   }};
   int failures = 0;
   for (const Case& item : cases) {
