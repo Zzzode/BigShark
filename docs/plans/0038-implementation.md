@@ -50,46 +50,60 @@ Expected intermediate state: module compiles; test/benchmark/fixture
 consumers do not yet (fixed in stages 2/4). Build the artifacts library
 target directly to stage the work.
 
-## Stage 2 — v2 fixture layer and the fixture publisher
+## Stage 2 — rekey fixture layer and the fixture publisher
+
+Mechanism (required; fixed runouts cannot use train_nseat, which is
+chance-sampled and exports only visited rows): keep in-memory
+`HeadsUpSolverDebug::train_full`, convert via
+`solver::to_unified_game(game)` (GameDef/ranges/sizes), mint the
+`AbstractionId` from the converted schedule and its digest, create a
+`SeatPolicy` with `SeatPolicyAssembler::set_identity`, transfer trained
++ override rows with `add_row` on byte-identical `InformationKey` words
+(pinned by test_two_seat_byte_identity, test_seat_policy.cpp:439,458),
+and publish a flop-rooted (board_size 3) river-terminal schema-v2
+artifact with `SeatCheckpointProvenance` (kFullTraversalPrngIdentifier).
+Hand-assembled sparse rows follow test_folded_root_identity (:600-660).
 
 Shared helpers (new test-internal header if reuse requires it):
 
-- `publish_game_v2(game_spec, iterations, overrides, dir, name)`:
-  train with `train_nseat` over a 2-seat flop-rooted `GameDef`, apply
-  overrides by seat information key, assemble with
-  `SeatPolicyAssembler`, checkpoint+publish via
-  `SeatCheckpointProvenance`.
-- `publish_root_only_v2(...)`: publish the seat policy with the class
-  section suppressed (same observable root-only artifact the v1 helper
-  produced; `validate_content_v2` never enforces completeness).
-- `publish_synthetic_policy_v2(...)`: assemble one forced row (and the
-  forced zero-probability row) directly via `SeatPolicyAssembler`.
+- `publish_game_rekey(game, iterations, overrides, dir, name)`: in-memory
+  train_full, apply overrides by identical key words, rekey, checkpoint +
+  publish.
+- `publish_root_only_rekey(...)`: rekeyed seat policy with the class
+  section suppressed (`validate_content_v2` never enforces completeness).
+- `publish_synthetic_policy_rekey(...)`: one forced row / forced
+  zero-probability row assembled directly via `SeatPolicyAssembler`.
 
-Migrate `engine/tests/resident_fixture_publisher.cpp` to these helpers;
-preserve the printed JSON exactly (`path`, `sha256`, `root.flop`,
+Migrate `engine/tests/resident_fixture_publisher.cpp` through the rekey
+helper; preserve the printed JSON exactly (`path`, `sha256`, `root.flop`,
 `root.stacks`, `root.contributions`, `root.pot`, `root.bigBlind`,
 `root.button`) and the `bs_resident_fixture` target/bin copy.
 
 ### test_resident_policy.cpp one-to-one scenario map
 
+The three v1 helpers publish_game/publish_root_only/publish_synthetic
+become the rekey helpers; the single heads-up rejection probe at :1790 is
+rebuilt on a seat checkpoint; sites :591/:653/:762 are already seat and
+untouched.
+
 | Scenario (current test) | v2 counterpart |
 | --- | --- |
-| golden reach (:818) | publish_game_v2, 2-seat flop root, golden margin query |
-| free-turn (:961) | v2 root with turn conditioning in the query cursor |
-| belief hook (:1039) + hook-free (:1169) | v2 policy row overrides at the hook node |
-| matrix (:1229) | publish_game_v2 4 iterations, same query matrix |
-| street conditioning (:1325) | v2 root, advance/round-end in queries |
-| streets-zero-hero (:1370) | forced zero-probability row via synthetic helper |
-| orphan actor/free chance (:1407) | v2 ranges omitting one seat's combos |
-| empty-shared / empty-zero (:1487,:1501) | publish_synthetic_policy_v2 single-row artifacts |
-| orphan p1 (:1565) / free slot (:1635) | v2 ranges + seat-mask variants |
-| shared combo (:1674) | overlapping v2 combo ranges |
-| probe api (:1715,:1753) | v2 publish_game_v2 probe byte accounting |
-| checkpoint rejection probe (:1790) | seat create_checkpoint; rejection checks unchanged |
-| miss golden/matrix (:2344-2346) | v2 unserved root enumeration |
-| fully blocked (:2517) | v2 root with blocking overrides |
-| root-only (:2539) | publish_root_only_v2 |
-| continuation golden (:2730) | v2 multi-street query chain |
+| golden reach (:818) | publish_game_rekey, flop-rooted river-terminal v2, golden margin query |
+| free-turn (:961) | rekeyed v2 root with turn conditioning in the query cursor |
+| belief hook (:1039) + hook-free (:1169) | rekeyed policy row overrides at the hook node |
+| matrix (:1229) | publish_game_rekey 4 iterations, same query matrix |
+| street conditioning (:1325) | rekeyed v2 root, advance/round-end in queries |
+| streets-zero-hero (:1370) | forced zero-prob row via rekey synthetic helper |
+| orphan actor/free chance (:1407) | rekeyed ranges omitting one seat's combos |
+| empty-shared / empty-zero (:1487,:1501) | publish_synthetic_policy_rekey single-row artifacts |
+| orphan p1 (:1565) / free slot (:1635) | rekeyed ranges + seat-mask variants |
+| shared combo (:1674) | overlapping rekeyed combo ranges |
+| probe api (:1715,:1753) | v2 publish_game_rekey probe byte accounting |
+| checkpoint rejection probe (:1790) | seat checkpoint; rejection checks unchanged |
+| miss golden/matrix (:2344-2346) | rekeyed v2 unserved root enumeration |
+| fully blocked (:2517) | rekeyed v2 root with blocking overrides |
+| root-only (:2539) | publish_root_only_rekey |
+| continuation golden (:2730) | rekeyed v2 multi-street query chain |
 
 The pre-existing v2/v3/preflop/multi-root tests in the same file are
 untouched.
@@ -108,15 +122,20 @@ untouched.
 
 - Delete v1 roundtrip/split/resume/crash/corruption/immutable/
   adversarial cases and the six `commit_checkpoint` sites; remove rev1
-  identity cases and rev1 canonical-key assertions (keep rev2 coverage);
-  rewrite the five arm-empty assertions to the nseat arm.
+  identity cases; rewrite the five arm-empty assertions to the nseat arm.
+- test_seat_policy.cpp: drop the five grammar-1 call sites / rejection
+  block (:373,379,381,412,441,461); keep the two heads-up-vs-seat
+  byte-identity checks on grammar 2.
 - Relocate format-agnostic invariants to v2/v3 fixtures: physical
   corruption rejection, immutable open, adversarial probability
   rejection, split-run/resume.
-- Migrate `resident_lookup_benchmark.cpp`: both publishers become 2-seat
-  flop-rooted v2; keep SPR-10 scan, six-root SPR-4 cold/warm +
-  zero-allocation, and zero-prob miss sections; update the key codec
-  call; record the first migrated run as the new baseline in
+- Migrate `resident_lookup_benchmark.cpp` via the rekey route: keep
+  in-memory train_full fixed runouts (full-coverage :441-447 and warmup
+  :518-535 invariants stay satisfied; no chance materialization),
+  publish flop-rooted river-terminal v2 with the converted schedule's
+  AbstractionId; keep SPR-10 scan, six-root SPR-4 cold/warm +
+  zero-allocation, and zero-prob miss sections; delete the :296 rev1
+  codec call; record the first migrated run as the new baseline in
   `docs/development/benchmarking.md`.
 
 ## Stage 5 — documentation and gates
