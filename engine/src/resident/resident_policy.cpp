@@ -117,7 +117,8 @@ int relabel_card(int card, const std::array<int, 4>& relabel) {
 // until the resident root generalizes (RFC 0009 D4).
 UnifiedGame build_v2_game(const GameDef& game,
                           const std::vector<std::vector<solver::WeightedHand>>& ranges,
-                          const abstraction::SizeSchedule& sizes) {
+                          const abstraction::SizeSchedule& sizes,
+                          const std::array<std::optional<int>, 2>& fixed_runout) {
   // RFC 0007: a preflop flop-terminal root (board_size == 0) is accepted
   // alongside flop-rooted (board_size == 3) sources. Turn/river-rooted schema-v2
   // sources stay refused until the resident root generalizes (RFC 0009 D4).
@@ -130,6 +131,9 @@ UnifiedGame build_v2_game(const GameDef& game,
   for (std::size_t seat = 0; seat < game.player_count; ++seat)
     built.ranges[seat] = ranges[seat];
   built.sizes = sizes;
+  // The conditional runout of an RFC 0038 rekeyed fixed-runout policy; empty
+  // for chance-sampled seat artifacts.
+  built.fixed_runout = fixed_runout;
   return built;
 }
 
@@ -388,7 +392,8 @@ const ResidentPolicySet::LazyEntry* ResidentPolicySet::ensure_lazy_loaded(
 
     auto entry = std::make_unique<LazyEntry>();
     const auto& policy = loaded.bundle.nseat->policy;
-    entry->game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
+    entry->game =
+        build_v2_game(policy.game(), policy.ranges(), policy.sizes(), policy.fixed_runout());
     entry->game.action_id = policy.action_id();
     entry->index.build(policy.rows());
     entry->card_abstraction = loaded.bundle.nseat->card_id;
@@ -589,14 +594,14 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
               spec.path,
               artifacts::LoadOptions{artifacts::kDefaultMaxArtifactBytes, spec.expected_sha256});
           record.result.sha256_hex = probe.sha256_hex;
-          if (probe.game_def) {
-            record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
-            record.game.action_id = abstraction::AbstractionId{
-                probe.manifest.abstraction_name, probe.manifest.abstraction_version,
-                probe.manifest.abstraction_parameters, probe.manifest.abstraction_digest};
-          } else {
-            record.game = solver::to_unified_game(probe.game);
-          }
+          if (!probe.game_def)
+            throw artifacts::ArtifactError(artifacts::ArtifactErrorKind::InvalidSchema,
+                                           "artifact probe carried no seat-generic identity");
+          record.game =
+              build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes, probe.fixed_runout);
+          record.game.action_id = abstraction::AbstractionId{
+              probe.manifest.abstraction_name, probe.manifest.abstraction_version,
+              probe.manifest.abstraction_parameters, probe.manifest.abstraction_digest};
           record.card_abstraction = probe.manifest.card_abstraction;
           record.lazy = true;
           record.lazy_path = spec.path;
@@ -666,16 +671,15 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
       // build the unified view of every flop-rooted source. A 3..10-seat
       // source loads and advertises; its belief and hero-decision queries
       // are exact for 2..10 seats (RFC 0011). Turn/river-rooted shapes stay refused.
-      if (probe.game_def) {
-        record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes);
-        // RFC 0011: reconstruct the action abstraction id from the manifest
-        // fields so the subgame resolver can rebuild the matching menu.
-        record.game.action_id = abstraction::AbstractionId{
-            probe.manifest.abstraction_name, probe.manifest.abstraction_version,
-            probe.manifest.abstraction_parameters, probe.manifest.abstraction_digest};
-      } else {
-        record.game = solver::to_unified_game(probe.game);
-      }
+      if (!probe.game_def)
+        throw artifacts::ArtifactError(artifacts::ArtifactErrorKind::InvalidSchema,
+                                       "artifact probe carried no seat-generic identity");
+      record.game = build_v2_game(*probe.game_def, *probe.ranges, *probe.sizes, probe.fixed_runout);
+      // RFC 0011: reconstruct the action abstraction id from the manifest
+      // fields so the subgame resolver can rebuild the matching menu.
+      record.game.action_id = abstraction::AbstractionId{
+          probe.manifest.abstraction_name, probe.manifest.abstraction_version,
+          probe.manifest.abstraction_parameters, probe.manifest.abstraction_digest};
       // W4c-ii: a schema-v3 probe carries the declared card abstraction; a schema-v2 probe
       // leaves it at nullopt (exact board).
       record.card_abstraction = probe.manifest.card_abstraction;
@@ -714,20 +718,19 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
           artifacts::LoadOptions load_options;
           load_options.expected_sha256 = spec.expected_sha256;
           artifacts::LoadedArtifact loaded = artifacts::load_artifact(spec.path, load_options);
-          if (loaded.bundle.nseat) {
-            // RFC 0009 D4: schema-v2 seat-generic policy. Build the unified
-            // view and build the index from the concrete seat-indexed rows.
-            const auto& policy = loaded.bundle.nseat->policy;
-            record.game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
-            record.game.action_id = policy.action_id();
-            record.index.build(policy.rows());
-            // W4c-ii: the schema-v3 reader reconstructs the card abstraction from the
-            // manifest; the schema-v2 reader leaves it at nullopt.
-            record.card_abstraction = loaded.bundle.nseat->card_id;
-          } else {
-            record.game = solver::to_unified_game(loaded.bundle.result.policy.game());
-            record.index.build(loaded.bundle.result.policy.rows());
-          }
+          if (!loaded.bundle.nseat)
+            throw artifacts::ArtifactError(artifacts::ArtifactErrorKind::InvalidSchema,
+                                           "loaded artifact carried no seat-generic policy");
+          // Schema-v2/v3 seat-generic policy. Build the unified view and the
+          // index from the concrete seat-indexed rows.
+          const auto& policy = loaded.bundle.nseat->policy;
+          record.game =
+              build_v2_game(policy.game(), policy.ranges(), policy.sizes(), policy.fixed_runout());
+          record.game.action_id = policy.action_id();
+          record.index.build(policy.rows());
+          // The schema-v3 reader reconstructs the card abstraction; the
+          // schema-v2 reader leaves it at nullopt.
+          record.card_abstraction = loaded.bundle.nseat->card_id;
           record.result.information_sets = record.index.row_count();
           record.result.probability_count = record.index.probability_count();
           record.result.resident_bytes =

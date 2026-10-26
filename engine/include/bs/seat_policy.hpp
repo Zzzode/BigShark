@@ -74,6 +74,15 @@ class SeatPolicy {
   // for the suit-canonicalization id; for any other id it records the
   // declaration verbatim.
   const std::optional<abstraction::AbstractionId>& card_id() const noexcept { return card_id_; }
+  // An optional CONDITIONAL runout for a flop-rooted, river-terminal policy:
+  // the concrete turn/river cards every stored row is conditioned on. Empty
+  // slots are free-chance streets. Chance-sampled seat training always leaves
+  // this empty; only an imported fixed-runout policy (the RFC 0038 rekey
+  // route) sets it. The schema-v2 game row carries it in the fixed_turn/
+  // fixed_river columns; for a flop-rooted root those columns name the
+  // conditional runout (the root board itself is exactly the three flop
+  // cards), whereas for a turn/river-rooted root they are the board prefix.
+  const std::array<std::optional<int>, 2>& fixed_runout() const noexcept { return fixed_runout_; }
   const std::map<InformationKey, SeatPolicyRow>& rows() const noexcept { return rows_; }
 
  private:
@@ -82,14 +91,14 @@ class SeatPolicy {
                                                const std::vector<std::vector<WeightedHand>>& ranges,
                                                std::optional<abstraction::AbstractionId> card_id);
   // The artifact reader (RFC 0009 D3) reconstructs a SeatPolicy from a schema-v2 file;
-  // it is the one production consumer granted write access, mirroring
-  // PolicyAssembler's relationship to HeadsUpPolicy.
+  // it is one of the sanctioned assembler grants alongside export_seat_policy.
   friend class ::bs::artifacts::detail::SeatPolicyAssembler;
   poker::GameDef game_{};
   abstraction::SizeSchedule sizes_{};
   std::vector<std::vector<WeightedHand>> ranges_{};
   abstraction::AbstractionId action_id_{};
   std::optional<abstraction::AbstractionId> card_id_{};
+  std::array<std::optional<int>, 2> fixed_runout_{};
   std::map<InformationKey, SeatPolicyRow> rows_;
 };
 

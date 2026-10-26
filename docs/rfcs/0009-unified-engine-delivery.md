@@ -12,6 +12,9 @@ superseded-by: ""
 
 # RFC 0009: Unified Engine Delivery and Live Promotion
 
+> **Historical note.** The schema-v1 dual-arm reader/writer, `to_unified_game(probe.game)`, and the `rfc0009-nseat-rev1-sampled-splitmix64` seat identity are **Historical**: retired by [RFC 0038](0038-retire-schema-v1-artifacts.md) on 2026-10-26. Schema-v2/v3, the seat-generic key grammar, the resident projection, and revision-two batched identities remain Current.
+
+
 ## Summary
 
 RFC 0008 designed one engine for 2..10 seats and landed its first five stages,

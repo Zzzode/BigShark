@@ -12,6 +12,9 @@ superseded-by: ""
 
 # RFC 0007: Preflop Profile Abstraction and Artifact Coexistence
 
+> **Historical note.** Schema-v1 coexistence and the v1 preflop error/coexistence text are **Historical**: retired by [RFC 0038](0038-retire-schema-v1-artifacts.md) on 2026-10-26. Preflop flop-terminal artifacts persist through the seat-generic schema-v2 path under the preflop rules identifier.
+
+
 ## Summary
 
 Define how a heads-up preflop profile becomes a bounded, trainable, and

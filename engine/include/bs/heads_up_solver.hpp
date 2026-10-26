@@ -12,11 +12,14 @@
 #include <span>
 #include <vector>
 
-// RFC 0005 artifact storage reconstructs immutable policies from validated
-// checkpoint/export records through this one sanctioned assembler. The grant
-// adds no mutator to the public facade and changes no solver behavior.
+// RFC 0038: the in-memory HeadsUpPolicy has no artifact assembler. The only
+// non-trainer constructor of an in-memory policy from existing rows is the
+// test/benchmark rekey oracle (fixed-runout verification), whose complete
+// definition lives in engine/src/artifacts/rekey_fixture.hpp. A translation
+// unit that does not include that private header can neither construct nor
+// use the access class.
 namespace bs::artifacts::detail {
-class PolicyAssembler;
+class RekeyOracleAccess;
 }
 
 namespace bs::solver {
@@ -112,7 +115,11 @@ class HeadsUpPolicy {
  private:
   friend class HeadsUpTrainer;
   friend class detail::HeadsUpDebugKey;
-  friend class ::bs::artifacts::detail::PolicyAssembler;
+  // RFC 0038: the artifact v1 assembler is gone. The only remaining non-trainer
+  // constructor of an in-memory HeadsUpPolicy from existing rows is the
+  // test/benchmark rekey oracle (fixed-runout verification), implemented in
+  // engine/src/artifacts/rekey_fixture.hpp.
+  friend class ::bs::artifacts::detail::RekeyOracleAccess;
   // Empty policies must be constructible while recovering from allocation
   // failure; avoid allocating the normal default size schedule here.
   HeadsUpGame game_{

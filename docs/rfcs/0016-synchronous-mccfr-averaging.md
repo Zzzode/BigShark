@@ -12,6 +12,9 @@ superseded-by: ""
 
 # RFC 0016: Synchronous MCCFR Batches and Correct Strategy Averaging
 
+> **Historical note.** The revision-one seat algorithm identity (`rfc0009-nseat-rev1-sampled-splitmix64`) is **Historical**: retired by [RFC 0038](0038-retire-schema-v1-artifacts.md) on 2026-10-26. Synchronous batch averaging and the revision-two frozen-batch identity remain Current.
+
+
 ## Summary
 
 Replace the n-seat trainer's asynchronous shared-table updates with bounded

@@ -532,7 +532,9 @@ general-game equilibrium claim.
 ## Sampled Heads-Up Trainer (External Sampling)
 
 `HeadsUpTrainer::train_sampled(iterations, seed, limits)` implements the pinned
-RFC 0004 revision-1 external-sampling MCCFR. One iteration runs traverser 0,
+RFC 0004 revision-1 external-sampling MCCFR (the in-memory algorithm; its
+schema-v1 artifact persistence was retired by RFC 0038). One iteration runs
+traverser 0,
 then traverser 1; each traversal samples exactly one weighted joint private
 deal for the episode. At a traverser information set the local regret-matching
 policy is frozen before recursion and every action is enumerated; at chance and
@@ -632,16 +634,13 @@ flowchart LR
 
 The artifact is a SQLite database with `application_id = 0x42534754` ("BSGT"),
 STRICT tables, foreign keys enforced, prepared statements throughout, and a
-compile/runtime requirement of SQLite 3.37 or newer. Three schema versions
-coexist; `open_validated` selects the DDL by `user_version`:
+compile/runtime requirement of SQLite 3.37 or newer. `open_validated` selects
+the DDL by `user_version`:
 
-- **schema-v1** (`user_version = 1`, frozen): the original two-seat schema. The
-  `game` table carries both stacks/contributions inline; `info_key_revision`
-  is the schema-v1 key grammar.
-- **schema-v2** (`user_version = 2`, RFC 0009 D3): the seat-generic schema. A new
+- **schema-v2** (`user_version = 2`, RFC 0009 D3): the seat-generic schema. A
   `game_seats` table holds per-seat stack/contribution for 2..10 seats, the
-  `game` table gains `player_count`, `root_street`, `ante`, and
-  `terminal_depth`, and the manifest gains `terminal_depth`. The key grammar
+  `game` table carries `player_count`, `root_street`, `ante`, and
+  `terminal_depth`, and the manifest carries `terminal_depth`. The key grammar
   is `info_key_revision = 2`. A schema-v2 artifact serves one exact board.
 - **schema-v3** (`user_version = 3`, RFC 0009 W4c-i): the seat-generic schema plus a
   declared card abstraction on the manifest. Only the manifest differs from
@@ -649,12 +648,19 @@ coexist; `open_validated` selects the DDL by `user_version`:
   artifact serves a board *class*, and its stored flop is the canonical
   representative under the declared abstraction.
 
+**Historical:** schema-v1 (`user_version = 1`, RFC 0004, the original
+two-seat heads-up format with inline stacks/contributions, the three-field
+key grammar, resumable checkpoints, and algorithm revision 1) was retired by
+RFC 0038 (2026-10-26). A v1 file is rejected with
+`ArtifactErrorKind::UnsupportedVersion` before schema validation; there is no
+reader, writer, or migration fallback.
+
 The schema-v2/schema-v3 tables:
 
 | Table | Content |
 | --- | --- |
 | `manifest` | Singleton: artifact kind (`checkpoint`/`policy`), algorithm revision, information-key revision (2), numeric profile, validation state, engine revision, completed iterations, PRNG identifier, seed and PRNG state (16 lowercase hex digits), run status, node/set/byte counters, action/terminal abstraction declaration, `terminal_depth`, and (schema-v3 only) the card-abstraction declaration: `card_abstraction_name`, `card_abstraction_version`, `card_abstraction_parameters`, `card_abstraction_digest` (16 lowercase hex digits, verified against name/version/parameters) |
-| `game` | Singleton: rules and utility identifiers, player count (2..10), button, big blind, ante, root street, terminal depth, flop (canonical representative for schema-v3), optional fixed turn/river, pot |
+| `game` | Singleton: rules and utility identifiers, player count (2..10), button, big blind, ante, root street, terminal depth, flop (canonical representative for schema-v3), optional fixed turn/river, pot. For a turn/river-rooted root the fixed columns are the board prefix; for a flop-rooted, river-terminal root they may instead name the CONDITIONAL turn/river runout every stored row is conditioned on (the RFC 0038 rekey route for fixed-runout policies); NULL marks a free-chance street |
 | `game_seats` | `(seat)` primary key: per-seat stack and contribution for 2..10 seats |
 | `sizes` | Ordered `(street, kind, ordinal)` rational bet/raise numerator and denominator |
 | `ranges` | `(player, combo)` primary key, canonical zero-based unordered combo id 0..1325, nonnegative finite REAL weight |
@@ -668,12 +674,15 @@ The information-state public key is the RFC 0005 canonical ASCII sequence
 `street|board_ids|events`, chosen over a binary BLOB key because it is
 self-describing, directly inspectable with SQLite tooling, and keeps the
 versioned grammar explicit. It is stored alongside the acting player and own
-combo in typed columns; the key itself contains no private cards. Events are
-comma-separated `actor:kind:target` triples with kinds `f/x/c/b/r`; public
-deals are represented entirely by the ordered `board_ids` sequence, so
-revision-1 event text never contains `d` triples. Board counts pin the street,
-and the reader reparses the round-end grammar, decimal rules (no leading
-zeros), targets (`-` for non-aggressive actions), and board/hole separation.
+combo in typed columns; the key itself contains no private cards. The single
+grammar after RFC 0038 is the seat-generic revision-2 form: events are
+comma-separated `actor:kind:target:street` quadruples with kinds `f/x/c/b/r`,
+the street is explicit (folds do not end multiway hands, so a fold is not
+terminal in the key), and public deals are represented entirely by the
+ordered `board_ids` sequence. Board counts pin the street (the preflop form
+uses street token 3 with an empty board field), and the reader reparses event
+ordering, decimal rules (no leading zeros), targets (`-` for non-aggressive
+actions), and board/hole separation.
 
 Chip and rational values follow the RFC 0004 `2^53 - 1` profile: every stored
 INTEGER is range-checked on read, doubles are stored as REAL with NaN and
@@ -681,15 +690,13 @@ infinity rejected, and probabilities are validated per row. Rational sizes,
 card ids, combo identity, action kinds, and aggressive targets round-trip
 exactly; REAL probabilities and training values round-trip as IEEE doubles.
 
-Checkpoints are mutable. `create_checkpoint` writes one complete iteration in
-a single transaction with rollback journaling and `synchronous=FULL`;
-`commit_checkpoint` replaces the policy and training state in one transaction
-and only after a read-only identity probe proves the full canonical identity
-(root board and street, button, blinds, stacks, contributions, pot, utility,
-every range weight, ordered rational sizing schedule, algorithm/key/numeric
-revisions, PRNG identifier, and seed). A mismatch fails with a typed
-`IdentityMismatch` before any write. A published policy cannot be resumed as
-training state.
+Seat checkpoints are immutable snapshots. `create_checkpoint` writes the
+complete result in one transaction with rollback journaling and
+`synchronous=FULL`; a path that already exists fails with
+`AlreadyExists`. Resumable `commit_checkpoint` and identity-mismatch resume
+existed only on the retired schema-v1 heads-up line (RFC 0038) and no longer
+exist; continued seat training starts a fresh checkpoint. A published policy
+cannot be resumed as training state.
 
 Publication writes a fresh SQLite file to a unique temporary name in the
 destination directory, fills and validates it in one transaction, closes it,
@@ -707,8 +714,7 @@ must be completely consumed; contiguous IDs/ordinals, raw-width/card/seat
 bounds, kind/target agreement, finite normalized probabilities, canonical
 keys, referential integrity, training/auxiliary tables, and manifest/card
 identity remain checked. The final map owns compact keys and its row vectors.
-Schema-v1 and raw warm-start reconstruction keep their legacy map paths;
-publication still performs the complete independently pinned reopen above.
+Publication still performs the complete independently pinned reopen above.
 
 Readers treat the file as untrusted: reject above an 8 GiB default bound
 (overridable), validate the physical header and committed in-header database

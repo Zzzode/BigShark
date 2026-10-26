@@ -1,7 +1,8 @@
 # RFC 0038 Implementation Plan
 
-Status: pending approval. RFC 0038 is in round-2 independent review; no
-engine source changes until the approval agent returns Approved.
+Status: Implemented 2026-10-26. RFC 0038 was approved by the independent
+approval agent; the Engine Build Contract gates and the AC evidence are
+recorded in the RFC's Implementation Evidence section.
 
 RFC: `docs/rfcs/0038-retire-schema-v1-artifacts.md`.
 

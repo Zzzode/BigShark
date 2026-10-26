@@ -377,7 +377,7 @@ normalized NashConv respectively) are unconverged large-game measurements
 behind frozen reference-machine regression gates, not equilibrium claims and
 not evidence of full-game hold\'em coverage.
 
-## Resident Lookup Benchmark (RFC 0005 Stage 6, schema 1)
+## Resident Lookup Benchmark (RFC 0005 Stage 6; RFC 0038 schema-v2 rekey)
 
 The RFC 0005 Stage 6 manual runner
 `engine/benchmarks/resident_lookup_benchmark.cpp` (target
@@ -393,15 +393,21 @@ Two deterministic measurements are produced from COMPLETE published
 artifacts built with `HeadsUpSolverDebug::train_full` at one or more full
 traversal iterations (all-zero initial regrets give a uniform policy whose
 average weights normalize exactly to the stored probabilities, so the
-exports validate). Neither number is a strategy-quality claim.
+exports validate). Since RFC 0038 the fixed-runout in-memory policy is
+rekeyed through the test-only `rekey_heads_up_result` helper into a
+flop-rooted river-terminal **schema-v2** artifact on byte-identical
+information keys (the chance-sampled seat trainer cannot materialize a
+fixed runout); the measured resident path is the single production
+schema-v2 path. Neither number is a strategy-quality claim.
 
 1. **Single-root budget gate.** The frozen RFC 0004 Stage 4 SPR-10 dry
    asymmetric fixture (Ks7h2c, 100/200 behind, 10-chip pot, the shared
    three-combo weighted ranges with the AcAd/AcAs cross-block, fixed 3s/5h
    runout) is trained at 4 iterations and published. Its tree is the
    matrix-measured 493,500 information sets. The artifact is loaded and
-   measured, then correctly REFUSED under the 256 MiB default resident
-   budget (`OverBudget`, not advertised).
+   measured; under the compact layout it fits the 256 MiB default resident
+   budget and is advertised (the over-budget refusal path itself is covered
+   by the unit suite with `budget_bytes = 1`).
 
 2. **Warm latency over a six-root aggregate.** Six complete supported roots
    use the same ranges and SPR-4 stack profile (the frozen matrix depth,
@@ -476,6 +482,44 @@ RFC 0005 promotion target, with zero heap allocations across both the
 100,000 hit and 20,000 miss calls. Peak RSS is dominated by training
 artifacts retained in the benchmark process and is not the resident
 footprint. Linux verification remains an external gate.
+
+### Labeled baseline after RFC 0038 (schema-v2 rekey, Linux)
+
+Measured 2026-10-26 on Linux 5.15 (x86-64, release preset, clang) after the
+schema-v1 retirement: every fixture is still trained in memory by
+`HeadsUpSolverDebug::train_full` on its fixed runout and then rekeyed into a
+flop-rooted river-terminal **schema-v2** artifact; the measured resident
+path is the single production schema-v2 path. This is a different machine
+from the 2026-10-05 Apple run, so the timing rows are not a portable
+comparison. The structural invariants are machine-independent and match the
+old run exactly: 493,500 SPR-10 sets, 115,056 aggregate sets (19,176 per
+root), enumerated hit queries asserted equal to the published set count,
+unexpected miss hits 0, and zero heap allocations in both timed batches.
+The SPR-10 honest resident footprint is byte-identical
+(71,265,576 bytes), and the six-root aggregate is 14,108,920 bytes
+(13.455 MiB; -1.8% versus 14,364,360, attributable to the schema-v2 game
+copy shape rather than any resident-index change).
+
+| Metric | Value |
+| --- | ---: |
+| SPR-10 fixture information sets | 493,500 |
+| SPR-10 published file bytes | 214,999,040 (205.04 MiB) |
+| SPR-10 honest resident bytes | 71,265,576 (67.97 MiB) |
+| SPR-10 outcome vs 256 MiB budget | Advertised |
+| SPR-10 4-iteration train time | 106,077.2 ms |
+| Aggregate roots | 6 |
+| Aggregate information sets | 115,056 (19,176 per root) |
+| Enumerated timed hit queries | 115,056 (asserted == information sets) |
+| Aggregate 6x100-iteration train time | 405,577.7 ms |
+| Cold construction (probe + verified load + index build) | 2,716.4 ms |
+| Aggregate honest resident bytes | 14,108,920 (13.455 MiB) of 256 MiB |
+| Process peak RSS (after all builds) | 1,958,621,184 bytes (1.82 GiB) |
+| Warm hit calls / time | 100,000 / 24,527.3 ms |
+| Warm hit p50 / p95 / p99 | 243.81 / 310.46 / 337.82 microseconds |
+| Warm miss calls / p99 | 20,000 / 83.45 microseconds |
+| Unexpected miss hits | 0 |
+| Heap allocations: hit batch / miss batch | 0 / 0 |
+| Warm p99 target (<= 10 ms) | MET |
 
 ### Full-library runtime smoke test (2026-10-05)
 

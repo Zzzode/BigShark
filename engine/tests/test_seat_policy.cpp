@@ -10,16 +10,15 @@
 //     sealed (bucket, node) table and compares it to the export key-by-key and
 //     value-by-value.
 //  2. Key round-trip: make_information_key round-trips through
-//     encode_public_key(key, 2) / decode_public_key(text, 2, ...) for every
+//     encode_public_key(key) / decode_public_key(text, ...) for every
 //     actor 0..9 and board_count 0/3/4/5, with grammar-consistent
-//     public-action paths. The revision-1/revision-2 rejection surfaces are
+//     public-action paths. The malformed-key rejection surfaces are
 //     exercised too.
 //  3. Two-seat byte identity: make_information_key produces the byte-identical
-//     key (and revision-1 encoding) that information_key(HeadsUpState, ...)
-//     produces for the same state, at both an empty-path flop root and a
-//     check-down river state. A 2-seat export keys its rows by
-//     make_information_key, closing the chain export -> make_information_key ->
-//     information_key.
+//     key that information_key(HeadsUpState, ...) produces for the same
+//     state, at both an empty-path flop root and a check-down river state.
+//     A 2-seat export keys its rows by make_information_key, closing the
+//     chain export -> make_information_key -> information_key.
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
@@ -309,11 +308,11 @@ int test_key_round_trip() {
   const std::vector<int> board5{card("2c"), card("3d"), card("7h"), card("Ks"), card("9c")};
   const std::vector<PublicAction> no_path;
   const Action check{ActionType::Check, 0};
-  // The decode grammar reconstructs each event's street from the round-end rule
-  // (a call or a check-check advances the street, AFTER pushing the event), so
-  // a check that closes a street is tagged with the street it closes -- exactly
-  // PublicAction.street semantics. board_count 4 needs a flop check-check;
-  // board_count 5 needs a flop and a turn check-check.
+  // Each event's street is an explicit key word in the single revision-2
+  // grammar (the PublicAction.street field); a check that closes a street is
+  // tagged with the street it closes -- exactly PublicAction.street
+  // semantics. board_count 4 needs a flop check-check; board_count 5 needs a
+  // flop and a turn check-check.
   const std::vector<PublicAction> flop_check_check{
       {Street::Flop, 0, check},
       {Street::Flop, 1, check},
@@ -329,30 +328,30 @@ int test_key_round_trip() {
     // board_count 0: the preflop form (revision 2 only).
     {
       const InformationKey key = make_information_key(actor, cards, board0, no_path);
-      const std::string text = artifacts::encode_public_key(key, 2);
-      const InformationKey back = artifacts::decode_public_key(text, 2, actor, cards[0], cards[1]);
+      const std::string text = artifacts::encode_public_key(key);
+      const InformationKey back = artifacts::decode_public_key(text, actor, cards[0], cards[1]);
       CHECK(back == key);
     }
     // board_count 3: flop, empty path.
     {
       const InformationKey key = make_information_key(actor, cards, board3, no_path);
-      const std::string text = artifacts::encode_public_key(key, 2);
-      const InformationKey back = artifacts::decode_public_key(text, 2, actor, cards[0], cards[1]);
+      const std::string text = artifacts::encode_public_key(key);
+      const InformationKey back = artifacts::decode_public_key(text, actor, cards[0], cards[1]);
       CHECK(back == key);
     }
     // board_count 4: turn, flop check-check.
     {
       const InformationKey key = make_information_key(actor, cards, board4, flop_check_check);
-      const std::string text = artifacts::encode_public_key(key, 2);
-      const InformationKey back = artifacts::decode_public_key(text, 2, actor, cards[0], cards[1]);
+      const std::string text = artifacts::encode_public_key(key);
+      const InformationKey back = artifacts::decode_public_key(text, actor, cards[0], cards[1]);
       CHECK(back == key);
     }
     // board_count 5: river, flop and turn check-check.
     {
       const InformationKey key =
           make_information_key(actor, cards, board5, flop_and_turn_check_check);
-      const std::string text = artifacts::encode_public_key(key, 2);
-      const InformationKey back = artifacts::decode_public_key(text, 2, actor, cards[0], cards[1]);
+      const std::string text = artifacts::encode_public_key(key);
+      const InformationKey back = artifacts::decode_public_key(text, actor, cards[0], cards[1]);
       CHECK(back == key);
     }
   }
@@ -367,53 +366,31 @@ int test_key_round_trip() {
     return false;
   };
 
-  // Revision 1 rejects the preflop form (board_count 0) at encode.
-  CHECK(expect_artifact(
-      [&] {
-        (void)artifacts::encode_public_key(make_information_key(0, cards, board0, no_path), 1);
-      },
-      artifacts::ArtifactErrorKind::InvalidArgument));
-  // Revision 1 rejects player > 1 at decode.
+  // The single revision-2 grammar rejects player > 9 at decode.
   {
     const std::string text =
-        artifacts::encode_public_key(make_information_key(0, cards, board3, no_path), 1);
-    CHECK(
-        expect_artifact([&] { (void)artifacts::decode_public_key(text, 1, 2, cards[0], cards[1]); },
-                        artifacts::ArtifactErrorKind::InvalidSchema));
+        artifacts::encode_public_key(make_information_key(0, cards, board3, no_path));
+    CHECK(expect_artifact([&] { (void)artifacts::decode_public_key(text, 10, cards[0], cards[1]); },
+                          artifacts::ArtifactErrorKind::InvalidSchema));
   }
-  // Revision 2 rejects player > 9 at decode.
-  {
-    const std::string text =
-        artifacts::encode_public_key(make_information_key(0, cards, board3, no_path), 2);
-    CHECK(expect_artifact(
-        [&] { (void)artifacts::decode_public_key(text, 2, 10, cards[0], cards[1]); },
-        artifacts::ArtifactErrorKind::InvalidSchema));
-  }
-  // Revision 2 rejects board_count 1 at encode (build the key by hand since
+  // The grammar rejects board_count 1 at encode (build the key by hand since
   // make_information_key validates board_count in {0,3,4,5}).
   {
     const InformationKey bad{0, static_cast<std::uint64_t>(cards[0]),
                              static_cast<std::uint64_t>(cards[1]), 1,
                              static_cast<std::uint64_t>(board3[0])};
-    CHECK(expect_artifact([&] { (void)artifacts::encode_public_key(bad, 2); },
+    CHECK(expect_artifact([&] { (void)artifacts::encode_public_key(bad); },
                           artifacts::ArtifactErrorKind::InvalidArgument));
   }
   // Decode rejects card0 >= card1.
   {
     const std::string text =
-        artifacts::encode_public_key(make_information_key(0, cards, board3, no_path), 2);
-    CHECK(
-        expect_artifact([&] { (void)artifacts::decode_public_key(text, 2, 0, cards[1], cards[0]); },
-                        artifacts::ArtifactErrorKind::InvalidSchema));
+        artifacts::encode_public_key(make_information_key(0, cards, board3, no_path));
+    CHECK(expect_artifact([&] { (void)artifacts::decode_public_key(text, 0, cards[1], cards[0]); },
+                          artifacts::ArtifactErrorKind::InvalidSchema));
   }
-  // An unsupported grammar revision is an InvalidArgument.
-  CHECK(expect_artifact(
-      [&] {
-        (void)artifacts::encode_public_key(make_information_key(0, cards, board3, no_path), 99);
-      },
-      artifacts::ArtifactErrorKind::InvalidArgument));
 
-  std::printf("key round-trip: 40 actor/board pairs + 6 rejections PASS\n");
+  std::printf("key round-trip: 40 actor/board pairs + 3 rejections PASS\n");
   return 0;
 }
 
@@ -438,12 +415,12 @@ int test_two_seat_byte_identity() {
     const InformationKey hu_key = information_key(state, own);
     const InformationKey seat_key = make_information_key(0, own, flop_board, no_path);
     CHECK(hu_key == seat_key);
-    CHECK(artifacts::encode_public_key(hu_key, 1) == artifacts::encode_public_key(seat_key, 1));
+    CHECK(artifacts::encode_public_key(hu_key) == artifacts::encode_public_key(seat_key));
   }
 
   // (b) Check-down river state: the heads-up history carries the flop and turn
   //     check-check, and make_information_key carries the same path, so the two
-  //     keys (and their revision-1 encodings) are byte-identical.
+  //     keys (and their canonical encodings) are byte-identical.
   {
     const HeadsUpGame game = heads_up_river_game();
     const HeadsUpState river_state = checked_down_river(game);
@@ -458,7 +435,7 @@ int test_two_seat_byte_identity() {
     const InformationKey hu_key = information_key(river_state, own);
     const InformationKey seat_key = make_information_key(0, own, river_board, check_down_path);
     CHECK(hu_key == seat_key);
-    CHECK(artifacts::encode_public_key(hu_key, 1) == artifacts::encode_public_key(seat_key, 1));
+    CHECK(artifacts::encode_public_key(hu_key) == artifacts::encode_public_key(seat_key));
   }
 
   // (c) A 2-seat river-rooted export keys its rows by make_information_key: the

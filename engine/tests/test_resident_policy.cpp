@@ -35,7 +35,7 @@
 #include <utility>
 #include <vector>
 
-#include "artifacts/artifact_internal.hpp"
+#include "artifacts/rekey_fixture.hpp"
 #include "gto/heads_up_solver_debug.hpp"
 #include "resident/public_reach.hpp"
 #include "resident/resident_index.hpp"
@@ -65,8 +65,6 @@ using namespace bs::resident;
 namespace fs = std::filesystem;
 
 namespace {
-
-using bs::artifacts::detail::PolicyAssembler;
 
 int card(const char* name) {
   return bs::cardId(std::string(name));
@@ -115,13 +113,6 @@ Sha256Digest parse_sha256(const std::string& hex) {
   return digest;
 }
 
-TrainingRows to_training_rows(const std::map<InformationKey, DebugRow>& debug_rows) {
-  TrainingRows out;
-  for (const auto& [key, row] : debug_rows)
-    out.emplace(key, TrainingRow{row.actions, row.regrets, row.sums});
-  return out;
-}
-
 using Overrides = std::map<InformationKey, std::vector<double>>;
 
 // Static solver-tree support: does `combo` have any opponent range combo
@@ -151,10 +142,16 @@ struct PublishedFixture {
   fs::path policy_path;
   HeadsUpGame game;
   std::string sha256_hex;
+  // The in-memory fixed-runout heads-up policy (overrides applied) that was
+  // rekeyed into the published schema-v2 artifact. Tests independently
+  // oracle-check probabilities against this; the resident serves the
+  // identical (key, probabilities) rows from the seat artifact.
+  HeadsUpPolicy oracle_policy;
 };
 
 // Train one complete full traversal, optionally override exact published
-// rows, checkpoint, and publish an immutable policy artifact.
+// rows, checkpoint, and publish an immutable schema-v2 policy artifact
+// (RFC 0038: rekeyed from the fixed-runout in-memory heads-up training).
 PublishedFixture publish_game(HeadsUpGame game, std::uint64_t iterations,
                               const Overrides& overrides, const fs::path& dir,
                               const std::string& name) {
@@ -165,45 +162,35 @@ PublishedFixture publish_game(HeadsUpGame game, std::uint64_t iterations,
     std::abort();
   }
 
-  TrainingRows raw_rows = to_training_rows(trained.rows);
-  HeadsUpPolicy policy;
-  PolicyAssembler::set_game(policy, game);
-  for (const auto& [key, trained_row] : trained.result.policy.rows()) {
-    PolicyRow row = PolicyRow{trained_row.actions, trained_row.probabilities};
-    const auto override_it = overrides.find(key);
-    if (override_it != overrides.end()) {
-      if (override_it->second.size() != row.actions.size()) {
-        std::printf("override action count mismatch for %s\n", name.c_str());
-        std::abort();
-      }
-      row.probabilities = override_it->second;
-    }
-    PolicyAssembler::add_row(policy, key, row);
-  }
+  // Validate every override names a real row with a matching action count.
   for (const auto& [key, probs] : overrides) {
     const auto row_it = trained.result.policy.rows().find(key);
     if (row_it == trained.result.policy.rows().end()) {
       std::printf("override key absent from trained policy for %s\n", name.c_str());
       std::abort();
     }
-    raw_rows.insert_or_assign(key, TrainingRow{row_it->second.actions, probs, probs});
+    if (probs.size() != row_it->second.actions.size()) {
+      std::printf("override action count mismatch for %s\n", name.c_str());
+      std::abort();
+    }
   }
 
-  TrainingResult result = trained.result;
-  result.policy = std::move(policy);
+  const SeatTrainingResult rekeyed =
+      bs::artifacts::detail::rekey_heads_up_result({game, trained.result, &overrides});
 
   const fs::path checkpoint = dir / (name + "-checkpoint.db");
   const fs::path policy_path = dir / (name + "-policy.db");
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kFullTraversalPrngIdentifier;
-  provenance.engine_revision = "resident-test-engine-1";
-  create_checkpoint(checkpoint, result, raw_rows, provenance);
+  const SeatCheckpointProvenance provenance =
+      bs::artifacts::detail::rekey_provenance("resident-test-engine-1");
+  create_checkpoint(checkpoint, rekeyed, provenance);
   const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-test-1");
 
   PublishedFixture fixture;
   fixture.policy_path = policy_path;
-  fixture.game = std::move(game);
+  fixture.game = game;
   fixture.sha256_hex = published.sha256_hex;
+  fixture.oracle_policy =
+      bs::artifacts::detail::RekeyOracleAccess::with_overrides(trained.result.policy, overrides);
   return fixture;
 }
 
@@ -243,31 +230,19 @@ HeadsUpGame matrix_game() {
 // the resident layer must report later nodes as missing history.
 PublishedFixture publish_root_only(HeadsUpGame game, const fs::path& dir, const std::string& name) {
   const DebugTrainingOutput trained = HeadsUpSolverDebug::train_full(game, 1, fast_limits());
-  HeadsUpPolicy policy;
-  PolicyAssembler::set_game(policy, game);
-  TrainingRows raw_rows;
-  for (const auto& [key, trained_row] : trained.result.policy.rows()) {
-    // Root keys are actor, two own cards, board size 3, the flop: 7 words.
-    if (key.size() != 7)
-      continue;
-    PolicyAssembler::add_row(policy, key,
-                             PolicyRow{trained_row.actions, trained_row.probabilities});
-    const auto raw_it = trained.rows.find(key);
-    raw_rows.emplace(
-        key, TrainingRow{raw_it->second.actions, raw_it->second.regrets, raw_it->second.sums});
-  }
-  TrainingResult result = trained.result;
-  result.policy = std::move(policy);
-  result.information_sets = raw_rows.size();
+  // Root keys are actor, two own cards, board size 3, the flop: 7 words.
+  const auto root_only = [](const InformationKey& key) { return key.size() == 7; };
+  const SeatTrainingResult rekeyed =
+      bs::artifacts::detail::rekey_heads_up_result({game, trained.result, nullptr, root_only});
 
   const fs::path checkpoint = dir / (name + "-checkpoint.db");
   const fs::path policy_path = dir / (name + "-policy.db");
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kFullTraversalPrngIdentifier;
-  provenance.engine_revision = "resident-partial-engine-1";
-  create_checkpoint(checkpoint, result, raw_rows, provenance);
+  const SeatCheckpointProvenance provenance =
+      bs::artifacts::detail::rekey_provenance("resident-partial-engine-1");
+  create_checkpoint(checkpoint, rekeyed, provenance);
   const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-partial-1");
-  return {policy_path, std::move(game), published.sha256_hex};
+  return {policy_path, std::move(game), published.sha256_hex,
+          bs::artifacts::detail::RekeyOracleAccess::with_overrides(trained.result.policy, {})};
 }
 
 InformationKey key_of(const HeadsUpState& state, std::array<int, 2> own) {
@@ -311,8 +286,8 @@ UnifiedNode to_unified(const HeadsUpState& source) {
   return {std::move(cursor), std::move(history)};
 }
 
-// Publish a hand-authored single-row policy for games the trainer refuses to
-// build (zero or fully cross-blocked joint ranges). Used to prove the
+// Publish a hand-authored single-row v2 policy for games the trainer refuses
+// to build (zero or fully cross-blocked joint ranges). Used to prove the
 // resident startup gate rejects validated artifacts that cannot condition.
 PublishedFixture publish_synthetic_policy(const HeadsUpGame& game_in, const fs::path& dir,
                                           const std::string& name) {
@@ -331,25 +306,39 @@ PublishedFixture publish_synthetic_policy(const HeadsUpGame& game_in, const fs::
   const auto own = game.ranges[0].front().cards;
   const InformationKey key = information_key(root, own);
 
-  HeadsUpPolicy policy;
-  PolicyAssembler::set_game(policy, game);
-  PolicyAssembler::add_row(policy, key, PolicyRow{actions, probs});
-  TrainingResult result;
-  result.status = TrainingStatus::Complete;
-  result.completed_iterations = 1;
-  result.information_sets = 1;
-  result.policy = std::move(policy);
-  TrainingRows rows;
-  rows.emplace(key, TrainingRow{actions, std::vector<double>(actions.size(), 0.0), probs});
+  // Directly assemble a flop-rooted river-terminal seat result (same
+  // hand-authored path as test_folded_root_identity). The information key is
+  // byte-identical in heads-up and seat form.
+  const UnifiedGame unified = to_unified_game(game);
+  std::vector<std::vector<WeightedHand>> ranges;
+  ranges.reserve(unified.def.player_count);
+  for (std::size_t seat = 0; seat < unified.def.player_count; ++seat)
+    ranges.push_back(unified.ranges[seat]);
+  const bs::abstraction::AbstractionId action_id = bs::abstraction::identity_action_id();
+
+  SeatTrainingResult fixture;
+  fixture.termination = NSeatTerminationPhase::Complete;
+  fixture.algorithm_revision = 0;  // custom algorithm string in provenance
+  fixture.completed_iterations = 0;
+  fixture.nodes = 1;
+  fixture.information_sets = 1;
+  fixture.action_id = action_id;
+  fixture.terminal_depth = TerminalDepth::River;
+  bs::artifacts::detail::SeatPolicyAssembler::set_identity(
+      fixture.policy, unified.def, unified.sizes, ranges, action_id, std::nullopt);
+  bs::artifacts::detail::SeatPolicyAssembler::add_row(fixture.policy, key,
+                                                      SeatPolicyRow{actions, probs, 0});
 
   const fs::path checkpoint = dir / (name + "-checkpoint.db");
   const fs::path policy_path = dir / (name + "-policy.db");
-  CheckpointProvenance provenance;
+  SeatCheckpointProvenance provenance;
   provenance.prng_identifier = kFullTraversalPrngIdentifier;
   provenance.engine_revision = "resident-synthetic-engine-1";
-  create_checkpoint(checkpoint, result, rows, provenance);
+  provenance.algorithm_revision = "resident-synthetic-fixture-1";
+  create_checkpoint(checkpoint, fixture, provenance);
   const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-synthetic-1");
-  return {policy_path, std::move(game), published.sha256_hex};
+  // The synthetic single-row fixture has no in-memory heads-up oracle.
+  return {policy_path, std::move(game), published.sha256_hex, {}};
 }
 
 double reach_of(const ResidentAnswer& answer, std::size_t player, int c0, int c1) {
@@ -816,8 +805,9 @@ static bool test_golden_reach(const fs::path& dir) {
   overrides.emplace(key_of(root, qh_jh), thirds);
 
   const PublishedFixture fixture = publish_game(game, 1, overrides, dir, "golden");
-  // schema-v1 never writes certification bounds or measurements: they exist,
-  // validate, and read as empty. Resident continuations are blueprint-only.
+  // The rekeyed schema-v2 fixture writes no certification bounds or
+  // measurements: they exist, validate, and read as empty. Resident
+  // continuations are blueprint-only.
   {
     sqlite3* raw = nullptr;
     CHECK(sqlite3_open(fixture.policy_path.string().c_str(), &raw) == SQLITE_OK);
@@ -1037,7 +1027,7 @@ static bool test_solver_reach_convention(const fs::path& dir) {
 
   const PublishedFixture fixture = publish_game(game, 1, overrides, dir, "hook");
   const LoadedArtifact loaded = load_artifact(fixture.policy_path);
-  const HeadsUpPolicy& policy = loaded.bundle.result.policy;
+  // oracle policy carried on the fixture (fixed-runout heads-up view)
   std::vector<RootLoadResult> results;
   ResidentPolicySet residents = ResidentPolicySet::build(
       {{fixture.policy_path, parse_sha256(fixture.sha256_hex)}}, {}, &results);
@@ -1105,7 +1095,7 @@ static bool test_solver_reach_convention(const fs::path& dir) {
         for (std::size_t d = 0; d < deals.size(); ++d) {
           if (reach[d] == 0.0)
             continue;
-          const auto* row = policy.lookup(cursor, deals[d].hands[event.actor]);
+          const auto* row = fixture.oracle_policy.lookup(cursor, deals[d].hands[event.actor]);
           CHECK_ORACLE(row != nullptr);
           reach[d] *= row->probabilities[action_index];
         }
@@ -1143,9 +1133,9 @@ static bool test_solver_reach_convention(const fs::path& dir) {
       CHECK(resident_mass > 0);
 
       const double solver_value = HeadsUpSolverDebug::response_value_with_reach(
-          game, policy, state, 0, own, best, solver_reach, fast_limits());
+          game, fixture.oracle_policy, state, 0, own, best, solver_reach, fast_limits());
       const double resident_value = HeadsUpSolverDebug::response_value_with_reach(
-          game, policy, state, 0, own, best, resident_reach, fast_limits());
+          game, fixture.oracle_policy, state, 0, own, best, resident_reach, fast_limits());
       // The two reach vectors differ only by a positive constant (chance
       // factors and per-node normalization); response values are homogeneous
       // in reach, so the normalized values must agree tightly.
@@ -1167,8 +1157,7 @@ static bool test_solver_reach_convention(const fs::path& dir) {
   // is the surviving QhJh so the response still has positive reach mass.
   HeadsUpGame free_game = canonicalize(free_turn_game());
   const PublishedFixture free_fixture = publish_game(free_game, 1, overrides, dir, "hook-free");
-  const LoadedArtifact free_loaded = load_artifact(free_fixture.policy_path);
-  const HeadsUpPolicy& free_policy = free_loaded.bundle.result.policy;
+  const HeadsUpPolicy& free_policy = free_fixture.oracle_policy;
   ResidentPolicySet free_residents = ResidentPolicySet::build(
       {{free_fixture.policy_path, parse_sha256(free_fixture.sha256_hex)}}, {}, &results);
   const HeadsUpState free_root(free_game.root);
@@ -1716,7 +1705,7 @@ static bool test_probe_api(const fs::path& dir) {
   const ArtifactProbe probe = probe_artifact(
       fixture.policy_path, LoadOptions{kDefaultMaxArtifactBytes, parse_sha256(fixture.sha256_hex)});
   const LoadedArtifact loaded = load_artifact(fixture.policy_path);
-  const auto& rows = loaded.bundle.result.policy.rows();
+  const auto& rows = loaded.bundle.nseat->policy.rows();
   CHECK(probe.information_sets == rows.size());
   std::uint64_t actions = 0;
   std::uint64_t words = 0;
@@ -1755,11 +1744,18 @@ static bool test_probe_api(const fs::path& dir) {
         deep_fixture.policy_path,
         LoadOptions{kDefaultMaxArtifactBytes, parse_sha256(deep_fixture.sha256_hex)});
     const LoadedArtifact deep_loaded = load_artifact(deep_fixture.policy_path);
-    const HeadsUpPolicy& deep_policy = deep_loaded.bundle.result.policy;
+    const SeatPolicy& deep_policy = deep_loaded.bundle.nseat->policy;
     ResidentIndex exact_index;
     exact_index.build(deep_policy.rows());
-    // Reproduce the resident library's own game-copy measurement.
-    const UnifiedGame unified = to_unified_game(deep_policy.game());
+    // Reproduce the resident library's own game-copy measurement: the resident
+    // builds its unified view straight from the schema-v2 identity
+    // (build_v2_game), so assemble the same view here from the SeatPolicy's
+    // owned GameDef/ranges/sizes.
+    UnifiedGame unified;
+    unified.def = deep_policy.game();
+    for (std::size_t seat = 0; seat < unified.def.player_count; ++seat)
+      unified.ranges[seat] = deep_policy.ranges()[seat];
+    unified.sizes = deep_policy.sizes();
     std::size_t exact_bytes = exact_index.resident_bytes();
     exact_bytes += kUnifiedGameCopyAccountingBytes;
     for (const auto& range : unified.ranges)
@@ -1781,13 +1777,10 @@ static bool test_probe_api(const fs::path& dir) {
   const fs::path checkpoint = dir / "probe-ck-checkpoint.db";
   {
     const DebugTrainingOutput trained = HeadsUpSolverDebug::train_full(game, 1, fast_limits());
-    TrainingRows raw_rows;
-    for (const auto& [key, row] : trained.rows)
-      raw_rows.emplace(key, TrainingRow{row.actions, row.regrets, row.sums});
-    CheckpointProvenance provenance;
-    provenance.prng_identifier = kFullTraversalPrngIdentifier;
-    provenance.engine_revision = "probe-ck-engine";
-    create_checkpoint(checkpoint, trained.result, raw_rows, provenance);
+    const SeatTrainingResult rekeyed =
+        bs::artifacts::detail::rekey_heads_up_result({game, trained.result});
+    create_checkpoint(checkpoint, rekeyed,
+                      bs::artifacts::detail::rekey_provenance("probe-ck-engine"));
   }
   bool checkpoint_rejected = false;
   try {
@@ -2576,8 +2569,10 @@ static bool test_misses(const fs::path& dir) {
 
 namespace {
 
-bool index_matches_map(const ResidentIndex& index,
-                       const std::map<InformationKey, PolicyRow>& rows) {
+// Works for both heads-up PolicyRow maps and schema-v2 SeatPolicyRow maps:
+// both store the same action menu and probability vector per key.
+template <class Row>
+bool index_matches_map(const ResidentIndex& index, const std::map<InformationKey, Row>& rows) {
   std::array<std::uint8_t, 512> compact_buf{};
   for (const auto& [key, row] : rows) {
     const std::size_t compact_size = ResidentIndex::compact_information_key(
@@ -2639,7 +2634,7 @@ struct ContinuityWalker {
         if (board_card == hand.cards[0] || board_card == hand.cards[1])
           blocked = true;
       if (!blocked)
-        return encode_public_key(information_key(state, hand.cards), kArtifactSchemaVersion);
+        return encode_public_key(information_key(state, hand.cards));
     }
     std::abort();
   }
@@ -2733,14 +2728,17 @@ static bool test_index_and_continuity(const fs::path& dir) {
 
   for (const PublishedFixture& fixture : {golden_fixture, free_fixture, matrix_fixture}) {
     const LoadedArtifact loaded = load_artifact(fixture.policy_path);
-    const HeadsUpPolicy& policy = loaded.bundle.result.policy;
+    // The resident serves the rekeyed seat rows from the schema-v2 artifact.
+    const SeatPolicy& seat_policy = loaded.bundle.nseat->policy;
     ResidentIndex index;
-    index.build(policy.rows());
-    CHECK(index.row_count() == policy.rows().size());
-    CHECK(index_matches_map(index, policy.rows()));
+    index.build(seat_policy.rows());
+    CHECK(index.row_count() == seat_policy.rows().size());
+    CHECK(index_matches_map(index, seat_policy.rows()));
 
-    ContinuityWalker walker{policy.game(), index, {}, true};
-    CHECK(walker.walk(HeadsUpState(policy.game().root)));
+    // Continuity is walked against the fixed-runout heads-up game view that
+    // was rekeyed into the artifact (carried on the fixture).
+    ContinuityWalker walker{fixture.game, index, {}, true};
+    CHECK(walker.walk(HeadsUpState(fixture.game.root)));
   }
   return true;
 }
@@ -3179,6 +3177,36 @@ static bool test_blueprint_only() {
   return true;
 }
 
+// AC2 (RFC 0038): a schema-v1 file is refused at the resident boundary with
+// RootStatus::LoadFailed and the RFC 0038 retirement message, rather than
+// crashing the process. The resident requires a pinned digest, so the v1
+// file's own actual digest is pinned: the version gate must then fire after
+// the digest check passes.
+static bool test_v1_resident_load_failed(const fs::path& dir) {
+  const fs::path path = dir / "v1-retired.db";
+  {
+    sqlite3* raw = nullptr;
+    CHECK(sqlite3_open(path.string().c_str(), &raw) == SQLITE_OK);
+    char* error = nullptr;
+    CHECK(sqlite3_exec(raw, "PRAGMA application_id = 1112754004;", nullptr, nullptr, &error) ==
+          SQLITE_OK);
+    CHECK(sqlite3_exec(raw, "PRAGMA user_version = 1;", nullptr, nullptr, &error) == SQLITE_OK);
+    sqlite3_close(raw);
+  }
+  const Sha256Digest digest = bs::artifacts::detail::sha256_file(path, kDefaultMaxArtifactBytes);
+  const std::string digest_hex = bs::artifacts::detail::to_hex(digest);
+
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet residents =
+      ResidentPolicySet::build({{path, parse_sha256(digest_hex)}}, {}, &results);
+  CHECK(results.size() == 1);
+  CHECK(results[0].status == RootStatus::LoadFailed);
+  CHECK(results[0].detail.find("schema v1 retired by RFC 0038") != std::string::npos);
+  // The failed root occupies no advertised slot.
+  CHECK(residents.advertised_roots() == 0);
+  return true;
+}
+
 int main() {
   const fs::path dir = fs::temp_directory_path() / "bs-resident-test";
   std::error_code ec;
@@ -3214,6 +3242,7 @@ int main() {
       {"wide board root identity", [](const fs::path&) { return test_wide_board_root_identity(); }},
       {"multi-root mmap resident", test_multi_root_mmap_resident},
       {"blueprint only", [](const fs::path&) { return test_blueprint_only(); }},
+      {"schema-v1 load failed", test_v1_resident_load_failed},
   };
 
   for (const Case& test_case : cases) {

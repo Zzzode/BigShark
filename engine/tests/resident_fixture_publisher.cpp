@@ -11,6 +11,7 @@
 // root. The tool is test infrastructure; production never ships blueprints.
 #include <algorithm>
 #include <array>
+#include <bs/abstraction.hpp>
 #include <bs/eval.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/heads_up_solver.hpp>
@@ -20,12 +21,11 @@
 #include <filesystem>
 #include <string>
 
-#include "artifacts/artifact_internal.hpp"
+#include "artifacts/rekey_fixture.hpp"
 #include "gto/heads_up_solver_debug.hpp"
 
 namespace {
 
-using bs::artifacts::detail::PolicyAssembler;
 using namespace bs::poker;
 using namespace bs::solver;
 using namespace bs::artifacts;
@@ -95,23 +95,17 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  HeadsUpPolicy policy;
-  PolicyAssembler::set_game(policy, game);
-  TrainingRows rawRows;
-  for (const auto& [key, trainedRow] : trained.result.policy.rows()) {
-    PolicyAssembler::add_row(policy, key, PolicyRow{trainedRow.actions, trainedRow.probabilities});
-    if (const auto rawIt = trained.rows.find(key); rawIt != trained.rows.end())
-      rawRows.emplace(
-          key, TrainingRow{rawIt->second.actions, rawIt->second.regrets, rawIt->second.sums});
-  }
+  // RFC 0038: the fixed-runout in-memory training is rekeyed into a
+  // flop-rooted river-terminal schema-v2 policy (no PolicyAssembler, no v1
+  // writer). The information keys are byte-identical between the two forms, so
+  // the published rows answer the same hands; the rekey helper stamps a
+  // genuine revision-two identity.
+  const SeatTrainingResult rekeyed =
+      bs::artifacts::detail::rekey_heads_up_result({game, trained.result});
 
-  TrainingResult result = trained.result;
-  result.policy = std::move(policy);
   const std::filesystem::path checkpoint = dir / "resident-fixture-checkpoint.db";
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kFullTraversalPrngIdentifier;
-  provenance.engine_revision = "stage8-fixture-engine-1";
-  create_checkpoint(checkpoint, result, rawRows, provenance);
+  create_checkpoint(checkpoint, rekeyed,
+                    bs::artifacts::detail::rekey_provenance("stage8-fixture-engine-1"));
   const PublishedPolicy published = publish_policy(checkpoint, policyPath, "stage8-fixture-1");
 
   std::printf(

@@ -5,8 +5,6 @@
 #pragma once
 
 #include <array>
-#include <bs/heads_up.hpp>
-#include <bs/heads_up_solver.hpp>
 #include <bs/seat_policy.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <cstddef>
@@ -28,9 +26,10 @@ namespace bs::artifacts::detail {
 // Maps a SQLite primary/extended result code to the artifact error taxonomy.
 ArtifactErrorKind classify_sqlite(int rc);
 
-// The canonical schema DDL sets (kSchemaDdlV1 frozen, kSchemaDdlV2 seat-generic)
-// and the per-version allowed-table sets are private to strategy_artifact.cpp;
-// open_validated selects one by the artifact's user_version.
+// The canonical schema DDL sets (kSchemaDdlV2 seat-generic, kSchemaDdlV3
+// declared card abstraction) and the per-version allowed-table sets are
+// private to strategy_artifact.cpp; open_validated selects one by the
+// artifact's user_version. A user_version 1 file is rejected (RFC 0038).
 
 // A SQLite database connection. All opens enable foreign keys; readers are
 // additionally pinned read-only/query-only/defensive.
@@ -127,25 +126,17 @@ double require_finite(double value, const std::string& field);
 // 1e-12, and the row is non-empty.
 void validate_probabilities(const std::vector<double>& probabilities, const std::string& field);
 
-// Assembles immutable solver domain records after validation. It is the one
-// production consumer granted access to HeadsUpPolicy's private rows.
-class PolicyAssembler {
- public:
-  static void set_game(solver::HeadsUpPolicy& policy, const solver::HeadsUpGame& game);
-  static void add_row(solver::HeadsUpPolicy& policy, solver::InformationKey key,
-                      solver::PolicyRow row);
-};
-
-// The schema-v2 (RFC 0009 D3) analogue of PolicyAssembler: the one production consumer
-// granted access to SeatPolicy's private identity and rows, used by the schema-v2
-// artifact reader to reconstruct an immutable SeatPolicy from a validated file.
+// The one production consumer granted access to SeatPolicy's private identity
+// and rows, used by the artifact reader to reconstruct an immutable SeatPolicy
+// from a validated file, and by the test/benchmark rekey helpers.
 class SeatPolicyAssembler {
  public:
   static void set_identity(solver::SeatPolicy& policy, poker::GameDef game,
                            abstraction::SizeSchedule sizes,
                            std::vector<std::vector<solver::WeightedHand>> ranges,
                            abstraction::AbstractionId action_id,
-                           std::optional<abstraction::AbstractionId> card_id);
+                           std::optional<abstraction::AbstractionId> card_id,
+                           std::array<std::optional<int>, 2> fixed_runout = {});
   static void add_row(solver::SeatPolicy& policy, solver::InformationKey key,
                       solver::SeatPolicyRow row);
 };

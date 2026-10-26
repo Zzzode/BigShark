@@ -1,25 +1,27 @@
 // RFC 0005 Stage 5 strategy artifact boundary.
 //
-// This is the only public surface of `bigshark_artifacts`. It serializes RFC
-// 0004 heads-up training checkpoints and immutable, validated policy exports.
-// Every function exchanges engine domain records from bs/heads_up_solver.hpp
-// and bs/heads_up.hpp; SQLite and OpenSSL handles, headers, and statements are
-// private to the implementation and never appear here. The library is offline
-// only: no host, service, or live-decision path links it in this stage.
+// This is the only public surface of `bigshark_artifacts`. It serializes
+// seat-generic training checkpoints and immutable, validated policy exports.
+// SQLite and OpenSSL handles, headers, and statements are private to the
+// implementation and never appear here. The library is offline only: no host,
+// service, or live-decision path links it.
 //
-// Artifact schema-v1: SQLite database, application_id 0x42534754 ("BSGT"),
-// user_version 1, STRICT tables, foreign keys, prepared statements, and the
-// RFC 0005 canonical ASCII information key. Checkpoints are mutable files
-// updated by one transaction per complete iteration (rollback journaling,
-// synchronous=FULL). A policy export is a fresh, read-only file published to a
-// new generation path by an atomic same-filesystem link, identified by
-// SHA-256 of its bytes. Readers are bounded and treat the file as untrusted.
+// Artifact schema (RFC 0038): only schema-v2/schema-v3 SQLite artifacts,
+// application_id 0x42534754 ("BSGT"), user_version 2 or 3, STRICT tables,
+// foreign keys, prepared statements, and the revision-2 information key.
+// The original two-seat schema-v1 dialect and algorithm revision 1 were
+// retired by RFC 0038; a user_version 1 file fails as UnsupportedVersion.
+// A checkpoint is an immutable snapshot of a complete SeatTrainingResult
+// written in one transaction (rollback journaling, synchronous=FULL);
+// continued training writes a fresh checkpoint. A policy export is a fresh,
+// read-only file published to a new generation path by an atomic
+// same-filesystem link, identified by SHA-256 of its bytes. Readers are
+// bounded and treat the file as untrusted.
 #pragma once
 
 #include <array>
 #include <bs/abstraction.hpp>
 #include <bs/game_definition.hpp>
-#include <bs/heads_up_solver.hpp>
 #include <bs/seat_policy.hpp>
 #include <cstddef>
 #include <cstdint>
@@ -34,7 +36,6 @@ namespace bs::artifacts {
 
 // "BSGT" stored in the SQLite application_id header word.
 inline constexpr std::uint32_t kArtifactApplicationId = 0x42534754u;
-inline constexpr std::uint32_t kArtifactSchemaVersion = 1;
 // RFC 0004 numeric profile: chip amounts fit exactly in 53-bit mantissa.
 inline constexpr std::uint64_t kMaxStoredChips = (std::uint64_t{1} << 53) - 1;
 inline constexpr std::uint64_t kDefaultMaxArtifactBytes = std::uint64_t{1} << 33;  // 8 GiB
@@ -50,18 +51,15 @@ inline constexpr int kArtifactPageCacheKiB = 64 * 1024;                         
 inline constexpr std::int64_t kReaderHeapBoundBytes = 512LL * 1024 * 1024;
 inline constexpr double kProbabilitySumTolerance = 1e-12;
 
-inline constexpr const char* kDefaultAlgorithmRevision = "rfc0004-rev1-full-kSimple-prng1";
 inline constexpr const char* kFullTraversalPrngIdentifier = "none";
 inline constexpr const char* kSampledPrngIdentifier = "splitmix64-rev1";
 inline constexpr const char* kDefaultEngineRevision = "bigshark-cpp/rfc0005-stage5";
-inline constexpr const char* kNumericProfileV1 =
-    "ieee754-binary64;chips<=9007199254740991;sqlite-real;key-rev1";
-inline constexpr const char* kRulesIdentifierV1 = "rfc0004-heads-up-flop-v1";
 inline constexpr const char* kUtilityIdentifier = "zero-sum-chip-net-side-pot";
 
-// RFC 0009 D3: schema-v2 is the seat-generic profile. The DDL set, key grammar,
-// rules identifier, and numeric profile are all version-keyed; a schema-v1 artifact
-// loads with an unchanged digest and a schema-v2 artifact is rejected by a schema-v1 reader.
+// Schema-v2 is the seat-generic profile (RFC 0009 D3). The DDL set, key
+// grammar, rules identifier, and numeric profile are version-keyed.
+// Schema-v3 (RFC 0009 W4c-i) adds a declared card abstraction on the
+// manifest and otherwise reuses the v2 tables byte-for-byte.
 inline constexpr std::uint32_t kArtifactSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kArtifactSchemaVersionV3 = 3;
 inline constexpr const char* kNumericProfileV2 =
@@ -70,9 +68,8 @@ inline constexpr const char* kRulesIdentifierV2 = "rfc0009-unified-flop-v1";
 // RFC 0007: the preflop flop-terminal profile. Distinct from kRulesIdentifierV2
 // so a reader can dispatch on the rules identifier without inspecting columns.
 inline constexpr const char* kRulesIdentifierPreflop = "rfc0009-unified-preflop-v1";
-// Exact persisted identities: the legacy policy remains readable; new seat
-// writers derive the revision-two identity from the result's actual batch size.
-inline constexpr const char* kLegacyAlgorithmRevisionV2 = "rfc0009-nseat-rev1-sampled-splitmix64";
+// The algorithm revision a seat writer emits, derived from the result's batch
+// size (RFC 0016 revision two).
 inline constexpr const char* kDefaultAlgorithmRevisionV2 =
     "rfc0016-nseat-rev2-frozen-batch-1-sampled-splitmix64";
 
@@ -112,9 +109,11 @@ using Sha256Digest = std::array<std::uint8_t, 32>;
 
 struct ArtifactManifest {
   ArtifactKind kind = ArtifactKind::Checkpoint;
-  std::string algorithm_revision = kDefaultAlgorithmRevision;
-  std::uint32_t information_key_revision = 1;
-  std::string numeric_profile = kNumericProfileV1;
+  // Populated by the v2/v3 writer through manifest_for_v2; a reader rejects
+  // an empty algorithm revision.
+  std::string algorithm_revision;
+  std::uint32_t information_key_revision = kArtifactSchemaVersionV2;
+  std::string numeric_profile = kNumericProfileV2;
   ValidationState validation = ValidationState::Unvalidated;
   std::string engine_revision = kDefaultEngineRevision;
   std::uint64_t completed_iterations = 0;
@@ -125,21 +124,18 @@ struct ArtifactManifest {
   std::size_t nodes = 0;
   std::size_t information_sets = 0;
   std::size_t accounted_bytes = 0;
-  // RFC 0009 D3 (schema-v2 only): the declared action abstraction and terminal
-  // depth. The schema-v1 writer/reader leave these at their defaults; the schema-v2 writer
-  // derives them from the SeatTrainingResult and the schema-v2 reader reconstructs the
+  // The declared action abstraction and terminal depth. The writer derives
+  // them from the SeatTrainingResult and the reader reconstructs the
   // SeatPolicy's action_id from them.
   std::string abstraction_name;
   std::uint32_t abstraction_version = 0;
   std::string abstraction_parameters;
   std::uint64_t abstraction_digest = 0;
   poker::TerminalDepth terminal_depth = poker::TerminalDepth::River;
-  // RFC 0009 W4c (schema-v3 only): the declared card abstraction. A schema-v2
-  // artifact (exact board) leaves this nullopt; a schema-v3 artifact (class policy)
-  // carries the id under which its stored board is the canonical class
-  // representative. The schema-v2 writer/reader leave this at nullopt; the schema-v3 writer
-  // derives it from the SeatTrainingResult and the schema-v3 reader reconstructs the
-  // SeatPolicy's card_id from it.
+  // Schema-v3: the declared card abstraction. A schema-v2 artifact (exact
+  // board) leaves this nullopt; a schema-v3 artifact (class policy) carries
+  // the id under which its stored board is the canonical class
+  // representative.
   std::optional<abstraction::AbstractionId> card_abstraction;
 };
 
@@ -155,31 +151,15 @@ struct TrainingRow {
 
 using TrainingRows = std::map<solver::InformationKey, TrainingRow>;
 
-// A complete checkpoint or policy artifact in domain-record form. `result`
-// carries the reconstructed HeadsUpGame (through result.policy.game()), the
-// immutable policy, counters, seed, and PRNG state. `rows` is empty for a
-// published policy and complete for a checkpoint.
-//
-// RFC 0009 D3 (schema-v2): a schema-v2 artifact populates `nseat` instead of `result`
-// and `rows`. The two arms are mutually exclusive — a schema-v1 load leaves `nseat`
-// nullopt and a schema-v2 load leaves `result`/`rows` at their defaults. Callers that
-// need the seat-generic policy dispatch on `nseat.has_value()`.
+// A complete checkpoint or policy artifact in domain-record form. A loaded
+// artifact always populates the seat-generic `nseat` arm (schema-v2/v3).
 struct ArtifactBundle {
   ArtifactManifest manifest;
-  solver::TrainingResult result;
-  TrainingRows rows;
   std::optional<solver::SeatTrainingResult> nseat;
 };
 
-struct CheckpointProvenance {
-  std::string algorithm_revision = kDefaultAlgorithmRevision;
-  std::string prng_identifier = kSampledPrngIdentifier;
-  std::string engine_revision = kDefaultEngineRevision;
-  ValidationState validation = ValidationState::Unvalidated;
-};
-
-// RFC 0009 D3: provenance for a seat-generic (schema-v2) checkpoint. Mirrors
-// CheckpointProvenance; an empty algorithm string derives result identity.
+// Provenance for a seat-generic (schema-v2) checkpoint. An empty algorithm
+// string derives the result's revision-two identity.
 struct SeatCheckpointProvenance {
   std::string algorithm_revision;
   std::string prng_identifier = kSampledPrngIdentifier;
@@ -187,29 +167,14 @@ struct SeatCheckpointProvenance {
   ValidationState validation = ValidationState::Unvalidated;
 };
 
-// Create a brand-new checkpoint containing one complete iteration's state. The
-// path must not exist. The complete write is one transaction. Throws
-// ArtifactError; on failure no readable artifact is left at the path.
-void create_checkpoint(const std::filesystem::path& path, const solver::TrainingResult& result,
-                       const TrainingRows& rows, const CheckpointProvenance& provenance = {});
-
-// RFC 0009 D3: create a brand-new schema-v2 checkpoint from a seat-generic
-// training result. The path must not exist. The complete write is one
-// transaction. Throws ArtifactError; on failure no readable artifact is left at
-// the path. Rooted flop/turn/river games (board_size 3..5) and heads-up
-// preflop flop-terminal games (board_size 0, preflop, terminal=Flop, RFC
-// 0007) are accepted.
+// Create a brand-new schema-v2 checkpoint from a seat-generic training
+// result. The path must not exist. The complete write is one transaction.
+// Throws ArtifactError; on failure no readable artifact is left at the path.
+// Rooted flop/turn/river games (board_size 3..5) and heads-up preflop
+// flop-terminal games (board_size 0, preflop, terminal=Flop, RFC 0007) are
+// accepted.
 void create_checkpoint(const std::filesystem::path& path, const solver::SeatTrainingResult& result,
                        const SeatCheckpointProvenance& provenance = {});
-
-// Replace the mutable training/policy state of an existing checkpoint with the
-// next complete iteration, in one transaction. The full canonical identity
-// (root board and street, button, blinds, stacks, contributions, pot, utility,
-// every range weight, the ordered rational sizing schedule, algorithm/key/
-// numeric revisions, PRNG identifier, and seed) must match the stored identity
-// exactly; otherwise IdentityMismatch is returned before any write.
-void commit_checkpoint(const std::filesystem::path& path, const solver::TrainingResult& result,
-                       const TrainingRows& rows, const CheckpointProvenance& provenance = {});
 
 struct LoadOptions {
   // Files larger than this are rejected before SQLite touches the file.
@@ -247,16 +212,15 @@ LoadedArtifact load_artifact(const std::filesystem::path& path, const LoadOption
 // load_artifact afterward.
 struct ArtifactProbe {
   ArtifactManifest manifest;
-  // Revision-1 identity. Default-constructed for a schema-v2 probe, where the
-  // seat-generic fields below carry the identity instead.
-  solver::HeadsUpGame game;
-  // RFC 0009 D4 (schema-v2 only): the seat-generic identity. Populated only
-  // for a schema-v2 probe. The resident path projects a two-seat flop-rooted schema-v2
-  // identity onto its heads-up view; turn/river-rooted and 3+-seat schema-v2 sources
-  // are refused there as LoadFailed until the state layer generalizes.
+  // The seat-generic identity of a schema-v2/v3 artifact. The resident path
+  // projects a two-seat flop-rooted identity; turn/river-rooted and 3+-seat
+  // sources are refused there as LoadFailed until the state layer generalizes.
   std::optional<poker::GameDef> game_def;
   std::optional<std::vector<std::vector<solver::WeightedHand>>> ranges;
   std::optional<abstraction::SizeSchedule> sizes;
+  // The conditional turn/river runout of a flop-rooted fixed-runout policy
+  // (empty for chance-sampled seat artifacts). See SeatPolicy::fixed_runout.
+  std::array<std::optional<int>, 2> fixed_runout{};
   std::uint64_t information_sets = 0;
   std::uint64_t action_count = 0;
   // Sum and maximum of stored canonical key lengths in 64-bit words.
@@ -291,28 +255,18 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
 std::string sha256_file_hex(const std::filesystem::path& path,
                             std::uint64_t max_file_bytes = kDefaultMaxArtifactBytes);
 
-// Encode an information key's public portion as the RFC 0005 canonical ASCII
-// key `street|board_ids|events` (actor and own cards live in the
-// information_states columns). Public deals are represented by board_ids, so
-// revision-1 events contain only f/x/c/b/r triples; event streets are assigned
-// by the RFC 0004 round-end grammar.
-//
-// `revision` selects the key grammar and has NO default: every caller declares
-// which grammar it writes. Revision 1 is frozen (actor 0..1, board_count 3..5,
-// street 0..2). Revision 2 admits the seat-generic grammar (actor 0..9,
+// Encode an information key's public portion under the revision-2 canonical
+// ASCII key grammar (RFC 0009): `street|board_ids|events`, actor 0..9,
 // board_count in {0,3,4,5} where 0 is the preflop form, street 0..3 with
-// street 3 denoting preflop). Throws ArtifactError(InvalidArgument) on any
-// other revision.
-std::string encode_public_key(const solver::InformationKey& key, std::uint32_t revision);
+// street 3 denoting preflop. `actor` and the own cards live in the
+// information_states columns. Throws ArtifactError(InvalidArgument) on a
+// malformed key.
+std::string encode_public_key(const solver::InformationKey& key);
 
 // Inverse of encode_public_key. `player`, `card0`, and `card1` come from the
 // information_states columns (sorted own combo, 0 <= card0 < card1 < 52).
-// `revision` selects the grammar and has NO default; it must match the
-// artifact's `info_key_revision`. Revision 1 decodes only the frozen heads-up
-// grammar; revision 2 additionally admits seats 0..9 and the preflop form.
-// Throws ArtifactError(InvalidSchema) on anything that is not a canonical key
-// for the selected revision's grammar.
-solver::InformationKey decode_public_key(const std::string& text, std::uint32_t revision,
-                                         int player, int card0, int card1);
+// Decodes only the revision-2 grammar. Throws ArtifactError(InvalidSchema)
+// on anything that is not a canonical revision-2 key.
+solver::InformationKey decode_public_key(const std::string& text, int player, int card0, int card1);
 
 }  // namespace bs::artifacts

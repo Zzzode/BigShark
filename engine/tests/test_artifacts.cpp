@@ -1,4 +1,6 @@
-// RFC 0005 Stage 5 artifact fault, round-trip, split-run, and boundary tests.
+// Artifact fault, round-trip, and boundary tests for the schema-v2 seat
+// artifacts and the schema-v3 card-abstraction extension (schema v1 was
+// retired by RFC 0038).
 //
 // The test is an independently written oracle: expected canonical key bytes,
 // schema facts, application id, table sets, and fault outcomes are asserted
@@ -72,49 +74,8 @@ namespace fs = std::filesystem;
 
 namespace {
 
-using bs::artifacts::detail::PolicyAssembler;
-
 int card(const char* name) {
   return bs::cardId(std::string(name));
-}
-
-TrainingLimits fast_limits() {
-  TrainingLimits limits;
-  limits.max_nodes = 200000000;
-  limits.max_information_sets = 20000000;
-  limits.time = std::chrono::minutes{10};
-  return limits;
-}
-
-// Two chips behind, three abstract actions at decision nodes, both runouts
-// fixed so complete-tree policies are small and deterministic.
-HeadsUpGame multi_size_fixture() {
-  HeadsUpGame game;
-  game.root = {{card("2c"), card("3d"), card("7h")}, {2, 2}, {1, 1}, 2, 1, 1};
-  game.ranges[0] = {{{card("As"), card("Ks")}, 2}, {{card("Qh"), card("Jh")}, 3}};
-  game.ranges[1] = {{{card("Ac"), card("Kc")}, 5}, {{card("Qd"), card("Jd")}, 7}};
-  game.fixed_runout = {card("9h"), card("8s")};
-  return game;
-}
-
-// The debug drivers take the game as given; the public HeadsUpTrainer
-// constructor canonicalizes sorted combos and per-player max-normalized
-// weights before training. Artifacts only ever store the canonical game, so
-// tests canonicalize with the exact trainer transformation.
-HeadsUpGame canonical_fixture() {
-  HeadsUpGame game = multi_size_fixture();
-  for (auto& range : game.ranges) {
-    double maximum = 0;
-    for (auto& hand : range) {
-      std::sort(hand.cards.begin(), hand.cards.end());
-      maximum = std::max(maximum, hand.weight);
-    }
-    for (auto& hand : range)
-      hand.weight /= maximum;
-    std::sort(range.begin(), range.end(),
-              [](const auto& a, const auto& b) { return a.cards < b.cards; });
-  }
-  return game;
 }
 
 bool near(double a, double b, double tolerance = 1e-12) {
@@ -142,86 +103,9 @@ bool throws_artifact(F&& operation, std::optional<ArtifactErrorKind> kind = std:
   return false;
 }
 
-// Compare the full canonical game identity exactly.
+// Exact size-fraction comparison used by the seat schedule round trip.
 bool same_fraction_exact(const Fraction& a, const Fraction& b) {
   return a.numerator == b.numerator && a.denominator == b.denominator;
-}
-bool same_schedule_exact(const SizeSchedule& a, const SizeSchedule& b) {
-  for (std::size_t s = 0; s < 3; ++s) {
-    if (a[s].bets.size() != b[s].bets.size() || a[s].raises.size() != b[s].raises.size())
-      return false;
-    for (std::size_t i = 0; i < a[s].bets.size(); ++i)
-      if (!same_fraction_exact(a[s].bets[i], b[s].bets[i]))
-        return false;
-    for (std::size_t i = 0; i < a[s].raises.size(); ++i)
-      if (!same_fraction_exact(a[s].raises[i], b[s].raises[i]))
-        return false;
-  }
-  return true;
-}
-bool same_ranges_exact(const std::array<std::vector<WeightedHand>, 2>& a,
-                       const std::array<std::vector<WeightedHand>, 2>& b) {
-  for (std::size_t p = 0; p < 2; ++p) {
-    if (a[p].size() != b[p].size())
-      return false;
-    for (std::size_t i = 0; i < a[p].size(); ++i) {
-      if (a[p][i].cards != b[p][i].cards || !same_bits(a[p][i].weight, b[p][i].weight))
-        return false;
-    }
-  }
-  return true;
-}
-bool same_game(const HeadsUpGame& a, const HeadsUpGame& b) {
-  return a.root.flop == b.root.flop && a.root.stacks == b.root.stacks &&
-         a.root.contributions == b.root.contributions && a.root.pot == b.root.pot &&
-         a.root.big_blind == b.root.big_blind && a.root.button == b.root.button &&
-         a.fixed_runout == b.fixed_runout && same_schedule_exact(a.sizes, b.sizes) &&
-         same_ranges_exact(a.ranges, b.ranges);
-}
-
-int compare_policy_exact(const HeadsUpPolicy& expected, const HeadsUpPolicy& actual,
-                         const TrainingRows& expected_raw, const TrainingRows& actual_raw) {
-  if (!same_game(expected.game(), actual.game()))
-    return 1;
-  if (expected.rows().size() != actual.rows().size())
-    return 1;
-  for (const auto& [key, expected_row] : expected.rows()) {
-    const auto found = actual.rows().find(key);
-    if (found == actual.rows().end())
-      return 1;
-    if (expected_row.actions != found->second.actions)
-      return 1;
-    if (expected_row.probabilities.size() != found->second.probabilities.size())
-      return 1;
-    double sum = 0;
-    for (std::size_t i = 0; i < expected_row.probabilities.size(); ++i) {
-      // Canonical doubles are stored as SQLite REAL; require bit-exact replay
-      // for the full-traversal oracle, and the declared tolerance otherwise.
-      if (!near(expected_row.probabilities[i], found->second.probabilities[i]))
-        return 1;
-      sum += found->second.probabilities[i];
-    }
-    if (std::abs(sum - 1.0) > 1e-12)
-      return 1;
-  }
-  if (expected_raw.size() != actual_raw.size())
-    return 1;
-  for (const auto& [key, row] : expected_raw) {
-    const auto found = actual_raw.find(key);
-    if (found == actual_raw.end())
-      return 1;
-    if (row.actions != found->second.actions ||
-        row.regrets.size() != found->second.regrets.size() ||
-        row.average_weights.size() != found->second.average_weights.size())
-      return 1;
-    for (std::size_t i = 0; i < row.regrets.size(); ++i) {
-      if (!same_bits(row.regrets[i], found->second.regrets[i]))
-        return 1;
-      if (!same_bits(row.average_weights[i], found->second.average_weights[i]))
-        return 1;
-    }
-  }
-  return 0;
 }
 
 // --- RFC 0009 W2b schema-v2 seat-generic fixtures ---------------------------
@@ -507,6 +391,33 @@ int compare_seat_result_exact(const SeatTrainingResult& expected,
         return 1;
   }
   return 0;
+}
+
+// Rebuild a revision-two seat result around an existing identity with an
+// explicit row set. This is the only way to construct content the real
+// trainer/export can never produce (writer-side validation tests) or a
+// genuinely zero-row checkpoint (the empty-policy publication test);
+// SeatPolicy exposes no row mutator on purpose.
+SeatTrainingResult seat_result_with_rows(const SeatTrainingResult& base,
+                                         const std::map<InformationKey, SeatPolicyRow>& rows) {
+  SeatTrainingResult out;
+  out.termination = NSeatTerminationPhase::Complete;
+  out.algorithm_revision = 2;
+  out.batch_size = 1;
+  out.completed_iterations = base.completed_iterations;
+  out.completed_epochs = base.completed_iterations;  // batch 1: one epoch per sample
+  out.seed = base.seed;
+  out.prng_state = base.prng_state;
+  out.nodes = base.nodes;
+  out.action_id = base.action_id;
+  out.terminal_depth = base.terminal_depth;
+  bs::artifacts::detail::SeatPolicyAssembler::set_identity(
+      out.policy, base.policy.game(), base.policy.sizes(), base.policy.ranges(), base.action_id,
+      std::nullopt);
+  for (const auto& [key, row] : rows)
+    bs::artifacts::detail::SeatPolicyAssembler::add_row(out.policy, key, row);
+  out.information_sets = rows.size();
+  return out;
 }
 
 // --- raw sqlite helper (fault injection only; never used by the library) ---
@@ -929,164 +840,7 @@ int run_crash_round(const fs::path& seed_db, const fs::path& round_db, bool comm
   return 0;
 }
 
-// Rebuild a result's immutable policy around a modified game for identity tests.
-TrainingResult rehome(const TrainingResult& result, HeadsUpGame game) {
-  TrainingResult copy = result;
-  PolicyAssembler::set_game(copy.policy, game);
-  return copy;
-}
-
-// The debug driver returns solver DebugRow maps; the artifact boundary takes
-// TrainingRows with the same actions/regrets/average-weight vectors.
-TrainingRows to_training_rows(const std::map<InformationKey, DebugRow>& debug_rows) {
-  TrainingRows out;
-  for (const auto& [key, row] : debug_rows)
-    out.emplace(key, TrainingRow{row.actions, row.regrets, row.sums});
-  return out;
-}
-
 }  // namespace
-
-// ---------------------------------------------------------------------------
-// test 1: schema oracle, full-traversal round trip, independent-process read
-// ---------------------------------------------------------------------------
-
-static int test_roundtrip(const fs::path& dir) {
-  const HeadsUpGame game = canonical_fixture();
-  const DebugTrainingOutput trained = HeadsUpSolverDebug::train_full(game, 16, fast_limits());
-  CHECK(trained.result.status == TrainingStatus::Complete);
-  CHECK(!trained.result.policy.rows().empty());
-  const TrainingRows trained_rows = to_training_rows(trained.rows);
-  CHECK(trained_rows.size() == trained.result.policy.rows().size());
-
-  const fs::path path = dir / "roundtrip-checkpoint.db";
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kFullTraversalPrngIdentifier;
-  provenance.engine_revision = "roundtrip-engine-1";
-  create_checkpoint(path, trained.result, trained_rows, provenance);
-  CHECK(throws_artifact([&] { create_checkpoint(path, trained.result, trained_rows, provenance); },
-                        ArtifactErrorKind::AlreadyExists));
-
-  // Independent schema oracle through a raw connection.
-  {
-    const std::string header = read_file_bytes(path).substr(0, 16);
-    CHECK(header == std::string("SQLite format 3\000", 16));
-    RawDb raw(path, SQLITE_OPEN_READONLY);
-    CHECK(raw.scalar_i64("PRAGMA application_id") == static_cast<std::int64_t>(0x42534754));
-    CHECK(raw.scalar_i64("PRAGMA user_version") == 1);
-    CHECK(raw.scalar_text("PRAGMA journal_mode") == "delete");
-    CHECK(raw.scalar_text("PRAGMA synchronous") == "2");
-
-    sqlite3_stmt* tables = nullptr;
-    CHECK(sqlite3_prepare_v2(raw.db,
-                             "SELECT name, sql FROM sqlite_schema WHERE type='table'"
-                             " ORDER BY name",
-                             -1, &tables, nullptr) == SQLITE_OK);
-    const std::vector<std::string> expected{
-        "actions", "bounds", "game",    "information_states", "manifest", "measurements",
-        "ranges",  "sizes",  "training"};
-    std::vector<std::string> seen;
-    while (sqlite3_step(tables) == SQLITE_ROW) {
-      const std::string name = reinterpret_cast<const char*>(sqlite3_column_text(tables, 0));
-      const std::string sql = reinterpret_cast<const char*>(sqlite3_column_text(tables, 1));
-      seen.push_back(name);
-      CHECK(sql.size() >= 6 && sql.substr(sql.size() - 6) == "STRICT");
-    }
-    sqlite3_finalize(tables);
-    CHECK(seen == expected);
-
-    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM sizes") == 15);
-    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM ranges") == 4);
-    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM information_states") ==
-          static_cast<std::int64_t>(trained.result.policy.rows().size()));
-    CHECK(raw.scalar_i64("SELECT COUNT(*) FROM training") == static_cast<std::int64_t>([&] {
-            std::size_t total = 0;
-            for (const auto& [key, row] : trained_rows)
-              total += row.actions.size();
-            return total;
-          }()));
-
-    sqlite3_stmt* sums = nullptr;
-    CHECK(sqlite3_prepare_v2(raw.db,
-                             "SELECT SUM(probability) FROM actions GROUP BY info_id"
-                             " HAVING ABS(SUM(probability) - 1.0) > 1e-12",
-                             -1, &sums, nullptr) == SQLITE_OK);
-    CHECK(sqlite3_step(sums) == SQLITE_DONE);
-    sqlite3_finalize(sums);
-
-    // Foreign keys are really declared.
-    CHECK(raw.try_exec("PRAGMA foreign_keys=ON;") == true);
-  }
-
-  // Same-process lossless read.
-  const LoadedArtifact loaded = load_artifact(path);
-  CHECK(loaded.sha256_hex.size() == 64);
-  CHECK(loaded.file_bytes > 0);
-  const auto& bundle = loaded.bundle;
-  CHECK(bundle.manifest.kind == ArtifactKind::Checkpoint);
-  CHECK(bundle.manifest.prng_identifier == kFullTraversalPrngIdentifier);
-  CHECK(bundle.manifest.engine_revision == "roundtrip-engine-1");
-  CHECK(bundle.manifest.completed_iterations == 16);
-  CHECK(bundle.manifest.seed == 0 && bundle.manifest.prng_state == 0);
-  if (compare_policy_exact(trained.result.policy, bundle.result.policy, trained_rows,
-                           bundle.rows) != 0) {
-    std::printf("roundtrip policy comparison failed\n");
-    return 1;
-  }
-  for (const auto& [key, row] : bundle.result.policy.rows()) {
-    (void)row;
-    CHECK(encode_public_key(decode_public_key(encode_public_key(key, kArtifactSchemaVersion),
-                                              kArtifactSchemaVersion, static_cast<int>(key[0]),
-                                              static_cast<int>(key[1]), static_cast<int>(key[2])),
-                            kArtifactSchemaVersion) ==
-          encode_public_key(key, kArtifactSchemaVersion));
-  }
-
-  // Independent reader in a forked child process (fresh sqlite handles, no
-  // shared memory with the writer).
-  pid_t child = fork();
-  if (child == 0) {
-    int rc = 0;
-    try {
-      const LoadedArtifact child_loaded = load_artifact(path);
-      const HeadsUpGame child_game = canonical_fixture();
-      const DebugTrainingOutput child_trained =
-          HeadsUpSolverDebug::train_full(child_game, 16, fast_limits());
-      rc = compare_policy_exact(child_trained.result.policy, child_loaded.bundle.result.policy,
-                                to_training_rows(child_trained.rows), child_loaded.bundle.rows);
-      if (child_loaded.bundle.manifest.completed_iterations != 16)
-        rc = 1;
-    } catch (...) {
-      rc = 1;
-    }
-    _exit(rc);
-  }
-  CHECK(child > 0);
-  int status = 0;
-  CHECK(waitpid(child, &status, 0) == child);
-  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-
-  // Immutable publication round trip.
-  const fs::path policy_dir = dir / "policy";
-  fs::create_directory(policy_dir);
-  const fs::path policy_path = policy_dir / "generation-0001.db";
-  const PublishedPolicy published = publish_policy(path, policy_path, "publish-engine-1");
-  CHECK(published.sha256_hex == sha256_file_hex(policy_path));
-  CHECK(published.file_bytes == fs::file_size(policy_path));
-  const LoadedArtifact published_loaded =
-      load_artifact(policy_path, LoadOptions{published.file_bytes, published.sha256});
-  CHECK(published_loaded.bundle.manifest.kind == ArtifactKind::Policy);
-  CHECK(published_loaded.bundle.manifest.validation == ValidationState::Validated);
-  CHECK(published_loaded.bundle.rows.empty());
-  CHECK(published_loaded.bundle.result.policy.rows().size() == trained.result.policy.rows().size());
-  for (const auto& [key, row] : trained.result.policy.rows()) {
-    const auto found = published_loaded.bundle.result.policy.rows().find(key);
-    CHECK(found != published_loaded.bundle.result.policy.rows().end());
-    for (std::size_t i = 0; i < row.probabilities.size(); ++i)
-      CHECK(near(row.probabilities[i], found->second.probabilities[i]));
-  }
-  return 0;
-}
 
 // ---------------------------------------------------------------------------
 // test 1b: RFC 0009 W2b schema-v2 seat-generic checkpoint round trip
@@ -1117,9 +871,6 @@ static int test_nseat_algorithm_identity(const fs::path& dir) {
   CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, batched, mismatch); },
                         ArtifactErrorKind::InvalidArgument));
   CHECK(!fs::exists(mismatch_path));
-  mismatch.algorithm_revision = kLegacyAlgorithmRevisionV2;
-  CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, serial, mismatch); },
-                        ArtifactErrorKind::InvalidArgument));
   auto wrong_epochs = batched;
   --wrong_epochs.completed_epochs;
   CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, wrong_epochs); },
@@ -1129,20 +880,14 @@ static int test_nseat_algorithm_identity(const fs::path& dir) {
   CHECK(throws_artifact([&] { create_checkpoint(mismatch_path, zero_batch); },
                         ArtifactErrorKind::InvalidArgument));
 
-  // A synthetic old identity exercises old immutable reads without running
-  // the retired training algorithm or rewriting any deployed artifact.
+  // RFC 0038: the revision-1 (algorithm_revision == 1, batch 0) identity is
+  // retired; no writer may produce it and no reader branch recognizes it.
   auto legacy = serial;
   legacy.algorithm_revision = 1;
   legacy.batch_size = 0;
   legacy.completed_epochs = 0;
-  const auto legacy_path = dir / "legacy-checkpoint.db";
-  create_checkpoint(legacy_path, legacy);
-  const auto legacy_policy = publish_policy(legacy_path, dir / "legacy-policy.db");
-  const auto legacy_sha = sha256_file_hex(legacy_policy.path);
-  const auto legacy_loaded = load_artifact(legacy_policy.path);
-  CHECK(legacy_loaded.bundle.manifest.algorithm_revision == kLegacyAlgorithmRevisionV2);
-  CHECK(compare_seat_result_exact(legacy, *legacy_loaded.bundle.nseat) == 0);
-  CHECK(sha256_file_hex(legacy_policy.path) == legacy_sha);
+  CHECK(throws_artifact([&] { create_checkpoint(dir / "legacy-checkpoint.db", legacy); },
+                        ArtifactErrorKind::InvalidArgument));
 
   const std::vector<std::string> unknown_identities = {
       "custom-unrecognized-algorithm",
@@ -1266,20 +1011,15 @@ static int test_roundtrip_v2(const fs::path& dir) {
   CHECK(bundle.manifest.completed_iterations == exported.completed_iterations);
   CHECK(bundle.manifest.terminal_depth == TerminalDepth::River);
   CHECK(bundle.nseat.has_value());
-  // The schema-v1 arm stays default for a schema-v2 file.
-  CHECK(bundle.result.policy.rows().empty());
-  CHECK(bundle.rows.empty());
   if (compare_seat_result_exact(exported, *bundle.nseat) != 0) {
     std::printf("schema-v2 roundtrip seat-result comparison failed\n");
     return 1;
   }
   for (const auto& [key, row] : bundle.nseat->policy.rows()) {
     (void)row;
-    CHECK(encode_public_key(decode_public_key(encode_public_key(key, kArtifactSchemaVersionV2),
-                                              kArtifactSchemaVersionV2, static_cast<int>(key[0]),
-                                              static_cast<int>(key[1]), static_cast<int>(key[2])),
-                            kArtifactSchemaVersionV2) ==
-          encode_public_key(key, kArtifactSchemaVersionV2));
+    CHECK(encode_public_key(decode_public_key(encode_public_key(key), static_cast<int>(key[0]),
+                                              static_cast<int>(key[1]),
+                                              static_cast<int>(key[2]))) == encode_public_key(key));
   }
 
   // The schema-v2 file is byte-stable: a second write of the same result has the same
@@ -1313,17 +1053,12 @@ static int test_roundtrip_v2(const fs::path& dir) {
   CHECK(*probe.sizes == exported.policy.sizes());
   CHECK(probe.information_sets == exported.policy.rows().size());
   CHECK(probe.action_count >= probe.information_sets);
-  // The schema-v1 identity arm stays default for a schema-v2 probe.
-  CHECK(probe.game.ranges[0].empty());
-  CHECK(probe.game.ranges[1].empty());
 
-  // The published policy round-trips through the schema-v2 loader with the schema-v1 arm
-  // default.
+  // The published policy round-trips through the schema-v2 loader.
   const LoadedArtifact published_loaded =
       load_artifact(policy_path, LoadOptions{published_v2.file_bytes, published_v2.sha256});
   CHECK(published_loaded.bundle.manifest.kind == ArtifactKind::Policy);
   CHECK(published_loaded.bundle.nseat.has_value());
-  CHECK(published_loaded.bundle.result.policy.rows().empty());
   if (compare_seat_result_exact(exported, *published_loaded.bundle.nseat) != 0) {
     std::printf("schema-v2 published-policy seat-result comparison failed\n");
     return 1;
@@ -1419,9 +1154,6 @@ static int test_roundtrip_v3(const fs::path& dir) {
   CHECK(bundle.nseat->card_id.has_value());
   CHECK(bundle.nseat->card_id == bs::abstraction::suit_canonicalization_id());
   CHECK(bundle.nseat->policy.card_id() == bs::abstraction::suit_canonicalization_id());
-  // The schema-v1 arm stays default for a schema-v3 file.
-  CHECK(bundle.result.policy.rows().empty());
-  CHECK(bundle.rows.empty());
   if (compare_seat_result_exact(exported, *bundle.nseat) != 0) {
     std::printf("schema-v3 roundtrip seat-result comparison failed\n");
     return 1;
@@ -1494,6 +1226,33 @@ static int test_roundtrip_v3(const fs::path& dir) {
     CHECK(throws_artifact([&] { create_checkpoint(bad_path, bad_export, provenance); },
                           ArtifactErrorKind::InvalidArgument));
   }
+
+  // A board-class (schema-v3) artifact cannot carry a conditional fixed
+  // runout: it serves an abstract board class, not one concrete runout.
+  // 9h is off the {2s,7h,Kd} flop, so only the v3-specific guard rejects.
+  {
+    const fs::path tampered = dir / "roundtrip-schema-v3-runout-ck.db";
+    fs::copy_file(path, tampered);
+    {
+      RawDb raw(tampered);
+      raw.exec("UPDATE game SET fixed_turn = 30;");  // 9h
+    }
+    CHECK(
+        throws_artifact([&] { (void)load_artifact(tampered); }, ArtifactErrorKind::InvalidSchema));
+  }
+  {
+    const fs::path tampered = dir / "roundtrip-schema-v3-runout-policy.db";
+    fs::copy_file(policy_path, tampered);
+    chmod(tampered.string().c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    {
+      RawDb raw(tampered);
+      raw.exec("UPDATE game SET fixed_turn = 30;");  // 9h
+    }
+    CHECK(
+        throws_artifact([&] { (void)load_artifact(tampered); }, ArtifactErrorKind::InvalidSchema));
+    CHECK(
+        throws_artifact([&] { (void)probe_artifact(tampered); }, ArtifactErrorKind::InvalidSchema));
+  }
   return 0;
 }
 
@@ -1538,8 +1297,6 @@ static int test_roundtrip_preflop(const fs::path& dir) {
   // Same-process lossless read.
   const LoadedArtifact loaded = load_artifact(path);
   CHECK(loaded.bundle.nseat.has_value());
-  CHECK(loaded.bundle.result.policy.rows().empty());
-  CHECK(loaded.bundle.rows.empty());
   const GameDef& read_game = loaded.bundle.nseat->policy.game();
   CHECK(read_game.player_count == 2);
   CHECK(read_game.board_size == 0);
@@ -1663,7 +1420,9 @@ static int test_roundtrip_preflop_3way(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
-// test 2: canonical key oracle (hand-authored bytes + malformed rejection)
+// test 2: canonical key oracle for the single revision-2 grammar
+// (hand-authored bytes + malformed rejection). RFC 0038 removed the
+// revision-1 three-field event grammar; every event is actor:kind:target:street.
 // ---------------------------------------------------------------------------
 
 static int test_canonical_keys(const fs::path&) {
@@ -1675,313 +1434,175 @@ static int test_canonical_keys(const fs::path&) {
   auto decode = [&](const std::string& text, int player) {
     auto sorted = own;
     std::sort(sorted.begin(), sorted.end());
-    return decode_public_key(text, kArtifactSchemaVersion, player, sorted[0], sorted[1]);
+    return decode_public_key(text, player, sorted[0], sorted[1]);
   };
 
   const InformationKey k_root = information_key(state, own);
-  CHECK(encode_public_key(k_root, kArtifactSchemaVersion) == "0|3,6,21|");
+  CHECK(encode_public_key(k_root) == "0|3,6,21|");
   CHECK(decode("0|3,6,21|", 0) == k_root);
 
   HeadsUpState after_check = state.after_action(0, {ActionType::Check});
   const InformationKey k_check = information_key(after_check, own);
-  CHECK(encode_public_key(k_check, kArtifactSchemaVersion) == "0|3,6,21|0:x:-");
-  CHECK(decode("0|3,6,21|0:x:-", 1) == k_check);
+  CHECK(encode_public_key(k_check) == "0|3,6,21|0:x:-:0");
+  CHECK(decode("0|3,6,21|0:x:-:0", 1) == k_check);
 
   HeadsUpState turn_state = after_check.after_action(1, {ActionType::Check}).after_card(turn);
   const InformationKey k_turn = information_key(turn_state, own);
-  CHECK(encode_public_key(k_turn, kArtifactSchemaVersion) == "1|3,6,21,29|0:x:-,1:x:-");
-  CHECK(decode("1|3,6,21,29|0:x:-,1:x:-", 0) == k_turn);
+  CHECK(encode_public_key(k_turn) == "1|3,6,21,29|0:x:-:0,1:x:-:0");
+  CHECK(decode("1|3,6,21,29|0:x:-:0,1:x:-:0", 0) == k_turn);
 
   HeadsUpState river_state = turn_state.after_action(0, {ActionType::Check})
                                  .after_action(1, {ActionType::Check})
                                  .after_card(river);
   const InformationKey k_river = information_key(river_state, own);
-  CHECK(encode_public_key(k_river, kArtifactSchemaVersion) ==
-        "2|3,6,21,29,24|0:x:-,1:x:-,0:x:-,1:x:-");
-  CHECK(decode("2|3,6,21,29,24|0:x:-,1:x:-,0:x:-,1:x:-", 0) == k_river);
+  CHECK(encode_public_key(k_river) == "2|3,6,21,29,24|0:x:-:0,1:x:-:0,0:x:-:1,1:x:-:1");
+  CHECK(decode("2|3,6,21,29,24|0:x:-:0,1:x:-:0,0:x:-:1,1:x:-:1", 0) == k_river);
 
   HeadsUpState after_bet = state.after_action(0, {ActionType::Bet, 2});
-  CHECK(encode_public_key(information_key(after_bet, own), kArtifactSchemaVersion) ==
-        "0|3,6,21|0:b:2");
+  CHECK(encode_public_key(information_key(after_bet, own)) == "0|3,6,21|0:b:2:0");
   HeadsUpState after_raise = after_bet.after_action(1, {ActionType::Raise, 4});
-  CHECK(encode_public_key(information_key(after_raise, own), kArtifactSchemaVersion) ==
-        "0|3,6,21|0:b:2,1:r:4");
+  CHECK(encode_public_key(information_key(after_raise, own)) == "0|3,6,21|0:b:2:0,1:r:4:0");
+
+  // A fold carries its street like every other event. In the seat-generic
+  // grammar a fold is NOT terminal: three-or-more-seat hands continue after
+  // one seat folds, so events may follow.
+  CHECK(encode_public_key(decode("0|3,6,21|0:f:-:0", 0)) == "0|3,6,21|0:f:-:0");
+  CHECK(encode_public_key(decode("0|3,6,21|0:f:-:0,1:x:-:0", 0)) == "0|3,6,21|0:f:-:0,1:x:-:0");
+
+  // The preflop form: street token 3, empty board field; preflop events use
+  // street 3 and the single allowed decrease wraps 3 -> 0 (preflop to flop).
+  {
+    const InformationKey preflop = decode("3||", 0);
+    CHECK(encode_public_key(preflop) == "3||");
+    CHECK(encode_public_key(decode("3||3:x:-:3", 0)) == "3||3:x:-:3");
+    CHECK(encode_public_key(decode("3||3:x:-:3,0:x:-:0", 0)) == "3||3:x:-:3,0:x:-:0");
+  }
 
   const std::vector<std::string> malformed{
-      "3|3,6,21|",                          // bad street
-      "0|3,6,21,29|",                       // boards disagree with street
-      "0|52,6,21|",                         // bad card
-      "0|3,6,21|2:x:-",                     // bad actor
-      "0|3,6,21|0:b:-",                     // aggressive needs target
-      "0|3,6,21|0:x:1",                     // check must not carry target
-      "0|3,6,21|0:d:29",                    // d events are not revision 1
-      "1|3,6,21,29|0:x:-",                  // one event, zero round closures
-      "2|3,6,21,29,24|0:x:-,1:x:-",         // one closure, street 2
-      "0|3,6,21|0:x",                       // missing field
-      "0|3,6,21|0:b:02",                    // leading zero
-      "0|3,6,21|0:b:9007199254740992",      // over 2^53-1
-      "0|3,6,21|0:x:-,1:x:-,0:x:-,1:x:-|",  // extra field
+      "4|3,6,21|",                                  // bad street
+      "0|3,6,21,29|",                               // boards disagree with street
+      "0|52,6,21|",                                 // bad card
+      "0|3,6,21|10:x:-:0",                          // bad actor (seats are 0..9)
+      "0|3,6,21|0:b:-:0",                           // aggressive needs target
+      "0|3,6,21|0:x:1:0",                           // check must not carry target
+      "0|3,6,21|0:d:-:0",                           // unknown event kind
+      "0|3,6,21|0:x",                               // missing event field
+      "0|3,6,21|0:b:02:0",                          // leading zero
+      "0|3,6,21|0:b:9007199254740992:0",            // over 2^53-1
+      "0|3,6,21|0:x:-:0,1:x:-:0,0:x:-:1,1:x:-:1|",  // extra field
+      "0|3,6,21|0:x:-:1",                           // event street exceeds key street
+      "1|3,6,21,29|0:x:-:1,1:x:-:0",                // event streets out of order
+      "3|3,6,21|",                                  // preflop key must have empty board field
+      "3||0:x:-:1",                                 // preflop event street below 3 is not a wrap
+      "3||3:x:-:4",                                 // event street above maximum
   };
   for (const auto& text : malformed)
     CHECK(throws_artifact([&] { (void)decode(text, 0); }, ArtifactErrorKind::InvalidSchema));
 
   // Own combo shares a board card: rejected even with otherwise valid text.
-  CHECK(throws_artifact(
-      [&] { (void)decode_public_key("0|3,6,21|", kArtifactSchemaVersion, 0, card("2c"), 51); },
-      ArtifactErrorKind::InvalidSchema));
+  CHECK(throws_artifact([&] { (void)decode_public_key("0|3,6,21|", 0, card("2c"), 51); },
+                        ArtifactErrorKind::InvalidSchema));
   return 0;
 }
 
 // ---------------------------------------------------------------------------
-// test 3: split-run equality and deterministic export digest
+// test 3 (RFC 0038): schema-v1 and unknown-version rejection. The version
+// gate runs before schema-object validation, so an empty database carrying
+// only the application id and a retired user_version must be refused solely
+// on its version, by both load and probe.
 // ---------------------------------------------------------------------------
 
-static int test_split_run(const fs::path& dir) {
-  const HeadsUpGame fixture = canonical_fixture();
-  constexpr std::uint64_t kSeed = 43;
-  constexpr std::uint64_t kN = 60;
-
-  const DebugTrainingOutput at_n =
-      HeadsUpSolverDebug::train_sampled(fixture, kN, kSeed, fast_limits());
-  CHECK(at_n.result.status == TrainingStatus::Complete);
-  const TrainingRows at_n_rows = to_training_rows(at_n.rows);
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kSampledPrngIdentifier;
-
-  const fs::path path_a = dir / "split-a.db";
-  const fs::path path_b = dir / "split-b.db";
-  create_checkpoint(path_a, at_n.result, at_n_rows, provenance);
-  std::error_code ec;
-  fs::remove(path_b, ec);
-  fs::copy_file(path_a, path_b);
-
-  // The file copy reads identically at the N checkpoint.
-  const LoadedArtifact loaded_n = load_artifact(path_b);
-  CHECK(loaded_n.bundle.manifest.completed_iterations == kN);
-  CHECK(compare_policy_exact(at_n.result.policy, loaded_n.bundle.result.policy, at_n_rows,
-                             loaded_n.bundle.rows) == 0);
-
-  // A continues the canonical pinned run uninterrupted to 2N.
-  const DebugTrainingOutput a_2n =
-      HeadsUpSolverDebug::train_sampled(fixture, 2 * kN, kSeed, fast_limits());
-  const TrainingRows a_2n_rows = to_training_rows(a_2n.rows);
-  commit_checkpoint(path_a, a_2n.result, a_2n_rows, provenance);
-
-  // B is a fresh process-style restore: rehydrate ONLY the rows, PRNG state,
-  // and completed count loaded from A's checkpoint, then run N more
-  // iterations through the debug resume driver. No in-memory table from the
-  // first run crosses this boundary.
-  std::map<InformationKey, DebugRow> restored;
-  for (const auto& [key, raw] : loaded_n.bundle.rows)
-    restored.emplace(key, DebugRow{raw.actions, raw.regrets, raw.average_weights});
-  CHECK(restored.size() == at_n_rows.size());
-  const DebugTrainingOutput b_resumed = HeadsUpSolverDebug::resume_sampled(
-      loaded_n.bundle.result.policy.game(), kN, kSeed, loaded_n.bundle.manifest.prng_state, kN,
-      restored, fast_limits());
-  CHECK(b_resumed.result.completed_iterations == 2 * kN);
-  // Node telemetry is cumulative across the resumed training: carry the
-  // checkpoint's visited-node counter so uninterrupted and resumed runs
-  // describe the same total work. Each driver invocation also counts the
-  // one-time joint-deal setup enumeration (one visit per range pair in
-  // joint_deals), so the second leg subtracts that fixed setup cost once.
-  const std::size_t joint_pairs = loaded_n.bundle.result.policy.game().ranges[0].size() *
-                                  loaded_n.bundle.result.policy.game().ranges[1].size();
-  DebugTrainingOutput b_resumed_total = b_resumed;
-  CHECK(b_resumed_total.result.nodes >= joint_pairs);
-  b_resumed_total.result.nodes += loaded_n.bundle.manifest.nodes - joint_pairs;
-  const TrainingRows b_resumed_rows = to_training_rows(b_resumed_total.rows);
-  commit_checkpoint(path_b, b_resumed_total.result, b_resumed_rows, provenance);
-
-  // The checkpoint-resumed run equals the uninterrupted run: probabilities
-  // within 1e-12 and raw regret/average state bit-exact (the arithmetic order
-  // is the pinned order in both runs).
-  double max_probability_delta = 0.0;
-  for (const auto& [key, row] : a_2n.result.policy.rows()) {
-    const auto found = b_resumed.result.policy.rows().find(key);
-    CHECK(found != b_resumed.result.policy.rows().end());
-    CHECK(row.actions == found->second.actions);
-    for (std::size_t i = 0; i < row.probabilities.size(); ++i) {
-      max_probability_delta = std::max(
-          max_probability_delta, std::abs(row.probabilities[i] - found->second.probabilities[i]));
+static int test_v1_rejection(const fs::path& dir) {
+  for (const int version : {1, 0, 99}) {
+    const fs::path path = dir / ("user-version-" + std::to_string(version) + ".db");
+    {
+      RawDb raw(path, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+      raw.exec("PRAGMA application_id = 1112754004;");
+      raw.exec("PRAGMA user_version = " + std::to_string(version) + ";");
     }
+    CHECK(
+        throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
+    CHECK(throws_artifact([&] { (void)probe_artifact(path); },
+                          ArtifactErrorKind::UnsupportedVersion));
   }
-  std::printf("split-run max policy probability delta: %.3g\n", max_probability_delta);
-  CHECK(max_probability_delta <= 1e-12);
-  CHECK(compare_policy_exact(a_2n.result.policy, b_resumed.result.policy, a_2n_rows,
-                             b_resumed_rows) == 0);
-
-  const LoadedArtifact final_a = load_artifact(path_a);
-  const LoadedArtifact final_b = load_artifact(path_b);
-  CHECK(final_a.bundle.manifest.completed_iterations == 2 * kN);
-  CHECK(final_b.bundle.manifest.completed_iterations == 2 * kN);
-  CHECK(final_a.bundle.manifest.prng_state == final_b.bundle.manifest.prng_state);
-  CHECK(compare_policy_exact(final_a.bundle.result.policy, final_b.bundle.result.policy,
-                             final_a.bundle.rows, final_b.bundle.rows) == 0);
-
-  // Independently published generations must be byte-identical.
-  const fs::path dir_a = dir / "gen-a";
-  const fs::path dir_b = dir / "gen-b";
-  fs::create_directories(dir_a);
-  fs::create_directories(dir_b);
-  const PublishedPolicy gen_a = publish_policy(path_a, dir_a / "gen.db");
-  const PublishedPolicy gen_b = publish_policy(path_b, dir_b / "gen.db");
-  CHECK(gen_a.sha256_hex == gen_b.sha256_hex);
-  CHECK(read_file_bytes(dir_a / "gen.db") == read_file_bytes(dir_b / "gen.db"));
+  // An unexpected application id is refused with the same kind regardless of
+  // the declared version.
+  {
+    const fs::path path = dir / "bad-appid.db";
+    {
+      RawDb raw(path, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE);
+      raw.exec("PRAGMA application_id = 1;");
+      raw.exec("PRAGMA user_version = 2;");
+    }
+    CHECK(
+        throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
+    CHECK(throws_artifact([&] { (void)probe_artifact(path); },
+                          ArtifactErrorKind::UnsupportedVersion));
+  }
   return 0;
 }
 
 // ---------------------------------------------------------------------------
-// test 4: resume identity matching
-// ---------------------------------------------------------------------------
-
-static int test_resume_identity(const fs::path& dir) {
-  const HeadsUpGame fixture = canonical_fixture();
-  const DebugTrainingOutput at_n = HeadsUpSolverDebug::train_sampled(fixture, 40, 7, fast_limits());
-  const DebugTrainingOutput at_2n =
-      HeadsUpSolverDebug::train_sampled(fixture, 80, 7, fast_limits());
-  // Canonical game identity actually stored in the checkpoint.
-  const HeadsUpGame& game = at_n.result.policy.game();
-  const TrainingRows at_n_rows = to_training_rows(at_n.rows);
-  const TrainingRows at_2n_rows = to_training_rows(at_2n.rows);
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kSampledPrngIdentifier;
-
-  const fs::path base = dir / "identity-base.db";
-  create_checkpoint(base, at_n.result, at_n_rows, provenance);
-
-  auto reject_case = [&](const TrainingResult& candidate,
-                         const CheckpointProvenance& candidate_provenance) {
-    const fs::path trial = dir / ("identity-trial-" + std::to_string(std::rand()) + ".db");
-    std::error_code ec;
-    fs::copy_file(base, trial, fs::copy_options::overwrite_existing);
-    if (!throws_artifact(
-            [&] { commit_checkpoint(trial, candidate, at_2n_rows, candidate_provenance); },
-            ArtifactErrorKind::IdentityMismatch))
-      return false;
-    const LoadedArtifact still = load_artifact(trial);
-    return still.bundle.manifest.completed_iterations == 40;
-  };
-
-  HeadsUpGame changed;
-  changed = game;
-  changed.root.stacks[0] += 1;
-  CHECK(reject_case(rehome(at_2n.result, changed), provenance));
-  changed = game;
-  changed.root.button = 1 - game.root.button;
-  CHECK(reject_case(rehome(at_2n.result, changed), provenance));
-  changed = game;
-  changed.root.pot += 1;
-  CHECK(reject_case(rehome(at_2n.result, changed), provenance));
-  changed = game;
-  changed.root.flop[0] = card("2s");
-  CHECK(reject_case(rehome(at_2n.result, changed), provenance));
-  changed = game;
-  changed.fixed_runout[0] = card("9s");
-  CHECK(reject_case(rehome(at_2n.result, changed), provenance));
-  changed = game;
-  changed.ranges[0][0].weight *= 0.5;
-  CHECK(reject_case(rehome(at_2n.result, changed), provenance));
-  changed = game;
-  changed.sizes[0].bets[0] = {2, 3};
-  CHECK(reject_case(rehome(at_2n.result, changed), provenance));
-
-  CheckpointProvenance other_algorithm = provenance;
-  other_algorithm.algorithm_revision = "other-revision";
-  CHECK(reject_case(at_2n.result, other_algorithm));
-  CheckpointProvenance other_prng = provenance;
-  other_prng.prng_identifier = kFullTraversalPrngIdentifier;
-  CHECK(reject_case(at_2n.result, other_prng));
-  TrainingResult other_seed = at_2n.result;
-  other_seed.seed += 1;
-  CHECK(reject_case(other_seed, provenance));
-
-  // Cannot commit training state into a published policy.
-  const fs::path policy_dir = dir / "identity-policy";
-  fs::create_directories(policy_dir);
-  const fs::path policy_path = policy_dir / "gen.db";
-  publish_policy(base, policy_path);
-  CHECK(
-      throws_artifact([&] { commit_checkpoint(policy_path, at_2n.result, at_2n_rows, provenance); },
-                      ArtifactErrorKind::IdentityMismatch));
-
-  // A changed ENGINE revision still resumes; it is build provenance, not game
-  // identity. The manifest records the new engine revision.
-  CheckpointProvenance new_engine = provenance;
-  new_engine.engine_revision = "next-engine-2";
-  const fs::path engine_trial = dir / "identity-engine.db";
-  fs::copy_file(base, engine_trial);
-  commit_checkpoint(engine_trial, at_2n.result, at_2n_rows, new_engine);
-  const LoadedArtifact advanced = load_artifact(engine_trial);
-  CHECK(advanced.bundle.manifest.completed_iterations == 80);
-  CHECK(advanced.bundle.manifest.engine_revision == "next-engine-2");
-  return 0;
-}
-
-// ---------------------------------------------------------------------------
-// test 5: ENOSPC fault injection and real killed-writer rounds
+// test 4: ENOSPC fault injection and real killed-writer rounds against
+// schema-v2 checkpoints (RFC 0038 counterpart of the retired v1 split/commit
+// fault cases). A seat checkpoint is an immutable snapshot: resumable
+// commits do not exist, so the writer's only multi-step publication is
+// publish_policy, whose atomic temp-file/link transaction is faulted here.
 // ---------------------------------------------------------------------------
 
 static int test_crash_and_full_disk(const fs::path& dir) {
-  const HeadsUpGame game = canonical_fixture();
-  const DebugTrainingOutput at_n = HeadsUpSolverDebug::train_sampled(game, 40, 11, fast_limits());
-  const DebugTrainingOutput at_2n = HeadsUpSolverDebug::train_sampled(game, 80, 11, fast_limits());
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kSampledPrngIdentifier;
-  const TrainingRows at_n_rows = to_training_rows(at_n.rows);
-  const TrainingRows at_2n_rows = to_training_rows(at_2n.rows);
+  const SeatTrainingResult exported = trained_seat_result_v2();
+  SeatCheckpointProvenance provenance;
+  provenance.engine_revision = "crash-engine-1";
 
   const fs::path good = dir / "crash-good.db";
-  create_checkpoint(good, at_n.result, at_n_rows, provenance);
+  create_checkpoint(good, exported, provenance);
 
-  // ENOSPC at create time across several write budgets: the failed create
-  // removes its database file and no readable artifact is left.
-  for (long long budget : {1LL, 4096LL, 16384LL, 40000LL, 65536LL}) {
+  // ENOSPC at create time: the failed create removes its database file and no
+  // readable artifact is left. Budgets stay at one page or below so they fail
+  // every nonempty database regardless of its final size.
+  for (const long long budget : {1LL, 4096LL}) {
     const fs::path starved = dir / ("starved-create-" + std::to_string(budget) + ".db");
     fault_vfs::arm(starved.string(), budget);
     bool threw = false;
     try {
-      create_checkpoint(starved, at_n.result, at_n_rows, provenance);
+      create_checkpoint(starved, exported, provenance);
     } catch (const ArtifactError& error) {
       threw = true;
-      if (error.kind() != ArtifactErrorKind::Io)
-        std::printf("ENOSPC create budget=%lld kind=%d rc=%d: %s\n", budget,
-                    static_cast<int>(error.kind()), error.sqlite_code(), error.what());
       CHECK(error.kind() == ArtifactErrorKind::Io);
     }
     fault_vfs::disarm();
     CHECK(threw);
     std::error_code ec;
     fs::remove(fs::path(starved.string() + "-journal"), ec);
+    fs::remove(fs::path(starved.string() + "-wal"), ec);
+    fs::remove(fs::path(starved.string() + "-shm"), ec);
     CHECK(!fs::exists(starved, ec));
   }
 
-  // ENOSPC during the commit transaction: after hot-journal recovery the file
-  // must present the complete pre-commit state, exactly N, never a partial.
-  for (long long budget : {1LL, 4096LL, 8192LL, 16384LL}) {
-    const fs::path starved = dir / ("starved-commit-" + std::to_string(budget) + ".db");
-    std::error_code ec;
-    fs::copy_file(good, starved, fs::copy_options::overwrite_existing, ec);
-    fault_vfs::arm(starved.string(), budget);
+  // ENOSPC during immutable publication: publish_policy throws Io, leaves no
+  // generation at the destination, and removes its .bs-policy temp file.
+  for (const long long budget : {1LL, 4096LL}) {
+    const fs::path gen_dir = dir / ("starved-publish-" + std::to_string(budget));
+    fs::create_directories(gen_dir);
+    const fs::path dest = gen_dir / "generation-1.db";
+    fault_vfs::arm(".bs-policy-", budget);
     bool threw = false;
     try {
-      commit_checkpoint(starved, at_2n.result, at_2n_rows, provenance);
-    } catch (const ArtifactError&) {
+      (void)publish_policy(good, dest, "crash-publish-1");
+    } catch (const ArtifactError& error) {
       threw = true;
+      CHECK(error.kind() == ArtifactErrorKind::Io);
     }
     fault_vfs::disarm();
     CHECK(threw);
-    // Operator-style recovery: a writable connection replays the hot journal.
-    {
-      RawDb recovery(starved, SQLITE_OPEN_READWRITE);
-      recovery.exec("SELECT COUNT(*) FROM manifest;");
-    }
-    const LoadedArtifact reverted = load_artifact(starved);
-    CHECK(reverted.bundle.manifest.completed_iterations == 40);
-    CHECK(compare_policy_exact(at_n.result.policy, reverted.bundle.result.policy, at_n_rows,
-                               reverted.bundle.rows) == 0);
+    std::error_code ec;
+    CHECK(!fs::exists(dest, ec));
+    for (const auto& entry : fs::directory_iterator(gen_dir))
+      CHECK(entry.path().filename().string().rfind(".bs-policy-", 0) != 0);
   }
 
-  // Real process kills, with a 19 MB multi-page transaction.
+  // Real process kills, with a large multi-page transaction.
   for (int round = 0; round < 6; ++round) {
     CHECK(run_crash_round(good, dir / ("crash-pre-" + std::to_string(round) + ".db"), false,
                           false) == 0);
@@ -1991,23 +1612,19 @@ static int test_crash_and_full_disk(const fs::path& dir) {
 
   // The seed checkpoint itself is untouched.
   const LoadedArtifact still_good = load_artifact(good);
-  CHECK(still_good.bundle.manifest.completed_iterations == 40);
+  CHECK(still_good.bundle.manifest.completed_iterations == exported.completed_iterations);
   return 0;
 }
 
 // ---------------------------------------------------------------------------
-// test 6: corruption, version, schema, and validation rejection
+// test 5: physical corruption, version/schema/validation rejection against a
+// schema-v2 checkpoint.
 // ---------------------------------------------------------------------------
 
 static int test_corruption(const fs::path& dir) {
-  const HeadsUpGame game = canonical_fixture();
-  const DebugTrainingOutput trained =
-      HeadsUpSolverDebug::train_sampled(game, 40, 13, fast_limits());
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kSampledPrngIdentifier;
-  const TrainingRows trained_rows = to_training_rows(trained.rows);
+  const SeatTrainingResult exported = trained_seat_result_v2();
   const fs::path source = dir / "corrupt-source.db";
-  create_checkpoint(source, trained.result, trained_rows, provenance);
+  create_checkpoint(source, exported);
 
   auto scratch = [&](const std::string& name) {
     const fs::path path = dir / name;
@@ -2015,22 +1632,12 @@ static int test_corruption(const fs::path& dir) {
     return path;
   };
 
-  // Unknown application id and schema version.
+  // A user_version bumped from 2 to 3 selects the schema-v3 DDL set; the
+  // stored schema-v2 manifest text does not match it.
   {
-    const fs::path path = scratch("bad-appid.db");
-    RawDb raw(path);
-    raw.exec("PRAGMA application_id=1;");
-    CHECK(
-        throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
-  }
-  {
-    // A schema-v1 file whose user_version is bumped to 2 is now a *supported* version,
-    // so open_validated selects the schema-v2 DDL set; the schema-v1 stored SQL does
-    // not match it and is rejected as InvalidSchema (wrong-version stored
-    // text), not UnsupportedVersion.
     const fs::path path = scratch("bad-version.db");
     RawDb raw(path);
-    raw.exec("PRAGMA user_version=2;");
+    raw.exec("PRAGMA user_version=3;");
     CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidSchema));
   }
 
@@ -2087,11 +1694,11 @@ static int test_corruption(const fs::path& dir) {
   }
 
   // NaN / +Inf / -Inf planted directly into the bytes of an unconstrained
-  // NOT NULL REAL cell (training.regret). SQL itself converts such literals to
-  // NULL and would reject the insert, so the values are injected at the byte
-  // level. SQLite integrity_check flags stored NaN as a NULL in a NOT NULL
-  // column, while infinities pass integrity and must be caught by the reader's
-  // own finite-REAL validation.
+  // NOT NULL REAL cell (training.regret). The v2 training table must stay
+  // empty for a real checkpoint, so these rows are also rejected on content;
+  // finite-REAL validation runs first and must classify them exactly as the
+  // retired v1 cases did. SQL itself cannot bind non-finite doubles, so the
+  // values are injected at the byte level.
   constexpr double kRealSentinel = -72539182736.125;
   for (const auto& [label, bits, expected] :
        std::vector<std::tuple<std::string, std::uint64_t, ArtifactErrorKind>>{
@@ -2103,31 +1710,25 @@ static int test_corruption(const fs::path& dir) {
     {
       RawDb raw(path);
       raw.exec(
-          "UPDATE training SET regret = -72539182736.125 WHERE rowid = "
-          "(SELECT rowid FROM training LIMIT 1)");
+          "INSERT INTO training (info_id, ordinal, regret, average_weight)"
+          " SELECT info_id, ordinal, -72539182736.125, 1.0 FROM actions"
+          " WHERE info_id = 0 AND ordinal = 0;");
       CHECK(raw.scalar_i64("SELECT COUNT(*) FROM training WHERE regret = -72539182736.125") == 1);
     }
     rewrite_unique_real(path, kRealSentinel, bits);
     CHECK(throws_artifact([&] { (void)load_artifact(path); }, expected));
   }
 
-  // Probability sum violation with per-cell values inside [0,1]. The selected
-  // state has two or three actions in this fixture, so all-0.2 sums to 0.4 or
-  // 0.6 and cannot accidentally equal one.
+  // Probability normalization violation with per-cell values inside [0,1].
   {
     const fs::path path = scratch("bad-sum.db");
     RawDb raw(path);
-    const std::int64_t action_count = raw.scalar_i64(
-        "SELECT COUNT(*) FROM actions WHERE info_id = (SELECT MIN(id) FROM"
-        " information_states)");
-    CHECK(action_count >= 2 && action_count <= 3);
     raw.exec(
-        "UPDATE actions SET probability = 0.2 WHERE info_id = (SELECT MIN(id)"
-        " FROM information_states)");
+        "UPDATE actions SET probability = 0 WHERE info_id = (SELECT MIN(id)"
+        " FROM information_states);");
     CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidValue));
   }
-  // Integer beyond the 2^53-1 profile, planted in a table column whose SQL
-  // CHECK enforces only INTEGER storage.
+  // Integer beyond the 2^53-1 profile in a measurements row.
   {
     const fs::path path = scratch("bad-int.db");
     RawDb raw(path);
@@ -2138,21 +1739,37 @@ static int test_corruption(const fs::path& dir) {
     CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidValue));
   }
 
-  // Writer-side content validation.
+  // Writer-side content validation: rows a real export can never carry must
+  // be rejected at create time, before any file is opened.
+  const auto& first_row = exported.policy.rows().begin()->second;
+  const InformationKey first_key = exported.policy.rows().begin()->first;
   {
-    TrainingRows bad = trained_rows;
-    const auto first = bad.begin();
-    bad[first->first].regrets[0] = std::nan("");
-    CHECK(throws_artifact(
-        [&] { create_checkpoint(dir / "never-nan.db", trained.result, bad, provenance); }));
-    bad = trained_rows;
-    bad[first->first].average_weights[0] = -0.25;
-    CHECK(throws_artifact(
-        [&] { create_checkpoint(dir / "never-negative.db", trained.result, bad, provenance); }));
-    bad = trained_rows;
-    bad[first->first].regrets.push_back(0.0);
-    CHECK(throws_artifact(
-        [&] { create_checkpoint(dir / "never-mismatch.db", trained.result, bad, provenance); }));
+    std::vector<double> probabilities = first_row.probabilities;
+    probabilities[0] = std::nan("");
+    const SeatTrainingResult bad = seat_result_with_rows(
+        exported, {{first_key, SeatPolicyRow{first_row.actions, probabilities, 0}}});
+    const fs::path path = dir / "never-nan.db";
+    CHECK(throws_artifact([&] { create_checkpoint(path, bad); }));
+    CHECK(!fs::exists(path));
+  }
+  {
+    std::vector<double> probabilities(first_row.probabilities.size(), 0.0);
+    probabilities[0] = -0.25;
+    probabilities[1] = 1.25;
+    const SeatTrainingResult bad = seat_result_with_rows(
+        exported, {{first_key, SeatPolicyRow{first_row.actions, probabilities, 0}}});
+    const fs::path path = dir / "never-negative.db";
+    CHECK(throws_artifact([&] { create_checkpoint(path, bad); }));
+    CHECK(!fs::exists(path));
+  }
+  {
+    std::vector<double> probabilities(first_row.probabilities.size() + 1,
+                                      1.0 / (first_row.probabilities.size() + 1));
+    const SeatTrainingResult bad = seat_result_with_rows(
+        exported, {{first_key, SeatPolicyRow{first_row.actions, probabilities, 0}}});
+    const fs::path path = dir / "never-mismatch.db";
+    CHECK(throws_artifact([&] { create_checkpoint(path, bad); }));
+    CHECK(!fs::exists(path));
   }
 
   // Size bound: a reader option below the file size rejects before opening.
@@ -2166,26 +1783,21 @@ static int test_corruption(const fs::path& dir) {
 }
 
 // ---------------------------------------------------------------------------
-// test 7: immutable publication guarantees
+// test 6: immutable publication guarantees for schema-v2 generations.
 // ---------------------------------------------------------------------------
 
 static int test_immutable(const fs::path& dir) {
-  const HeadsUpGame game = canonical_fixture();
-  const DebugTrainingOutput trained =
-      HeadsUpSolverDebug::train_sampled(game, 40, 19, fast_limits());
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kSampledPrngIdentifier;
-  const TrainingRows trained_rows = to_training_rows(trained.rows);
+  const SeatTrainingResult exported = trained_seat_result_v2();
   const fs::path checkpoint = dir / "immutable-source.db";
-  create_checkpoint(checkpoint, trained.result, trained_rows, provenance);
+  create_checkpoint(checkpoint, exported);
 
   const fs::path gen_dir = dir / "immutable-gen";
   fs::create_directories(gen_dir);
   const fs::path gen = gen_dir / "generation-1.db";
-  const PublishedPolicy published = publish_policy(checkpoint, gen);
+  const PublishedPolicy published = publish_policy(checkpoint, gen, "immutable-engine-1");
 
   // Never overwrites an existing generation.
-  CHECK(throws_artifact([&] { (void)publish_policy(checkpoint, gen); },
+  CHECK(throws_artifact([&] { (void)publish_policy(checkpoint, gen, "immutable-engine-1"); },
                         ArtifactErrorKind::AlreadyExists));
 
   // No temp names left in the directory.
@@ -2218,7 +1830,7 @@ static int test_immutable(const fs::path& dir) {
   fs::copy_file(gen, edited);
   chmod(edited.string().c_str(), S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
   // Flip a byte in the application_id header word: independently fatal even
-  // when the caller does not pin a digest (the digest-pinned load above is
+  // when the caller does not pin a digest (the digest-pinned load below is
   // rejected first on the SHA-256 mismatch).
   flip_byte(edited, 69);
   LoadOptions expected;
@@ -2227,16 +1839,31 @@ static int test_immutable(const fs::path& dir) {
                         ArtifactErrorKind::DigestMismatch));
   CHECK(throws_artifact([&] { (void)load_artifact(edited); }));
 
-  // A zero-iteration checkpoint is valid but can never be published: the
-  // policy is empty.
-  const DebugTrainingOutput empty_run =
-      HeadsUpSolverDebug::train_sampled(canonical_fixture(), 0, 1, fast_limits());
-  CHECK(empty_run.result.status == TrainingStatus::Complete);
-  const TrainingRows no_rows;
+  // Independent publications of the same checkpoint are byte-identical; this
+  // is the schema-v2 counterpart of the retired v1 split-run digest equality
+  // (deterministic pages, rollback journal, sorted reads).
+  {
+    const fs::path dir_a = dir / "gen-a";
+    const fs::path dir_b = dir / "gen-b";
+    fs::create_directories(dir_a);
+    fs::create_directories(dir_b);
+    const PublishedPolicy gen_a =
+        publish_policy(checkpoint, dir_a / "gen.db", "immutable-engine-1");
+    const PublishedPolicy gen_b =
+        publish_policy(checkpoint, dir_b / "gen.db", "immutable-engine-1");
+    CHECK(gen_a.sha256_hex == gen_b.sha256_hex);
+    CHECK(read_file_bytes(dir_a / "gen.db") == read_file_bytes(dir_b / "gen.db"));
+  }
+
+  // A zero-row checkpoint is valid but can never be published: the policy is
+  // empty.
+  SeatTrainingResult empty = seat_result_with_rows(exported, {});
+  empty.completed_iterations = 0;
+  empty.completed_epochs = 0;
   const fs::path empty_checkpoint = dir / "empty-checkpoint.db";
-  create_checkpoint(empty_checkpoint, empty_run.result, no_rows, provenance);
+  create_checkpoint(empty_checkpoint, empty);
   const LoadedArtifact empty_loaded = load_artifact(empty_checkpoint);
-  CHECK(empty_loaded.bundle.result.policy.rows().empty());
+  CHECK(empty_loaded.bundle.nseat->policy.rows().empty());
   CHECK(throws_artifact([&] { (void)publish_policy(empty_checkpoint, dir / "empty-gen.db"); },
                         ArtifactErrorKind::InvalidArgument));
 
@@ -2245,10 +1872,6 @@ static int test_immutable(const fs::path& dir) {
   CHECK(again.sha256_hex == published.sha256_hex);
   return 0;
 }
-
-// ---------------------------------------------------------------------------
-// test 8: independent adversarial regressions (P1-1, P1-3, P2-2, P2-4, P2-5)
-// ---------------------------------------------------------------------------
 
 // Rewrites a table's stored CREATE text under writable_schema. An empty sql
 // restores NULL. Used to first strip CHECK enforcement, plant a bad row with
@@ -2474,15 +2097,19 @@ static int test_seat_stream_adversarial(const fs::path& dir) {
   return 0;
 }
 
+// ---------------------------------------------------------------------------
+// test 8: independent adversarial regressions against the schema-v2 writer
+// and reader: P1-1 CHECK-stripped size/range domains and tampered DDL text,
+// P1-3 committed -wal sidecar bypass, P2-4 schema-object zip bomb, P2-5
+// writer pragma verification. Stream ordering, key/probability domains, and
+// 2^32-narrowing regressions are covered by test_seat_stream_adversarial on
+// both v2 and v3 sources.
+// ---------------------------------------------------------------------------
+
 static int test_adversarial(const fs::path& dir) {
-  const HeadsUpGame game = canonical_fixture();
-  const DebugTrainingOutput trained =
-      HeadsUpSolverDebug::train_sampled(game, 40, 23, fast_limits());
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kSampledPrngIdentifier;
-  const TrainingRows trained_rows = to_training_rows(trained.rows);
+  const SeatTrainingResult exported = trained_seat_result_v2();
   const fs::path source = dir / "adv-source.db";
-  create_checkpoint(source, trained.result, trained_rows, provenance);
+  create_checkpoint(source, exported);
 
   std::string canonical_sizes;
   std::string canonical_ranges;
@@ -2499,9 +2126,14 @@ static int test_adversarial(const fs::path& dir) {
     return path;
   };
 
+  struct BadSizeRow {
+    const char* name;
+    const char* values;
+  };
+
   // --- P1-1: CHECK-stripped rows with canonical DDL text restored ----------
-  // If the C++ domain checks were removed, street=16 would index a 3-element
-  // array: silent OOB in release, stack-buffer-overflow under ASan.
+  // If the C++ domain checks were removed, street=16 would index a small
+  // schedule array: silent OOB in release, stack-buffer-overflow under ASan.
   const char* kSizesNoCheck =
       "CREATE TABLE sizes (street INTEGER NOT NULL, kind INTEGER NOT NULL,"
       " ordinal INTEGER NOT NULL, numerator INTEGER NOT NULL,"
@@ -2510,10 +2142,6 @@ static int test_adversarial(const fs::path& dir) {
       "CREATE TABLE ranges (player INTEGER NOT NULL, combo INTEGER NOT NULL,"
       " weight REAL NOT NULL, PRIMARY KEY (player, combo)) STRICT";
 
-  struct BadSizeRow {
-    const char* name;
-    const char* values;
-  };
   for (const BadSizeRow& bad : std::vector<BadSizeRow>{
            {"adv-size-street16", "(16, 0, 7, 1, 3)"},
            {"adv-size-street-neg", "(-1, 0, 0, 1, 3)"},
@@ -2530,7 +2158,9 @@ static int test_adversarial(const fs::path& dir) {
   }
 
   for (const auto& [name, values] : std::vector<std::pair<std::string, std::string>>{
-           {"adv-range-player2", "(2, 0, 1.0)"},
+           // The source game has three occupied seats, so player 3 passes the
+           // 0..9 SQL domain but lies outside the game's player_count.
+           {"adv-range-player3", "(3, 0, 1.0)"},
            {"adv-range-combo1326", "(0, 1326, 1.0)"},
            {"adv-range-combo-neg", "(0, -1, 1.0)"},
        }) {
@@ -2554,90 +2184,6 @@ static int test_adversarial(const fs::path& dir) {
         " kind INTEGER NOT NULL, ordinal INTEGER NOT NULL, numerator INTEGER NOT NULL,"
         " denominator INTEGER NOT NULL, PRIMARY KEY (street, kind, ordinal)) STRICT");
     CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidSchema));
-  }
-
-  // P1-1 residual: 2^32-congruent integers must NOT pass a small-domain check
-  // via int64->int narrowing. Strip the information_states/actions CHECKs,
-  // plant values that narrow to valid small ints, restore the canonical DDL,
-  // and require rejection.
-  {
-    std::string canonical_states;
-    std::string canonical_actions;
-    {
-      RawDb raw(source, SQLITE_OPEN_READONLY);
-      canonical_states =
-          raw.scalar_text("SELECT sql FROM sqlite_schema WHERE name='information_states'");
-      canonical_actions = raw.scalar_text("SELECT sql FROM sqlite_schema WHERE name='actions'");
-      CHECK(!canonical_states.empty() && !canonical_actions.empty());
-    }
-    const char* kStatesNoCheck =
-        "CREATE TABLE information_states (id INTEGER PRIMARY KEY, player INTEGER NOT NULL,"
-        " card0 INTEGER NOT NULL, card1 INTEGER NOT NULL, public_key TEXT NOT NULL,"
-        " UNIQUE (player, card0, card1, public_key)) STRICT";
-    const char* kActionsNoCheck =
-        "CREATE TABLE actions (info_id INTEGER NOT NULL, ordinal INTEGER NOT NULL,"
-        " kind INTEGER NOT NULL, target INTEGER, probability REAL NOT NULL,"
-        " PRIMARY KEY (info_id, ordinal)) STRICT";
-
-    // player=2^32 narrows to 0; card0=2^32 -> 0; card1=2^32+1 -> 1.
-    {
-      const fs::path path = scratch("adv-congruent-states.db");
-      overwrite_table_sql(path, "information_states", kStatesNoCheck);
-      {
-        RawDb update(path);
-        update.exec(
-            "UPDATE information_states SET player = 4294967296,"
-            " card0 = 4294967296, card1 = 4294967297 WHERE id ="
-            " (SELECT MIN(id) FROM information_states);");
-      }
-      overwrite_table_sql(path, "information_states", canonical_states);
-      CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidSchema));
-    }
-    // Negative control: 2^32+52 narrows to 52 and must be rejected too (it
-    // already was); proves the column genuinely holds the planted raw values.
-    {
-      const fs::path path = scratch("adv-congruent-card52.db");
-      overwrite_table_sql(path, "information_states", kStatesNoCheck);
-      {
-        RawDb update(path);
-        update.exec(
-            "UPDATE information_states SET card0 = 0, card1 = 4294967348"
-            " WHERE id = (SELECT MIN(id) FROM information_states);");
-      }
-      overwrite_table_sql(path, "information_states", canonical_states);
-      CHECK(throws_artifact([&] { (void)load_artifact(path); }));
-    }
-    // actions.kind = 2^32+1 narrows to 1 (Check).
-    {
-      const fs::path path = scratch("adv-congruent-actions.db");
-      overwrite_table_sql(path, "actions", kActionsNoCheck);
-      {
-        RawDb update(path);
-        update.exec(
-            "UPDATE actions SET kind = 4294967297 WHERE ordinal = 0 AND info_id ="
-            " (SELECT MIN(id) FROM information_states);");
-      }
-      overwrite_table_sql(path, "actions", canonical_actions);
-      CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidValue));
-    }
-  }
-
-  // --- P2-2: duplicate public board cards -----------------------------------
-  for (const auto& [name, key] : std::vector<std::pair<std::string, std::string>>{
-           {"adv-dup-flop", "0|3,3,3|"},
-           {"adv-turn-repeats-flop", "1|3,6,21,3|"},
-       }) {
-    const fs::path path = scratch(name + ".db");
-    {
-      RawDb raw(path);
-      const std::int64_t first_id = raw.scalar_i64("SELECT MIN(id) FROM information_states");
-      raw.exec("UPDATE information_states SET public_key = '" + key +
-               "' WHERE id = " + std::to_string(first_id) + ";");
-    }
-    CHECK(throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::InvalidSchema));
-    const fs::path bad_gen = dir / (name + "-gen.db");
-    CHECK(throws_artifact([&] { (void)publish_policy(path, bad_gen); },
-                          ArtifactErrorKind::InvalidSchema));
   }
 
   // --- P2-4: schema-object zip bomb rejection and bounded heap design ------
@@ -2749,21 +2295,21 @@ static int test_adversarial(const fs::path& dir) {
   {
     const fs::path path = scratch("adv-wal-reject.db");
     std::error_code ec;
-    fs::copy_file(wal_base, path, fs::copy_options::overwrite_existing, ec);
     fs::copy_file(fs::path(wal_base.string() + "-wal"), fs::path(path.string() + "-wal"),
                   fs::copy_options::overwrite_existing, ec);
     CHECK(throws_artifact([&] { (void)load_artifact(path); }));
   }
 
-  // (ii) A legacy (version-1) main file next to a stray committed -wal must
-  // still be rejected by the sidecar check, and the immutable reader never
-  // opens or creates sidecars: no -shm appears and the -wal is untouched.
+  // (ii) A published immutable generation next to a stray committed -wal
+  // must still be rejected by the sidecar check, and the immutable reader
+  // never opens or creates sidecars: no -shm appears and the -wal is
+  // untouched.
   {
     const fs::path gen_dir = dir / "adv-wal-gen";
     fs::create_directories(gen_dir);
     const fs::path gen = gen_dir / "gen.db";
-    const PublishedPolicy published = publish_policy(source, gen);
-    const fs::path victim = dir / "adv-wal-legacy.db";
+    const PublishedPolicy published = publish_policy(source, gen, "adv-wal-engine-1");
+    const fs::path victim = dir / "adv-wal-published.db";
     fs::copy_file(gen, victim);
     std::error_code ec;
     fs::copy_file(fs::path(wal_base.string() + "-wal"), fs::path(victim.string() + "-wal"),
@@ -2806,15 +2352,13 @@ int main() {
     int (*fn)(const fs::path&);
   };
   const Case cases[] = {
-      {"roundtrip", test_roundtrip},
       {"roundtrip-schema-v2", test_roundtrip_v2},
       {"nseat-algorithm-identity", test_nseat_algorithm_identity},
       {"roundtrip-schema-v3", test_roundtrip_v3},
       {"roundtrip-preflop", test_roundtrip_preflop},
       {"roundtrip-preflop-3way", test_roundtrip_preflop_3way},
       {"canonical-keys", test_canonical_keys},
-      {"split-run", test_split_run},
-      {"resume-identity", test_resume_identity},
+      {"v1-rejection", test_v1_rejection},
       {"crash-full-disk", test_crash_and_full_disk},
       {"corruption", test_corruption},
       {"immutable", test_immutable},

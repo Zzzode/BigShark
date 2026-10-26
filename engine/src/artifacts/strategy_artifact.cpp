@@ -63,8 +63,6 @@ struct NSeatAlgorithmIdentity {
 };
 
 NSeatAlgorithmIdentity decode_nseat_algorithm(std::string_view text) {
-  if (text == kLegacyAlgorithmRevisionV2)
-    return {1, 0};
   if (!text.starts_with(kNSeatRevisionTwoPrefix) || !text.ends_with(kNSeatRevisionTwoSuffix) ||
       text.size() <= kNSeatRevisionTwoPrefix.size() + kNSeatRevisionTwoSuffix.size())
     return {};
@@ -86,6 +84,12 @@ std::uint64_t epochs_from_samples(std::uint64_t samples, std::size_t batch) {
 
 std::string nseat_write_identity(const SeatTrainingResult& result,
                                  const SeatCheckpointProvenance& provenance) {
+  // RFC 0038: revision-one results and the legacy identity string are gone.
+  // Revision 2 is the trained identity; revision 0 is reserved for synthetic
+  // results that name an explicit custom provenance string.
+  check(result.algorithm_revision == 2 || result.algorithm_revision == 0,
+        ArtifactErrorKind::InvalidArgument,
+        "seat artifacts require a revision-two or explicitly custom result");
   if (result.algorithm_revision == 2) {
     check(result.batch_size > 0, ArtifactErrorKind::InvalidArgument,
           "revision-two result requires a positive batch size");
@@ -98,90 +102,23 @@ std::string nseat_write_identity(const SeatTrainingResult& result,
     if (result.algorithm_revision == 2)
       identity = std::string(kNSeatRevisionTwoPrefix) + std::to_string(result.batch_size) +
                  std::string(kNSeatRevisionTwoSuffix);
-    else if (result.algorithm_revision == 1)
-      identity = kLegacyAlgorithmRevisionV2;
     else
       fail(ArtifactErrorKind::InvalidArgument,
-           "unknown result requires explicit algorithm provenance");
+           "a custom result requires an explicit algorithm provenance");
   }
+  // An unrecognized identity string is preserved verbatim: custom test and
+  // fixture provenance must round-trip without being silently stamped with
+  // the current revision. A recognized revision-two identity is cross-checked
+  // against the result; recognizing a revision-one identity is impossible
+  // after RFC 0038.
   const auto decoded = decode_nseat_algorithm(identity);
   if (decoded.revision != 0) {
     check(decoded.revision == result.algorithm_revision, ArtifactErrorKind::InvalidArgument,
           "algorithm provenance disagrees with result revision");
     check(decoded.batch_size == result.batch_size, ArtifactErrorKind::InvalidArgument,
           "algorithm provenance disagrees with result batch size");
-    if (decoded.revision == 1)
-      check(result.completed_epochs == 0, ArtifactErrorKind::InvalidArgument,
-            "legacy result cannot claim revision-two update epochs");
   }
   return identity;
-}
-
-// Normalized positive regret-matching probabilities, the same convention the
-// solver uses to publish a policy. Used only as a write/read cross-check.
-std::vector<double> normalized(const std::vector<double>& weights) {
-  double sum = 0;
-  for (double w : weights)
-    sum += std::max(0.0, w);
-  std::vector<double> out(weights.size(), 1.0 / static_cast<double>(weights.size()));
-  if (sum > 0)
-    for (std::size_t i = 0; i < weights.size(); ++i)
-      out[i] = std::max(0.0, weights[i]) / sum;
-  return out;
-}
-
-bool same_fraction(const solver::Fraction& a, const solver::Fraction& b) {
-  return a.numerator == b.numerator && a.denominator == b.denominator;
-}
-
-bool same_size_schedule(const solver::SizeSchedule& a, const solver::SizeSchedule& b) {
-  // Only the POSTFLOP entries are compared, and that bound is deliberate rather
-  // than incidental: the artifact stores exactly those three (RFC 0007 rollout
-  // step 3 widens the store and this loop together), so a schedule restored
-  // from an artifact has an empty preflop entry while a freshly built one has
-  // the declared default. Comparing the fourth entry here - before the store
-  // knows about it - makes every resume fail as an identity mismatch, which is
-  // a correct comparison applied one step too early. The two must land in the
-  // same change.
-  constexpr std::size_t kStoredStreets = 3;
-  for (std::size_t street = 0; street < kStoredStreets; ++street) {
-    if (a[street].bets.size() != b[street].bets.size() ||
-        a[street].raises.size() != b[street].raises.size())
-      return false;
-    for (std::size_t i = 0; i < a[street].bets.size(); ++i)
-      if (!same_fraction(a[street].bets[i], b[street].bets[i]))
-        return false;
-    for (std::size_t i = 0; i < a[street].raises.size(); ++i)
-      if (!same_fraction(a[street].raises[i], b[street].raises[i]))
-        return false;
-  }
-  return true;
-}
-
-bool same_ranges(const std::array<std::vector<WeightedHand>, 2>& a,
-                 const std::array<std::vector<WeightedHand>, 2>& b) {
-  for (std::size_t player = 0; player < 2; ++player) {
-    if (a[player].size() != b[player].size())
-      return false;
-    for (std::size_t i = 0; i < a[player].size(); ++i) {
-      if (a[player][i].cards != b[player][i].cards)
-        return false;
-      // Range weights are normalized by the trainer and stored as IEEE REAL, so
-      // resume identity compares the exact double, not a tolerance.
-      if (std::bit_cast<std::uint64_t>(a[player][i].weight) !=
-          std::bit_cast<std::uint64_t>(b[player][i].weight))
-        return false;
-    }
-  }
-  return true;
-}
-
-bool same_game(const HeadsUpGame& a, const HeadsUpGame& b) {
-  return a.root.flop == b.root.flop && a.root.stacks == b.root.stacks &&
-         a.root.contributions == b.root.contributions && a.root.pot == b.root.pot &&
-         a.root.big_blind == b.root.big_blind && a.root.button == b.root.button &&
-         a.fixed_runout == b.fixed_runout && same_size_schedule(a.sizes, b.sizes) &&
-         same_ranges(a.ranges, b.ranges);
 }
 
 void validate_probabilities_local(const std::vector<double>& probabilities,
@@ -233,139 +170,6 @@ RunStatus run_status_from_text(std::string_view text) {
   if (text == "resource_limit")
     return RunStatus::ResourceLimit;
   fail(ArtifactErrorKind::InvalidSchema, "unknown training run status");
-}
-
-void validate_root(const HeadsUpRoot& root) {
-  std::array<bool, 52> used{};
-  for (int card : root.flop) {
-    check(card >= 0 && card < 52 && !used[card], ArtifactErrorKind::InvalidArgument,
-          "invalid or duplicate flop card");
-    used[card] = true;
-  }
-  check(root.button <= 1, ArtifactErrorKind::InvalidArgument, "button outside seats");
-  check(root.pot > 0 && root.pot <= kMaxStoredChips, ArtifactErrorKind::InvalidArgument,
-        "pot outside the 2^53-1 profile");
-  check(root.big_blind > 0 && root.big_blind <= kMaxStoredChips, ArtifactErrorKind::InvalidArgument,
-        "big blind outside the numeric profile");
-  for (Chips stack : root.stacks)
-    check(stack <= kMaxStoredChips, ArtifactErrorKind::InvalidArgument,
-          "stack outside the 2^53-1 profile");
-  for (Chips contribution : root.contributions)
-    check(contribution <= kMaxStoredChips, ArtifactErrorKind::InvalidArgument,
-          "contribution outside the 2^53-1 profile");
-}
-
-void validate_game(const HeadsUpGame& game) {
-  validate_root(game.root);
-  std::array<bool, 52> used{};
-  for (int card : game.root.flop)
-    used[card] = true;
-  for (auto fixed : game.fixed_runout) {
-    if (!fixed)
-      continue;
-    check(*fixed >= 0 && *fixed < 52 && !used[*fixed], ArtifactErrorKind::InvalidArgument,
-          "invalid or duplicate fixed runout card");
-    used[*fixed] = true;
-  }
-  for (std::size_t player = 0; player < 2; ++player) {
-    check(!game.ranges[player].empty() && game.ranges[player].size() <= 1326,
-          ArtifactErrorKind::InvalidArgument, "range must contain 1..1326 combos");
-    for (const WeightedHand& hand : game.ranges[player]) {
-      check(hand.cards[0] >= 0 && hand.cards[1] < 52 && hand.cards[0] < hand.cards[1],
-            ArtifactErrorKind::InvalidArgument, "range combo cards invalid or unsorted");
-      check(!used[hand.cards[0]] && !used[hand.cards[1]], ArtifactErrorKind::InvalidArgument,
-            "range combo shares a public card");
-      check(std::isfinite(hand.weight) && hand.weight >= 0, ArtifactErrorKind::InvalidArgument,
-            "range weight must be finite and nonnegative");
-    }
-  }
-  for (const auto& street : game.sizes)
-    for (const auto* fractions : {&street.bets, &street.raises})
-      for (const solver::Fraction& fraction : *fractions) {
-        check(fraction.numerator > 0 && fraction.numerator <= kMaxStoredChips &&
-                  fraction.denominator > 0 && fraction.denominator <= kMaxStoredChips,
-              ArtifactErrorKind::InvalidArgument, "size fraction outside the numeric profile");
-      }
-}
-
-// Validates that raw training rows agree with the immutable policy and returns
-// the policy row count. Regrets may be negative but must be finite; average
-// weights are nonnegative and normalize to the published probabilities.
-std::size_t validate_content(const TrainingResult& result, const TrainingRows& rows,
-                             ArtifactKind kind) {
-  const HeadsUpGame& game = result.policy.game();
-  validate_game(game);
-  const auto& policy_rows = result.policy.rows();
-  if (kind == ArtifactKind::Policy) {
-    check(!policy_rows.empty(), ArtifactErrorKind::InvalidArgument,
-          "cannot publish an empty policy");
-    check(result.status == TrainingStatus::Complete, ArtifactErrorKind::InvalidArgument,
-          "cannot publish a resource-limited run");
-  }
-  if (kind == ArtifactKind::Checkpoint && !policy_rows.empty())
-    check(rows.size() == policy_rows.size(), ArtifactErrorKind::InvalidArgument,
-          "checkpoint raw rows must cover every policy row");
-  for (const auto& [key, policy_row] : policy_rows) {
-    check(key.size() >= 4, ArtifactErrorKind::InvalidArgument, "information key too short");
-    dt::validate_probabilities(policy_row.probabilities, "policy probabilities");
-    check(policy_row.actions.size() == policy_row.probabilities.size(),
-          ArtifactErrorKind::InvalidArgument, "policy action/probability length mismatch");
-    const auto found = rows.find(key);
-    if (kind == ArtifactKind::Checkpoint && !policy_rows.empty()) {
-      check(found != rows.end(), ArtifactErrorKind::InvalidArgument,
-            "checkpoint missing a raw training row");
-      const TrainingRow& raw = found->second;
-      check(raw.actions == policy_row.actions, ArtifactErrorKind::InvalidArgument,
-            "raw row actions differ from policy actions");
-      check(raw.regrets.size() == policy_row.actions.size() &&
-                raw.average_weights.size() == policy_row.actions.size(),
-            ArtifactErrorKind::InvalidArgument, "raw row vector length mismatch");
-      for (double regret : raw.regrets)
-        dt::require_finite(regret, "cumulative regret");
-      for (double average : raw.average_weights) {
-        dt::require_finite(average, "average weight");
-        check(average >= 0, ArtifactErrorKind::InvalidArgument,
-              "average weight must be nonnegative");
-      }
-      const std::vector<double> rebuilt = normalized(raw.average_weights);
-      for (std::size_t i = 0; i < rebuilt.size(); ++i)
-        check(std::abs(rebuilt[i] - policy_row.probabilities[i]) <= 1e-12,
-              ArtifactErrorKind::InvalidArgument,
-              "published probability is not the normalized average weight");
-    }
-    // Every key must have a canonical revision-1 encoding.
-    (void)encode_public_key(key, kArtifactSchemaVersion);
-  }
-  if (kind == ArtifactKind::Checkpoint && !policy_rows.empty()) {
-    for (const auto& [key, raw] : rows)
-      check(policy_rows.contains(key), ArtifactErrorKind::InvalidArgument,
-            "raw row has no policy row");
-  }
-  return policy_rows.size();
-}
-
-ArtifactManifest manifest_for(const TrainingResult& result, const CheckpointProvenance& provenance,
-                              ArtifactKind kind, ValidationState validation) {
-  check(!provenance.algorithm_revision.empty() && !provenance.engine_revision.empty(),
-        ArtifactErrorKind::InvalidArgument, "manifest provenance strings must be non-empty");
-  check(provenance.prng_identifier == kSampledPrngIdentifier ||
-            provenance.prng_identifier == kFullTraversalPrngIdentifier,
-        ArtifactErrorKind::InvalidArgument, "unsupported PRNG identifier");
-  ArtifactManifest manifest;
-  manifest.kind = kind;
-  manifest.algorithm_revision = provenance.algorithm_revision;
-  manifest.engine_revision = provenance.engine_revision;
-  manifest.validation = validation;
-  manifest.completed_iterations = result.completed_iterations;
-  manifest.prng_identifier = provenance.prng_identifier;
-  manifest.seed = result.seed;
-  manifest.prng_state = result.prng_state;
-  manifest.run_status =
-      result.status == TrainingStatus::Complete ? RunStatus::Complete : RunStatus::ResourceLimit;
-  manifest.nodes = result.nodes;
-  manifest.information_sets = result.information_sets;
-  manifest.accounted_bytes = result.accounted_bytes;
-  return manifest;
 }
 
 }  // namespace
@@ -572,131 +376,14 @@ constexpr const char* kReaderPragmas =
     "PRAGMA mmap_size=0;"
     "PRAGMA cache_size=-65536;";
 
-// Schema-v1 (RFC 0004 heads-up profile). FROZEN byte-for-byte: the schema-v1 DDL
-// text is never edited, and every schema-v1 fixture's stored SQL must match it
-// exactly. The seat-generic schema-v2 (RFC 0009 D3) lives in kSchemaDdlV2.
-const char* const kSchemaDdlV1[] = {
-    "CREATE TABLE manifest ("
-    " id INTEGER PRIMARY KEY CHECK (id = 1),"
-    " kind TEXT NOT NULL CHECK (kind IN ('checkpoint','policy')),"
-    " algorithm_revision TEXT NOT NULL,"
-    " info_key_revision INTEGER NOT NULL CHECK (info_key_revision = 1),"
-    " numeric_profile TEXT NOT NULL,"
-    " validation_state TEXT NOT NULL CHECK (validation_state IN"
-    " ('unvalidated','validated','rejected')),"
-    " engine_revision TEXT NOT NULL,"
-    " completed_iterations INTEGER NOT NULL CHECK (completed_iterations >= 0),"
-    " prng_identifier TEXT NOT NULL,"
-    " seed_hex TEXT NOT NULL CHECK (length(seed_hex) = 16),"
-    " prng_state_hex TEXT NOT NULL CHECK (length(prng_state_hex) = 16),"
-    " run_status TEXT NOT NULL CHECK (run_status IN ('complete','resource_limit')),"
-    " nodes INTEGER NOT NULL CHECK (nodes >= 0),"
-    " information_sets INTEGER NOT NULL CHECK (information_sets >= 0),"
-    " accounted_bytes INTEGER NOT NULL CHECK (accounted_bytes >= 0)"
-    ") STRICT;",
-
-    "CREATE TABLE game ("
-    " id INTEGER PRIMARY KEY CHECK (id = 1),"
-    " rules_id TEXT NOT NULL,"
-    " button INTEGER NOT NULL CHECK (button IN (0,1)),"
-    " big_blind INTEGER NOT NULL CHECK (big_blind > 0 AND"
-    " big_blind <= 9007199254740991),"
-    " root_street INTEGER NOT NULL CHECK (root_street = 0),"
-    " flop0 INTEGER NOT NULL CHECK (flop0 BETWEEN 0 AND 51),"
-    " flop1 INTEGER NOT NULL CHECK (flop1 BETWEEN 0 AND 51),"
-    " flop2 INTEGER NOT NULL CHECK (flop2 BETWEEN 0 AND 51),"
-    " fixed_turn INTEGER CHECK (fixed_turn IS NULL OR fixed_turn BETWEEN 0 AND 51),"
-    " fixed_river INTEGER CHECK (fixed_river IS NULL OR fixed_river BETWEEN 0 AND 51),"
-    " stack0 INTEGER NOT NULL CHECK (stack0 BETWEEN 0 AND 9007199254740991),"
-    " stack1 INTEGER NOT NULL CHECK (stack1 BETWEEN 0 AND 9007199254740991),"
-    " contribution0 INTEGER NOT NULL CHECK (contribution0 BETWEEN 0 AND 9007199254740991),"
-    " contribution1 INTEGER NOT NULL CHECK (contribution1 BETWEEN 0 AND 9007199254740991),"
-    " pot INTEGER NOT NULL CHECK (pot > 0 AND pot <= 9007199254740991),"
-    " utility_id TEXT NOT NULL"
-    ") STRICT;",
-
-    "CREATE TABLE sizes ("
-    " street INTEGER NOT NULL CHECK (street BETWEEN 0 AND 2),"
-    " kind INTEGER NOT NULL CHECK (kind IN (0,1)),"
-    " ordinal INTEGER NOT NULL CHECK (ordinal >= 0 AND ordinal < 32),"
-    " numerator INTEGER NOT NULL CHECK (numerator > 0 AND"
-    " numerator <= 9007199254740991),"
-    " denominator INTEGER NOT NULL CHECK (denominator > 0 AND"
-    " denominator <= 9007199254740991),"
-    " PRIMARY KEY (street, kind, ordinal)"
-    ") STRICT;",
-
-    "CREATE TABLE ranges ("
-    " player INTEGER NOT NULL CHECK (player IN (0,1)),"
-    " combo INTEGER NOT NULL CHECK (combo BETWEEN 0 AND 1325),"
-    " weight REAL NOT NULL CHECK (weight >= 0 AND weight = weight),"
-    " PRIMARY KEY (player, combo)"
-    ") STRICT;",
-
-    "CREATE TABLE information_states ("
-    " id INTEGER PRIMARY KEY CHECK (id >= 0),"
-    " player INTEGER NOT NULL CHECK (player IN (0,1)),"
-    " card0 INTEGER NOT NULL CHECK (card0 BETWEEN 0 AND 51),"
-    " card1 INTEGER NOT NULL CHECK (card1 BETWEEN 0 AND 51 AND card1 > card0),"
-    " public_key TEXT NOT NULL,"
-    " UNIQUE (player, card0, card1, public_key)"
-    ") STRICT;",
-
-    "CREATE TABLE actions ("
-    " info_id INTEGER NOT NULL REFERENCES information_states(id) ON DELETE CASCADE,"
-    " ordinal INTEGER NOT NULL CHECK (ordinal >= 0 AND ordinal < 32),"
-    " kind INTEGER NOT NULL CHECK (kind BETWEEN 0 AND 4),"
-    " target INTEGER CHECK (target IS NULL OR (target >= 0 AND"
-    " target <= 9007199254740991)),"
-    " probability REAL NOT NULL CHECK (probability >= 0 AND probability <= 1),"
-    " PRIMARY KEY (info_id, ordinal),"
-    " CHECK ((kind IN (3,4)) = (target IS NOT NULL))"
-    ") STRICT;",
-
-    "CREATE TABLE training ("
-    " info_id INTEGER NOT NULL,"
-    " ordinal INTEGER NOT NULL CHECK (ordinal >= 0 AND ordinal < 32),"
-    " regret REAL NOT NULL,"
-    " average_weight REAL NOT NULL CHECK (average_weight >= 0 AND"
-    " average_weight = average_weight),"
-    " PRIMARY KEY (info_id, ordinal),"
-    " FOREIGN KEY (info_id, ordinal) REFERENCES actions (info_id, ordinal)"
-    " ON DELETE CASCADE"
-    ") STRICT;",
-
-    "CREATE TABLE bounds ("
-    " id INTEGER PRIMARY KEY CHECK (id >= 0),"
-    " public_root TEXT NOT NULL,"
-    " responder_combo INTEGER CHECK (responder_combo IS NULL OR"
-    " responder_combo BETWEEN 0 AND 1325),"
-    " baseline_cf_mass REAL CHECK (baseline_cf_mass IS NULL OR"
-    " (baseline_cf_mass >= 0 AND baseline_cf_mass = baseline_cf_mass)),"
-    " normalized_bound REAL,"
-    " certification_method TEXT,"
-    " measurements_json TEXT,"
-    " UNIQUE (public_root, responder_combo)"
-    ") STRICT;",
-
-    "CREATE TABLE measurements ("
-    " id INTEGER PRIMARY KEY CHECK (id >= 0),"
-    " fixture TEXT NOT NULL,"
-    " seed_hex TEXT CHECK (seed_hex IS NULL OR length(seed_hex) = 16),"
-    " iterations INTEGER CHECK (iterations IS NULL OR iterations >= 0),"
-    " metric TEXT NOT NULL,"
-    " metric_class TEXT NOT NULL CHECK (metric_class IN ('exact','estimated')),"
-    " value REAL NOT NULL CHECK (value = value AND abs(value) < 1e308),"
-    " UNIQUE (fixture, seed_hex, iterations, metric)"
-    ") STRICT;",
-};
-
 // Schema-v2 (RFC 0009 D3): the seat-generic profile. manifest gains a declared
 // AbstractionId and terminal depth; game becomes seat-generic (player_count,
 // button 0..9, ante, root_street 0..3, terminal_depth) and drops the fixed
 // stack0/1/contribution0/1 columns; game_seats stores one (stack, contribution)
 // row per occupied seat; ranges/information_states admit player 0..9; sizes
 // admits street 0..3; bounds gains the (seat, combo) dimension. bounds has NO
-// writer in W2b (validated-when-present). actions/training/measurements are
-// byte-identical to schema-v1. The writer supports flop-rooted games only.
+// writer in W2b (validated-when-present). The writer supports flop-rooted
+// games only.
 const char* const kSchemaDdlV2[] = {
     "CREATE TABLE manifest ("
     " id INTEGER PRIMARY KEY CHECK (id = 1),"
@@ -949,201 +636,6 @@ void open_immutable_reader(Db& db, const std::filesystem::path& path) {
 
 namespace {
 
-void write_schema(dt::Db& db) {
-  std::string ddl;
-  for (const char* statement : kSchemaDdlV1) {
-    ddl += statement;
-    ddl.push_back('\n');
-  }
-  db.exec(ddl, "create schema");
-}
-
-void insert_manifest(dt::Db& db, const ArtifactManifest& manifest) {
-  dt::Stmt insert(db.get(),
-                  "INSERT INTO manifest (id, kind, algorithm_revision, info_key_revision,"
-                  " numeric_profile, validation_state, engine_revision, completed_iterations,"
-                  " prng_identifier, seed_hex, prng_state_hex, run_status, nodes,"
-                  " information_sets, accounted_bytes) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                  " ?, ?, ?, ?, ?)",
-                  "insert manifest");
-  int i = 1;
-  insert.bind_text(i++, kind_text(manifest.kind));
-  insert.bind_text(i++, manifest.algorithm_revision);
-  insert.bind_i64(i++, static_cast<std::int64_t>(manifest.information_key_revision));
-  insert.bind_text(i++, manifest.numeric_profile);
-  insert.bind_text(i++, validation_text(manifest.validation));
-  insert.bind_text(i++, manifest.engine_revision);
-  insert.bind_u64_chips(i++, manifest.completed_iterations);
-  insert.bind_text(i++, manifest.prng_identifier);
-  insert.bind_text(i++, dt::u64_to_hex(manifest.seed));
-  insert.bind_text(i++, dt::u64_to_hex(manifest.prng_state));
-  insert.bind_text(i++, run_status_text(manifest.run_status));
-  insert.bind_u64_chips(i++, manifest.nodes);
-  insert.bind_u64_chips(i++, manifest.information_sets);
-  insert.bind_u64_chips(i++, manifest.accounted_bytes);
-  (void)insert.step("insert manifest");
-}
-
-void insert_game(dt::Db& db, const HeadsUpGame& game) {
-  const HeadsUpRoot& root = game.root;
-  dt::Stmt insert(db.get(),
-                  "INSERT INTO game (id, rules_id, button, big_blind, root_street, flop0,"
-                  " flop1, flop2, fixed_turn, fixed_river, stack0, stack1, contribution0,"
-                  " contribution1, pot, utility_id) VALUES (1, ?, ?, ?, 0, ?, ?, ?, ?, ?,"
-                  " ?, ?, ?, ?, ?, ?)",
-                  "insert game");
-  int i = 1;
-  insert.bind_text(i++, kRulesIdentifierV1);
-  insert.bind_i64(i++, static_cast<std::int64_t>(root.button));
-  insert.bind_u64_chips(i++, root.big_blind);
-  insert.bind_i64(i++, root.flop[0]);
-  insert.bind_i64(i++, root.flop[1]);
-  insert.bind_i64(i++, root.flop[2]);
-  if (game.fixed_runout[0])
-    insert.bind_i64(i++, *game.fixed_runout[0]);
-  else
-    insert.bind_null(i++);
-  if (game.fixed_runout[1])
-    insert.bind_i64(i++, *game.fixed_runout[1]);
-  else
-    insert.bind_null(i++);
-  insert.bind_u64_chips(i++, root.stacks[0]);
-  insert.bind_u64_chips(i++, root.stacks[1]);
-  insert.bind_u64_chips(i++, root.contributions[0]);
-  insert.bind_u64_chips(i++, root.contributions[1]);
-  insert.bind_u64_chips(i++, root.pot);
-  insert.bind_text(i++, kUtilityIdentifier);
-  (void)insert.step("insert game");
-}
-
-void insert_sizes(dt::Db& db, const HeadsUpGame& game) {
-  dt::Stmt insert(db.get(),
-                  "INSERT INTO sizes (street, kind, ordinal, numerator, denominator)"
-                  " VALUES (?, ?, ?, ?, ?)",
-                  "insert size");
-  for (int street = 0; street < 3; ++street) {
-    for (int kind = 0; kind < 2; ++kind) {
-      const auto& fractions = kind == 0 ? game.sizes[street].bets : game.sizes[street].raises;
-      for (std::size_t ordinal = 0; ordinal < fractions.size(); ++ordinal) {
-        insert.reset_and_clear();
-        int i = 1;
-        insert.bind_i64(i++, street);
-        insert.bind_i64(i++, kind);
-        insert.bind_i64(i++, static_cast<std::int64_t>(ordinal));
-        insert.bind_u64_chips(i++, fractions[ordinal].numerator);
-        insert.bind_u64_chips(i++, fractions[ordinal].denominator);
-        (void)insert.step("insert size");
-      }
-    }
-  }
-}
-
-void insert_ranges(dt::Db& db, const HeadsUpGame& game) {
-  dt::Stmt insert(db.get(), "INSERT INTO ranges (player, combo, weight) VALUES (?, ?, ?)",
-                  "insert range");
-  for (int player = 0; player < 2; ++player)
-    for (const WeightedHand& hand : game.ranges[player]) {
-      insert.reset_and_clear();
-      insert.bind_i64(1, player);
-      insert.bind_i64(2, dt::combo_id(hand.cards));
-      insert.bind_double(3, hand.weight);
-      (void)insert.step("insert range");
-    }
-}
-
-// Inserts information states, actions, and (optionally) raw training rows.
-// State ids are assigned in ascending InformationKey order.
-void insert_policy(dt::Db& db, const TrainingResult& result, const TrainingRows& rows,
-                   bool include_training) {
-  dt::Stmt state_insert(db.get(),
-                        "INSERT INTO information_states (id, player, card0, card1,"
-                        " public_key) VALUES (?, ?, ?, ?, ?)",
-                        "insert information state");
-  dt::Stmt action_insert(db.get(),
-                         "INSERT INTO actions (info_id, ordinal, kind, target, probability) VALUES"
-                         " (?, ?, ?, ?, ?)",
-                         "insert action");
-  dt::Stmt training_insert(db.get(),
-                           "INSERT INTO training (info_id, ordinal, regret,"
-                           " average_weight) VALUES (?, ?, ?, ?)",
-                           "insert training");
-  std::int64_t state_id = 0;
-  for (const auto& [key, row] : result.policy.rows()) {
-    state_insert.reset_and_clear();
-    int i = 1;
-    state_insert.bind_i64(i++, state_id);
-    state_insert.bind_i64(i++, static_cast<std::int64_t>(key[0]));
-    state_insert.bind_i64(i++, static_cast<std::int64_t>(key[1]));
-    state_insert.bind_i64(i++, static_cast<std::int64_t>(key[2]));
-    state_insert.bind_text(i++, encode_public_key(key, kArtifactSchemaVersion));
-    (void)state_insert.step("insert information state");
-
-    for (std::int64_t ordinal = 0; ordinal < static_cast<std::int64_t>(row.actions.size());
-         ++ordinal) {
-      const Action& action = row.actions[static_cast<std::size_t>(ordinal)];
-      action_insert.reset_and_clear();
-      int a = 1;
-      action_insert.bind_i64(a++, state_id);
-      action_insert.bind_i64(a++, ordinal);
-      action_insert.bind_i64(a++, dt::action_kind_id(action.type));
-      if (action.type == ActionType::Bet || action.type == ActionType::Raise)
-        action_insert.bind_u64_chips(a++, action.target_total);
-      else
-        action_insert.bind_null(a++);
-      action_insert.bind_double(a++, row.probabilities[static_cast<std::size_t>(ordinal)]);
-      (void)action_insert.step("insert action");
-    }
-
-    if (include_training) {
-      const auto found = rows.find(key);
-      if (found == rows.end())
-        fail(ArtifactErrorKind::InvalidArgument, "missing raw row for policy state");
-      const TrainingRow& raw = found->second;
-      for (std::int64_t ordinal = 0; ordinal < static_cast<std::int64_t>(raw.regrets.size());
-           ++ordinal) {
-        training_insert.reset_and_clear();
-        int t = 1;
-        training_insert.bind_i64(t++, state_id);
-        training_insert.bind_i64(t++, ordinal);
-        training_insert.bind_double(t++, raw.regrets[static_cast<std::size_t>(ordinal)]);
-        training_insert.bind_double(t++, raw.average_weights[static_cast<std::size_t>(ordinal)]);
-        (void)training_insert.step("insert training");
-      }
-    }
-    ++state_id;
-  }
-}
-
-void write_all(dt::Db& db, const ArtifactManifest& manifest, const TrainingResult& result,
-               const TrainingRows& rows, bool include_training) {
-  db.exec("BEGIN IMMEDIATE;", "begin write");
-  bool rollback_best_effort = true;
-  try {
-    db.exec("PRAGMA application_id = 1112754004;", "set application id");
-    db.exec("PRAGMA user_version = 1;", "set schema version");
-    write_schema(db);
-    insert_manifest(db, manifest);
-    insert_game(db, result.policy.game());
-    insert_sizes(db, result.policy.game());
-    insert_ranges(db, result.policy.game());
-    insert_policy(db, result, rows, include_training);
-    db.exec("COMMIT;", "commit write");
-    rollback_best_effort = false;
-  } catch (...) {
-    // A disk I/O error (e.g. SQLITE_FULL mid-transaction) makes SQLite roll
-    // the transaction back automatically; a manual ROLLBACK can then report
-    // no active transaction or fail itself, so it is deliberately best
-    // effort and must not mask the original failure.
-    if (rollback_best_effort) {
-      try {
-        db.exec("ROLLBACK;", "rollback failed write");
-      } catch (...) {
-      }
-    }
-    throw;
-  }
-}
-
 // --- schema-v2 (RFC 0009 D3) writer: seat-generic ---
 
 void write_schema_v2(dt::Db& db) {
@@ -1275,13 +767,35 @@ void validate_content_v2(const SeatTrainingResult& result) {
             "range weight must be finite and nonnegative");
     }
   }
+  // A conditional fixed runout is valid only for a flop-rooted,
+  // river-terminal policy; each fixed card must be off the flop and the two
+  // fixed cards must differ. A board-class (schema-v3) policy serves an
+  // abstract board class and can never carry a concrete conditional runout.
+  const auto& fixed_runout = result.policy.fixed_runout();
+  if (fixed_runout[0] || fixed_runout[1]) {
+    check(!result.card_id.has_value(), ArtifactErrorKind::InvalidArgument,
+          "a card-abstraction class policy cannot carry a conditional fixed runout");
+    check(game.board_size == 3 && !game.preflop && game.terminal == TerminalDepth::River,
+          ArtifactErrorKind::InvalidArgument,
+          "a conditional fixed runout requires a flop-rooted, river-terminal policy");
+    std::array<bool, 52> fixed_used = board_used;
+    for (const auto& fixed : fixed_runout) {
+      if (!fixed)
+        continue;
+      check(*fixed >= 0 && *fixed < 52, ArtifactErrorKind::InvalidArgument,
+            "fixed runout card outside 0..51");
+      check(!fixed_used[*fixed], ArtifactErrorKind::InvalidArgument,
+            "invalid or duplicate fixed runout card");
+      fixed_used[*fixed] = true;
+    }
+  }
   for (const auto& [key, row] : result.policy.rows()) {
     check(key.size() >= 4, ArtifactErrorKind::InvalidArgument, "information key too short");
     dt::validate_probabilities(row.probabilities, "policy probabilities");
     check(row.actions.size() == row.probabilities.size(), ArtifactErrorKind::InvalidArgument,
           "policy action/probability length mismatch");
     // Every key must have a canonical revision-2 encoding.
-    (void)encode_public_key(key, kArtifactSchemaVersionV2);
+    (void)encode_public_key(key);
   }
 }
 
@@ -1398,7 +912,8 @@ void insert_manifest_v3(dt::Db& db, const ArtifactManifest& manifest) {
   (void)insert.step("insert manifest");
 }
 
-void insert_game_v2(dt::Db& db, const GameDef& game) {
+void insert_game_v2(dt::Db& db, const GameDef& game,
+                    const std::array<std::optional<int>, 2>& conditional_runout) {
   dt::Stmt insert(db.get(),
                   "INSERT INTO game (id, rules_id, player_count, button, big_blind, ante,"
                   " root_street, terminal_depth, flop0, flop1, flop2, fixed_turn, fixed_river,"
@@ -1420,12 +935,20 @@ void insert_game_v2(dt::Db& db, const GameDef& game) {
   insert.bind_i64(i++, is_preflop ? 0 : game.board[0]);
   insert.bind_i64(i++, is_preflop ? 0 : game.board[1]);
   insert.bind_i64(i++, is_preflop ? 0 : game.board[2]);
+  // fixed_turn/fixed_river carry the board prefix beyond the flop for a
+  // turn/river-rooted root; for a flop-rooted root they instead carry the
+  // CONDITIONAL runout every stored row is conditioned on (NULL on a free
+  // street). Preflop roots always store NULL.
   if (game.board_size >= 4)
     insert.bind_i64(i++, game.board[3]);
+  else if (game.board_size == 3 && conditional_runout[0])
+    insert.bind_i64(i++, *conditional_runout[0]);
   else
     insert.bind_null(i++);
   if (game.board_size >= 5)
     insert.bind_i64(i++, game.board[4]);
+  else if (game.board_size == 3 && conditional_runout[1])
+    insert.bind_i64(i++, *conditional_runout[1]);
   else
     insert.bind_null(i++);
   insert.bind_u64_chips(i++, game.pot);
@@ -1500,7 +1023,7 @@ void insert_policy_v2(dt::Db& db, const SeatTrainingResult& result) {
     state_insert.bind_i64(i++, static_cast<std::int64_t>(key[0]));
     state_insert.bind_i64(i++, static_cast<std::int64_t>(key[1]));
     state_insert.bind_i64(i++, static_cast<std::int64_t>(key[2]));
-    state_insert.bind_text(i++, encode_public_key(key, kArtifactSchemaVersionV2));
+    state_insert.bind_text(i++, encode_public_key(key));
     (void)state_insert.step("insert information state");
 
     for (std::int64_t ordinal = 0; ordinal < static_cast<std::int64_t>(row.actions.size());
@@ -1531,7 +1054,7 @@ void write_all_v2(dt::Db& db, const ArtifactManifest& manifest, const SeatTraini
     db.exec("PRAGMA user_version = 2;", "set schema version");
     write_schema_v2(db);
     insert_manifest_v2(db, manifest);
-    insert_game_v2(db, result.policy.game());
+    insert_game_v2(db, result.policy.game(), result.policy.fixed_runout());
     insert_game_seats(db, result.policy.game());
     insert_sizes_v2(db, result.policy.sizes());
     insert_ranges_v2(db, result.policy.ranges(), result.policy.game().player_count);
@@ -1562,7 +1085,7 @@ void write_all_v3(dt::Db& db, const ArtifactManifest& manifest, const SeatTraini
     db.exec("PRAGMA user_version = 3;", "set schema version");
     write_schema_v3(db);
     insert_manifest_v3(db, manifest);
-    insert_game_v2(db, result.policy.game());
+    insert_game_v2(db, result.policy.game(), result.policy.fixed_runout());
     insert_game_seats(db, result.policy.game());
     insert_sizes_v2(db, result.policy.sizes());
     insert_ranges_v2(db, result.policy.ranges(), result.policy.game().player_count);
@@ -1612,180 +1135,7 @@ std::int64_t read_bounded_i64(dt::Stmt& stmt, int column, const std::string& fie
   return value;
 }
 
-HeadsUpGame read_game(dt::Db& db) {
-  dt::Stmt query(db.get(),
-                 "SELECT rules_id, button, big_blind, root_street, flop0, flop1,"
-                 " flop2, fixed_turn, fixed_river, stack0, stack1,"
-                 " contribution0, contribution1, pot, utility_id FROM game",
-                 "read game");
-  if (!query.step("read game"))
-    fail(ArtifactErrorKind::InvalidSchema, "game table is empty");
-  HeadsUpGame game;
-  int i = 0;
-  const std::string_view rules = query.column_text(i++);
-  check(rules == kRulesIdentifierV1, ArtifactErrorKind::UnsupportedVersion,
-        "unsupported rules identifier: " + std::string(rules));
-  const std::int64_t button_raw = query.column_i64(i++);
-  check(button_raw == 0 || button_raw == 1, ArtifactErrorKind::InvalidSchema,
-        "game.button outside {0,1}");
-  game.root.button = static_cast<std::size_t>(button_raw);
-  game.root.big_blind = static_cast<Chips>(read_bounded_i64(query, i++, "big_blind"));
-  const std::int64_t root_street = query.column_i64(i++);
-  check(root_street == 0, ArtifactErrorKind::UnsupportedVersion, "unsupported root street");
-  for (int flop_index = 0; flop_index < 3; ++flop_index) {
-    const std::int64_t flop_card = query.column_i64(i++);
-    check(flop_card >= 0 && flop_card < 52, ArtifactErrorKind::InvalidValue,
-          "game flop card outside 0..51");
-    game.root.flop[flop_index] = static_cast<int>(flop_card);
-  }
-  for (int runout_index = 0; runout_index < 2; ++runout_index) {
-    if (query.column_null(i)) {
-      game.fixed_runout[runout_index] = std::optional<int>{};
-    } else {
-      const std::int64_t runout_card = query.column_i64(i);
-      check(runout_card >= 0 && runout_card < 52, ArtifactErrorKind::InvalidValue,
-            "fixed runout card outside 0..51");
-      game.fixed_runout[runout_index] = static_cast<int>(runout_card);
-    }
-    ++i;
-  }
-  game.root.stacks[0] = static_cast<Chips>(read_bounded_i64(query, i++, "stack0"));
-  game.root.stacks[1] = static_cast<Chips>(read_bounded_i64(query, i++, "stack1"));
-  game.root.contributions[0] = static_cast<Chips>(read_bounded_i64(query, i++, "contribution0"));
-  game.root.contributions[1] = static_cast<Chips>(read_bounded_i64(query, i++, "contribution1"));
-  game.root.pot = static_cast<Chips>(read_bounded_i64(query, i++, "pot"));
-  const std::string_view utility = query.column_text(i++);
-  check(utility == kUtilityIdentifier, ArtifactErrorKind::UnsupportedVersion,
-        "unsupported utility identifier: " + std::string(utility));
-  check(!query.step("read game"), ArtifactErrorKind::InvalidSchema, "game table not singleton");
-  // A default HeadsUpGame carries the pinned default schedule; replace it with
-  // exactly the ordered fractions stored in the artifact.
-  for (auto& street_sizes : game.sizes) {
-    street_sizes.bets.clear();
-    street_sizes.raises.clear();
-  }
-  return game;
-}
-
-void read_sizes(dt::Db& db, HeadsUpGame& game) {
-  dt::Stmt query(db.get(),
-                 "SELECT street, kind, ordinal, numerator, denominator FROM sizes"
-                 " ORDER BY street, kind, ordinal",
-                 "read sizes");
-  std::array<std::array<std::size_t, 2>, 3> next_ordinal{};
-  while (query.step("read sizes")) {
-    // Every value below came from an untrusted file column. The SQL CHECK
-    // constraints are write-time-only and can be stripped from a tampered
-    // file, so validate the fixed-array indices in C++ before indexing.
-    const std::int64_t street_raw = query.column_i64(0);
-    const std::int64_t kind_raw = query.column_i64(1);
-    check(street_raw >= 0 && street_raw <= 2, ArtifactErrorKind::InvalidSchema,
-          "sizes.street outside 0..2");
-    const std::int64_t ordinal = query.column_i64(2);
-    check(ordinal >= 0 && ordinal < 32, ArtifactErrorKind::InvalidSchema,
-          "sizes.ordinal outside 0..31");
-    check(kind_raw == 0 || kind_raw == 1, ArtifactErrorKind::InvalidSchema,
-          "sizes.kind must be 0 (bet) or 1 (raise)");
-    const int street = static_cast<int>(street_raw);
-    const int kind = static_cast<int>(kind_raw);
-    const Chips numerator = static_cast<Chips>(read_bounded_i64(query, 3, "numerator"));
-    const Chips denominator = static_cast<Chips>(read_bounded_i64(query, 4, "denominator"));
-    check(numerator > 0 && denominator > 0, ArtifactErrorKind::InvalidValue,
-          "non-positive size fraction");
-    check(ordinal == static_cast<std::int64_t>(next_ordinal[street][kind]),
-          ArtifactErrorKind::InvalidSchema, "non-contiguous size ordinals");
-    ++next_ordinal[street][kind];
-    auto& street_sizes = game.sizes[street];
-    (kind == 0 ? street_sizes.bets : street_sizes.raises).push_back({numerator, denominator});
-  }
-}
-
-void read_ranges(dt::Db& db, HeadsUpGame& game) {
-  dt::Stmt query(db.get(), "SELECT player, combo, weight FROM ranges ORDER BY player, combo",
-                 "read ranges");
-  int last_player = -1;
-  int last_combo = -1;
-  std::size_t rows = 0;
-  while (query.step("read ranges")) {
-    const std::int64_t player_raw = query.column_i64(0);
-    const std::int64_t combo_raw = query.column_i64(1);
-    // Untrusted column values: validate before indexing fixed-size storage.
-    check(player_raw == 0 || player_raw == 1, ArtifactErrorKind::InvalidSchema,
-          "ranges.player outside {0,1}");
-    check(combo_raw >= 0 && combo_raw <= 1325, ArtifactErrorKind::InvalidSchema,
-          "ranges.combo outside 0..1325");
-    const int player = static_cast<int>(player_raw);
-    const int combo = static_cast<int>(combo_raw);
-    const double weight = query.column_double(2);
-    dt::require_finite(weight, "range weight");
-    check(weight >= 0, ArtifactErrorKind::InvalidValue, "negative range weight");
-    if (player != last_player) {
-      check(player == last_player + 1, ArtifactErrorKind::InvalidSchema,
-            "range player rows out of order");
-      last_combo = -1;
-      last_player = player;
-    }
-    check(combo > last_combo, ArtifactErrorKind::InvalidSchema,
-          "range combo rows out of order or duplicated");
-    last_combo = combo;
-    const auto cards = dt::combo_cards(combo);
-    game.ranges[player].push_back(WeightedHand{{cards[0], cards[1]}, weight});
-    ++rows;
-  }
-  check(last_player == 1 && rows >= 2, ArtifactErrorKind::InvalidSchema,
-        "both players require at least one range combo");
-}
-
-ArtifactManifest read_manifest(dt::Db& db) {
-  dt::Stmt query(db.get(),
-                 "SELECT kind, algorithm_revision, info_key_revision, numeric_profile,"
-                 " validation_state, engine_revision, completed_iterations, prng_identifier,"
-                 " seed_hex, prng_state_hex, run_status, nodes, information_sets,"
-                 " accounted_bytes FROM manifest",
-                 "read manifest");
-  if (!query.step("read manifest"))
-    fail(ArtifactErrorKind::InvalidSchema, "manifest table is empty");
-  ArtifactManifest manifest;
-  int i = 0;
-  manifest.kind = kind_from_text(query.column_text(i++));
-  manifest.algorithm_revision = std::string(query.column_text(i++));
-  const std::int64_t info_key_revision_raw = query.column_i64(i++);
-  check(info_key_revision_raw == static_cast<std::int64_t>(kArtifactSchemaVersion),
-        ArtifactErrorKind::UnsupportedVersion, "unsupported information-key revision");
-  manifest.information_key_revision = static_cast<std::uint32_t>(info_key_revision_raw);
-  manifest.numeric_profile = std::string(query.column_text(i++));
-  check(manifest.numeric_profile == kNumericProfileV1, ArtifactErrorKind::UnsupportedVersion,
-        "unsupported numeric profile: " + manifest.numeric_profile);
-  manifest.validation = validation_from_text(query.column_text(i++));
-  manifest.engine_revision = std::string(query.column_text(i++));
-  manifest.completed_iterations =
-      static_cast<std::uint64_t>(read_bounded_i64(query, i++, "completed_iterations"));
-  manifest.prng_identifier = std::string(query.column_text(i++));
-  check(manifest.prng_identifier == kSampledPrngIdentifier ||
-            manifest.prng_identifier == kFullTraversalPrngIdentifier,
-        ArtifactErrorKind::UnsupportedVersion,
-        "unsupported PRNG identifier: " + manifest.prng_identifier);
-  const std::string_view seed_hex = query.column_text(i++);
-  const std::string_view state_hex = query.column_text(i++);
-  check(dt::is_hex_word(seed_hex) && dt::is_hex_word(state_hex), ArtifactErrorKind::InvalidSchema,
-        "PRNG words must be 16 lowercase hex digits");
-  manifest.seed = dt::hex_to_u64(seed_hex);
-  manifest.prng_state = dt::hex_to_u64(state_hex);
-  manifest.run_status = run_status_from_text(query.column_text(i++));
-  manifest.nodes = static_cast<std::size_t>(read_bounded_i64(query, i++, "nodes"));
-  manifest.information_sets =
-      static_cast<std::size_t>(read_bounded_i64(query, i++, "information_sets"));
-  manifest.accounted_bytes =
-      static_cast<std::size_t>(read_bounded_i64(query, i++, "accounted_bytes"));
-  check(!manifest.algorithm_revision.empty() && !manifest.engine_revision.empty(),
-        ArtifactErrorKind::InvalidSchema, "manifest revision strings are empty");
-  check(!query.step("read manifest"), ArtifactErrorKind::InvalidSchema,
-        "manifest table is not a singleton");
-  return manifest;
-}
-
-StoredState read_state_fields(dt::Stmt& query, std::uint64_t expected, std::size_t player_count,
-                              bool legacy_domain = false) {
+StoredState read_state_fields(dt::Stmt& query, std::uint64_t expected, std::size_t player_count) {
   StoredState state;
   state.id = query.column_i64(0);
   check(state.id >= 0, ArtifactErrorKind::InvalidSchema, "negative information state id");
@@ -1795,15 +1145,10 @@ StoredState read_state_fields(dt::Stmt& query, std::uint64_t expected, std::size
   const std::int64_t player_raw = query.column_i64(1);
   const std::int64_t card0_raw = query.column_i64(2);
   const std::int64_t card1_raw = query.column_i64(3);
-  if (legacy_domain) {
-    check(player_raw == 0 || player_raw == 1, ArtifactErrorKind::InvalidSchema,
-          "information state player outside {0,1}");
-  } else {
-    check(player_raw >= 0 && player_raw <= 9, ArtifactErrorKind::InvalidSchema,
-          "information state player outside 0..9");
-    check(player_raw < static_cast<std::int64_t>(player_count), ArtifactErrorKind::InvalidSchema,
-          "information state player outside player_count");
-  }
+  check(player_raw >= 0 && player_raw <= 9, ArtifactErrorKind::InvalidSchema,
+        "information state player outside 0..9");
+  check(player_raw < static_cast<std::int64_t>(player_count), ArtifactErrorKind::InvalidSchema,
+        "information state player outside player_count");
   check(card0_raw >= 0 && card0_raw < card1_raw && card1_raw <= 51, ArtifactErrorKind::InvalidValue,
         "information state own cards out of range");
   state.player = static_cast<int>(player_raw);
@@ -1837,8 +1182,7 @@ StoredAction read_action_fields(dt::Stmt& query) {
   return action;
 }
 
-std::map<std::int64_t, StoredState> read_states(dt::Db& db, std::size_t player_count = 2,
-                                                bool legacy_domain = true) {
+std::map<std::int64_t, StoredState> read_states(dt::Db& db, std::size_t player_count) {
   std::map<std::int64_t, StoredState> states;
   dt::Stmt query(db.get(),
                  "SELECT id, player, card0, card1, public_key FROM information_states"
@@ -1846,7 +1190,7 @@ std::map<std::int64_t, StoredState> read_states(dt::Db& db, std::size_t player_c
                  "read information states");
   std::uint64_t expected = 0;
   while (query.step("read information states")) {
-    StoredState state = read_state_fields(query, expected++, player_count, legacy_domain);
+    StoredState state = read_state_fields(query, expected++, player_count);
     states.emplace(state.id, std::move(state));
   }
   return states;
@@ -1897,48 +1241,6 @@ std::map<std::pair<std::int64_t, int>, StoredTraining> read_training(dt::Db& db)
     training.emplace(std::make_pair(row.info_id, row.ordinal), std::move(row));
   }
   return training;
-}
-
-void read_auxiliary_tables(dt::Db& db) {
-  dt::Stmt bounds_query(db.get(),
-                        "SELECT responder_combo, baseline_cf_mass, normalized_bound FROM bounds",
-                        "read bounds");
-  while (bounds_query.step("read bounds")) {
-    if (!bounds_query.column_null(0)) {
-      const std::int64_t combo = bounds_query.column_i64(0);
-      check(combo >= 0 && combo <= 1325, ArtifactErrorKind::InvalidValue,
-            "bound responder combo out of range");
-    }
-    if (!bounds_query.column_null(1)) {
-      const double mass = bounds_query.column_double(1);
-      dt::require_finite(mass, "baseline cf mass");
-      check(mass >= 0, ArtifactErrorKind::InvalidValue, "negative baseline cf mass");
-    }
-    if (!bounds_query.column_null(2))
-      dt::require_finite(bounds_query.column_double(2), "normalized bound");
-  }
-
-  dt::Stmt measurements_query(
-      db.get(), "SELECT seed_hex, iterations, metric, metric_class, value FROM measurements",
-      "read measurements");
-  while (measurements_query.step("read measurements")) {
-    if (!measurements_query.column_null(0)) {
-      const std::string_view seed = measurements_query.column_text(0);
-      check(dt::is_hex_word(seed), ArtifactErrorKind::InvalidSchema,
-            "measurement seed must be 16 lowercase hex digits");
-    }
-    if (!measurements_query.column_null(1)) {
-      const std::int64_t iterations = measurements_query.column_i64(1);
-      check(iterations >= 0 && static_cast<std::uint64_t>(iterations) <= kMaxStoredChips,
-            ArtifactErrorKind::InvalidValue, "measurement iterations out of range");
-    }
-    check(!measurements_query.column_text(2).empty(), ArtifactErrorKind::InvalidSchema,
-          "measurement metric is empty");
-    const std::string_view metric_class = measurements_query.column_text(3);
-    check(metric_class == "exact" || metric_class == "estimated", ArtifactErrorKind::InvalidSchema,
-          "measurement class must be exact/estimated");
-    dt::require_finite(measurements_query.column_double(4), "measurement value");
-  }
 }
 
 // --- schema-v2 (RFC 0009 D3) reader: seat-generic ---
@@ -2103,7 +1405,12 @@ ArtifactManifest read_manifest_v3(dt::Db& db) {
 // games (root_street == 3) the reader derives blinds_posted deterministically
 // from big_blind for 2-seat games (button posts SB, other posts BB) and sets
 // preflop=true. variant is always NoLimitHoldem.
-GameDef read_game_v2(dt::Db& db) {
+// Reads the game row. For a turn/river-rooted root the fixed_turn/fixed_river
+// columns are the board prefix. For a flop-rooted root they optionally carry
+// the CONDITIONAL runout the rows are conditioned on (RFC 0038 rekey route);
+// the caller receives them separately because they are not part of GameDef's
+// root board.
+GameDef read_game_v2(dt::Db& db, std::array<std::optional<int>, 2>& conditional_runout) {
   dt::Stmt query(db.get(),
                  "SELECT rules_id, player_count, button, big_blind, ante, root_street,"
                  " terminal_depth, flop0, flop1, flop2, fixed_turn, fixed_river, pot,"
@@ -2174,9 +1481,11 @@ GameDef read_game_v2(dt::Db& db) {
             "game flop card outside 0..51");
       game.board[flop_index] = static_cast<int>(flop_card);
     }
-    // root_street 0 (flop): board_size 3, no fixed cards.
-    // root_street 1 (turn): board_size 4, fixed_turn = board[3].
-    // root_street 2 (river): board_size 5, fixed_turn = board[3], fixed_river = board[4].
+    // root_street 0 (flop): board_size 3; a non-null fixed card is the
+    // CONDITIONAL runout the rows are conditioned on, not part of the root
+    // board. root_street 1 (turn): board_size 4, fixed_turn = board[3].
+    // root_street 2 (river): board_size 5, fixed_turn = board[3],
+    // fixed_river = board[4].
     if (root_street >= 1) {
       check(!query.column_null(i), ArtifactErrorKind::InvalidSchema,
             "turn-rooted game requires a fixed_turn card");
@@ -2184,9 +1493,11 @@ GameDef read_game_v2(dt::Db& db) {
       check(turn_card >= 0 && turn_card < 52, ArtifactErrorKind::InvalidValue,
             "fixed_turn card outside 0..51");
       game.board[3] = static_cast<int>(turn_card);
-    } else {
-      check(query.column_null(i), ArtifactErrorKind::InvalidSchema,
-            "flop-rooted game must not carry a fixed_turn card");
+    } else if (!query.column_null(i)) {
+      const std::int64_t turn_card = query.column_i64(i);
+      check(turn_card >= 0 && turn_card < 52, ArtifactErrorKind::InvalidValue,
+            "conditional fixed turn card outside 0..51");
+      conditional_runout[0] = static_cast<int>(turn_card);
     }
     ++i;
     if (root_street >= 2) {
@@ -2196,11 +1507,20 @@ GameDef read_game_v2(dt::Db& db) {
       check(river_card >= 0 && river_card < 52, ArtifactErrorKind::InvalidValue,
             "fixed_river card outside 0..51");
       game.board[4] = static_cast<int>(river_card);
+    } else if (root_street == 0 && !query.column_null(i)) {
+      const std::int64_t river_card = query.column_i64(i);
+      check(river_card >= 0 && river_card < 52, ArtifactErrorKind::InvalidValue,
+            "conditional fixed river card outside 0..51");
+      conditional_runout[1] = static_cast<int>(river_card);
     } else {
       check(query.column_null(i), ArtifactErrorKind::InvalidSchema,
             "non-river-rooted game must not carry a fixed_river card");
     }
     ++i;
+    // A conditional runout requires a river-terminal policy.
+    if (conditional_runout[0] || conditional_runout[1])
+      check(game.terminal == TerminalDepth::River, ArtifactErrorKind::InvalidSchema,
+            "a conditional fixed runout requires a river-terminal policy");
     game.board_size = static_cast<std::uint8_t>(3 + root_street);
     game.preflop = false;
   }
@@ -2210,6 +1530,20 @@ GameDef read_game_v2(dt::Db& db) {
         "unsupported utility identifier: " + std::string(utility));
   check(!query.step("read game"), ArtifactErrorKind::InvalidSchema, "game table not singleton");
   game.variant = RulesVariant::NoLimitHoldem;
+  // Conditional runout cards must be off the stored board and distinct from
+  // each other (a tampered file placing one on the flop or twice is invalid).
+  if (conditional_runout[0] || conditional_runout[1]) {
+    std::array<bool, 52> used{};
+    for (std::size_t b = 0; b < game.board_size; ++b)
+      used[game.board[b]] = true;
+    for (const auto& fixed : conditional_runout) {
+      if (!fixed)
+        continue;
+      check(!used[*fixed], ArtifactErrorKind::InvalidSchema,
+            "conditional fixed runout card is on the board or duplicated");
+      used[*fixed] = true;
+    }
+  }
   return game;
 }
 
@@ -2311,7 +1645,7 @@ std::vector<std::vector<WeightedHand>> read_ranges_v2(dt::Db& db, std::size_t pl
 
 // Warm-start checkpoint reconstruction still needs the complete state map.
 std::map<std::int64_t, StoredState> read_states_v2(dt::Db& db, std::size_t player_count) {
-  return read_states(db, player_count, false);
+  return read_states(db, player_count);
 }
 
 // Validates the schema-v2 bounds table, whose dimension is (public_root, seat, combo)
@@ -2365,16 +1699,13 @@ void read_auxiliary_tables_v2(dt::Db& db, std::size_t player_count) {
 
 // A versioned schema set: the canonical DDL statements, the allowed table
 // names, and a diagnostic label. open_validated selects one by user_version;
-// a file written under one version is rejected by the other's set.
+// a file written under one version is rejected by the other's set. A
+// user_version 1 file (schema v1, retired by RFC 0038) is rejected before a
+// schema set is selected.
 struct SchemaSet {
   std::span<const char* const> ddl;
   const std::set<std::string>& allowed_tables;
   std::string_view label;
-};
-
-const std::set<std::string> kAllowedTablesV1{
-    "manifest", "game",     "sizes",  "ranges",       "information_states",
-    "actions",  "training", "bounds", "measurements",
 };
 
 const std::set<std::string> kAllowedTablesV2{
@@ -2382,7 +1713,6 @@ const std::set<std::string> kAllowedTablesV2{
     "information_states", "actions", "training",   "bounds", "measurements",
 };
 
-const SchemaSet kSchemaV1{kSchemaDdlV1, kAllowedTablesV1, "v1"};
 const SchemaSet kSchemaV2{kSchemaDdlV2, kAllowedTablesV2, "v2"};
 // RFC 0009 W4c: schema-v3 shares schema-v2's table set; only the manifest DDL differs.
 const std::set<std::string> kAllowedTablesV3 = kAllowedTablesV2;
@@ -2458,8 +1788,8 @@ struct OpenedArtifact {
   dt::Db db;
   Sha256Digest digest;
   std::uint64_t file_bytes = 0;
-  // The artifact's schema user_version (1 or 2), selected by open_validated.
-  // load_path dispatches on this to reconstruct the matching domain records.
+  // The artifact's schema user_version (2 or 3), selected by open_validated.
+  // user_version 1 (schema v1) is rejected (RFC 0038).
   std::uint32_t schema_version = 0;
 };
 
@@ -2481,15 +1811,14 @@ OpenedArtifact open_validated(const std::filesystem::path& path, const LoadOptio
          "unexpected application_id " + std::to_string(application_id));
   const std::int64_t user_version = opened.db.pragma_i64("user_version", "read schema version");
   const SchemaSet* schema = nullptr;
-  if (user_version == static_cast<std::int64_t>(kArtifactSchemaVersion))
-    schema = &kSchemaV1;
-  else if (user_version == static_cast<std::int64_t>(kArtifactSchemaVersionV2))
+  if (user_version == static_cast<std::int64_t>(kArtifactSchemaVersionV2))
     schema = &kSchemaV2;
   else if (user_version == static_cast<std::int64_t>(kArtifactSchemaVersionV3))
     schema = &kSchemaV3;
   else
     fail(ArtifactErrorKind::UnsupportedVersion,
-         "unsupported artifact schema user_version " + std::to_string(user_version));
+         "unsupported artifact schema user_version " + std::to_string(user_version) +
+             (user_version == 1 ? " (schema v1 retired by RFC 0038)" : ""));
   opened.schema_version = static_cast<std::uint32_t>(user_version);
   verify_schema_objects(opened.db, *schema);
   verify_integrity(opened.db);
@@ -2522,8 +1851,8 @@ std::size_t read_seat_policy_rows(dt::Db& db, solver::SeatPolicy& policy,
     check(action && action->info_id == state.id, ArtifactErrorKind::InvalidSchema,
           "information state has no actions after referential validation");
 
-    InformationKey key = decode_public_key(state.public_key, kArtifactSchemaVersionV2, state.player,
-                                           state.card0, state.card1);
+    InformationKey key =
+        decode_public_key(state.public_key, state.player, state.card0, state.card1);
     solver::SeatPolicyRow row;
     int expected_ordinal = 0;
     while (action && action->info_id == state.id) {
@@ -2554,11 +1883,15 @@ LoadedArtifact load_path_seat(OpenedArtifact& opened) {
   dt::Db& db = opened.db;
   const bool schema_v3 = opened.schema_version == kArtifactSchemaVersionV3;
   ArtifactManifest manifest = schema_v3 ? read_manifest_v3(db) : read_manifest_v2(db);
-  GameDef game = read_game_v2(db);
+  std::array<std::optional<int>, 2> fixed_runout;
+  GameDef game = read_game_v2(db, fixed_runout);
   read_game_seats(db, game);
   SizeSchedule sizes = read_sizes_v2(db);
   auto ranges = read_ranges_v2(db, game.player_count);
   validate_game_v2(game);
+  if (schema_v3 && (fixed_runout[0] || fixed_runout[1]))
+    fail(ArtifactErrorKind::InvalidSchema,
+         "a card-abstraction class artifact cannot carry a conditional fixed runout");
 
   // Parse every raw training field before requiring the generic policy reader's
   // empty table. Warm-start state no longer travels through this reader: RFC
@@ -2589,7 +1922,7 @@ LoadedArtifact load_path_seat(OpenedArtifact& opened) {
           : 0;
 
   dt::SeatPolicyAssembler::set_identity(result.policy, game, sizes, ranges, result.action_id,
-                                        result.card_id);
+                                        result.card_id, fixed_runout);
   const std::size_t state_count = read_seat_policy_rows(db, result.policy, game.player_count);
   check(training.empty(), ArtifactErrorKind::InvalidSchema,
         schema_v3 ? "schema-v3 artifact must not carry training rows"
@@ -2615,127 +1948,8 @@ LoadedArtifact load_path_seat(OpenedArtifact& opened) {
 
 LoadedArtifact load_path(const std::filesystem::path& path, const LoadOptions& options) {
   OpenedArtifact opened = open_validated(path, options);
-  if (opened.schema_version == kArtifactSchemaVersionV2 ||
-      opened.schema_version == kArtifactSchemaVersionV3)
-    return load_path_seat(opened);
-  dt::Db& db = opened.db;
-  const Sha256Digest digest = opened.digest;
-  const std::uint64_t file_bytes = opened.file_bytes;
-
-  ArtifactManifest manifest = read_manifest(db);
-  HeadsUpGame game = read_game(db);
-  read_sizes(db, game);
-  read_ranges(db, game);
-  validate_game(game);
-
-  auto states = read_states(db);
-  auto actions = read_actions(db);
-  auto training = read_training(db);
-  read_auxiliary_tables(db);
-
-  // Referential integrity independent of stripped foreign keys: every action
-  // must belong to an existing state and every training row to an existing
-  // action; every state must carry at least one action.
-  for (const auto& [key, stored_action] : actions)
-    check(states.contains(key.first), ArtifactErrorKind::InvalidSchema,
-          "action row references a missing information state");
-  for (const auto& [key, stored_training] : training) {
-    (void)stored_training;
-    check(actions.contains(key), ArtifactErrorKind::InvalidSchema,
-          "training row references a missing action");
-  }
-  for (const auto& [id, state] : states) {
-    (void)state;
-    check(actions.lower_bound({id, 0}) != actions.end() &&
-              actions.lower_bound({id, 0})->first.first == id,
-          ArtifactErrorKind::InvalidSchema,
-          "information state has no actions after referential validation");
-  }
-
-  // Reconstruct information keys from the canonical text and player column and
-  // require them to agree with the stored own cards.
-  for (const auto& [id, state] : states) {
-    // The canonical text must reparse against the own-combo columns; street,
-    // board order, event grammar, and card uniqueness are validated inside.
-    (void)decode_public_key(state.public_key, kArtifactSchemaVersion, state.player, state.card0,
-                            state.card1);
-  }
-
-  TrainingResult result;
-  result.completed_iterations = manifest.completed_iterations;
-  result.seed = manifest.seed;
-  result.prng_state = manifest.prng_state;
-  result.status = manifest.run_status == RunStatus::Complete ? TrainingStatus::Complete
-                                                             : TrainingStatus::ResourceLimit;
-  result.nodes = manifest.nodes;
-  result.information_sets = manifest.information_sets;
-  result.accounted_bytes = manifest.accounted_bytes;
-  dt::PolicyAssembler::set_game(result.policy, game);
-
-  TrainingRows raw_rows;
-  for (const auto& [id, state] : states) {
-    InformationKey key = decode_public_key(state.public_key, kArtifactSchemaVersion, state.player,
-                                           state.card0, state.card1);
-    PolicyRow row;
-    std::vector<double> regrets;
-    std::vector<double> averages;
-    for (auto it = actions.lower_bound({id, 0}); it != actions.end() && it->first.first == id;
-         ++it) {
-      const StoredAction& stored = it->second;
-      Action action{dt::action_kind_from_id(stored.kind), stored.target.value_or(0)};
-      row.actions.push_back(action);
-      row.probabilities.push_back(stored.probability);
-      const auto training_it = training.find({id, stored.ordinal});
-      if (training_it != training.end()) {
-        regrets.push_back(training_it->second.regret);
-        averages.push_back(training_it->second.average_weight);
-      }
-    }
-    check(!row.actions.empty(), ArtifactErrorKind::InvalidSchema,
-          "information state has no actions");
-    validate_probabilities_local(row.probabilities, "information state " + std::to_string(id));
-
-    // Capture raw training state before `row` is moved into the policy.
-    const bool has_training = !regrets.empty() || !averages.empty();
-    if (has_training)
-      check(regrets.size() == row.actions.size() && averages.size() == row.actions.size(),
-            ArtifactErrorKind::InvalidSchema,
-            "training rows must cover every action ordinal of a state");
-    TrainingRow raw;
-    raw.actions = row.actions;
-    raw.regrets = std::move(regrets);
-    raw.average_weights = std::move(averages);
-
-    dt::PolicyAssembler::add_row(result.policy, key, std::move(row));
-
-    if (has_training)
-      raw_rows.emplace(std::move(key), std::move(raw));
-  }
-
-  if (manifest.kind == ArtifactKind::Policy) {
-    check(training.empty(), ArtifactErrorKind::InvalidSchema,
-          "published policy must not carry a training table");
-    check(manifest.validation == ValidationState::Validated, ArtifactErrorKind::InvalidSchema,
-          "published policy must be validated");
-  } else {
-    check(!result.policy.rows().empty() ? raw_rows.size() == states.size() : raw_rows.empty(),
-          ArtifactErrorKind::InvalidSchema,
-          "checkpoint raw rows must cover every information state");
-  }
-  check(result.information_sets == states.size(), ArtifactErrorKind::InvalidSchema,
-        "manifest information_sets disagrees with stored state count");
-
-  ArtifactBundle bundle;
-  bundle.manifest = std::move(manifest);
-  bundle.result = std::move(result);
-  bundle.rows = std::move(raw_rows);
-
-  LoadedArtifact loaded;
-  loaded.bundle = std::move(bundle);
-  loaded.sha256 = digest;
-  loaded.sha256_hex = dt::to_hex(digest);
-  loaded.file_bytes = file_bytes;
-  return loaded;
+  // open_validated admits only schema-v2/schema-v3; schema v1 fails there.
+  return load_path_seat(opened);
 }
 
 // SQL aggregate word count for one canonical key's 64-bit storage layout:
@@ -2771,33 +1985,29 @@ ArtifactProbe probe_path(const std::filesystem::path& path, const LoadOptions& o
   } else if (opened.schema_version == kArtifactSchemaVersionV3) {
     probe.manifest = read_manifest_v3(db);
   } else {
-    probe.manifest = read_manifest(db);
+    fail(ArtifactErrorKind::UnsupportedVersion,
+         "unsupported artifact schema user_version " + std::to_string(opened.schema_version));
   }
   check(probe.manifest.kind == ArtifactKind::Policy, ArtifactErrorKind::InvalidArgument,
         "resident probe supports published policies only: " + path.string());
   check(probe.manifest.run_status == RunStatus::Complete, ArtifactErrorKind::InvalidArgument,
         "cannot probe a resource-limited policy");
 
-  if (opened.schema_version == kArtifactSchemaVersionV2 ||
-      opened.schema_version == kArtifactSchemaVersionV3) {
-    // RFC 0009 D4: materialize the seat-generic identity. The resident path
-    // projects a two-seat flop-rooted schema-v2/schema-v3 source onto its heads-up view; the
-    // probe itself only carries the identity and SQL aggregates. Schema-v3
-    // differs from schema-v2 only in the manifest, already read above.
-    GameDef game = read_game_v2(db);
-    read_game_seats(db, game);
-    probe.sizes = read_sizes_v2(db);
-    probe.ranges = read_ranges_v2(db, game.player_count);
-    validate_game_v2(game);
-    probe.game_def = game;
-    read_auxiliary_tables_v2(db, game.player_count);
-  } else {
-    probe.game = read_game(db);
-    read_sizes(db, probe.game);
-    read_ranges(db, probe.game);
-    validate_game(probe.game);
-    read_auxiliary_tables(db);
-  }
+  // Materialize the seat-generic identity. The resident path projects a
+  // two-seat flop-rooted source onto its view; the probe carries only the
+  // identity and SQL aggregates. Schema-v3 differs from schema-v2 only in the
+  // manifest, already read above.
+  GameDef game = read_game_v2(db, probe.fixed_runout);
+  read_game_seats(db, game);
+  probe.sizes = read_sizes_v2(db);
+  probe.ranges = read_ranges_v2(db, game.player_count);
+  validate_game_v2(game);
+  if (opened.schema_version == kArtifactSchemaVersionV3 &&
+      (probe.fixed_runout[0] || probe.fixed_runout[1]))
+    fail(ArtifactErrorKind::InvalidSchema,
+         "a card-abstraction class artifact cannot carry a conditional fixed runout");
+  probe.game_def = game;
+  read_auxiliary_tables_v2(db, game.player_count);
 
   dt::Stmt states(db.get(), "SELECT COUNT(*) FROM information_states", "probe information states");
   check(states.step("probe information states"), ArtifactErrorKind::Corrupt,
@@ -2833,28 +2043,6 @@ ArtifactProbe probe_path(const std::filesystem::path& path, const LoadOptions& o
 }
 
 }  // namespace
-
-void create_checkpoint(const std::filesystem::path& path, const TrainingResult& result,
-                       const TrainingRows& rows, const CheckpointProvenance& provenance) {
-  ArtifactManifest manifest =
-      manifest_for(result, provenance, ArtifactKind::Checkpoint, provenance.validation);
-  (void)validate_content(result, rows, ArtifactKind::Checkpoint);
-  std::error_code ec;
-  if (std::filesystem::exists(path, ec))
-    fail(ArtifactErrorKind::AlreadyExists, "checkpoint already exists: " + path.string());
-  dt::Db db;
-  open_writer(db, path.string(), true);
-  try {
-    write_all(db, manifest, result, rows, true);
-  } catch (...) {
-    db.close();
-    std::error_code ec;
-    std::filesystem::remove(path, ec);
-    std::filesystem::remove(std::filesystem::path(path.string() + "-journal"), ec);
-    std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), ec);
-    throw;
-  }
-}
 
 void create_checkpoint(const std::filesystem::path& path, const SeatTrainingResult& result,
                        const SeatCheckpointProvenance& provenance) {
@@ -2899,76 +2087,6 @@ void create_checkpoint(const std::filesystem::path& path, const SeatTrainingResu
   }
 }
 
-void commit_checkpoint(const std::filesystem::path& path, const TrainingResult& result,
-                       const TrainingRows& rows, const CheckpointProvenance& provenance) {
-  validate_content(result, rows, ArtifactKind::Checkpoint);
-
-  // Read the stored identity before opening the replacement transaction so a
-  // mismatch never enters a write transaction. This probe uses the same
-  // immutable, sidecar-rejecting reader as load_artifact: a checkpoint with
-  // stale WAL/SHM/journal state is not committable and must be recovered or
-  // rejected first; our own committed checkpoints never leave sidecars.
-  ArtifactManifest stored_manifest;
-  {
-    const std::uint64_t probe_bytes = dt::file_size_required(path, kDefaultMaxArtifactBytes);
-    dt::validate_database_header(path, probe_bytes);
-    dt::reject_sqlite_sidecars(path);
-    dt::ensure_reader_heap_bound();
-    dt::Db probe;
-    dt::open_immutable_reader(probe, path);
-    stored_manifest = read_manifest(probe);
-    HeadsUpGame stored_game = read_game(probe);
-    read_sizes(probe, stored_game);
-    read_ranges(probe, stored_game);
-    if (stored_manifest.kind != ArtifactKind::Checkpoint)
-      fail(ArtifactErrorKind::IdentityMismatch, "cannot commit iterations into a published policy");
-    if (!same_game(stored_game, result.policy.game()))
-      fail(ArtifactErrorKind::IdentityMismatch,
-           "checkpoint game identity differs; refusing resume");
-    if (stored_manifest.algorithm_revision != provenance.algorithm_revision ||
-        stored_manifest.numeric_profile != kNumericProfileV1 ||
-        stored_manifest.prng_identifier != provenance.prng_identifier ||
-        stored_manifest.seed != result.seed)
-      fail(ArtifactErrorKind::IdentityMismatch,
-           "checkpoint revision or PRNG identity differs; refusing resume");
-  }
-
-  ArtifactManifest manifest =
-      manifest_for(result, provenance, ArtifactKind::Checkpoint, stored_manifest.validation);
-
-  dt::Db db;
-  open_writer(db, path.string(), false);
-  db.exec("BEGIN IMMEDIATE;", "begin checkpoint commit");
-  try {
-    db.exec("DELETE FROM information_states;", "replace policy states");
-    insert_policy(db, result, rows, true);
-    dt::Stmt update(db.get(),
-                    "UPDATE manifest SET completed_iterations = ?,"
-                    " prng_state_hex = ?, run_status = ?, nodes = ?,"
-                    " information_sets = ?, accounted_bytes = ?, engine_revision = ?"
-                    " WHERE id = 1",
-                    "update manifest");
-    int i = 1;
-    update.bind_u64_chips(i++, manifest.completed_iterations);
-    update.bind_text(i++, dt::u64_to_hex(manifest.prng_state));
-    update.bind_text(i++, run_status_text(manifest.run_status));
-    update.bind_u64_chips(i++, manifest.nodes);
-    update.bind_u64_chips(i++, manifest.information_sets);
-    update.bind_u64_chips(i++, manifest.accounted_bytes);
-    update.bind_text(i++, manifest.engine_revision);
-    (void)update.step("update manifest");
-    db.exec("COMMIT;", "commit checkpoint iteration");
-  } catch (...) {
-    // See write_all: an I/O failure may already have auto-rolled the
-    // transaction back; never mask the original error with a failed ROLLBACK.
-    try {
-      db.exec("ROLLBACK;", "rollback checkpoint iteration");
-    } catch (...) {
-    }
-    throw;
-  }
-}
-
 LoadedArtifact load_artifact(const std::filesystem::path& path, const LoadOptions& options) {
   return load_path(path, options);
 }
@@ -2981,18 +2099,12 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
                                const std::filesystem::path& destination,
                                const std::string& engine_revision) {
   const LoadedArtifact source = load_artifact(checkpoint_path);
-  const bool is_seat = source.bundle.nseat.has_value();
   check(source.bundle.manifest.kind == ArtifactKind::Checkpoint, ArtifactErrorKind::InvalidArgument,
         "publish source must be a checkpoint: " + checkpoint_path.string());
   check(source.bundle.manifest.run_status == RunStatus::Complete,
         ArtifactErrorKind::InvalidArgument, "cannot publish a resource-limited checkpoint");
-  if (is_seat) {
-    check(!source.bundle.nseat->policy.rows().empty(), ArtifactErrorKind::InvalidArgument,
-          "cannot publish an empty policy");
-  } else {
-    check(!source.bundle.result.policy.rows().empty(), ArtifactErrorKind::InvalidArgument,
-          "cannot publish an empty policy");
-  }
+  check(!source.bundle.nseat->policy.rows().empty(), ArtifactErrorKind::InvalidArgument,
+        "cannot publish an empty policy");
 
   std::error_code ec;
   const std::filesystem::path parent = destination.parent_path();
@@ -3006,31 +2118,20 @@ PublishedPolicy publish_policy(const std::filesystem::path& checkpoint_path,
   bool linked = false;
   try {
     open_writer(db, temp.string(), true);
-    ArtifactManifest manifest;
-    if (is_seat) {
-      SeatCheckpointProvenance provenance;
-      provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;
-      provenance.prng_identifier = source.bundle.manifest.prng_identifier;
-      provenance.engine_revision = engine_revision;
-      manifest = manifest_for_v2(*source.bundle.nseat, provenance, ArtifactKind::Policy,
-                                 ValidationState::Validated);
-      validate_content_v2(*source.bundle.nseat);
-      // A declared card abstraction marks a schema-v3 source; the manifest
-      // already carries the card fields (manifest_for_v2 copies them), so only
-      // the writer dispatches.
-      if (source.bundle.nseat->card_id.has_value())
-        write_all_v3(db, manifest, *source.bundle.nseat);
-      else
-        write_all_v2(db, manifest, *source.bundle.nseat);
-    } else {
-      CheckpointProvenance provenance;
-      provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;
-      provenance.prng_identifier = source.bundle.manifest.prng_identifier;
-      provenance.engine_revision = engine_revision;
-      manifest = manifest_for(source.bundle.result, provenance, ArtifactKind::Policy,
-                              ValidationState::Validated);
-      write_all(db, manifest, source.bundle.result, source.bundle.rows, false);
-    }
+    SeatCheckpointProvenance provenance;
+    provenance.algorithm_revision = source.bundle.manifest.algorithm_revision;
+    provenance.prng_identifier = source.bundle.manifest.prng_identifier;
+    provenance.engine_revision = engine_revision;
+    ArtifactManifest manifest = manifest_for_v2(*source.bundle.nseat, provenance,
+                                                ArtifactKind::Policy, ValidationState::Validated);
+    validate_content_v2(*source.bundle.nseat);
+    // A declared card abstraction marks a schema-v3 source; the manifest
+    // already carries the card fields (manifest_for_v2 copies them), so only
+    // the writer dispatches.
+    if (source.bundle.nseat->card_id.has_value())
+      write_all_v3(db, manifest, *source.bundle.nseat);
+    else
+      write_all_v2(db, manifest, *source.bundle.nseat);
     db.close();
 
     dt::fsync_file(temp);

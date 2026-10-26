@@ -12,6 +12,9 @@ superseded-by: ""
 
 # RFC 0004: Heads-Up Multi-Size Blueprint Training
 
+> **Historical note.** The schema-v1 SQLite blueprint format (`user_version = 1`), the heads-up `rfc0004-rev1-...` algorithm identity, and resumable heads-up checkpoints are **Historical**: retired by [RFC 0038](0038-retire-schema-v1-artifacts.md) on 2026-10-26. The in-memory heads-up trainers and the full-traversal policy model remain.
+
+
 ## Summary
 
 Introduce a stack-aware, multi-size heads-up no-limit Hold'em game and an

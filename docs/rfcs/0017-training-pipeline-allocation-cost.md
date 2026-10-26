@@ -12,6 +12,9 @@ superseded-by: ""
 
 # RFC 0017: Training Pipeline Allocation Cost
 
+> **Historical note.** Schema-v1 checkpoint/resume allocation accounting and the heads-up checkpoint commit path are **Historical**: retired by [RFC 0038](0038-retire-schema-v1-artifacts.md) on 2026-10-26. Seat checkpoint accounting remains Current.
+
+
 ## Summary
 
 Reduce implementation overhead in revision-two training, concrete policy

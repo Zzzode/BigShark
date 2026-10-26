@@ -2,9 +2,10 @@
 //
 // Two measurements are produced, both from deterministically published
 // COMPLETE full-traversal policies (one full-traversal iteration visits the
-// complete information-set tree with an all-zero-regret uniform policy;
-// average weights normalize to the published probabilities exactly, so the
-// exports validate). This is a latency fixture, not a quality claim.
+// complete information-set tree with an all-zero-regret uniform policy).
+// RFC 0038: the fixed-runout in-memory training is rekeyed on byte-identical
+// information keys into a flop-rooted river-terminal schema-v2 artifact by
+// the test-only rekey helper; this is a latency fixture, not a quality claim.
 //
 //  1. Budget gate evidence on the frozen RFC 0004 Stage 4 SPR-10 dry
 //     asymmetric fixture (Ks7h2c, 100/200 behind, 10-chip pot, three weighted
@@ -52,7 +53,7 @@
 #include <sys/resource.h>
 #endif
 
-#include "artifacts/artifact_internal.hpp"
+#include "artifacts/rekey_fixture.hpp"
 #include "gto/heads_up_solver_debug.hpp"
 
 using namespace bs::poker;
@@ -63,8 +64,6 @@ using namespace bs::resident;
 namespace fs = std::filesystem;
 
 namespace {
-
-using bs::artifacts::detail::PolicyAssembler;
 
 std::atomic<std::uint64_t> g_alloc_count{0};
 std::atomic<std::uint64_t> g_alloc_bytes{0};
@@ -145,18 +144,17 @@ Published publish_complete(HeadsUpGame game, std::uint64_t iterations, const fs:
     std::fprintf(stderr, "training did not complete for %s\n", name.c_str());
     std::exit(2);
   }
-  TrainingRows rows;
-  for (const auto& [key, row] : trained.rows)
-    rows.emplace(key, TrainingRow{row.actions, row.regrets, row.sums});
+  // RFC 0038: the fixed-runout full traversal is rekeyed into a flop-rooted
+  // river-terminal schema-v2 policy on byte-identical information keys.
+  const SeatTrainingResult rekeyed =
+      bs::artifacts::detail::rekey_heads_up_result({game, trained.result});
   const fs::path checkpoint = dir / (name + "-checkpoint.db");
   const fs::path policy = dir / (name + "-policy.db");
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kFullTraversalPrngIdentifier;
-  provenance.engine_revision = "resident-benchmark-1";
-  create_checkpoint(checkpoint, trained.result, rows, provenance);
+  create_checkpoint(checkpoint, rekeyed,
+                    bs::artifacts::detail::rekey_provenance("resident-benchmark-1"));
   const PublishedPolicy out = publish_policy(checkpoint, policy, "resident-benchmark-1");
   return {policy,         std::move(game), out.sha256,
-          out.sha256_hex, out.file_bytes,  trained.result.information_sets};
+          out.sha256_hex, out.file_bytes,  rekeyed.information_sets};
 }
 
 // Small fixed-runout two-vs-two game with a forced zero-call row facing a jam.
@@ -173,38 +171,28 @@ Published publish_zero_prob(const fs::path& dir) {
   const HeadsUpState after_jam = root.after_action(0, {ActionType::Bet, 2});
   static const std::array<std::array<int, 2>, 2> jam_combos = {
       {{card_id("Ac"), card_id("Kc")}, {card_id("Qd"), card_id("Jd")}}};
-  TrainingResult result = trained.result;
-  TrainingRows rows;
-  // Start from an EMPTY policy (not trained.result.policy): add_row emplaces,
-  // so reusing the populated policy would silently keep the original rows and
-  // disagree with the forced raw average weights.
-  HeadsUpPolicy forced_policy;
-  PolicyAssembler::set_game(forced_policy, source);
-  for (const auto& [key, old_row] : trained.rows) {
+  // Force a fold-only row for each range combo facing the jam. The rekey
+  // helper validates that every override names a trained row with a matching
+  // action count, so a missing key fails loudly instead of going unforced.
+  std::map<InformationKey, std::vector<double>> overrides;
+  for (const auto& own : jam_combos) {
+    const InformationKey key = information_key(after_jam, own);
     const auto trained_it = trained.result.policy.rows().find(key);
     if (trained_it == trained.result.policy.rows().end())
       std::exit(3);
-    PolicyRow policy_row{trained_it->second.actions, trained_it->second.probabilities};
-    for (const auto& own : jam_combos)
-      if (key == information_key(after_jam, own)) {
-        policy_row.probabilities.assign(policy_row.actions.size(), 0.0);
-        policy_row.probabilities[0] = 1.0;  // fold only
-      }
-    (void)old_row;
-    PolicyAssembler::add_row(forced_policy, key, policy_row);
-    rows.emplace(
-        key, TrainingRow{policy_row.actions, policy_row.probabilities, policy_row.probabilities});
+    std::vector<double> forced(trained_it->second.actions.size(), 0.0);
+    forced[0] = 1.0;  // fold only
+    overrides.emplace(key, std::move(forced));
   }
-  result.policy = std::move(forced_policy);
+  const SeatTrainingResult rekeyed =
+      bs::artifacts::detail::rekey_heads_up_result({source, trained.result, &overrides});
   const fs::path checkpoint = dir / "zero-checkpoint.db";
   const fs::path policy = dir / "zero-policy.db";
-  CheckpointProvenance provenance;
-  provenance.prng_identifier = kFullTraversalPrngIdentifier;
-  provenance.engine_revision = "resident-benchmark-zero";
-  create_checkpoint(checkpoint, result, rows, provenance);
+  create_checkpoint(checkpoint, rekeyed,
+                    bs::artifacts::detail::rekey_provenance("resident-benchmark-zero"));
   const PublishedPolicy out = publish_policy(checkpoint, policy, "resident-benchmark-zero");
   return {policy,         std::move(source), out.sha256,
-          out.sha256_hex, out.file_bytes,    result.information_sets};
+          out.sha256_hex, out.file_bytes,    rekeyed.information_sets};
 }
 
 // Rebuilds the seat-generic GameState view of a flop-rooted HeadsUpState by
@@ -292,8 +280,7 @@ void collect_queries(const HeadsUpGame& game, std::size_t root, HeadsUpState sta
   }
   if (!have_name)
     return;
-  const std::string name =
-      encode_public_key(information_key(state, name_cards), kArtifactSchemaVersion);
+  const std::string name = encode_public_key(information_key(state, name_cards));
   if (!seen.insert(name).second)
     return;
   const UnifiedNode node = to_unified(state);

@@ -12,6 +12,9 @@ superseded-by: ""
 
 # RFC 0005: Strategy Artifacts and Bounded Heads-Up Resolving
 
+> **Historical note.** The schema-v1 artifact storage design (heads-up `create_checkpoint`/`commit_checkpoint`/`publish_policy`, `PolicyAssembler`, the three-field key grammar, raw training-table persistence, and `ArtifactBundle.result`/`ArtifactProbe.game`) is **Historical**: retired by [RFC 0038](0038-retire-schema-v1-artifacts.md) on 2026-10-26. The resident, digest, immutable publication, and bounded reader designs remain, now on the seat-generic schema only.
+
+
 ## Summary
 
 Persist RFC 0004 training checkpoints and immutable blueprint policies in a

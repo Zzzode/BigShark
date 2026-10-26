@@ -1,7 +1,7 @@
 ---
 rfc: "0038"
 subject: "Retire the schema-v1 heads-up artifact format and algorithm revision 1"
-status: "Accepted"
+status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-26"
 updated: "2026-10-26"
@@ -686,6 +686,74 @@ None.
   replay), the artifacts/resident tests pass under ASan, and
   `check-rfcs`/`check-docs` pass with the gto-engine, benchmarking, and
   RFC 0004/0005/0007/0009/0016/0017/0034 documentation updates.
+
+## Implementation Evidence
+
+Status: Implemented 2026-10-26.
+
+The deletion set is gone from the engine (`kSchemaDdlV1`,
+`kAllowedTablesV1`, `kNumericProfileV1`, `kRulesIdentifierV1`,
+`kDefaultAlgorithmRevision`, `kLegacyAlgorithmRevisionV2`,
+bare `kArtifactSchemaVersion`, heads-up `CheckpointProvenance`/
+`create_checkpoint`/`commit_checkpoint`/`PolicyAssembler`,
+`LoadedArtifact::result`, `ArtifactProbe::game`, `legacy_domain`,
+`grammar_for_revision`, and the encode/decode revision parameter). The
+codec speaks only the revision-2 four-field event grammar; a fold is not
+terminal in that grammar (multiway hands continue), matching the
+pre-RFC-0038 revision-2 behavior exactly. `nseat_write_identity` accepts
+revision 2 and an explicitly named revision-0 custom identity (test
+fixtures) and preserves an unrecognized provenance string verbatim;
+revision 1 is unrecognizable.
+
+One transport detail needed an explicit design decision during
+implementation: the rekeyed fixed-runout policies had to keep carrying
+their conditional turn/river cards. The schema-v2 `game.fixed_turn`/
+`fixed_river` columns previously meant only the turn/river-rooted board
+prefix and were forbidden on a flop-rooted root, so the in-memory
+`UnifiedGame.fixed_runout` used by the resident chance-support and
+runout checks had nowhere to round-trip. The columns now carry the
+CONDITIONAL runout for a flop-rooted, river-terminal policy (NULL on a
+free street), still the board prefix for a turn/river-rooted root, and
+always NULL for preflop and schema-v3 class policies. The value lives on
+`SeatPolicy::fixed_runout` and `ArtifactProbe::fixed_runout`, is set by
+the test-only rekey helper and the artifact reader, and is copied by the
+single `build_v2_game` path. A board-class artifact carrying one is
+rejected by load and probe.
+
+Verified 2026-10-26:
+
+- Release build clean; `ctest` 79/79 passed (artifacts suite rewritten to
+  v2/v3 fixtures with the physical-corruption, immutable-publication,
+  ENOSPC/killed-writer, WAL-sidecar, zip-bomb, writer-pragma,
+  probability/stream-adversarial, and byte-deterministic-publication
+  invariants relocated off the retired v1 cases; 26 resident scenarios,
+  including the new `user_version=1` resident `LoadFailed` pin).
+- New rejection tests: an empty SQLite file with the application id and
+  `user_version` 1 (also 0 and 99) fails both `load_artifact` and
+  `probe_artifact` with `UnsupportedVersion` and the
+  "schema v1 retired by RFC 0038" message; the resident reports
+  `LoadFailed` with that message and occupies no advertised slot.
+- `bs_resident_fixture` emits `user_version=2`, the conditional runout
+  columns populated, 10,080 states, and the unchanged JSON contract; the
+  w1 real-binary TS cases pass inside `npm run check` (133/133).
+- All five shipped preflop profiles (2/3/4/5/6-way) load through the new
+  reader and run one frozen-deviation evaluation (rc=0); the BSFLIB03
+  library advertises under `--verify-binary` with its pinned digest.
+- The migrated resident-lookup benchmark runs all three measured
+  sections against rekeyed schema-v2 artifacts: 493,500 SPR-10 sets and
+  the 115,056-set six-root aggregate (enumerated queries asserted equal
+  to the published count), zero timed-batch allocations; the labeled
+  Linux baseline is recorded in benchmarking.md.
+- `benchmark-multistreet` PASS; `npm run check`, `npm run proto:check`,
+  and `node bin/replay.mjs` green; the RFC 0037 policy audit (6/6) and
+  ablation checker (matrix CSV) pass; `check-rfcs` and `check-docs`
+  green.
+- AddressSanitizer + UndefinedBehaviorSanitizer: `test_artifacts`,
+  `test_seat_policy`, and `test_resident_policy` all passed with zero
+  sanitizer findings (the resident run is slow under instrumentation
+  because the pre-existing 3-4 seat 200-iteration fixtures expand to
+  ~600k-1m rows and are exercised train/publish/load/index; those
+  reader/index/reach paths are unchanged by this RFC).
 
 ## Decision
 

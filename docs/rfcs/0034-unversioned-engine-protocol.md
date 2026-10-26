@@ -12,6 +12,9 @@ superseded-by: ""
 
 # RFC 0034: Unversioned Single-Form Engine Protocol
 
+> **Historical note.** The resident fixture publisher described here now emits a flop-rooted river-terminal schema-v2 artifact through the RFC 0038 rekey route rather than a schema-v1 heads-up artifact; see [RFC 0038](0038-retire-schema-v1-artifacts.md) (2026-10-26). The engine wire protocol itself is unchanged.
+
+
 ## Summary
 
 The engine protocol already has exactly one live form: every in-repo
