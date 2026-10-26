@@ -1,7 +1,7 @@
 # RFC 0008 stage 6 offline link-negative scan.
 #
-# Runs `nm` over the live test_stage6_link_negative binary (which links v0+v1
-# and drives a real decision path) and fails on ANY symbol in the Itanium C++
+# Runs `nm` over the live test_stage6_link_negative binary (which links the
+# online engine protocol and service and drives a real decision path) and fails on ANY symbol in the Itanium C++
 # mangling for namespace bs::stage6 ("6stage6"), where the behavior interface,
 # the uniform reference, and every later stage-6 component live. Static
 # archives contribute only referenced objects, so a clean scan proves no
@@ -29,7 +29,7 @@ if(nm_output MATCHES "6stage6")
   message(FATAL_ERROR
     "RFC 0008 stage-6 offline boundary violated: the live link contains "
     "bs::stage6 symbols:\n  ${leaked}\n"
-    "Offline measurement code must not be linked into v0/v1/service/host.")
+    "Offline measurement code must not be linked into the online engine/service/host.")
 endif()
 
 message(STATUS "stage6 link-negative scan passed")

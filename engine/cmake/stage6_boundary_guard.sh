@@ -101,7 +101,7 @@ for src in "$@"; do
       echo "RFC 0008 stage-6 offline boundary violation: '$src' resolves the" >&2
       echo "offline measurement header:" >&2
       echo "  $rel" >&2
-      echo "The decision service and v0/v1 protocols must not link or include" >&2
+      echo "The online decision service and engine protocol targets must not link or include" >&2
       echo "the behavior/stage-6 offline surface." >&2
       rc=1
     fi

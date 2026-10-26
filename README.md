@@ -195,7 +195,7 @@ cmake --build --preset release --target protobuf-check
 ```
 
 The authoritative schema is
-[`proto/bigshark/engine/v2/engine.proto`](proto/bigshark/engine/v2/engine.proto).
+[`proto/bigshark/engine/engine.proto`](proto/bigshark/engine/engine.proto).
 See the [Protobuf protocol reference](docs/reference/protobuf-engine-protocol.md)
 for amount semantics, generated output ownership, compatibility policy, and
 current integration status.

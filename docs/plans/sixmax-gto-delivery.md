@@ -90,6 +90,148 @@ defines the separate coverage, quality, and resource gates. It remains Proposed:
 guarantee-to-evidence justification, numerical thresholds and complete campaign
 budgets still need independent approval before a passing claim is possible.
 
+### 2026-10-25 status entry
+
+- **Authorization gates checked**: no River Club token exists
+  (`~/.config/river-club-agent/config.json` absent, `RIVER_CLUB_TOKEN`
+  unset) and the user has not authorized a live data-collection session;
+  the bankroll gate therefore cannot be evaluated. Tasks 1 and 4 of the
+  25-item work list are open user gates. Every live-corpus task (RFC 0035
+  stage 4-5, T-09/T-10/T-11, coverage measurement) stays blocked; the
+  single `sessions/2026-10-25.jsonl` row is the token-missing failure.
+- **RFC 0037 (shape-keyed action-abstraction selection policy) Implemented
+  2026-10-26**: the frozen cap table equals the provisional table (no
+  cell promoted); the 72-row pre-registered matrix and the committed
+  checker (`tools/artifact-audit/rfc0037-ablation-check.py`) mechanically
+  returned KEEP — the one nominally promotable cell (3-seat standard
+  1 -> 2) has no non-proxy cap-0 reference in the postflop streets(1)
+  geometry (production-menu cap-0 trees exceed 1 GiB at 3+ seats), so it
+  stays cap 1 despite a favorable proxy. The policy module, the
+  `resolve_flop` activation table (only change: two-live shallow flop
+  cap 1 -> 0 after a passing Stage-0a spike), the mid-street-fold
+  invariant, the tri-state policy audit (8/8 artifacts pass), the
+  cross-cap ablation harness, and the complete 2..6 dealt-count preflop
+  profile set with runner auto-discovery all landed. Gates: ctest 79/79,
+  npm 133/133, benchmark-multistreet quality PASS, ASan clean on touched
+  surfaces, proto:check and replay exit 0. Independent full-range quality
+  certification remains the campaign; the cap-selection policy itself is
+  settled.
+- **Task 10 (RFC 0036 M2) MEASURED 2026-10-26 — FAIL, Phase C required**:
+  the `--rfc0036-m2` harness (full cap-1 turn->river reference vs the
+  cap-1 streets(1) frontier candidate; same cap, so it isolates the
+  river leaf-model error) gives a 100K, three-seed model delta of 0.402
+  BB (CI [0.18, 0.62]) at two seats and 6.161 BB (CI [4.79, 7.53]) at
+  three seats — both fail the summed 0.03 BB gate by 1-2 orders of
+  magnitude; the uniform-fill arm is ~28/42 BB. Even heads-up deep
+  fails. Any turn/river on-demand routing (task 11) now requires a new
+  Phase C RFC supplying a real river continuation-value model (nested
+  depth-limited resolve with cached CV, or a neural estimator), not more
+  iterations/budget. Rows: `docs/plans/ablation/rfc0036-m2.csv`; design
+  and verdict in `docs/plans/0036-implementation.md`. Supersedes the
+  earlier design-only note.
+
+### 2026-10-24 status entry
+
+- **RFC 0030 (raise cap + checkpoint witness) Implemented (2026-10-25)**:
+  identity digest carries `|max-raises=N|`, the flop builder refuses
+  witness/digest mismatches before rows are adopted, mid-street raise
+  counter plumbed, and the checkpoint witness lineage continues in
+  BSWARM03 under RFC 0035. Stage 3 is complete: all service artifacts and
+  packed libraries were rebuilt pack-direct with explicit tokens (identity
+  family), pass the AC9 local audit (5 pass / 0 fail) and the bundled
+  reachability test, and carry matching SHA-256 sidecars; tokenless
+  predecessors are preserved under `~/.bigshark-backups/`. The RFC 0029
+  validation artifact awaits the T-09 replay program.
+- **RFC 0031 (card-abstraction error) Implemented (2026-10-25)**: AC1
+  baseline statistics reproduce exactly on the pinned `b67e3cb3` artifact
+  (1,642,680 nodes, 57.60% untrained, 2.9319, 1.5237); Stage 1 identity
+  pinning and Stage 2 `TiersDrawV1` landed earlier; AC5 cost is below the
+  150 ns/call rejection gate at every street (129-135 ns flop/turn,
+  79-95 ns river); the RFC 0029 candidate adapter and the stage-6 driver
+  gained scheme selection (`--card-kind tiers|tiers-draw`). The Stage-3
+  two-scheme ablation on the declared n=2 exact fixture at 1,000 and
+  10,000 iterations (raw CSV in `docs/plans/ablation/`) gives negative
+  improvement with overlapping intervals at both counts, so the pre-declared
+  rule resolves to **keep tiers**; no artifact adopts TiersDrawV1.
+- **RFC 0030 stage 3 executing (2026-10-25)**: all service artifacts are
+  rebuilt with explicit cap tokens under the correct **identity**
+  (`rfc0007-pot-fractions`) family — the earlier coarse-labeled attempt was
+  discarded. `ac1-16w`, the 2p/3p/6p preflop profiles, and the six-way
+  full-range library rebuilds run pack-direct; tokenless predecessors are
+  preserved under `~/.bigshark-backups/`. The AC9 local audit
+  (`tools/artifact-audit/ac9-token-audit.py`) gates the result. The
+  RFC 0029 validation artifact awaits the T-09 replay program.
+- **RFC 0033 (flop library root reachability) Implemented**: the shipped
+  six-way library now answers the real limped 200-chip/2-contribution root
+  (188,411,904 bytes, sha256 b5a480af…, reachable per RFC 0035's measurement
+  gate; the superseded b67e3cb3 backup stays outside the repository).
+- **RFC 0034 (unversioned engine protocol) Implemented (2026-10-25)**: single
+  `bigshark.engine` package, `engine.binpb` baseline, descriptor diff limited
+  to package/file/FQN, the two-TU fuzz harness restored with a 100,000-input
+  clean Clang-14 campaign and a linking libFuzzer configuration, six-exhaust
+  token inventory residual empty, and 124/124 compiled Node tests including
+  both real-binary w1 cases non-skipped against the republished engine. The
+  full ASan/UBSan suite is green on the final source (77/77; the
+  `stage6_measured_policy` watchdog was raised to 5,400 s under sanitizers
+  only after a 900 s wall-timeout on a still-advancing run, and the isolated
+  rerun passed in 2,905 s), and the final release Engine Build Contract is
+  green (ctest 79/79, benchmark quality gates PASS, npm check 124/124,
+  proto:check, replay).
+- **RFC 0035 (multi-root flop library) Implemented for stages 1-3
+  (2026-10-25)**: the BSFLIB03 root directory, full RFC 0030 action
+  identity in the header, per-(root,class) builder/resume, BSWARM03
+  checkpoints, exact-ledger resident matching, the ClassNotTrainedForRoot
+  miss through all six sites, and per-root host reporting are implemented
+  and tested (AC1-AC7, release ctest 79/79, ASan codec subset 10/10).
+  Stages 4-5 — the live exact-ledger histogram over `sessions/` and the
+  first real multi-root training build — remain the explicit gate; no
+  second root is trained until that threshold and the data exist.
+- **RFC 0036 (six-way turn/river on-demand) Accepted (design only)**: bounded
+  cap-1 river (seats 5/6) and street-start turn (seats 4-6) resolves with a
+  three-stage serve/decline gate; host routing stays unrouted until the
+  stage-0 node/iteration/visits calibration evidence lands. This is the T5
+  turn/river direction replacing class-library expansion. The stage-0
+  behavior-preserving build/train split of `solve_rooted_subgame` landed
+  2026-10-24, pinned by the release resolver/subgame/conformance suites;
+  the calibration measurements themselves remain gated on compute
+  authorization. **Update 2026-10-25: stage 0 measured, result is no-go
+  for seats 5/6.** Production identity cap-1 shapes are small (six-seat
+  river 1,897 nodes, six-seat turn streets(1) 46,585 nodes; all clear the
+  1 GiB builder cap) and the 1,600 ms envelope affords 1,510 (river) / 970
+  (turn) iterations at six seats, but in-model pooled NashConv there is
+  9.3 BB (six-seat river), 15.7 BB (six-seat turn), and 5.7-7.1 BB at five
+  seats — 38x-105x above the 0.15 BB sum gate. No minimum-iteration
+  constant both fits the envelope and passes M1, so both bounded paths
+  default to decline; host routing stays off and the labeled fallback
+  remains. The seam is retained for a future budget change. M2/Phase C is
+  not reached. Evidence in `docs/plans/0036-implementation.md` and the
+  `--rfc0036-m1*` harnesses.
+- **T-08 coverage instrumentation landed**: `platforms/river-club/src/
+  coverage.ts` plus `bin/coverage.mjs` tally the `.runtime/results.log`
+  seam into resident/resolved/fallback buckets with per-reason and
+  per-street distributions; analyzer unit tests pass. Real hit-rate numbers
+  await a live session corpus.
+- **T-11 provider gate (static half) audited 2026-10-24**:
+  `docs/integrations/provider-public-field-audit.md` maps every
+  reconstruction input against the authoritative v2.1 contract. Settled:
+  revision spine, legality, current state, and the old-events-omitted
+  guarantee. Undocumented/unsettled: `room.pots`, `winners` shape, the
+  event-kind catalog, rake/ante/refund/runout rules, and window retention.
+  The host still emits only `hu-r1` with `side_pots=false`; the v2 side-pot
+  end-to-end remains blocked on the five enumerated authoritative-data
+  items plus real captured vectors (live-play authorization). T-09 (RFC
+  0029 stage 4) and T-10 (RFC 0032 stage 4) remain documented as blocked
+  on live-play authorization; `sessions/` is empty.
+- **T-04 verification debt closed (2026-10-25)**: the full ASan/UBSan
+  preset is green at 77/77 on the final source, including
+  `heads_up_solver_sampled` (3,696 s) and `resident` (12,044 s, no
+  watchdog). One wall-timeout on `stage6_measured_policy` (900 s) was
+  resolved with a sanitizer-only watchdog raise to 5,400 s following the
+  `postflop_templates` precedent; the isolated rerun passed in 2,905 s.
+  The final release Engine Build Contract passed end to end (ctest 79/79,
+  benchmark-multistreet quality gates PASS, npm check 124/124,
+  proto:check, replay, docs, RFC checks).
+
 ## Internal Checkpoint and Verification Policy
 
 Start with T1a: the mapper barrier is proven, small, and blocks every later
