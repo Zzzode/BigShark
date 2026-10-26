@@ -510,6 +510,44 @@ reservations and in-use evicted policies share that budget. The separate
 template budget defaults to 4 GiB. These are accounted payload limits, not
 whole-process RSS limits. Six structural templates replace per-flop trees;
 policies remain specific to the canonical board and SPR bucket.
+`--max-infosets N` and `--train-bytes N` set the trainer's retained-row
+caps: the Preflop169-retaining three-seat identity tree needs about 1.58M
+information sets and 8 GiB of retained rows, so the multiway identity
+rebuild passes `--max-infosets 2000000 --train-bytes 8589934592`
+(the library defaults are 1M / 1 GiB and the trainer throws
+`nseat_training_exhausted` past them). `--raise-cap N` writes the canonical
+`|max-raises=N` action-identity token (RFC 0030).
+
+## RFC 0031 card-abstraction measurements
+
+Status: Current
+
+- `bigshark-card-bucket-cost [iterations]` — RFC 0031 AC5 per-lookup
+  `card_bucket` cost over every non-blocked hole pair on representative
+  flop/turn/river boards. On the measurement host tiers and identity run
+  ~78 ns/call and TiersDrawV1 129-135 ns/call on flop/turn and 79-95
+  ns/call on the river; all are below the 150 ns/call rejection gate.
+- `bigshark-stage6-measurement-driver measure --card-kind tiers|tiers-draw`
+  — the RFC 0031 Stage-3 ablation entry; the card scheme is otherwise fixed
+  to tiers. The 2026-10-25 n=2/n=3 campaigns and their decision are in the
+  RFC 0031 Implementation Record and `docs/plans/ablation/`.
+
+## RFC 0036 on-demand resolver calibration
+
+Status: Current
+
+- `bigshark-rfc0036-calibration [iterations] [build-repeats]` — stage-0
+  node/byte table and per-node/per-iteration cost for the production
+  identity cap-1 bounded river (G1) and street-start turn streets(1) (G2)
+  shapes with full-range uniform priors, plus the uncapped and
+  declared-coarse cross-checks. The measured envelope projection is in
+  `docs/plans/0036-implementation.md`.
+- `bigshark-subgame-nash-conv --rfc0036-m1 [max-iters] [seed]` and
+  `--rfc0036-m1-envelope [seed]` — in-model M1 NashConv for the bounded
+  shapes; the plain sweep covers all seats at several iteration counts,
+  the envelope sweep targets seats 5/6 at their projected affordable
+  counts. Six-seat rows use an enumerable 12-hand sub-range and an exact
+  pooled walk (the full-range six-seat case needs the sampled estimator).
 
 The builder reports successful policy/template loads, retained and peak
 policy bytes, template bytes, and cumulative load/extraction milliseconds.
