@@ -26,7 +26,7 @@
 namespace bs {
 namespace {
 
-namespace pv2 = ::bigshark::engine::v2;
+namespace pe = ::bigshark::engine;
 
 constexpr std::uint64_t kIntMax = static_cast<std::uint64_t>(std::numeric_limits<int>::max());
 
@@ -34,92 +34,92 @@ constexpr double kMaxEffectiveStackBbHint = 10000.0;
 
 // --- Closed-set predicates (proto3 enums are open on the wire) ---
 
-bool isKnownRank(pv2::Rank value) {
-  return value >= pv2::RANK_TWO && value <= pv2::RANK_ACE;
+bool isKnownRank(pe::Rank value) {
+  return value >= pe::RANK_TWO && value <= pe::RANK_ACE;
 }
 
-bool isKnownSuit(pv2::Suit value) {
-  return value >= pv2::SUIT_SPADES && value <= pv2::SUIT_CLUBS;
+bool isKnownSuit(pe::Suit value) {
+  return value >= pe::SUIT_SPADES && value <= pe::SUIT_CLUBS;
 }
 
-bool isKnownStreet(pv2::Street value) {
-  return value >= pv2::STREET_PREFLOP && value <= pv2::STREET_SHOWDOWN;
+bool isKnownStreet(pe::Street value) {
+  return value >= pe::STREET_PREFLOP && value <= pe::STREET_SHOWDOWN;
 }
 
-bool isKnownPlayerStatus(pv2::PlayerStatus value) {
-  return value >= pv2::PLAYER_STATUS_ACTIVE && value <= pv2::PLAYER_STATUS_ALL_IN;
+bool isKnownPlayerStatus(pe::PlayerStatus value) {
+  return value >= pe::PLAYER_STATUS_ACTIVE && value <= pe::PLAYER_STATUS_ALL_IN;
 }
 
-bool isKnownActionType(pv2::ActionType value) {
-  return value >= pv2::ACTION_TYPE_FOLD && value <= pv2::ACTION_TYPE_RAISE;
+bool isKnownActionType(pe::ActionType value) {
+  return value >= pe::ACTION_TYPE_FOLD && value <= pe::ACTION_TYPE_RAISE;
 }
 
-bool isKnownForcedType(pv2::ForcedContributionType value) {
-  return value >= pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND &&
-         value <= pv2::FORCED_CONTRIBUTION_TYPE_STRADDLE;
+bool isKnownForcedType(pe::ForcedContributionType value) {
+  return value >= pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND &&
+         value <= pe::FORCED_CONTRIBUTION_TYPE_STRADDLE;
 }
 
-bool isKnownGameVariant(pv2::GameVariant value) {
-  return value == pv2::GAME_VARIANT_NLHE;
+bool isKnownGameVariant(pe::GameVariant value) {
+  return value == pe::GAME_VARIANT_NLHE;
 }
 
-bool isKnownBettingStructure(pv2::BettingStructure value) {
-  return value == pv2::BETTING_STRUCTURE_NO_LIMIT;
+bool isKnownBettingStructure(pe::BettingStructure value) {
+  return value == pe::BETTING_STRUCTURE_NO_LIMIT;
 }
 
-bool isKnownGameType(pv2::GameType value) {
-  return value == pv2::GAME_TYPE_CASH || value == pv2::GAME_TYPE_TOURNAMENT;
+bool isKnownGameType(pe::GameType value) {
+  return value == pe::GAME_TYPE_CASH || value == pe::GAME_TYPE_TOURNAMENT;
 }
 
-bool isKnownSolverMode(pv2::SolverMode value) {
-  return value >= pv2::SOLVER_MODE_AUTOMATIC && value <= pv2::SOLVER_MODE_RESOLVING;
+bool isKnownSolverMode(pe::SolverMode value) {
+  return value >= pe::SOLVER_MODE_AUTOMATIC && value <= pe::SOLVER_MODE_RESOLVING;
 }
 
-bool isKnownPotPhase(pv2::PotPhase value) {
-  return value >= pv2::POT_PHASE_ACTION && value <= pv2::POT_PHASE_SETTLED;
+bool isKnownPotPhase(pe::PotPhase value) {
+  return value >= pe::POT_PHASE_ACTION && value <= pe::POT_PHASE_SETTLED;
 }
 
-bool isKnownLayerStatus(pv2::LayerStatus value) {
-  return value == pv2::LAYER_STATUS_PENDING || value == pv2::LAYER_STATUS_FINALIZED;
+bool isKnownLayerStatus(pe::LayerStatus value) {
+  return value == pe::LAYER_STATUS_PENDING || value == pe::LAYER_STATUS_FINALIZED;
 }
 
-bool isKnownObservationSource(pv2::ObservationSource value) {
-  return value >= pv2::OBSERVATION_SOURCE_OFFICIAL_RESPONSE &&
-         value <= pv2::OBSERVATION_SOURCE_SUPPLIED;
+bool isKnownObservationSource(pe::ObservationSource value) {
+  return value >= pe::OBSERVATION_SOURCE_OFFICIAL_RESPONSE &&
+         value <= pe::OBSERVATION_SOURCE_SUPPLIED;
 }
 
-bool isKnownObservationCoverage(pv2::ObservationCoverage value) {
-  return value >= pv2::OBSERVATION_COVERAGE_FULL && value <= pv2::OBSERVATION_COVERAGE_GAP;
+bool isKnownObservationCoverage(pe::ObservationCoverage value) {
+  return value >= pe::OBSERVATION_COVERAGE_FULL && value <= pe::OBSERVATION_COVERAGE_GAP;
 }
 
-bool isKnownSettlementRule(pv2::SettlementRule value) {
-  return value == pv2::SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON;
+bool isKnownSettlementRule(pe::SettlementRule value) {
+  return value == pe::SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON;
 }
 
-bool isKnownReopeningRule(pv2::ReopeningRule value) {
-  return value == pv2::REOPENING_RULE_NEVER_CUMULATIVE || value == pv2::REOPENING_RULE_TDA_2026;
+bool isKnownReopeningRule(pe::ReopeningRule value) {
+  return value == pe::REOPENING_RULE_NEVER_CUMULATIVE || value == pe::REOPENING_RULE_TDA_2026;
 }
 
-bool isKnownRunoutRule(pv2::RunoutRule value) {
-  return value == pv2::RUNOUT_RULE_SINGLE;
+bool isKnownRunoutRule(pe::RunoutRule value) {
+  return value == pe::RUNOUT_RULE_SINGLE;
 }
 
-bool isKnownUtilityProfile(pv2::UtilityProfile value) {
-  return value == pv2::UTILITY_PROFILE_CASH_CHIP || value == pv2::UTILITY_PROFILE_TOURNAMENT_ICM;
+bool isKnownUtilityProfile(pe::UtilityProfile value) {
+  return value == pe::UTILITY_PROFILE_CASH_CHIP || value == pe::UTILITY_PROFILE_TOURNAMENT_ICM;
 }
 
-bool isKnownGuaranteeLevel(pv2::GuaranteeLevel value) {
-  return value >= pv2::GUARANTEE_LEVEL_OPERATIONAL_FALLBACK &&
-         value <= pv2::GUARANTEE_LEVEL_CERTIFIED_BOUND;
+bool isKnownGuaranteeLevel(pe::GuaranteeLevel value) {
+  return value >= pe::GUARANTEE_LEVEL_OPERATIONAL_FALLBACK &&
+         value <= pe::GUARANTEE_LEVEL_CERTIFIED_BOUND;
 }
 
 // --- Validator ---
 
 class SemanticValidator {
  public:
-  explicit SemanticValidator(const pv2::DecisionRequest& request) : request_(request) {}
+  explicit SemanticValidator(const pe::DecisionRequest& request) : request_(request) {}
 
-  pv2::ErrorCode run() {
+  pe::ErrorCode run() {
     checkRequestPresence();
     if (request_.has_state())
       checkHandState(request_.state(), "state");
@@ -131,7 +131,7 @@ class SemanticValidator {
   const ValidationReport& report() const { return report_; }
 
  private:
-  const pv2::DecisionRequest& request_;
+  const pe::DecisionRequest& request_;
   ValidationReport report_;
   bool unsupportedGame_ = false;
   bool unsupportedFeature_ = false;
@@ -168,18 +168,18 @@ class SemanticValidator {
     reject(field, description);
   }
 
-  pv2::ErrorCode resultCode() const {
+  pe::ErrorCode resultCode() const {
     if (rulesUnconfirmed_)
-      return pv2::ERROR_CODE_RULES_UNCONFIRMED;
+      return pe::ERROR_CODE_RULES_UNCONFIRMED;
     if (unknownUtility_)
-      return pv2::ERROR_CODE_UNKNOWN_UTILITY;
+      return pe::ERROR_CODE_UNKNOWN_UTILITY;
     if (historyIncomplete_)
-      return pv2::ERROR_CODE_HISTORY_INCOMPLETE;
+      return pe::ERROR_CODE_HISTORY_INCOMPLETE;
     if (unsupportedGame_)
-      return pv2::ERROR_CODE_UNSUPPORTED_GAME;
+      return pe::ERROR_CODE_UNSUPPORTED_GAME;
     if (unsupportedFeature_)
-      return pv2::ERROR_CODE_UNSUPPORTED_FEATURE;
-    return report_.ok() ? pv2::ERROR_CODE_UNSPECIFIED : pv2::ERROR_CODE_INVALID_REQUEST;
+      return pe::ERROR_CODE_UNSUPPORTED_FEATURE;
+    return report_.ok() ? pe::ERROR_CODE_UNSPECIFIED : pe::ERROR_CODE_INVALID_REQUEST;
   }
 
   bool stringField(const std::string& value, unsigned minLength, unsigned maxLength,
@@ -220,27 +220,27 @@ class SemanticValidator {
       reject("options", "decision request requires options");
   }
 
-  void checkCard(const pv2::Card& card, const std::string& field) {
+  void checkCard(const pe::Card& card, const std::string& field) {
     if (!isKnownRank(card.rank()))
       reject(field + ".rank", "card rank is outside the closed rank set");
     if (!isKnownSuit(card.suit()))
       reject(field + ".suit", "card suit is outside the closed suit set");
   }
 
-  void checkGameDefinition(const pv2::GameDefinition& game, const std::string& field) {
+  void checkGameDefinition(const pe::GameDefinition& game, const std::string& field) {
     if (!isKnownGameVariant(game.variant())) {
       reject(field + ".variant", "game variant is outside the closed variant set");
-    } else if (game.variant() != pv2::GAME_VARIANT_NLHE) {
+    } else if (game.variant() != pe::GAME_VARIANT_NLHE) {
       rejectGame(field + ".variant", "only NLHE is supported");
     }
     if (!isKnownBettingStructure(game.betting_structure())) {
       reject(field + ".betting_structure", "betting structure is outside the closed set");
-    } else if (game.betting_structure() != pv2::BETTING_STRUCTURE_NO_LIMIT) {
+    } else if (game.betting_structure() != pe::BETTING_STRUCTURE_NO_LIMIT) {
       rejectGame(field + ".betting_structure", "only no-limit is supported");
     }
     if (!isKnownGameType(game.game_type())) {
       reject(field + ".game_type", "game type is outside the closed set");
-    } else if (game.game_type() != pv2::GAME_TYPE_CASH) {
+    } else if (game.game_type() != pe::GAME_TYPE_CASH) {
       rejectGame(field + ".game_type", "tournament/ICM decisions are unsupported");
     }
     if (game.table_capacity() < 2 || game.table_capacity() > 10)
@@ -290,29 +290,29 @@ class SemanticValidator {
     }
   }
 
-  void checkRuleProfile(const pv2::RuleProfile& rules, const std::string& field) {
+  void checkRuleProfile(const pe::RuleProfile& rules, const std::string& field) {
     if (!isKnownSettlementRule(rules.settlement())) {
       reject(field + ".settlement", "settlement rule is outside the closed set");
-    } else if (rules.settlement() != pv2::SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON) {
+    } else if (rules.settlement() != pe::SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON) {
       rejectFeature(field + ".settlement", "only clockwise-left-of-button settlement is supported");
     }
     if (!isKnownReopeningRule(rules.reopening())) {
       reject(field + ".reopening", "reopening rule is outside the closed set");
-    } else if (rules.reopening() == pv2::REOPENING_RULE_TDA_2026) {
+    } else if (rules.reopening() == pe::REOPENING_RULE_TDA_2026) {
       // TDA 2026 reopening is declared but unimplemented.
       rejectRulesUnconfirmed(field + ".reopening",
                              "TDA 2026 reopening rule has not been confirmed");
     }
     if (!isKnownRunoutRule(rules.runout())) {
       reject(field + ".runout", "runout rule is outside the closed set");
-    } else if (rules.runout() != pv2::RUNOUT_RULE_SINGLE) {
+    } else if (rules.runout() != pe::RUNOUT_RULE_SINGLE) {
       rejectFeature(field + ".runout", "only single runout is supported");
     }
     if (rules.dealt_seat_count() < 2 || rules.dealt_seat_count() > 10)
       reject(field + ".dealt_seat_count", "dealt seat count must be in 2..10");
   }
 
-  void checkPlayer(const pv2::PlayerState& player, const std::string& field,
+  void checkPlayer(const pe::PlayerState& player, const std::string& field,
                    std::uint32_t tableCapacity) {
     if (player.seat() > 9 || player.seat() >= tableCapacity)
       reject(field + ".seat", "seat must be in 0..table_capacity-1");
@@ -346,8 +346,8 @@ class SemanticValidator {
     }
   }
 
-  void checkPotState(const pv2::PotState& pot, const std::string& field, int playerCount,
-                     const std::unordered_map<std::uint32_t, const pv2::PlayerState*>& players) {
+  void checkPotState(const pe::PotState& pot, const std::string& field, int playerCount,
+                     const std::unordered_map<std::uint32_t, const pe::PlayerState*>& players) {
     if (!isKnownPotPhase(pot.phase())) {
       reject(field + ".phase", "pot phase is outside the closed set");
       return;
@@ -358,7 +358,7 @@ class SemanticValidator {
     std::uint64_t prevLevel = 0;
     bool hasPrevLevel = false;
     for (int i = 0; i < pot.layers_size(); ++i) {
-      const pv2::PotLayer& layer = pot.layers(i);
+      const pe::PotLayer& layer = pot.layers(i);
       const std::string layerField = field + ".layers[" + std::to_string(i) + "]";
 
       // Layers must be ordered by contribution_level ascending.
@@ -379,12 +379,12 @@ class SemanticValidator {
         reject(layerField + ".status", "layer status is outside the closed set");
       } else {
         // Phase-aware layer validation.
-        if (pot.phase() == pv2::POT_PHASE_ACTION && layer.status() != pv2::LAYER_STATUS_PENDING)
+        if (pot.phase() == pe::POT_PHASE_ACTION && layer.status() != pe::LAYER_STATUS_PENDING)
           reject(layerField + ".status", "ACTION-phase layers must be PENDING");
-        if (pot.phase() == pv2::POT_PHASE_SETTLED && layer.status() != pv2::LAYER_STATUS_FINALIZED)
+        if (pot.phase() == pe::POT_PHASE_SETTLED && layer.status() != pe::LAYER_STATUS_FINALIZED)
           reject(layerField + ".status", "SETTLED-phase layers must be FINALIZED");
 
-        if (layer.status() == pv2::LAYER_STATUS_PENDING) {
+        if (layer.status() == pe::LAYER_STATUS_PENDING) {
           // PENDING layers must not carry rake or winners (provisional).
           if (layer.has_rake())
             reject(layerField + ".rake", "PENDING layer must not carry rake");
@@ -392,7 +392,7 @@ class SemanticValidator {
             reject(layerField + ".winner_seats", "PENDING layer must not have winners");
         }
 
-        if (layer.status() == pv2::LAYER_STATUS_FINALIZED) {
+        if (layer.status() == pe::LAYER_STATUS_FINALIZED) {
           // FINALIZED layers must have at least two contributors (eligible seats).
           // A sole-contributor FINALIZED layer is a refund, not a pot.
           if (layer.eligible_seats_size() < 2)
@@ -424,17 +424,17 @@ class SemanticValidator {
   }
 
   void checkTransitionPath(
-      const pv2::HandState& state, const std::string& field,
-      const std::unordered_map<std::uint32_t, const pv2::PlayerState*>& players) {
+      const pe::HandState& state, const std::string& field,
+      const std::unordered_map<std::uint32_t, const pe::PlayerState*>& players) {
     std::uint64_t previousSequence = 0;
     bool hasSequence = false;
-    pv2::Street previousStreet = pv2::STREET_UNSPECIFIED;
+    pe::Street previousStreet = pe::STREET_UNSPECIFIED;
     int boardCardsDealt = 0;
     // Track all cards dealt to detect duplicates.
     std::unordered_set<int> dealtCards;
 
     for (int i = 0; i < state.transition_path_size(); ++i) {
-      const pv2::TransitionEvent& event = state.transition_path(i);
+      const pe::TransitionEvent& event = state.transition_path(i);
       const std::string eventField = field + ".transition_path[" + std::to_string(i) + "]";
 
       if (hasSequence && event.sequence() <= previousSequence)
@@ -443,12 +443,12 @@ class SemanticValidator {
       hasSequence = true;
 
       switch (event.transition_case()) {
-        case pv2::TransitionEvent::kAction: {
-          const pv2::ActionEvent& action = event.action();
+        case pe::TransitionEvent::kAction: {
+          const pe::ActionEvent& action = event.action();
           if (!isKnownStreet(action.street())) {
             reject(eventField + ".action.street", "action street is outside the closed set");
           } else {
-            if (previousStreet != pv2::STREET_UNSPECIFIED &&
+            if (previousStreet != pe::STREET_UNSPECIFIED &&
                 static_cast<int>(action.street()) < static_cast<int>(previousStreet))
               reject(eventField + ".action.street", "transition streets must be nondecreasing");
             // Transition streets must not exceed the current street.
@@ -463,17 +463,17 @@ class SemanticValidator {
             reject(eventField + ".action.action", "action type is outside the closed set");
           } else {
             // Chip-field shape per action kind.
-            const bool aggressive = action.action() == pv2::ACTION_TYPE_BET ||
-                                    action.action() == pv2::ACTION_TYPE_RAISE;
-            if (action.action() == pv2::ACTION_TYPE_FOLD ||
-                action.action() == pv2::ACTION_TYPE_CHECK) {
+            const bool aggressive =
+                action.action() == pe::ACTION_TYPE_BET || action.action() == pe::ACTION_TYPE_RAISE;
+            if (action.action() == pe::ACTION_TYPE_FOLD ||
+                action.action() == pe::ACTION_TYPE_CHECK) {
               if (action.has_incremental_amount() && action.incremental_amount() != 0)
                 reject(eventField + ".action.incremental_amount",
                        "fold/check must not carry an incremental amount");
               if (action.has_target_total())
                 reject(eventField + ".action.target_total",
                        "fold/check must not carry a target total");
-            } else if (action.action() == pv2::ACTION_TYPE_CALL) {
+            } else if (action.action() == pe::ACTION_TYPE_CALL) {
               if (!action.has_incremental_amount() || action.incremental_amount() == 0)
                 reject(eventField + ".action.incremental_amount",
                        "call must carry a positive incremental amount");
@@ -487,13 +487,13 @@ class SemanticValidator {
           }
           break;
         }
-        case pv2::TransitionEvent::kBoardDeal: {
-          const pv2::BoardDeal& deal = event.board_deal();
+        case pe::TransitionEvent::kBoardDeal: {
+          const pe::BoardDeal& deal = event.board_deal();
           if (!isKnownStreet(deal.street())) {
             reject(eventField + ".board_deal.street",
                    "board deal street is outside the closed set");
           } else {
-            if (previousStreet != pv2::STREET_UNSPECIFIED &&
+            if (previousStreet != pe::STREET_UNSPECIFIED &&
                 static_cast<int>(deal.street()) < static_cast<int>(previousStreet))
               reject(eventField + ".board_deal.street", "transition streets must be nondecreasing");
             // Transition streets must not exceed the current street.
@@ -503,10 +503,10 @@ class SemanticValidator {
             // Card count per street: FLOP=3, TURN=1, RIVER=1.
             const int expectedCards = [&]() -> int {
               switch (deal.street()) {
-                case pv2::STREET_FLOP:
+                case pe::STREET_FLOP:
                   return 3;
-                case pv2::STREET_TURN:
-                case pv2::STREET_RIVER:
+                case pe::STREET_TURN:
+                case pe::STREET_RIVER:
                   return 1;
                 default:
                   return 0;  // PREFLOP has no board deal
@@ -520,7 +520,7 @@ class SemanticValidator {
           if (deal.cards_size() < 1 || deal.cards_size() > 3)
             reject(eventField + ".board_deal.cards", "board deal must carry 1..3 cards");
           for (int c = 0; c < deal.cards_size(); ++c) {
-            const pv2::Card& card = deal.cards(c);
+            const pe::Card& card = deal.cards(c);
             checkCard(card, eventField + ".board_deal.cards[" + std::to_string(c) + "]");
             // Duplicate card detection.
             const int cardId = static_cast<int>(card.rank()) * 4 + static_cast<int>(card.suit());
@@ -531,7 +531,7 @@ class SemanticValidator {
           }
           break;
         }
-        case pv2::TransitionEvent::TRANSITION_NOT_SET:
+        case pe::TransitionEvent::TRANSITION_NOT_SET:
           reject(eventField, "transition event requires exactly one transition");
           break;
       }
@@ -542,7 +542,7 @@ class SemanticValidator {
       reject(field + ".board", "board card count does not match transition path board deals");
   }
 
-  void checkProvenance(const pv2::ObservationProvenance& provenance, const std::string& field,
+  void checkProvenance(const pe::ObservationProvenance& provenance, const std::string& field,
                        int transitionPathSize) {
     if (!isKnownObservationSource(provenance.source()))
       reject(field + ".source", "observation source is outside the closed set");
@@ -553,17 +553,17 @@ class SemanticValidator {
       reject(field + ".observed_event_count",
              "observed event count does not match transition path length");
     // FULL coverage requires a non-empty transition path.
-    if (provenance.coverage() == pv2::OBSERVATION_COVERAGE_FULL && transitionPathSize == 0)
+    if (provenance.coverage() == pe::OBSERVATION_COVERAGE_FULL && transitionPathSize == 0)
       rejectHistoryIncomplete(field + ".coverage",
                               "FULL coverage requires a non-empty transition path");
   }
 
-  void checkLegal(const pv2::HandState& state, const std::string& field,
-                  const std::unordered_map<std::uint32_t, const pv2::PlayerState*>& players) {
+  void checkLegal(const pe::HandState& state, const std::string& field,
+                  const std::unordered_map<std::uint32_t, const pe::PlayerState*>& players) {
     if (state.legal_actions_size() < 1 || state.legal_actions_size() > 5)
       reject(field + ".legal_actions", "legal actions must have 1..5 entries");
 
-    const pv2::PlayerState* hero = nullptr;
+    const pe::PlayerState* hero = nullptr;
     if (players.contains(state.hero_seat()))
       hero = players.at(state.hero_seat());
     if (!hero) {
@@ -582,7 +582,7 @@ class SemanticValidator {
     bool hasCheck = false;
     bool hasCall = false;
     for (int i = 0; i < state.legal_actions_size(); ++i) {
-      const pv2::LegalAction& legal = state.legal_actions(i);
+      const pe::LegalAction& legal = state.legal_actions(i);
       const std::string legalField = field + ".legal_actions[" + std::to_string(i) + "]";
       if (!isKnownActionType(legal.type())) {
         reject(legalField + ".type", "legal action type is outside the closed set");
@@ -590,15 +590,15 @@ class SemanticValidator {
       }
       if (!seenKinds.insert(static_cast<int>(legal.type())).second)
         reject(legalField + ".type", "duplicate legal action type");
-      if (legal.type() == pv2::ACTION_TYPE_BET)
+      if (legal.type() == pe::ACTION_TYPE_BET)
         hasBet = true;
-      if (legal.type() == pv2::ACTION_TYPE_RAISE)
+      if (legal.type() == pe::ACTION_TYPE_RAISE)
         hasRaise = true;
-      if (legal.type() == pv2::ACTION_TYPE_CHECK)
+      if (legal.type() == pe::ACTION_TYPE_CHECK)
         hasCheck = true;
-      if (legal.type() == pv2::ACTION_TYPE_CALL)
+      if (legal.type() == pe::ACTION_TYPE_CALL)
         hasCall = true;
-      if (legal.type() == pv2::ACTION_TYPE_BET || legal.type() == pv2::ACTION_TYPE_RAISE) {
+      if (legal.type() == pe::ACTION_TYPE_BET || legal.type() == pe::ACTION_TYPE_RAISE) {
         if (!legal.has_min_target_total() || !legal.has_max_target_total())
           reject(legalField, "bet/raise legal action requires min and max target");
         else {
@@ -629,7 +629,7 @@ class SemanticValidator {
     }
   }
 
-  void checkOptions(const pv2::DecisionOptions& options, const std::string& field) {
+  void checkOptions(const pe::DecisionOptions& options, const std::string& field) {
     stringField(options.strategy_profile(), 1, 64, field + ".strategy_profile");
     const std::string& profile = options.strategy_profile();
     if (profile != "tag" && profile != "lag" && profile != "station-hunter")
@@ -642,10 +642,10 @@ class SemanticValidator {
       // Only AUTOMATIC, HEURISTIC, BLUEPRINT, and RESOLVING are selectable.
       // RIVER_LP, RIVER_DCFR, and MULTISTREET_CFR are not force-selectable.
       switch (options.solver_mode()) {
-        case pv2::SOLVER_MODE_AUTOMATIC:
-        case pv2::SOLVER_MODE_HEURISTIC:
-        case pv2::SOLVER_MODE_BLUEPRINT:
-        case pv2::SOLVER_MODE_RESOLVING:
+        case pe::SOLVER_MODE_AUTOMATIC:
+        case pe::SOLVER_MODE_HEURISTIC:
+        case pe::SOLVER_MODE_BLUEPRINT:
+        case pe::SOLVER_MODE_RESOLVING:
           break;
         default:
           rejectFeature(field + ".solver_mode", "solver mode is not force-selectable");
@@ -662,12 +662,12 @@ class SemanticValidator {
       reject(field + ".minimum_guarantee", "guarantee level is outside the closed set");
     if (!isKnownUtilityProfile(options.utility_profile())) {
       reject(field + ".utility_profile", "utility profile is outside the closed set");
-    } else if (options.utility_profile() == pv2::UTILITY_PROFILE_TOURNAMENT_ICM) {
+    } else if (options.utility_profile() == pe::UTILITY_PROFILE_TOURNAMENT_ICM) {
       rejectUnknownUtility(field + ".utility_profile", "tournament ICM utility is not supported");
     }
   }
 
-  void checkHandState(const pv2::HandState& state, const std::string& field) {
+  void checkHandState(const pe::HandState& state, const std::string& field) {
     if (!state.has_game()) {
       reject(field + ".game", "hand state requires a game definition");
       return;
@@ -677,7 +677,7 @@ class SemanticValidator {
     stringField(state.hand_id(), 1, 128, field + ".hand_id");
     if (!isKnownStreet(state.street()))
       reject(field + ".street", "street is outside the closed set");
-    else if (state.street() == pv2::STREET_SHOWDOWN)
+    else if (state.street() == pe::STREET_SHOWDOWN)
       reject(field + ".street", "SHOWDOWN street is not actionable");
     if (state.button_seat() > 9)
       reject(field + ".button_seat", "button seat must be at most 9");
@@ -688,9 +688,9 @@ class SemanticValidator {
     if (state.players_size() < 2 || state.players_size() > 10)
       reject(field + ".players", "players must have 2..10 entries");
 
-    std::unordered_map<std::uint32_t, const pv2::PlayerState*> players;
+    std::unordered_map<std::uint32_t, const pe::PlayerState*> players;
     for (int i = 0; i < state.players_size(); ++i) {
-      const pv2::PlayerState& player = state.players(i);
+      const pe::PlayerState& player = state.players(i);
       const std::string playerField = field + ".players[" + std::to_string(i) + "]";
       checkPlayer(player, playerField, state.game().table_capacity());
       if (players.contains(player.seat()))
@@ -708,8 +708,8 @@ class SemanticValidator {
 
     // Hero must be present and ACTIVE.
     if (players.contains(state.hero_seat())) {
-      const pv2::PlayerState* hero = players.at(state.hero_seat());
-      if (hero->status() != pv2::PLAYER_STATUS_ACTIVE)
+      const pe::PlayerState* hero = players.at(state.hero_seat());
+      if (hero->status() != pe::PLAYER_STATUS_ACTIVE)
         reject(field + ".hero_seat", "hero must be ACTIVE");
     }
 
@@ -734,14 +734,14 @@ class SemanticValidator {
 
     // Forced contributions.
     for (int i = 0; i < state.forced_contributions_size(); ++i) {
-      const pv2::ForcedContribution& forced = state.forced_contributions(i);
+      const pe::ForcedContribution& forced = state.forced_contributions(i);
       const std::string forcedField = field + ".forced_contributions[" + std::to_string(i) + "]";
       if (forced.seat() > 9)
         reject(forcedField + ".seat", "forced contribution seat must be at most 9");
       if (!isKnownForcedType(forced.type())) {
         reject(forcedField + ".type", "forced contribution type is outside the closed set");
-      } else if (forced.type() != pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND &&
-                 forced.type() != pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND) {
+      } else if (forced.type() != pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND &&
+                 forced.type() != pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND) {
         rejectFeature(forcedField + ".type", "antes, dead blinds, and straddles are unsupported");
       }
       if (forced.amount() == 0)
@@ -768,11 +768,11 @@ class SemanticValidator {
 
 }  // namespace
 
-pv2::ErrorCode validateDecisionRequest(const pv2::DecisionRequest& request,
-                                       ValidationReport& report) {
+pe::ErrorCode validateDecisionRequest(const pe::DecisionRequest& request,
+                                      ValidationReport& report) {
   SemanticValidator validator(request);
-  const pv2::ErrorCode code = validator.run();
-  for (const pv2::FieldViolation& violation : validator.report().violations)
+  const pe::ErrorCode code = validator.run();
+  for (const pe::FieldViolation& violation : validator.report().violations)
     report.violations.push_back(violation);
   return code;
 }

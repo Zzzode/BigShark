@@ -1,15 +1,16 @@
 syntax = "proto3";
 
-package bigshark.engine.v2;
+package bigshark.engine;
 
 import "buf/validate/validate.proto";
 
 // ============================================================================
 // RFC 0022: Complete Cash-Hand Protocol
 //
-// V2 carries the complete contribution ledger (G/F), phase-tagged pot layers,
-// explicit rule identity, observation provenance, and capability tuples.
-// V0/V1 are frozen; v2 is an explicit opt-in selected by protocol version.
+// The protocol carries the complete contribution ledger (G/F), phase-tagged
+// pot layers, explicit rule identity, observation provenance, and capability
+// tuples. There is one unversioned wire form (RFC 0034); the transport-level
+// protocol_version discriminant is a handshake field, not a schema family.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
@@ -131,21 +132,21 @@ enum ErrorCode {
   ERROR_CODE_RESOURCE_EXHAUSTED = 7;
   ERROR_CODE_INTERNAL = 8;
   ERROR_CODE_GUARANTEE_BELOW_REQUEST = 9;
-  // V2: the supplied action history is missing actions or has ambiguous
+  // the supplied action history is missing actions or has ambiguous
   // attribution. The host cannot reconstruct the hand from hand start.
   ERROR_CODE_HISTORY_INCOMPLETE = 10;
-  // V2: the supplied action history replays to a different state than the
+  // the supplied action history replays to a different state than the
   // declared current stacks, pot, or board.
   ERROR_CODE_REPLAY_MISMATCH = 11;
-  // V2: no qualified strategy root matches the supplied game definition,
+  // no qualified strategy root matches the supplied game definition,
   // rule profile, or contribution ledger.
   ERROR_CODE_INCOMPATIBLE_ROOT = 12;
-  // V2: a legal action amount does not match any policy or abstraction row.
+  // a legal action amount does not match any policy or abstraction row.
   ERROR_CODE_OFF_TREE_AMOUNT = 13;
-  // V2: the declared rule profile has not been confirmed against the
+  // the declared rule profile has not been confirmed against the
   // provider's authoritative rules.
   ERROR_CODE_RULES_UNCONFIRMED = 14;
-  // V2: the requested utility profile is not supported.
+  // the requested utility profile is not supported.
   ERROR_CODE_UNKNOWN_UTILITY = 15;
 }
 
@@ -158,7 +159,7 @@ enum GuaranteeLevel {
   GUARANTEE_LEVEL_CERTIFIED_BOUND = 5;
 }
 
-// V2: which utility model the response uses. Cash-chip EV must not become
+// which utility model the response uses. Cash-chip EV must not become
 // tournament prize EV.
 enum UtilityProfile {
   UTILITY_PROFILE_UNSPECIFIED = 0;
@@ -166,14 +167,14 @@ enum UtilityProfile {
   UTILITY_PROFILE_TOURNAMENT_ICM = 2;
 }
 
-// V2: how terminal awards are computed. The native offline profile uses
+// how terminal awards are computed. The native offline profile uses
 // clockwise-left-of-button for odd chips.
 enum SettlementRule {
   SETTLEMENT_RULE_UNSPECIFIED = 0;
   SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON = 1;
 }
 
-// V2: whether cumulative short all-ins reopen betting for an already-acted
+// whether cumulative short all-ins reopen betting for an already-acted
 // player. The native offline profile never reopens on cumulative shorts.
 // TDA 2026 rule 49 reopens when the accumulated increase meets the last
 // full raise.
@@ -183,13 +184,13 @@ enum ReopeningRule {
   REOPENING_RULE_TDA_2026 = 2;
 }
 
-// V2: how the board runs out.
+// how the board runs out.
 enum RunoutRule {
   RUNOUT_RULE_UNSPECIFIED = 0;
   RUNOUT_RULE_SINGLE = 1;
 }
 
-// V2: the pot's current phase. During ACTION, layers are provisional (pending
+// the pot's current phase. During ACTION, layers are provisional (pending
 // wagers). At SETTLED, layers are finalized with rake and winners.
 enum PotPhase {
   POT_PHASE_UNSPECIFIED = 0;
@@ -198,7 +199,7 @@ enum PotPhase {
   POT_PHASE_SETTLED = 3;
 }
 
-// V2: whether a pot layer is a provisional pending wager or a finalized
+// whether a pot layer is a provisional pending wager or a finalized
 // settlement layer. A sole-contributor PENDING layer is valid (an open bet
 // awaiting response); a sole-contributor FINALIZED layer is invalid (it would
 // be a refund, not a pot).
@@ -208,7 +209,7 @@ enum LayerStatus {
   LAYER_STATUS_FINALIZED = 2;
 }
 
-// V2: how the action history was obtained and whether it is complete.
+// how the action history was obtained and whether it is complete.
 enum ObservationSource {
   OBSERVATION_SOURCE_UNSPECIFIED = 0;
   // Observed from the official CLI response stream in real time.
@@ -219,7 +220,7 @@ enum ObservationSource {
   OBSERVATION_SOURCE_SUPPLIED = 3;
 }
 
-// V2: whether the observed history covers the complete hand from start.
+// whether the observed history covers the complete hand from start.
 enum ObservationCoverage {
   OBSERVATION_COVERAGE_UNSPECIFIED = 0;
   // Every action from hand start was observed.
@@ -254,7 +255,7 @@ message StraddlePolicy {
   optional uint32 seat = 3 [(buf.validate.field).uint32.lte = 9];
 }
 
-// V2: explicit rule identity. The native offline profile is the declared
+// explicit rule identity. The native offline profile is the declared
 // default; provider rules must be confirmed before a different profile is
 // accepted. The dealt_seat_count selects the native rules profile (heads-up
 // at 2 seats, multiway at 3+ seats) and is fixed for the entire hand.
@@ -304,7 +305,7 @@ message GameDefinition {
   uint64 button_ante = 9;
   optional RakePolicy rake = 10;
   optional StraddlePolicy straddle = 11;
-  // V2: explicit rule identity. Required for v2; absent in v1.
+  // Explicit rule identity; required in the single wire form.
   RuleProfile rule_profile = 12 [(buf.validate.field).required = true];
 }
 
@@ -319,7 +320,7 @@ message Card {
   }];
 }
 
-// V2: per-seat state with the complete G/F contribution ledger.
+// per-seat state with the complete G/F contribution ledger.
 //
 // Invariant (before awards): starting_stack = stack + gross_contributed -
 // refunded. The host validates this after replaying the action history.
@@ -376,7 +377,7 @@ message ActionEvent {
   bool all_in = 9;
 }
 
-// V2: a board card deal event, making street/card boundaries explicit in the
+// a board card deal event, making street/card boundaries explicit in the
 // transition path.
 message BoardDeal {
   Street street = 1 [(buf.validate.field).enum = {
@@ -389,7 +390,7 @@ message BoardDeal {
   }];
 }
 
-// V2: one event in the ordered public transition path. Either a player action
+// one event in the ordered public transition path. Either a player action
 // or a board card deal.
 message TransitionEvent {
   uint64 sequence = 1;
@@ -400,7 +401,7 @@ message TransitionEvent {
   }
 }
 
-// V2: one contribution layer. During ACTION, layers are PENDING (provisional,
+// one contribution layer. During ACTION, layers are PENDING (provisional,
 // may change as more chips enter). At SETTLED, layers are FINALIZED with rake
 // and winners. A PENDING layer may have a single contributor (an open bet);
 // a FINALIZED layer must have at least two contributors (a sole-contributor
@@ -436,7 +437,7 @@ message PotLayer {
   }];
 }
 
-// V2: phase-tagged pot state. During ACTION, layers are provisional pending
+// phase-tagged pot state. During ACTION, layers are provisional pending
 // wagers. At SETTLED, layers are finalized. The host must never invoke
 // terminal settlement validation on an ACTION-phase pot.
 message PotState {
@@ -461,7 +462,7 @@ message LegalAction {
   bool all_in_only = 4;
 }
 
-// V2: observation provenance. Binds the action history to a controller
+// observation provenance. Binds the action history to a controller
 // observation epoch and records coverage. An asserted completeness bit is
 // not a proof; the host validates the history by replaying it.
 message ObservationProvenance {
@@ -511,14 +512,14 @@ message HandState {
   repeated Card board = 9 [(buf.validate.field).repeated.max_items = 5];
   PotState pot = 10 [(buf.validate.field).required = true];
   repeated ForcedContribution forced_contributions = 11;
-  // V2: ordered transition path with explicit card boundaries.
+  // ordered transition path with explicit card boundaries.
   repeated TransitionEvent transition_path = 12;
   repeated LegalAction legal_actions = 13 [(buf.validate.field).repeated = {
     min_items: 1
     max_items: 5
   }];
   uint64 to_call = 14;
-  // V2: observation provenance. Required for v2.
+  // Observation provenance; required in the single wire form.
   ObservationProvenance provenance = 15 [(buf.validate.field).required = true];
 }
 
@@ -549,7 +550,7 @@ message DecisionOptions {
       5
     ]
   }];
-  // V2: the utility profile for this decision. Cash-chip EV must not become
+  // the utility profile for this decision. Cash-chip EV must not become
   // tournament prize EV.
   UtilityProfile utility_profile = 9 [(buf.validate.field).enum = {
     defined_only: true
@@ -616,7 +617,7 @@ message SolverMetadata {
       "certified_bound"
     ]
   }];
-  // V2: the utility profile of the response values.
+  // the utility profile of the response values.
   UtilityProfile utility_profile = 11 [(buf.validate.field).enum = {
     defined_only: true
     not_in: 0
@@ -674,7 +675,7 @@ message DecisionResponse {
   }
 }
 
-// V2: a complete supported capability tuple. Replaces v1's independent
+// A complete supported capability tuple, rather than independent
 // booleans, which could imply an unimplemented cross-product. Each tuple
 // describes one fully qualified combination.
 message CapabilityTuple {
@@ -745,10 +746,9 @@ message GetCapabilitiesResponse {
 }
 
 message Envelope {
-  // Wire discriminator shared with v1's protocol_minor (same field 1).
-  // v0/v1 use 0..2; v2 uses 3. A v1 host that receives 3 returns
-  // UNSUPPORTED_PROTOCOL (v1_envelope.cpp rejects minor > 2). A v2 host
-  // dispatches 0..2 to the frozen v1 handler and 3 to v2. No autodetection.
+  // Transport handshake discriminant (field 1). The engine tier accepts one
+  // value (3) and rejects every other value as an unsupported protocol;
+  // the schema family itself is unversioned (RFC 0034).
   uint32 protocol_version = 1;
   string request_id = 2 [(buf.validate.field).string = {
     min_len: 1

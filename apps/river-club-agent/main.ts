@@ -86,7 +86,7 @@ interface RunnerConfig {
   autoWindowMs?: number;
   /**
    * RFC 0009 W1: resident artifact roots ({path, sha256}) launch the framed
-   * engine child with `--resident-root` and negotiate minor 2. Empty or absent
+   * engine child with `--resident-root` and negotiate the engine protocol handshake. Empty or absent
    * keeps the previous behavior exactly: the engine answers from its built-in
    * sources with the decision labeled by its guarantee level.
    */

@@ -23,14 +23,16 @@
 #include <vector>
 
 #include "../src/protocol/mappers.hpp"
+#include "conformance_fixtures.hpp"
 
 namespace {
 
-namespace pv2 = bs::pv2;
+namespace pe = bs::pe;
 using bs::EnvelopeOutcome;
 using bs::EnvelopeResult;
 using bs::ReconstructedState;
 using bs::ReplayMiss;
+namespace cf = bs::conformance;
 
 int failures = 0;
 
@@ -41,164 +43,35 @@ void check(bool condition, const std::string& description) {
   }
 }
 
-// --- Card helpers ----------------------------------------------------------
+// Shared current-schema builders live in conformance_fixtures.hpp.
+using cf::addAction;
+using cf::addBoardDeal;
+using cf::addForced;
+using cf::addLayer;
+using cf::addLegal;
+using cf::addPlayer;
+using cf::capabilitiesEnvelope;
+using cf::card;
+using cf::envelopeFor;
+using cf::setGameDefinition;
+using cf::setOptions;
+using cf::setProvenance;
+using cf::vector1Request;
 
-pv2::Card card(pv2::Rank rank, pv2::Suit suit) {
-  pv2::Card value;
-  value.set_rank(rank);
-  value.set_suit(suit);
-  return value;
-}
+// --- Envelope handling ------------------------------------------------------
 
-// --- Player helpers --------------------------------------------------------
-
-void addPlayer(pv2::HandState* state, uint32_t seat, uint64_t starting, uint64_t stack,
-               uint64_t street_committed, uint64_t gross, uint64_t refunded,
-               pv2::PlayerStatus status) {
-  pv2::PlayerState* player = state->add_players();
-  player->set_seat(seat);
-  player->set_starting_stack(starting);
-  player->set_stack(stack);
-  player->set_street_committed(street_committed);
-  player->set_gross_contributed(gross);
-  player->set_refunded(refunded);
-  player->set_status(status);
-}
-
-void addForced(pv2::HandState* state, uint32_t seat, pv2::ForcedContributionType type,
-               uint64_t amount) {
-  pv2::ForcedContribution* forced = state->add_forced_contributions();
-  forced->set_seat(seat);
-  forced->set_type(type);
-  forced->set_amount(amount);
-}
-
-// --- Transition path helpers -----------------------------------------------
-
-void addAction(pv2::HandState* state, uint64_t seq, pv2::Street street, uint32_t actor,
-               pv2::ActionType action, uint64_t pot_before, uint64_t stack_after,
-               bool all_in = false, std::optional<uint64_t> target = std::nullopt,
-               std::optional<uint64_t> incremental = std::nullopt) {
-  pv2::TransitionEvent* event = state->add_transition_path();
-  event->set_sequence(seq);
-  pv2::ActionEvent* ae = event->mutable_action();
-  ae->set_sequence(seq);
-  ae->set_street(street);
-  ae->set_actor_seat(actor);
-  ae->set_action(action);
-  ae->set_pot_before(pot_before);
-  ae->set_stack_after(stack_after);
-  ae->set_all_in(all_in);
-  if (target.has_value())
-    ae->set_target_total(*target);
-  if (incremental.has_value())
-    ae->set_incremental_amount(*incremental);
-}
-
-void addBoardDeal(pv2::HandState* state, uint64_t seq, pv2::Street street,
-                  std::initializer_list<pv2::Card> cards) {
-  pv2::TransitionEvent* event = state->add_transition_path();
-  event->set_sequence(seq);
-  pv2::BoardDeal* bd = event->mutable_board_deal();
-  bd->set_street(street);
-  for (const pv2::Card& c : cards)
-    *bd->add_cards() = c;
-}
-
-// --- Pot layer helpers ------------------------------------------------------
-
-void addLayer(pv2::PotState* pot, uint64_t level, uint64_t amount,
-              std::initializer_list<uint32_t> eligible, pv2::LayerStatus status) {
-  pv2::PotLayer* layer = pot->add_layers();
-  layer->set_contribution_level(level);
-  layer->set_amount(amount);
-  for (uint32_t seat : eligible)
-    layer->add_eligible_seats(seat);
-  layer->set_status(status);
-}
-
-// --- Legal action helpers ---------------------------------------------------
-
-void addLegal(pv2::HandState* state, pv2::ActionType type,
-              std::optional<uint64_t> min_target = std::nullopt,
-              std::optional<uint64_t> max_target = std::nullopt) {
-  pv2::LegalAction* legal = state->add_legal_actions();
-  legal->set_type(type);
-  if (min_target.has_value())
-    legal->set_min_target_total(*min_target);
-  if (max_target.has_value())
-    legal->set_max_target_total(*max_target);
-}
-
-// --- Game definition helper -------------------------------------------------
-
-void setGameDefinition(pv2::HandState* state, uint32_t table_capacity, uint64_t sb, uint64_t bb,
-                       uint32_t dealt_seats) {
-  pv2::GameDefinition* game = state->mutable_game();
-  game->set_variant(pv2::GAME_VARIANT_NLHE);
-  game->set_betting_structure(pv2::BETTING_STRUCTURE_NO_LIMIT);
-  game->set_game_type(pv2::GAME_TYPE_CASH);
-  game->set_table_capacity(table_capacity);
-  game->mutable_amount_unit()->set_name("chip");
-  game->mutable_amount_unit()->set_decimal_places(0);
-  game->set_small_blind(sb);
-  game->set_big_blind(bb);
-  pv2::RuleProfile* profile = game->mutable_rule_profile();
-  profile->set_settlement(pv2::SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON);
-  profile->set_reopening(pv2::REOPENING_RULE_NEVER_CUMULATIVE);
-  profile->set_runout(pv2::RUNOUT_RULE_SINGLE);
-  profile->set_dealt_seat_count(dealt_seats);
-}
-
-void setProvenance(pv2::HandState* state, uint32_t event_count) {
-  pv2::ObservationProvenance* provenance = state->mutable_provenance();
-  provenance->set_source(pv2::OBSERVATION_SOURCE_OFFICIAL_RESPONSE);
-  provenance->set_coverage(pv2::OBSERVATION_COVERAGE_FULL);
-  provenance->set_controller_epoch("test-epoch-1");
-  provenance->set_observed_event_count(event_count);
-}
-
-void setOptions(pv2::DecisionRequest* request, pv2::SolverMode mode, uint64_t seed = 42,
-                bool sampled = true) {
-  pv2::DecisionOptions* options = request->mutable_options();
-  options->set_strategy_profile("tag");
-  options->set_solve_time_budget_ms(1000);
-  options->set_seed(seed);
-  options->set_include_sampled_action(sampled);
-  options->set_solver_mode(mode);
-  options->set_utility_profile(pv2::UTILITY_PROFILE_CASH_CHIP);
-}
-
-// --- Envelope helpers -------------------------------------------------------
-
-std::string envelopeFor(const std::string& id, pv2::DecisionRequest request) {
-  pv2::Envelope envelope;
-  envelope.set_protocol_version(3);
-  envelope.set_request_id(id);
-  *envelope.mutable_decision_request() = std::move(request);
-  return envelope.SerializeAsString();
-}
-
-std::string capabilitiesEnvelope(const std::string& id) {
-  pv2::Envelope envelope;
-  envelope.set_protocol_version(3);
-  envelope.set_request_id(id);
-  envelope.mutable_get_capabilities_request();
-  return envelope.SerializeAsString();
-}
-
-pv2::Envelope respond(const std::string& frame) {
+pe::Envelope respond(const std::string& frame) {
   const EnvelopeResult result = bs::handleEnvelope(frame);
   check(result.outcome == EnvelopeOutcome::Respond, "host responds");
-  pv2::Envelope response;
+  pe::Envelope response;
   check(response.ParseFromString(result.response), "response parses");
   return response;
 }
 
-pv2::Envelope respondWith(const std::string& frame, const bs::HostServices& services) {
+pe::Envelope respondWith(const std::string& frame, const bs::HostServices& services) {
   const EnvelopeResult result = bs::handleEnvelope(frame, services);
   check(result.outcome == EnvelopeOutcome::Respond, "host responds");
-  pv2::Envelope response;
+  pe::Envelope response;
   check(response.ParseFromString(result.response), "response parses");
   return response;
 }
@@ -209,70 +82,6 @@ pv2::Envelope respondWith(const std::string& frame, const bs::HostServices& serv
 // Hero seat 2 (BB). Decision point: seat 2, street FLOP, to_call = 8.
 // ===========================================================================
 
-pv2::DecisionRequest vector1Request(pv2::SolverMode mode = pv2::SOLVER_MODE_HEURISTIC) {
-  pv2::DecisionRequest request;
-  pv2::HandState* state = request.mutable_state();
-  setGameDefinition(state, 6, 1, 2, 6);
-  state->set_hand_id("vector1-hand");
-  state->set_decision_index(1);
-  state->set_street(pv2::STREET_FLOP);
-  state->set_button_seat(0);
-  state->set_hero_seat(2);
-
-  // Players (G/F ledger from RFC). street_committed is current-street only.
-  addPlayer(state, 0, 200, 186, 8, 14, 0, pv2::PLAYER_STATUS_ACTIVE);
-  addPlayer(state, 1, 200, 199, 0, 1, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 2, 200, 194, 0, 6, 0, pv2::PLAYER_STATUS_ACTIVE);
-  addPlayer(state, 3, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 4, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 5, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
-
-  // Hero hole cards: Qh Qd.
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_HEARTS);
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_DIAMONDS);
-
-  // Board: As Kd 7c.
-  *state->add_board() = card(pv2::RANK_ACE, pv2::SUIT_SPADES);
-  *state->add_board() = card(pv2::RANK_KING, pv2::SUIT_DIAMONDS);
-  *state->add_board() = card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS);
-
-  // Pot: 21, three PENDING layers.
-  pv2::PotState* pot = state->mutable_pot();
-  pot->set_phase(pv2::POT_PHASE_ACTION);
-  addLayer(pot, 1, 3, {0, 2}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 6, 10, {0, 2}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 14, 8, {0}, pv2::LAYER_STATUS_PENDING);
-  pot->set_pot_total(21);
-
-  // Forced contributions.
-  addForced(state, 1, pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
-  addForced(state, 2, pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
-
-  // Transition path (9 events).
-  addAction(state, 1, pv2::STREET_PREFLOP, 3, pv2::ACTION_TYPE_FOLD, 3, 200);
-  addAction(state, 2, pv2::STREET_PREFLOP, 4, pv2::ACTION_TYPE_FOLD, 3, 200);
-  addAction(state, 3, pv2::STREET_PREFLOP, 5, pv2::ACTION_TYPE_FOLD, 3, 200);
-  addAction(state, 4, pv2::STREET_PREFLOP, 0, pv2::ACTION_TYPE_RAISE, 3, 194, false, 6);
-  addAction(state, 5, pv2::STREET_PREFLOP, 1, pv2::ACTION_TYPE_FOLD, 9, 199);
-  addAction(state, 6, pv2::STREET_PREFLOP, 2, pv2::ACTION_TYPE_CALL, 9, 194, false, std::nullopt,
-            4);
-  addBoardDeal(state, 7, pv2::STREET_FLOP,
-               {card(pv2::RANK_ACE, pv2::SUIT_SPADES), card(pv2::RANK_KING, pv2::SUIT_DIAMONDS),
-                card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS)});
-  addAction(state, 8, pv2::STREET_FLOP, 2, pv2::ACTION_TYPE_CHECK, 13, 194);
-  addAction(state, 9, pv2::STREET_FLOP, 0, pv2::ACTION_TYPE_BET, 13, 186, false, 8);
-
-  // Legal actions: FOLD, CALL(8), RAISE(min 16, max 194).
-  addLegal(state, pv2::ACTION_TYPE_FOLD);
-  addLegal(state, pv2::ACTION_TYPE_CALL);
-  addLegal(state, pv2::ACTION_TYPE_RAISE, 16, 194);
-  state->set_to_call(8);
-
-  setProvenance(state, 9);
-  setOptions(&request, mode);
-  return request;
-}
-
 // ===========================================================================
 // Turn check-through line — the RFC 0032 baseline fixture.
 // Same 6-max cash hand as vector 1, played one street further: the flop is
@@ -282,64 +91,63 @@ pv2::DecisionRequest vector1Request(pv2::SolverMode mode = pv2::SOLVER_MODE_HEUR
 // construct today.
 // ===========================================================================
 
-pv2::DecisionRequest turnCheckThroughRequest(pv2::SolverMode mode = pv2::SOLVER_MODE_HEURISTIC) {
-  pv2::DecisionRequest request;
-  pv2::HandState* state = request.mutable_state();
+pe::DecisionRequest turnCheckThroughRequest(pe::SolverMode mode = pe::SOLVER_MODE_HEURISTIC) {
+  pe::DecisionRequest request;
+  pe::HandState* state = request.mutable_state();
   setGameDefinition(state, 6, 1, 2, 6);
   state->set_hand_id("turn-checkthrough");
   state->set_decision_index(2);
-  state->set_street(pv2::STREET_TURN);
+  state->set_street(pe::STREET_TURN);
   state->set_button_seat(0);
   state->set_hero_seat(2);
 
-  addPlayer(state, 0, 200, 186, 8, 14, 0, pv2::PLAYER_STATUS_ACTIVE);
-  addPlayer(state, 1, 200, 199, 0, 1, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 2, 200, 194, 0, 6, 0, pv2::PLAYER_STATUS_ACTIVE);
-  addPlayer(state, 3, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 4, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 5, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 0, 200, 186, 8, 14, 0, pe::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 1, 200, 199, 0, 1, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 2, 200, 194, 0, 6, 0, pe::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 3, 200, 200, 0, 0, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 4, 200, 200, 0, 0, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 5, 200, 200, 0, 0, 0, pe::PLAYER_STATUS_FOLDED);
 
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_HEARTS);
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_DIAMONDS);
+  *state->add_hero_hole_cards() = card(pe::RANK_QUEEN, pe::SUIT_HEARTS);
+  *state->add_hero_hole_cards() = card(pe::RANK_QUEEN, pe::SUIT_DIAMONDS);
 
   // Board: As Kd 7c 9s.
-  *state->add_board() = card(pv2::RANK_ACE, pv2::SUIT_SPADES);
-  *state->add_board() = card(pv2::RANK_KING, pv2::SUIT_DIAMONDS);
-  *state->add_board() = card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS);
-  *state->add_board() = card(pv2::RANK_NINE, pv2::SUIT_SPADES);
+  *state->add_board() = card(pe::RANK_ACE, pe::SUIT_SPADES);
+  *state->add_board() = card(pe::RANK_KING, pe::SUIT_DIAMONDS);
+  *state->add_board() = card(pe::RANK_SEVEN, pe::SUIT_CLUBS);
+  *state->add_board() = card(pe::RANK_NINE, pe::SUIT_SPADES);
 
-  pv2::PotState* pot = state->mutable_pot();
-  pot->set_phase(pv2::POT_PHASE_ACTION);
-  addLayer(pot, 1, 3, {0, 2}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 6, 10, {0, 2}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 14, 8, {0}, pv2::LAYER_STATUS_PENDING);
+  pe::PotState* pot = state->mutable_pot();
+  pot->set_phase(pe::POT_PHASE_ACTION);
+  addLayer(pot, 1, 3, {0, 2}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 6, 10, {0, 2}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 14, 8, {0}, pe::LAYER_STATUS_PENDING);
   pot->set_pot_total(21);
 
-  addForced(state, 1, pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
-  addForced(state, 2, pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
+  addForced(state, 1, pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
+  addForced(state, 2, pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
 
-  addAction(state, 1, pv2::STREET_PREFLOP, 3, pv2::ACTION_TYPE_FOLD, 3, 200);
-  addAction(state, 2, pv2::STREET_PREFLOP, 4, pv2::ACTION_TYPE_FOLD, 3, 200);
-  addAction(state, 3, pv2::STREET_PREFLOP, 5, pv2::ACTION_TYPE_FOLD, 3, 200);
-  addAction(state, 4, pv2::STREET_PREFLOP, 0, pv2::ACTION_TYPE_RAISE, 3, 194, false, 6);
-  addAction(state, 5, pv2::STREET_PREFLOP, 1, pv2::ACTION_TYPE_FOLD, 9, 199);
-  addAction(state, 6, pv2::STREET_PREFLOP, 2, pv2::ACTION_TYPE_CALL, 9, 194, false, std::nullopt,
-            4);
-  addBoardDeal(state, 7, pv2::STREET_FLOP,
-               {card(pv2::RANK_ACE, pv2::SUIT_SPADES), card(pv2::RANK_KING, pv2::SUIT_DIAMONDS),
-                card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS)});
+  addAction(state, 1, pe::STREET_PREFLOP, 3, pe::ACTION_TYPE_FOLD, 3, 200);
+  addAction(state, 2, pe::STREET_PREFLOP, 4, pe::ACTION_TYPE_FOLD, 3, 200);
+  addAction(state, 3, pe::STREET_PREFLOP, 5, pe::ACTION_TYPE_FOLD, 3, 200);
+  addAction(state, 4, pe::STREET_PREFLOP, 0, pe::ACTION_TYPE_RAISE, 3, 194, false, 6);
+  addAction(state, 5, pe::STREET_PREFLOP, 1, pe::ACTION_TYPE_FOLD, 9, 199);
+  addAction(state, 6, pe::STREET_PREFLOP, 2, pe::ACTION_TYPE_CALL, 9, 194, false, std::nullopt, 4);
+  addBoardDeal(state, 7, pe::STREET_FLOP,
+               {card(pe::RANK_ACE, pe::SUIT_SPADES), card(pe::RANK_KING, pe::SUIT_DIAMONDS),
+                card(pe::RANK_SEVEN, pe::SUIT_CLUBS)});
   // Flop checked through: seat 2 acts first (clockwise of the button, with the
   // blinds and folded seats skipped), then the button closes the street.
-  addAction(state, 8, pv2::STREET_FLOP, 2, pv2::ACTION_TYPE_CHECK, 13, 194);
-  addAction(state, 9, pv2::STREET_FLOP, 0, pv2::ACTION_TYPE_CHECK, 13, 194);
-  addBoardDeal(state, 10, pv2::STREET_TURN, {card(pv2::RANK_NINE, pv2::SUIT_SPADES)});
+  addAction(state, 8, pe::STREET_FLOP, 2, pe::ACTION_TYPE_CHECK, 13, 194);
+  addAction(state, 9, pe::STREET_FLOP, 0, pe::ACTION_TYPE_CHECK, 13, 194);
+  addBoardDeal(state, 10, pe::STREET_TURN, {card(pe::RANK_NINE, pe::SUIT_SPADES)});
   // Turn: hero checks, the button bets 8.
-  addAction(state, 11, pv2::STREET_TURN, 2, pv2::ACTION_TYPE_CHECK, 13, 194);
-  addAction(state, 12, pv2::STREET_TURN, 0, pv2::ACTION_TYPE_BET, 13, 186, false, 8);
+  addAction(state, 11, pe::STREET_TURN, 2, pe::ACTION_TYPE_CHECK, 13, 194);
+  addAction(state, 12, pe::STREET_TURN, 0, pe::ACTION_TYPE_BET, 13, 186, false, 8);
 
-  addLegal(state, pv2::ACTION_TYPE_FOLD);
-  addLegal(state, pv2::ACTION_TYPE_CALL);
-  addLegal(state, pv2::ACTION_TYPE_RAISE, 16, 194);
+  addLegal(state, pe::ACTION_TYPE_FOLD);
+  addLegal(state, pe::ACTION_TYPE_CALL);
+  addLegal(state, pe::ACTION_TYPE_RAISE, 16, 194);
   state->set_to_call(8);
 
   setProvenance(state, 12);
@@ -357,7 +165,7 @@ pv2::DecisionRequest turnCheckThroughRequest(pv2::SolverMode mode = pv2::SOLVER_
 // adapter, which makes this a ready-made guard for the fixed behaviour rather
 // than a test that has to be deleted.
 void testTurnStatePreservesBoard() {
-  pv2::DecisionRequest req = turnCheckThroughRequest();
+  pe::DecisionRequest req = turnCheckThroughRequest();
   ReplayMiss miss = ReplayMiss::None;
   ReconstructedState recon;
   check(reconstructHandState(req, recon, miss), "turn: reconstruction succeeds");
@@ -365,14 +173,14 @@ void testTurnStatePreservesBoard() {
   check(recon.state.has_value(), "turn: a state was produced");
   const bs::poker::GameState& state = *recon.state;
   check(req.state().board_size() == 4, "turn: the wire carries four board cards");
-  check(req.state().street() == pv2::STREET_TURN, "turn: the wire declares the turn");
+  check(req.state().street() == pe::STREET_TURN, "turn: the wire declares the turn");
   // RFC 0032: the rebuilt state is the cursor's runtime, so the board and the
   // street are the wire's, not a three-card flop clamp.
   check(state.board().size() == 4, "turn: the rebuilt board carries four cards");
   check(state.street() == bs::poker::Street::Turn, "turn: the rebuilt street is the TURN");
   check(state.def().board_size == 4, "turn: the identity def is turn-rooted");
   for (std::size_t i = 0; i < state.board().size(); ++i) {
-    const pv2::Card& wire = req.state().board(static_cast<int>(i));
+    const pe::Card& wire = req.state().board(static_cast<int>(i));
     const int expected =
         (static_cast<int>(wire.rank()) - 1) * 4 + (static_cast<int>(wire.suit()) - 1);
     check(state.board()[i] == expected, "turn: identity board card " + std::to_string(i));
@@ -451,40 +259,40 @@ std::string cellLabel(const MatrixCell& cell) {
          "/" + shape;
 }
 
-pv2::Street wireStreet(bs::poker::Street street) {
+pe::Street wireStreet(bs::poker::Street street) {
   switch (street) {
     case bs::poker::Street::Preflop:
-      return pv2::STREET_PREFLOP;
+      return pe::STREET_PREFLOP;
     case bs::poker::Street::Flop:
-      return pv2::STREET_FLOP;
+      return pe::STREET_FLOP;
     case bs::poker::Street::Turn:
-      return pv2::STREET_TURN;
+      return pe::STREET_TURN;
     case bs::poker::Street::River:
-      return pv2::STREET_RIVER;
+      return pe::STREET_RIVER;
   }
-  return pv2::STREET_UNSPECIFIED;
+  return pe::STREET_UNSPECIFIED;
 }
 
-pv2::ActionType wireAction(bs::poker::ActionType type) {
+pe::ActionType wireAction(bs::poker::ActionType type) {
   switch (type) {
     case bs::poker::ActionType::Fold:
-      return pv2::ACTION_TYPE_FOLD;
+      return pe::ACTION_TYPE_FOLD;
     case bs::poker::ActionType::Check:
-      return pv2::ACTION_TYPE_CHECK;
+      return pe::ACTION_TYPE_CHECK;
     case bs::poker::ActionType::Call:
-      return pv2::ACTION_TYPE_CALL;
+      return pe::ACTION_TYPE_CALL;
     case bs::poker::ActionType::Bet:
-      return pv2::ACTION_TYPE_BET;
+      return pe::ACTION_TYPE_BET;
     case bs::poker::ActionType::Raise:
-      return pv2::ACTION_TYPE_RAISE;
+      return pe::ACTION_TYPE_RAISE;
   }
-  return pv2::ACTION_TYPE_UNSPECIFIED;
+  return pe::ACTION_TYPE_UNSPECIFIED;
 }
 
-pv2::Card wireCard(int id) {
-  pv2::Card out;
-  out.set_rank(static_cast<pv2::Rank>(id / 4 + 1));
-  out.set_suit(static_cast<pv2::Suit>(id % 4 + 1));
+pe::Card wireCard(int id) {
+  pe::Card out;
+  out.set_rank(static_cast<pe::Rank>(id / 4 + 1));
+  out.set_suit(static_cast<pe::Suit>(id % 4 + 1));
   return out;
 }
 
@@ -699,7 +507,7 @@ Replay replayCell(const MatrixCell& cell) {
 }
 
 // Project a replayed cell onto the wire snapshot the adapter consumes.
-pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
+pe::DecisionRequest matrixRequest(const MatrixCell& cell) {
   const Replay replay = replayCell(cell);
   if (!replay.final_state.has_value())
     throw std::runtime_error("matrix fixture: replay produced no state");
@@ -708,8 +516,8 @@ pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
   const std::uint32_t button_wire = replay.button_wire;
   const std::uint32_t hero_wire = replay.hero_wire;
 
-  pv2::DecisionRequest request;
-  pv2::HandState* wire = request.mutable_state();
+  pe::DecisionRequest request;
+  pe::HandState* wire = request.mutable_state();
   setGameDefinition(wire, static_cast<std::uint32_t>(seats), 1, 2,
                     static_cast<std::uint32_t>(seats));
   wire->set_hand_id("matrix-" + cellLabel(cell));
@@ -721,26 +529,26 @@ pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
 
   for (std::size_t i = 0; i < seats; ++i) {
     const bs::poker::GamePlayer& seat = state.players()[i];
-    pv2::PlayerState* player = wire->add_players();
+    pe::PlayerState* player = wire->add_players();
     player->set_seat(replay.rotated[i]);
     player->set_starting_stack(replay.starting_stacks[i]);
     player->set_stack(seat.stack);
     player->set_street_committed(seat.street_committed);
     player->set_gross_contributed(seat.contributed);
     player->set_refunded(seat.refunded);
-    player->set_status(seat.folded   ? pv2::PLAYER_STATUS_FOLDED
-                       : seat.all_in ? pv2::PLAYER_STATUS_ALL_IN
-                                     : pv2::PLAYER_STATUS_ACTIVE);
+    player->set_status(seat.folded   ? pe::PLAYER_STATUS_FOLDED
+                       : seat.all_in ? pe::PLAYER_STATUS_ALL_IN
+                                     : pe::PLAYER_STATUS_ACTIVE);
   }
   // 2h 2d is clear of every board card used above.
-  *wire->add_hero_hole_cards() = card(pv2::RANK_TWO, pv2::SUIT_HEARTS);
-  *wire->add_hero_hole_cards() = card(pv2::RANK_TWO, pv2::SUIT_DIAMONDS);
+  *wire->add_hero_hole_cards() = card(pe::RANK_TWO, pe::SUIT_HEARTS);
+  *wire->add_hero_hole_cards() = card(pe::RANK_TWO, pe::SUIT_DIAMONDS);
   for (int id : state.board())
     *wire->add_board() = wireCard(id);
 
   // Pot layers: one per distinct net-contribution level, ascending.
-  pv2::PotState* pot = wire->mutable_pot();
-  pot->set_phase(pv2::POT_PHASE_ACTION);
+  pe::PotState* pot = wire->mutable_pot();
+  pot->set_phase(pe::POT_PHASE_ACTION);
   {
     std::vector<bs::poker::Chips> levels;
     for (std::size_t i = 0; i < seats; ++i)
@@ -760,12 +568,12 @@ pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
         eligible.push_back(replay.rotated[i]);
       }
       if (amount > 0) {
-        pv2::PotLayer* layer = pot->add_layers();
+        pe::PotLayer* layer = pot->add_layers();
         layer->set_contribution_level(level);
         layer->set_amount(amount);
         for (std::uint32_t seat : eligible)
           layer->add_eligible_seats(seat);
-        layer->set_status(pv2::LAYER_STATUS_PENDING);
+        layer->set_status(pe::LAYER_STATUS_PENDING);
       }
       previous = level;
     }
@@ -775,10 +583,10 @@ pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
   for (std::size_t i = 0; i < seats; ++i) {
     if (replay.blinds[i] == 0)
       continue;
-    pv2::ForcedContribution* forced = wire->add_forced_contributions();
+    pe::ForcedContribution* forced = wire->add_forced_contributions();
     forced->set_seat(replay.rotated[i]);
-    forced->set_type(i == replay.small_blind_actor ? pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND
-                                                   : pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND);
+    forced->set_type(i == replay.small_blind_actor ? pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND
+                                                   : pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND);
     forced->set_amount(replay.blinds[i]);
   }
 
@@ -786,16 +594,16 @@ pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
   // actually saw.
   std::uint64_t sequence = 1;
   for (const Step& step : replay.steps) {
-    pv2::TransitionEvent* event = wire->add_transition_path();
+    pe::TransitionEvent* event = wire->add_transition_path();
     event->set_sequence(sequence);
     if (step.is_card) {
-      pv2::BoardDeal* deal = event->mutable_board_deal();
+      pe::BoardDeal* deal = event->mutable_board_deal();
       deal->set_street(wireStreet(step.street));
       *deal->add_cards() = wireCard(step.card);
       ++sequence;
       continue;
     }
-    pv2::ActionEvent* action = event->mutable_action();
+    pe::ActionEvent* action = event->mutable_action();
     action->set_sequence(sequence);
     action->set_street(wireStreet(step.street));
     action->set_actor_seat(replay.rotated[step.actor]);
@@ -814,20 +622,20 @@ pv2::DecisionRequest matrixRequest(const MatrixCell& cell) {
 
   const bs::poker::LegalActions& legal = state.legal();
   if (legal.fold)
-    addLegal(wire, pv2::ACTION_TYPE_FOLD);
+    addLegal(wire, pe::ACTION_TYPE_FOLD);
   if (legal.check)
-    addLegal(wire, pv2::ACTION_TYPE_CHECK);
+    addLegal(wire, pe::ACTION_TYPE_CHECK);
   if (legal.call)
-    addLegal(wire, pv2::ACTION_TYPE_CALL);
+    addLegal(wire, pe::ACTION_TYPE_CALL);
   if (legal.aggressive) {
     addLegal(wire,
-             legal.aggressive->type == bs::poker::ActionType::Bet ? pv2::ACTION_TYPE_BET
-                                                                  : pv2::ACTION_TYPE_RAISE,
+             legal.aggressive->type == bs::poker::ActionType::Bet ? pe::ACTION_TYPE_BET
+                                                                  : pe::ACTION_TYPE_RAISE,
              legal.aggressive->minimum, legal.aggressive->maximum);
   }
 
   setProvenance(wire, static_cast<std::uint32_t>(wire->transition_path_size()));
-  setOptions(&request, pv2::SOLVER_MODE_HEURISTIC);
+  setOptions(&request, pe::SOLVER_MODE_HEURISTIC);
   return request;
 }
 
@@ -843,7 +651,7 @@ void testDecisionNodeIdentityMatrix() {
           continue;
         const MatrixCell cell{seats, board_size, shape};
         const std::string label = cellLabel(cell);
-        pv2::DecisionRequest request;
+        pe::DecisionRequest request;
         try {
           request = matrixRequest(cell);
         } catch (const std::exception& error) {
@@ -937,70 +745,69 @@ void testDecisionNodeIdentityMatrix() {
 // path (including the refund) and match the pinned G/F ledger.
 // ===========================================================================
 
-pv2::DecisionRequest vector2Request() {
-  pv2::DecisionRequest request;
-  pv2::HandState* state = request.mutable_state();
+pe::DecisionRequest vector2Request() {
+  pe::DecisionRequest request;
+  pe::HandState* state = request.mutable_state();
   setGameDefinition(state, 6, 1, 2, 6);
   state->set_hand_id("vector2-hand");
   state->set_decision_index(1);
-  state->set_street(pv2::STREET_FLOP);
+  state->set_street(pe::STREET_FLOP);
   state->set_button_seat(0);
   state->set_hero_seat(3);
 
   // Players (G/F ledger after refund, from RFC).
-  addPlayer(state, 0, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 1, 200, 199, 0, 1, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 2, 200, 194, 0, 6, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 3, 200, 170, 0, 36, 6, pv2::PLAYER_STATUS_ACTIVE);
-  addPlayer(state, 4, 30, 0, 0, 30, 0, pv2::PLAYER_STATUS_ALL_IN);
-  addPlayer(state, 5, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 0, 200, 200, 0, 0, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 1, 200, 199, 0, 1, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 2, 200, 194, 0, 6, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 3, 200, 170, 0, 36, 6, pe::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 4, 30, 0, 0, 30, 0, pe::PLAYER_STATUS_ALL_IN);
+  addPlayer(state, 5, 200, 200, 0, 0, 0, pe::PLAYER_STATUS_FOLDED);
 
   // Hero hole cards: Qh Qd (same as vector 1 for consistency).
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_HEARTS);
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_DIAMONDS);
+  *state->add_hero_hole_cards() = card(pe::RANK_QUEEN, pe::SUIT_HEARTS);
+  *state->add_hero_hole_cards() = card(pe::RANK_QUEEN, pe::SUIT_DIAMONDS);
 
   // Board: Js Jd 4c.
-  *state->add_board() = card(pv2::RANK_JACK, pv2::SUIT_SPADES);
-  *state->add_board() = card(pv2::RANK_JACK, pv2::SUIT_DIAMONDS);
-  *state->add_board() = card(pv2::RANK_FOUR, pv2::SUIT_CLUBS);
+  *state->add_board() = card(pe::RANK_JACK, pe::SUIT_SPADES);
+  *state->add_board() = card(pe::RANK_JACK, pe::SUIT_DIAMONDS);
+  *state->add_board() = card(pe::RANK_FOUR, pe::SUIT_CLUBS);
 
   // Pot: 67 (73 - 6 refund), three PENDING layers after refund.
-  pv2::PotState* pot = state->mutable_pot();
-  pot->set_phase(pv2::POT_PHASE_ACTION);
-  addLayer(pot, 1, 4, {3, 4}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 6, 15, {3, 4}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 30, 48, {3, 4}, pv2::LAYER_STATUS_PENDING);
+  pe::PotState* pot = state->mutable_pot();
+  pot->set_phase(pe::POT_PHASE_ACTION);
+  addLayer(pot, 1, 4, {3, 4}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 6, 15, {3, 4}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 30, 48, {3, 4}, pe::LAYER_STATUS_PENDING);
   pot->set_pot_total(67);
 
   // Forced contributions.
-  addForced(state, 1, pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
-  addForced(state, 2, pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
+  addForced(state, 1, pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
+  addForced(state, 2, pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
 
   // Transition path (11 events).
-  addAction(state, 1, pv2::STREET_PREFLOP, 3, pv2::ACTION_TYPE_RAISE, 3, 194, false, 6);
-  addAction(state, 2, pv2::STREET_PREFLOP, 4, pv2::ACTION_TYPE_CALL, 9, 24, false, std::nullopt, 6);
-  addAction(state, 3, pv2::STREET_PREFLOP, 5, pv2::ACTION_TYPE_FOLD, 15, 200);
-  addAction(state, 4, pv2::STREET_PREFLOP, 0, pv2::ACTION_TYPE_FOLD, 15, 200);
-  addAction(state, 5, pv2::STREET_PREFLOP, 1, pv2::ACTION_TYPE_FOLD, 15, 199);
-  addAction(state, 6, pv2::STREET_PREFLOP, 2, pv2::ACTION_TYPE_CALL, 15, 194, false, std::nullopt,
-            4);
-  addBoardDeal(state, 7, pv2::STREET_FLOP,
-               {card(pv2::RANK_JACK, pv2::SUIT_SPADES), card(pv2::RANK_JACK, pv2::SUIT_DIAMONDS),
-                card(pv2::RANK_FOUR, pv2::SUIT_CLUBS)});
-  addAction(state, 8, pv2::STREET_FLOP, 2, pv2::ACTION_TYPE_CHECK, 19, 194);
-  addAction(state, 9, pv2::STREET_FLOP, 3, pv2::ACTION_TYPE_BET, 19, 164, false, 30);
-  addAction(state, 10, pv2::STREET_FLOP, 4, pv2::ACTION_TYPE_CALL, 49, 0, true, std::nullopt, 24);
-  addAction(state, 11, pv2::STREET_FLOP, 2, pv2::ACTION_TYPE_FOLD, 73, 194);
+  addAction(state, 1, pe::STREET_PREFLOP, 3, pe::ACTION_TYPE_RAISE, 3, 194, false, 6);
+  addAction(state, 2, pe::STREET_PREFLOP, 4, pe::ACTION_TYPE_CALL, 9, 24, false, std::nullopt, 6);
+  addAction(state, 3, pe::STREET_PREFLOP, 5, pe::ACTION_TYPE_FOLD, 15, 200);
+  addAction(state, 4, pe::STREET_PREFLOP, 0, pe::ACTION_TYPE_FOLD, 15, 200);
+  addAction(state, 5, pe::STREET_PREFLOP, 1, pe::ACTION_TYPE_FOLD, 15, 199);
+  addAction(state, 6, pe::STREET_PREFLOP, 2, pe::ACTION_TYPE_CALL, 15, 194, false, std::nullopt, 4);
+  addBoardDeal(state, 7, pe::STREET_FLOP,
+               {card(pe::RANK_JACK, pe::SUIT_SPADES), card(pe::RANK_JACK, pe::SUIT_DIAMONDS),
+                card(pe::RANK_FOUR, pe::SUIT_CLUBS)});
+  addAction(state, 8, pe::STREET_FLOP, 2, pe::ACTION_TYPE_CHECK, 19, 194);
+  addAction(state, 9, pe::STREET_FLOP, 3, pe::ACTION_TYPE_BET, 19, 164, false, 30);
+  addAction(state, 10, pe::STREET_FLOP, 4, pe::ACTION_TYPE_CALL, 49, 0, true, std::nullopt, 24);
+  addAction(state, 11, pe::STREET_FLOP, 2, pe::ACTION_TYPE_FOLD, 73, 194);
 
   // At the post-refund point, the hand is heads-up with seat 4 all-in.
   // The next event would be a turn deal. No player decision is available.
   // We provide CHECK as the only legal action (the cursor should be at a
   // state where the next street's first actor can check).
-  addLegal(state, pv2::ACTION_TYPE_CHECK);
+  addLegal(state, pe::ACTION_TYPE_CHECK);
   state->set_to_call(0);
 
   setProvenance(state, 11);
-  setOptions(&request, pv2::SOLVER_MODE_HEURISTIC);
+  setOptions(&request, pe::SOLVER_MODE_HEURISTIC);
   return request;
 }
 
@@ -1010,73 +817,70 @@ pv2::DecisionRequest vector2Request() {
 // Decision point: seat 5, street TURN, to_call = 20.
 // ===========================================================================
 
-pv2::DecisionRequest vector3Request(pv2::SolverMode mode = pv2::SOLVER_MODE_HEURISTIC) {
-  pv2::DecisionRequest request;
-  pv2::HandState* state = request.mutable_state();
+pe::DecisionRequest vector3Request(pe::SolverMode mode = pe::SOLVER_MODE_HEURISTIC) {
+  pe::DecisionRequest request;
+  pe::HandState* state = request.mutable_state();
   setGameDefinition(state, 6, 1, 2, 6);
   state->set_hand_id("vector3-hand");
   state->set_decision_index(1);
-  state->set_street(pv2::STREET_TURN);
+  state->set_street(pe::STREET_TURN);
   state->set_button_seat(0);
   state->set_hero_seat(5);
 
   // Players (G/F ledger from RFC). street_committed is current-street (TURN) only.
-  addPlayer(state, 0, 200, 200, 0, 0, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 1, 200, 199, 0, 1, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 2, 200, 194, 0, 6, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 3, 200, 144, 20, 56, 0, pv2::PLAYER_STATUS_ACTIVE);
-  addPlayer(state, 4, 30, 0, 0, 30, 0, pv2::PLAYER_STATUS_ALL_IN);
-  addPlayer(state, 5, 200, 164, 0, 36, 0, pv2::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 0, 200, 200, 0, 0, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 1, 200, 199, 0, 1, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 2, 200, 194, 0, 6, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 3, 200, 144, 20, 56, 0, pe::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 4, 30, 0, 0, 30, 0, pe::PLAYER_STATUS_ALL_IN);
+  addPlayer(state, 5, 200, 164, 0, 36, 0, pe::PLAYER_STATUS_ACTIVE);
 
   // Hero hole cards: Qh Qd.
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_HEARTS);
-  *state->add_hero_hole_cards() = card(pv2::RANK_QUEEN, pv2::SUIT_DIAMONDS);
+  *state->add_hero_hole_cards() = card(pe::RANK_QUEEN, pe::SUIT_HEARTS);
+  *state->add_hero_hole_cards() = card(pe::RANK_QUEEN, pe::SUIT_DIAMONDS);
 
   // Board: As Kd 7c 2h.
-  *state->add_board() = card(pv2::RANK_ACE, pv2::SUIT_SPADES);
-  *state->add_board() = card(pv2::RANK_KING, pv2::SUIT_DIAMONDS);
-  *state->add_board() = card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS);
-  *state->add_board() = card(pv2::RANK_TWO, pv2::SUIT_HEARTS);
+  *state->add_board() = card(pe::RANK_ACE, pe::SUIT_SPADES);
+  *state->add_board() = card(pe::RANK_KING, pe::SUIT_DIAMONDS);
+  *state->add_board() = card(pe::RANK_SEVEN, pe::SUIT_CLUBS);
+  *state->add_board() = card(pe::RANK_TWO, pe::SUIT_HEARTS);
 
   // Pot: 129, five PENDING layers (including side pot).
-  pv2::PotState* pot = state->mutable_pot();
-  pot->set_phase(pv2::POT_PHASE_ACTION);
-  addLayer(pot, 1, 5, {3, 4, 5}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 6, 20, {3, 4, 5}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 30, 72, {3, 4, 5}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 36, 12, {3, 5}, pv2::LAYER_STATUS_PENDING);
-  addLayer(pot, 56, 20, {3}, pv2::LAYER_STATUS_PENDING);
+  pe::PotState* pot = state->mutable_pot();
+  pot->set_phase(pe::POT_PHASE_ACTION);
+  addLayer(pot, 1, 5, {3, 4, 5}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 6, 20, {3, 4, 5}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 30, 72, {3, 4, 5}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 36, 12, {3, 5}, pe::LAYER_STATUS_PENDING);
+  addLayer(pot, 56, 20, {3}, pe::LAYER_STATUS_PENDING);
   pot->set_pot_total(129);
 
   // Forced contributions.
-  addForced(state, 1, pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
-  addForced(state, 2, pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
+  addForced(state, 1, pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
+  addForced(state, 2, pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
 
   // Transition path (14 events).
-  addAction(state, 1, pv2::STREET_PREFLOP, 3, pv2::ACTION_TYPE_RAISE, 3, 194, false, 6);
-  addAction(state, 2, pv2::STREET_PREFLOP, 4, pv2::ACTION_TYPE_CALL, 9, 24, false, std::nullopt, 6);
-  addAction(state, 3, pv2::STREET_PREFLOP, 5, pv2::ACTION_TYPE_CALL, 15, 194, false, std::nullopt,
-            6);
-  addAction(state, 4, pv2::STREET_PREFLOP, 0, pv2::ACTION_TYPE_FOLD, 21, 200);
-  addAction(state, 5, pv2::STREET_PREFLOP, 1, pv2::ACTION_TYPE_FOLD, 21, 199);
-  addAction(state, 6, pv2::STREET_PREFLOP, 2, pv2::ACTION_TYPE_CALL, 21, 194, false, std::nullopt,
-            4);
-  addBoardDeal(state, 7, pv2::STREET_FLOP,
-               {card(pv2::RANK_ACE, pv2::SUIT_SPADES), card(pv2::RANK_KING, pv2::SUIT_DIAMONDS),
-                card(pv2::RANK_SEVEN, pv2::SUIT_CLUBS)});
-  addAction(state, 8, pv2::STREET_FLOP, 2, pv2::ACTION_TYPE_CHECK, 25, 194);
-  addAction(state, 9, pv2::STREET_FLOP, 3, pv2::ACTION_TYPE_BET, 25, 164, false, 30);
-  addAction(state, 10, pv2::STREET_FLOP, 4, pv2::ACTION_TYPE_CALL, 55, 0, true, std::nullopt, 24);
-  addAction(state, 11, pv2::STREET_FLOP, 5, pv2::ACTION_TYPE_CALL, 79, 164, false, std::nullopt,
-            30);
-  addAction(state, 12, pv2::STREET_FLOP, 2, pv2::ACTION_TYPE_FOLD, 109, 194);
-  addBoardDeal(state, 13, pv2::STREET_TURN, {card(pv2::RANK_TWO, pv2::SUIT_HEARTS)});
-  addAction(state, 14, pv2::STREET_TURN, 3, pv2::ACTION_TYPE_BET, 109, 144, false, 20);
+  addAction(state, 1, pe::STREET_PREFLOP, 3, pe::ACTION_TYPE_RAISE, 3, 194, false, 6);
+  addAction(state, 2, pe::STREET_PREFLOP, 4, pe::ACTION_TYPE_CALL, 9, 24, false, std::nullopt, 6);
+  addAction(state, 3, pe::STREET_PREFLOP, 5, pe::ACTION_TYPE_CALL, 15, 194, false, std::nullopt, 6);
+  addAction(state, 4, pe::STREET_PREFLOP, 0, pe::ACTION_TYPE_FOLD, 21, 200);
+  addAction(state, 5, pe::STREET_PREFLOP, 1, pe::ACTION_TYPE_FOLD, 21, 199);
+  addAction(state, 6, pe::STREET_PREFLOP, 2, pe::ACTION_TYPE_CALL, 21, 194, false, std::nullopt, 4);
+  addBoardDeal(state, 7, pe::STREET_FLOP,
+               {card(pe::RANK_ACE, pe::SUIT_SPADES), card(pe::RANK_KING, pe::SUIT_DIAMONDS),
+                card(pe::RANK_SEVEN, pe::SUIT_CLUBS)});
+  addAction(state, 8, pe::STREET_FLOP, 2, pe::ACTION_TYPE_CHECK, 25, 194);
+  addAction(state, 9, pe::STREET_FLOP, 3, pe::ACTION_TYPE_BET, 25, 164, false, 30);
+  addAction(state, 10, pe::STREET_FLOP, 4, pe::ACTION_TYPE_CALL, 55, 0, true, std::nullopt, 24);
+  addAction(state, 11, pe::STREET_FLOP, 5, pe::ACTION_TYPE_CALL, 79, 164, false, std::nullopt, 30);
+  addAction(state, 12, pe::STREET_FLOP, 2, pe::ACTION_TYPE_FOLD, 109, 194);
+  addBoardDeal(state, 13, pe::STREET_TURN, {card(pe::RANK_TWO, pe::SUIT_HEARTS)});
+  addAction(state, 14, pe::STREET_TURN, 3, pe::ACTION_TYPE_BET, 109, 144, false, 20);
 
   // Legal actions: FOLD, CALL(20), RAISE(min 40, max 164).
-  addLegal(state, pv2::ACTION_TYPE_FOLD);
-  addLegal(state, pv2::ACTION_TYPE_CALL);
-  addLegal(state, pv2::ACTION_TYPE_RAISE, 40, 164);
+  addLegal(state, pe::ACTION_TYPE_FOLD);
+  addLegal(state, pe::ACTION_TYPE_CALL);
+  addLegal(state, pe::ACTION_TYPE_RAISE, 40, 164);
   state->set_to_call(20);
 
   setProvenance(state, 14);
@@ -1089,8 +893,8 @@ pv2::DecisionRequest vector3Request(pv2::SolverMode mode = pv2::SOLVER_MODE_HEUR
 // ===========================================================================
 
 void testPeekProtocolVersion() {
-  // v2 envelope (protocol_version = 3).
-  pv2::Envelope v2env;
+  // Envelope on the accepted transport version (protocol_version = 3).
+  pe::Envelope v2env;
   v2env.set_protocol_version(3);
   v2env.set_request_id("test");
   v2env.mutable_get_capabilities_request();
@@ -1101,7 +905,7 @@ void testPeekProtocolVersion() {
   // Envelope with protocol_version = 0 (default, absent on wire). Proto3
   // omits default values on the wire, so field 1 is absent and peek returns
   // nullopt.
-  pv2::Envelope v1env;
+  pe::Envelope v1env;
   v1env.set_protocol_version(0);
   v1env.set_request_id("test");
   const std::string v1frame = v1env.SerializeAsString();
@@ -1124,14 +928,14 @@ void testPeekProtocolVersion() {
 }
 
 void testCapabilities() {
-  const pv2::Envelope response = respond(capabilitiesEnvelope("cap-1"));
+  const pe::Envelope response = respond(capabilitiesEnvelope("cap-1"));
   check(response.has_get_capabilities_response(), "capabilities response present");
-  const pv2::GetCapabilitiesResponse& caps = response.get_capabilities_response();
+  const pe::GetCapabilitiesResponse& caps = response.get_capabilities_response();
   check(caps.supported_protocol_versions_size() == 1, "one protocol version");
   check(caps.supported_protocol_versions(0) == 3, "protocol version 3");
   check(caps.capabilities_size() >= 2, "at least 2 capability tuples");
   // Verify the first tuple is hu-r1.
-  const pv2::CapabilityTuple& tuple = caps.capabilities(0);
+  const pe::CapabilityTuple& tuple = caps.capabilities(0);
   check(tuple.min_dealt_players() == 2, "hu-r1 min dealt 2");
   check(tuple.max_dealt_players() == 2, "hu-r1 max dealt 2");
   check(tuple.min_live_players() == 2, "hu-r1 min live 2");
@@ -1139,19 +943,19 @@ void testCapabilities() {
   check(tuple.supported_streets_size() == 4, "hu-r1 all streets");
   check(tuple.max_stack_bb() == 100, "hu-r1 max stack 100 BB");
   check(!tuple.side_pots(), "hu-r1 no side pots");
-  check(tuple.utility_profile() == pv2::UTILITY_PROFILE_CASH_CHIP, "hu-r1 cash chip");
-  check(tuple.required_coverage() == pv2::OBSERVATION_COVERAGE_FULL, "hu-r1 full coverage");
+  check(tuple.utility_profile() == pe::UTILITY_PROFILE_CASH_CHIP, "hu-r1 cash chip");
+  check(tuple.required_coverage() == pe::OBSERVATION_COVERAGE_FULL, "hu-r1 full coverage");
   check(tuple.quality_scope() == "heads-up-r1", "hu-r1 quality scope");
 }
 
 void testVector1() {
-  pv2::DecisionRequest req = vector1Request();
-  const pv2::Envelope response = respond(envelopeFor("v1-1", std::move(req)));
+  pe::DecisionRequest req = vector1Request();
+  const pe::Envelope response = respond(envelopeFor("vector1-1", std::move(req)));
   check(response.has_decision_response(), "vector 1 decision response present");
-  const pv2::DecisionResponse& dr = response.decision_response();
+  const pe::DecisionResponse& dr = response.decision_response();
   check(!dr.has_error(), "vector 1 no error");
   check(dr.has_expanded_strategy(), "vector 1 expanded strategy present");
-  const pv2::ExpandedStrategy& strategy = dr.expanded_strategy();
+  const pe::ExpandedStrategy& strategy = dr.expanded_strategy();
   check(strategy.actions_size() >= 1, "vector 1 at least 1 action");
   check(strategy.actions_size() <= 32, "vector 1 at most 32 actions");
 
@@ -1162,11 +966,11 @@ void testVector1() {
   check(std::abs(sum - 1.0) <= 1e-9, "vector 1 probabilities sum to 1");
 
   // Verify every action is in the legal set.
-  pv2::DecisionRequest legalReq = vector1Request();
+  pe::DecisionRequest legalReq = vector1Request();
   for (int i = 0; i < strategy.actions_size(); ++i) {
-    const pv2::ActionPolicy& policy = strategy.actions(i);
+    const pe::ActionPolicy& policy = strategy.actions(i);
     bool found = false;
-    for (const pv2::LegalAction& legal : legalReq.state().legal_actions()) {
+    for (const pe::LegalAction& legal : legalReq.state().legal_actions()) {
       if (legal.type() == policy.type()) {
         found = true;
         break;
@@ -1177,9 +981,9 @@ void testVector1() {
 
   // Verify sampled action is present and legal.
   if (strategy.has_selected_action()) {
-    const pv2::SelectedAction& selected = strategy.selected_action();
+    const pe::SelectedAction& selected = strategy.selected_action();
     bool found = false;
-    for (const pv2::LegalAction& legal : legalReq.state().legal_actions()) {
+    for (const pe::LegalAction& legal : legalReq.state().legal_actions()) {
       if (legal.type() == selected.type()) {
         found = true;
         break;
@@ -1190,10 +994,10 @@ void testVector1() {
 
   // Verify solver metadata.
   check(strategy.has_solver(), "vector 1 solver metadata present");
-  const pv2::SolverMetadata& meta = strategy.solver();
-  check(meta.utility_profile() == pv2::UTILITY_PROFILE_CASH_CHIP,
+  const pe::SolverMetadata& meta = strategy.solver();
+  check(meta.utility_profile() == pe::UTILITY_PROFILE_CASH_CHIP,
         "vector 1 utility profile CASH_CHIP");
-  check(!meta.artifact_sha256().empty() || meta.source() != pv2::SOLVER_SOURCE_BLUEPRINT,
+  check(!meta.artifact_sha256().empty() || meta.source() != pe::SOLVER_SOURCE_BLUEPRINT,
         "vector 1 artifact sha256 present for blueprint");
 }
 
@@ -1248,13 +1052,13 @@ void testSubgameRowWithoutArtifact() {
   // Vector 1 is a flop decision with fold and call legal, so the synthetic row
   // is legal at that node.
   ResolvingHostServices host{""};
-  pv2::DecisionRequest req = vector1Request(pv2::SOLVER_MODE_AUTOMATIC);
-  const pv2::Envelope response = respondWith(envelopeFor("no-artifact", std::move(req)), host);
+  pe::DecisionRequest req = vector1Request(pe::SOLVER_MODE_AUTOMATIC);
+  const pe::Envelope response = respondWith(envelopeFor("no-artifact", std::move(req)), host);
   check(response.has_decision_response(), "subgame: decision response present");
-  const pv2::DecisionResponse& dr = response.decision_response();
+  const pe::DecisionResponse& dr = response.decision_response();
   check(!dr.has_error(), "subgame: a solved row with no artifact is not an error");
   check(dr.has_expanded_strategy(), "subgame: expanded strategy present");
-  const pv2::SolverMetadata& meta = dr.expanded_strategy().solver();
+  const pe::SolverMetadata& meta = dr.expanded_strategy().solver();
   check(!meta.has_artifact_sha256(), "subgame: digest is ABSENT, not empty");
   check(meta.diagnostic_reason() == bs::resolver::kSubgameResolveToken,
         "subgame: diagnostic token preserved");
@@ -1292,28 +1096,28 @@ class MissHostServices final : public bs::HostServices {
 
 void testOperationalFallbackLabelsUnservedRoot() {
   MissHostServices host;
-  const auto reasonAt = [&](pv2::DecisionRequest req) {
-    const pv2::Envelope response = respondWith(envelopeFor("fallback", std::move(req)), host);
-    const pv2::DecisionResponse& dr = response.decision_response();
+  const auto reasonAt = [&](pe::DecisionRequest req) {
+    const pe::Envelope response = respondWith(envelopeFor("fallback", std::move(req)), host);
+    const pe::DecisionResponse& dr = response.decision_response();
     if (!dr.has_expanded_strategy())
       return std::string("<no strategy>");
     return dr.expanded_strategy().solver().diagnostic_reason();
   };
   // A flop snapshot keeps the original token, so existing counts are unchanged.
-  check(reasonAt(vector1Request(pv2::SOLVER_MODE_AUTOMATIC)) == "operational-fallback",
+  check(reasonAt(vector1Request(pe::SOLVER_MODE_AUTOMATIC)) == "operational-fallback",
         "fallback: a flop root keeps the original token");
   // A four-card turn snapshot names the unserved root instead.
-  check(reasonAt(turnCheckThroughRequest(pv2::SOLVER_MODE_AUTOMATIC)) == "turn_root_unserved",
+  check(reasonAt(turnCheckThroughRequest(pe::SOLVER_MODE_AUTOMATIC)) == "turn_root_unserved",
         "fallback: a turn root is labelled turn_root_unserved");
 }
 
 void testResidentRowWithMalformedDigest() {
   ResolvingHostServices host{"not-a-sha256"};
-  pv2::DecisionRequest req = vector1Request(pv2::SOLVER_MODE_AUTOMATIC);
-  const pv2::Envelope response = respondWith(envelopeFor("bad-digest", std::move(req)), host);
-  const pv2::DecisionResponse& dr = response.decision_response();
+  pe::DecisionRequest req = vector1Request(pe::SOLVER_MODE_AUTOMATIC);
+  const pe::Envelope response = respondWith(envelopeFor("bad-digest", std::move(req)), host);
+  const pe::DecisionResponse& dr = response.decision_response();
   check(dr.has_error(), "malformed digest: still an error");
-  check(dr.error().code() == pv2::ERROR_CODE_INTERNAL, "malformed digest: ERROR_CODE_INTERNAL");
+  check(dr.error().code() == pe::ERROR_CODE_INTERNAL, "malformed digest: ERROR_CODE_INTERNAL");
 }
 
 void testVector2Replay() {
@@ -1321,7 +1125,7 @@ void testVector2Replay() {
   // with one player all-in after the flop, so no DecisionRequest is emitted in
   // production. We verify the resident mapper can replay the transition path
   // (including the refund) and match the pinned G/F ledger.
-  pv2::DecisionRequest request = vector2Request();
+  pe::DecisionRequest request = vector2Request();
   bs::ReconstructedState recon;
   ReplayMiss miss = ReplayMiss::None;
   const bool ok = bs::reconstructHandState(request, recon, miss);
@@ -1358,13 +1162,13 @@ void testVector2Replay() {
 }
 
 void testVector3() {
-  pv2::DecisionRequest req = vector3Request();
-  const pv2::Envelope response = respond(envelopeFor("v3-1", std::move(req)));
+  pe::DecisionRequest req = vector3Request();
+  const pe::Envelope response = respond(envelopeFor("vector3-1", std::move(req)));
   check(response.has_decision_response(), "vector 3 decision response present");
-  const pv2::DecisionResponse& dr = response.decision_response();
+  const pe::DecisionResponse& dr = response.decision_response();
   check(!dr.has_error(), "vector 3 no error");
   check(dr.has_expanded_strategy(), "vector 3 expanded strategy present");
-  const pv2::ExpandedStrategy& strategy = dr.expanded_strategy();
+  const pe::ExpandedStrategy& strategy = dr.expanded_strategy();
   check(strategy.actions_size() >= 1, "vector 3 at least 1 action");
   check(strategy.actions_size() <= 32, "vector 3 at most 32 actions");
 
@@ -1375,11 +1179,11 @@ void testVector3() {
   check(std::abs(sum - 1.0) <= 1e-9, "vector 3 probabilities sum to 1");
 
   // Verify every action is in the legal set.
-  pv2::DecisionRequest legalReq = vector3Request();
+  pe::DecisionRequest legalReq = vector3Request();
   for (int i = 0; i < strategy.actions_size(); ++i) {
-    const pv2::ActionPolicy& policy = strategy.actions(i);
+    const pe::ActionPolicy& policy = strategy.actions(i);
     bool found = false;
-    for (const pv2::LegalAction& legal : legalReq.state().legal_actions()) {
+    for (const pe::LegalAction& legal : legalReq.state().legal_actions()) {
       if (legal.type() == policy.type()) {
         found = true;
         break;
@@ -1390,9 +1194,9 @@ void testVector3() {
 
   // Verify sampled action is present and legal.
   if (strategy.has_selected_action()) {
-    const pv2::SelectedAction& selected = strategy.selected_action();
+    const pe::SelectedAction& selected = strategy.selected_action();
     bool found = false;
-    for (const pv2::LegalAction& legal : legalReq.state().legal_actions()) {
+    for (const pe::LegalAction& legal : legalReq.state().legal_actions()) {
       if (legal.type() == selected.type()) {
         found = true;
         break;
@@ -1403,41 +1207,41 @@ void testVector3() {
 
   // Verify solver metadata.
   check(strategy.has_solver(), "vector 3 solver metadata present");
-  const pv2::SolverMetadata& meta = strategy.solver();
-  check(meta.utility_profile() == pv2::UTILITY_PROFILE_CASH_CHIP,
+  const pe::SolverMetadata& meta = strategy.solver();
+  check(meta.utility_profile() == pe::UTILITY_PROFILE_CASH_CHIP,
         "vector 3 utility profile CASH_CHIP");
 }
 
 void testUnsupportedProtocol() {
-  // A v2 envelope with protocol_version != 3 should be rejected.
-  pv2::Envelope envelope;
+  // An envelope with protocol_version != 3 must be rejected.
+  pe::Envelope envelope;
   envelope.set_protocol_version(4);
   envelope.set_request_id("bad-version");
   envelope.mutable_get_capabilities_request();
   const std::string frame = envelope.SerializeAsString();
   const EnvelopeResult result = bs::handleEnvelope(frame);
   check(result.outcome == EnvelopeOutcome::Respond, "unsupported version responds");
-  pv2::Envelope response;
+  pe::Envelope response;
   check(response.ParseFromString(result.response), "unsupported version response parses");
   check(response.has_decision_response(), "unsupported version has decision response");
   check(response.decision_response().has_error(), "unsupported version has error");
-  check(response.decision_response().error().code() == pv2::ERROR_CODE_UNSUPPORTED_PROTOCOL,
+  check(response.decision_response().error().code() == pe::ERROR_CODE_UNSUPPORTED_PROTOCOL,
         "unsupported version error code");
 }
 
 void testMissingRequestId() {
-  pv2::Envelope envelope;
+  pe::Envelope envelope;
   envelope.set_protocol_version(3);
   // No request_id.
   envelope.mutable_get_capabilities_request();
   const std::string frame = envelope.SerializeAsString();
   const EnvelopeResult result = bs::handleEnvelope(frame);
   check(result.outcome == EnvelopeOutcome::Respond, "missing request_id responds");
-  pv2::Envelope response;
+  pe::Envelope response;
   check(response.ParseFromString(result.response), "missing request_id response parses");
   check(response.has_decision_response(), "missing request_id has decision response");
   check(response.decision_response().has_error(), "missing request_id has error");
-  check(response.decision_response().error().code() == pv2::ERROR_CODE_INVALID_REQUEST,
+  check(response.decision_response().error().code() == pe::ERROR_CODE_INVALID_REQUEST,
         "missing request_id error code");
 }
 
@@ -1448,49 +1252,49 @@ void testMissingRequestId() {
 // GameState (not a flop-rooted one) for blueprint identity matching.
 // ===========================================================================
 
-pv2::DecisionRequest buttonRotationRequest() {
-  pv2::DecisionRequest request;
-  pv2::HandState* state = request.mutable_state();
+pe::DecisionRequest buttonRotationRequest() {
+  pe::DecisionRequest request;
+  pe::HandState* state = request.mutable_state();
   setGameDefinition(state, 3, 1, 2, 3);
   state->set_hand_id("rotation-hand");
   state->set_decision_index(1);
-  state->set_street(pv2::STREET_PREFLOP);
+  state->set_street(pe::STREET_PREFLOP);
   state->set_button_seat(2);
   state->set_hero_seat(1);
 
   // Players: seat 0 = SB, seat 1 = BB (hero), seat 2 = button.
-  addPlayer(state, 0, 200, 199, 1, 1, 0, pv2::PLAYER_STATUS_FOLDED);
-  addPlayer(state, 1, 200, 198, 2, 2, 0, pv2::PLAYER_STATUS_ACTIVE);
-  addPlayer(state, 2, 200, 194, 6, 6, 0, pv2::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 0, 200, 199, 1, 1, 0, pe::PLAYER_STATUS_FOLDED);
+  addPlayer(state, 1, 200, 198, 2, 2, 0, pe::PLAYER_STATUS_ACTIVE);
+  addPlayer(state, 2, 200, 194, 6, 6, 0, pe::PLAYER_STATUS_ACTIVE);
 
   // Hero hole cards: As Ks.
-  *state->add_hero_hole_cards() = card(pv2::RANK_ACE, pv2::SUIT_SPADES);
-  *state->add_hero_hole_cards() = card(pv2::RANK_KING, pv2::SUIT_SPADES);
+  *state->add_hero_hole_cards() = card(pe::RANK_ACE, pe::SUIT_SPADES);
+  *state->add_hero_hole_cards() = card(pe::RANK_KING, pe::SUIT_SPADES);
 
   // Pot: 9 (1 + 2 + 6).
   state->mutable_pot()->set_pot_total(9);
 
   // Forced contributions: SB at seat 0, BB at seat 1.
-  addForced(state, 0, pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
-  addForced(state, 1, pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
+  addForced(state, 0, pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND, 1);
+  addForced(state, 1, pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND, 2);
 
   // Transition path: button raises to 6, SB folds.
-  addAction(state, 1, pv2::STREET_PREFLOP, 2, pv2::ACTION_TYPE_RAISE, 3, 194, false, 6);
-  addAction(state, 2, pv2::STREET_PREFLOP, 0, pv2::ACTION_TYPE_FOLD, 9, 199);
+  addAction(state, 1, pe::STREET_PREFLOP, 2, pe::ACTION_TYPE_RAISE, 3, 194, false, 6);
+  addAction(state, 2, pe::STREET_PREFLOP, 0, pe::ACTION_TYPE_FOLD, 9, 199);
 
   // Legal actions: FOLD, CALL(4), RAISE(min 10, max 200).
-  addLegal(state, pv2::ACTION_TYPE_FOLD);
-  addLegal(state, pv2::ACTION_TYPE_CALL);
-  addLegal(state, pv2::ACTION_TYPE_RAISE, 10, 200);
+  addLegal(state, pe::ACTION_TYPE_FOLD);
+  addLegal(state, pe::ACTION_TYPE_CALL);
+  addLegal(state, pe::ACTION_TYPE_RAISE, 10, 200);
   state->set_to_call(4);
 
   setProvenance(state, 2);
-  setOptions(&request, pv2::SOLVER_MODE_HEURISTIC);
+  setOptions(&request, pe::SOLVER_MODE_HEURISTIC);
   return request;
 }
 
 void testButtonRotation() {
-  pv2::DecisionRequest request = buttonRotationRequest();
+  pe::DecisionRequest request = buttonRotationRequest();
   bs::ReconstructedState recon;
   ReplayMiss miss = ReplayMiss::None;
   const bool ok = bs::reconstructHandState(request, recon, miss);

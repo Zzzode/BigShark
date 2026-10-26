@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// wait-turn (protocol v2) — block on `river-club next` until our decision is due
+// wait-turn (River Club framed protocol) - block on `river-club next` until our decision is due
 // (room.legal present), we're off-table, or the budget expires. Emits ONE compact
 // one-line digest so model processing stays fast; the full state is in the journal.
 //

@@ -35,7 +35,7 @@ import {
   type Envelope,
   type ExpandedStrategy,
   type Strategy,
-} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+} from '../../../build/generated/ts/bigshark/engine/engine_pb.js';
 import type {
   Action,
   ExecutableDecision,

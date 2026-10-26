@@ -134,7 +134,7 @@
           "potOdds": 0.3061
         },
         "solver": {
-          "format": "river-gto-v1",
+          "format": "river-gto",
           "game": "NLHE",
           "street": "preflop",
           "heroPosition": "HJ",
@@ -343,7 +343,7 @@
           "potOdds": 0
         },
         "solver": {
-          "format": "river-gto-v1",
+          "format": "river-gto",
           "game": "NLHE",
           "street": "flop",
           "heroPosition": "BB",
@@ -552,7 +552,7 @@
           "potOdds": 0.08
         },
         "solver": {
-          "format": "river-gto-v1",
+          "format": "river-gto",
           "game": "NLHE",
           "street": "turn",
           "heroPosition": "BB",
@@ -755,7 +755,7 @@
           "potOdds": 0
         },
         "solver": {
-          "format": "river-gto-v1",
+          "format": "river-gto",
           "game": "NLHE",
           "street": "river",
           "heroPosition": "BB",
@@ -967,7 +967,7 @@
           "potOdds": 0.0313
         },
         "solver": {
-          "format": "river-gto-v1",
+          "format": "river-gto",
           "game": "NLHE",
           "street": "river",
           "heroPosition": "BB",
@@ -1171,7 +1171,7 @@
           "potOdds": 0
         },
         "solver": {
-          "format": "river-gto-v1",
+          "format": "river-gto",
           "game": "NLHE",
           "street": "river",
           "heroPosition": "BTN/SB",

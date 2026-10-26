@@ -37,9 +37,10 @@
 
 namespace bs::stage6 {
 
-// The declared v1 translator identity, with the eval-side digest filled. This
-// is the SAME type the trainer's frozen manifest records (translator_id.hpp in
-// bigshark_stage6_core); the eval side owns the rule text and the digest.
+// The declared coarse-to-exact translator identity, with the eval-side digest
+// filled. This is the SAME type the trainer's frozen manifest records
+// (translator_id.hpp in bigshark_stage6_core); the eval side owns the rule
+// text and the digest.
 const TranslatorId& declared_translator_id();
 
 // Snaps an arbitrary non-negative wanted total (half-integers included) to
@@ -78,8 +79,8 @@ poker::Action aggressive_fallback_action(const poker::LegalActions& legal);
 // std::invalid_argument (a std::logic_error, not a std::runtime_error) when
 // this is not `seat`'s action phase or the id is unknown, and
 // std::runtime_error on any malformed input or unrecoverable inconsistency.
-// `id` is carried as the projection identity; the default is the frozen v1
-// rule and results do not depend on it beyond identity keying.
+// `id` is carried as the projection identity; the default is the declared
+// coarse-to-exact rule and results do not depend on it beyond identity keying.
 std::vector<PolicyAction> translate_coarse_to_exact(const poker::GameState& state, std::size_t seat,
                                                     const std::vector<PolicyAction>& coarse_dist,
                                                     const TranslatorId& id = {});

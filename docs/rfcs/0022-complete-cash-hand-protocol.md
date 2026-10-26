@@ -847,8 +847,15 @@ rollback specification before it is written.
   selection is `Envelope.protocol_version = 3` (0–2 reserved for v0/v1
   to avoid the v1 minor-2 discriminator collision) with no autodetection;
   the initial capability tuples are `hu-r1` and `sixmax-r1`.
-- Establish which official public fields/transitions can prove full-history
-  completeness and which cases require additional authoritative public data.
+- ~~Establish which official public fields/transitions can prove full-history
+  completeness and which cases require additional authoritative public data.~~
+  **Static audit completed 2026-10-24:** see
+  [Provider public-field audit](../integrations/provider-public-field-audit.md).
+  The revision spine, decision legality, current-state fields, and the
+  old-events-are-omitted guarantee are settled; `room.pots`, `winners`, the
+  event-kind catalog, rake/ante/refund/runout rules, and event-window
+  retention are undocumented or unsettled and are the remaining provider
+  data gate.
 - Confirm River settlement/rake/ante/reopening/runout rules from authoritative
   public sources; current local documentation does not settle these questions.
 - Decide and approve any native rule/profile migration without invalidating

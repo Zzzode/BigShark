@@ -258,7 +258,7 @@ std::vector<std::vector<WeightedHand>> three_seat_river_ranges_v2() {
 }
 
 // Trains the 3-seat river fixture and exports a concrete SeatTrainingResult,
-// the v2 writer's domain record.
+// the schema-v2 writer's domain record.
 SeatTrainingResult trained_seat_result_v2() {
   const GameDef def = three_seat_river_def_v2();
   const bs::tree::AbstractTree tree(def, bs::abstraction::ActionAbstraction::identity());
@@ -275,7 +275,7 @@ SeatTrainingResult trained_seat_result_v2() {
 // A two-seat flop-rooted fixture on a suit-canonical board. {2s, 7h, Kd} has
 // suits {0,1,2} in rank order, so the suit-canonicalization relabel is the
 // identity and the board is its own class representative -- the precondition
-// the v3 writer's board-canonical integrity check enforces.
+// the schema-v3 writer's board-canonical integrity check enforces.
 GameDef two_seat_flop_canonical_def_v3() {
   GameDef def{};
   def.player_count = 2;
@@ -311,7 +311,7 @@ std::vector<std::vector<WeightedHand>> two_seat_flop_ranges_v3() {
 }
 
 // Trains the two-seat canonical flop fixture and exports a concrete
-// SeatTrainingResult under the suit-canonicalization card abstraction, the v3
+// SeatTrainingResult under the suit-canonicalization card abstraction, the schema-v3
 // writer's domain record.
 SeatTrainingResult trained_seat_result_v3() {
   const GameDef def = two_seat_flop_canonical_def_v3();
@@ -320,7 +320,7 @@ SeatTrainingResult trained_seat_result_v3() {
   const NSeatTrainingResult trained =
       train_nseat(tree, ranges, 200, 20261001, NSeatTrainerLimits{});
   if (trained.termination != NSeatTerminationPhase::Complete)
-    throw std::runtime_error("v3 seat fixture training did not complete");
+    throw std::runtime_error("schema-v3 seat fixture training did not complete");
   return export_seat_policy(trained, tree, ranges, bs::abstraction::suit_canonicalization_id());
 }
 
@@ -370,7 +370,7 @@ std::vector<std::vector<WeightedHand>> two_seat_preflop_ranges_v2() {
 }
 
 // Trains the two-seat preflop flop-terminal fixture with the zero frontier
-// evaluator and exports a concrete SeatTrainingResult, the v2 writer's domain
+// evaluator and exports a concrete SeatTrainingResult, the schema-v2 writer's domain
 // record.
 SeatTrainingResult trained_preflop_result_v2() {
   const GameDef def = two_seat_preflop_def_v2();
@@ -1185,9 +1185,9 @@ static int test_roundtrip_v2(const fs::path& dir) {
   CHECK(exported.policy.game().player_count == 3);
   CHECK(exported.terminal_depth == TerminalDepth::River);
 
-  const fs::path path = dir / "roundtrip-v2-checkpoint.db";
+  const fs::path path = dir / "roundtrip-schema-v2-checkpoint.db";
   SeatCheckpointProvenance provenance;
-  provenance.engine_revision = "roundtrip-v2-engine-1";
+  provenance.engine_revision = "roundtrip-schema-v2-engine-1";
   create_checkpoint(path, exported, provenance);
   CHECK(throws_artifact([&] { create_checkpoint(path, exported, provenance); },
                         ArtifactErrorKind::AlreadyExists));
@@ -1239,7 +1239,7 @@ static int test_roundtrip_v2(const fs::path& dir) {
     CHECK(sqlite3_step(sums) == SQLITE_DONE);
     sqlite3_finalize(sums);
 
-    // Manifest and game identity carry the v2 declarations.
+    // Manifest and game identity carry the schema-v2 declarations.
     CHECK(raw.scalar_i64("SELECT info_key_revision FROM manifest") == 2);
     CHECK(raw.scalar_text("SELECT numeric_profile FROM manifest") == kNumericProfileV2);
     CHECK(raw.scalar_i64("SELECT terminal_depth FROM manifest") ==
@@ -1262,15 +1262,15 @@ static int test_roundtrip_v2(const fs::path& dir) {
   const auto& bundle = loaded.bundle;
   CHECK(bundle.manifest.kind == ArtifactKind::Checkpoint);
   CHECK(bundle.manifest.information_key_revision == 2);
-  CHECK(bundle.manifest.engine_revision == "roundtrip-v2-engine-1");
+  CHECK(bundle.manifest.engine_revision == "roundtrip-schema-v2-engine-1");
   CHECK(bundle.manifest.completed_iterations == exported.completed_iterations);
   CHECK(bundle.manifest.terminal_depth == TerminalDepth::River);
   CHECK(bundle.nseat.has_value());
-  // The v1 arm stays default for a v2 file.
+  // The schema-v1 arm stays default for a schema-v2 file.
   CHECK(bundle.result.policy.rows().empty());
   CHECK(bundle.rows.empty());
   if (compare_seat_result_exact(exported, *bundle.nseat) != 0) {
-    std::printf("v2 roundtrip seat-result comparison failed\n");
+    std::printf("schema-v2 roundtrip seat-result comparison failed\n");
     return 1;
   }
   for (const auto& [key, row] : bundle.nseat->policy.rows()) {
@@ -1282,20 +1282,21 @@ static int test_roundtrip_v2(const fs::path& dir) {
           encode_public_key(key, kArtifactSchemaVersionV2));
   }
 
-  // The v2 file is byte-stable: a second write of the same result has the same
+  // The schema-v2 file is byte-stable: a second write of the same result has the same
   // SHA-256 (rollback journal mode, deterministic page allocation).
-  const fs::path path2 = dir / "roundtrip-v2-checkpoint-2.db";
+  const fs::path path2 = dir / "roundtrip-schema-v2-checkpoint-2.db";
   create_checkpoint(path2, exported, provenance);
   CHECK(sha256_file_hex(path) == sha256_file_hex(path2));
 
-  // RFC 0009 W2c: probe_artifact and publish_policy now support schema v2. The
+  // RFC 0009 W2c: probe_artifact and publish_policy now support schema schema-v2. The
   // probe carries the seat-generic identity (game_def/ranges/sizes); the
-  // resident projection of a two-seat flop-rooted v2 source onto the heads-up
+  // resident projection of a two-seat flop-rooted schema-v2 source onto the heads-up
   // view is exercised by the resident-policy test, not here.
-  const fs::path policy_dir = dir / "policy-v2";
+  const fs::path policy_dir = dir / "policy-schema-v2";
   fs::create_directory(policy_dir);
-  const fs::path policy_path = policy_dir / "generation-v2-0001.db";
-  const PublishedPolicy published_v2 = publish_policy(path, policy_path, "publish-v2-engine-1");
+  const fs::path policy_path = policy_dir / "generation-schema-v2-0001.db";
+  const PublishedPolicy published_v2 =
+      publish_policy(path, policy_path, "publish-schema-v2-engine-1");
   CHECK(published_v2.sha256_hex == sha256_file_hex(policy_path));
   CHECK(published_v2.file_bytes == fs::file_size(policy_path));
 
@@ -1312,11 +1313,11 @@ static int test_roundtrip_v2(const fs::path& dir) {
   CHECK(*probe.sizes == exported.policy.sizes());
   CHECK(probe.information_sets == exported.policy.rows().size());
   CHECK(probe.action_count >= probe.information_sets);
-  // The v1 identity arm stays default for a v2 probe.
+  // The schema-v1 identity arm stays default for a schema-v2 probe.
   CHECK(probe.game.ranges[0].empty());
   CHECK(probe.game.ranges[1].empty());
 
-  // The published policy round-trips through the v2 loader with the v1 arm
+  // The published policy round-trips through the schema-v2 loader with the schema-v1 arm
   // default.
   const LoadedArtifact published_loaded =
       load_artifact(policy_path, LoadOptions{published_v2.file_bytes, published_v2.sha256});
@@ -1324,7 +1325,7 @@ static int test_roundtrip_v2(const fs::path& dir) {
   CHECK(published_loaded.bundle.nseat.has_value());
   CHECK(published_loaded.bundle.result.policy.rows().empty());
   if (compare_seat_result_exact(exported, *published_loaded.bundle.nseat) != 0) {
-    std::printf("v2 published-policy seat-result comparison failed\n");
+    std::printf("schema-v2 published-policy seat-result comparison failed\n");
     return 1;
   }
 
@@ -1333,7 +1334,7 @@ static int test_roundtrip_v2(const fs::path& dir) {
   // state whose player is inside the 0..9 digit domain but outside the 3-seat
   // game is rejected.
   {
-    const fs::path tampered = dir / "roundtrip-v2-tampered-player.db";
+    const fs::path tampered = dir / "roundtrip-schema-v2-tampered-player.db";
     fs::copy_file(path, tampered);
     {
       RawDb raw(tampered);
@@ -1347,7 +1348,7 @@ static int test_roundtrip_v2(const fs::path& dir) {
 
   // The bounds (seat, combo) dimension gets the same player_count bound.
   {
-    const fs::path tampered = dir / "roundtrip-v2-tampered-seat.db";
+    const fs::path tampered = dir / "roundtrip-schema-v2-tampered-seat.db";
     fs::copy_file(path, tampered);
     {
       RawDb raw(tampered);
@@ -1377,9 +1378,9 @@ static int test_roundtrip_v3(const fs::path& dir) {
                                 exported.policy.game().board[2]};
   CHECK(bs::abstraction::canonicalize(flop).board == flop);
 
-  const fs::path path = dir / "roundtrip-v3-checkpoint.db";
+  const fs::path path = dir / "roundtrip-schema-v3-checkpoint.db";
   SeatCheckpointProvenance provenance;
-  provenance.engine_revision = "roundtrip-v3-engine-1";
+  provenance.engine_revision = "roundtrip-schema-v3-engine-1";
   create_checkpoint(path, exported, provenance);
   CHECK(throws_artifact([&] { create_checkpoint(path, exported, provenance); },
                         ArtifactErrorKind::AlreadyExists));
@@ -1396,12 +1397,12 @@ static int test_roundtrip_v3(const fs::path& dir) {
           exported.card_id->parameters);
     CHECK(raw.scalar_text("SELECT card_abstraction_digest FROM manifest") ==
           bs::artifacts::detail::u64_to_hex(exported.card_id->digest));
-    // The v2 action-abstraction columns are still present and correct.
+    // The schema-v2 action-abstraction columns are still present and correct.
     CHECK(raw.scalar_i64("SELECT abstraction_version FROM manifest") ==
           static_cast<std::int64_t>(exported.action_id.version));
     CHECK(raw.scalar_i64("SELECT terminal_depth FROM manifest") ==
           static_cast<std::int64_t>(TerminalDepth::River));
-    // The v3 manifest has exactly the v2 table set plus the four card columns.
+    // The schema-v3 manifest has exactly the schema-v2 table set plus the four card columns.
     CHECK(raw.scalar_i64("SELECT COUNT(*) FROM pragma_table_info('manifest')") == 24);
   }
 
@@ -1411,31 +1412,32 @@ static int test_roundtrip_v3(const fs::path& dir) {
   const auto& bundle = loaded.bundle;
   CHECK(bundle.manifest.kind == ArtifactKind::Checkpoint);
   CHECK(bundle.manifest.information_key_revision == 2);
-  CHECK(bundle.manifest.engine_revision == "roundtrip-v3-engine-1");
+  CHECK(bundle.manifest.engine_revision == "roundtrip-schema-v3-engine-1");
   CHECK(bundle.manifest.card_abstraction.has_value());
   CHECK(bundle.manifest.card_abstraction == bs::abstraction::suit_canonicalization_id());
   CHECK(bundle.nseat.has_value());
   CHECK(bundle.nseat->card_id.has_value());
   CHECK(bundle.nseat->card_id == bs::abstraction::suit_canonicalization_id());
   CHECK(bundle.nseat->policy.card_id() == bs::abstraction::suit_canonicalization_id());
-  // The v1 arm stays default for a v3 file.
+  // The schema-v1 arm stays default for a schema-v3 file.
   CHECK(bundle.result.policy.rows().empty());
   CHECK(bundle.rows.empty());
   if (compare_seat_result_exact(exported, *bundle.nseat) != 0) {
-    std::printf("v3 roundtrip seat-result comparison failed\n");
+    std::printf("schema-v3 roundtrip seat-result comparison failed\n");
     return 1;
   }
 
   // Byte-stability: a second write of the same result has the same SHA-256.
-  const fs::path path2 = dir / "roundtrip-v3-checkpoint-2.db";
+  const fs::path path2 = dir / "roundtrip-schema-v3-checkpoint-2.db";
   create_checkpoint(path2, exported, provenance);
   CHECK(sha256_file_hex(path) == sha256_file_hex(path2));
 
   // Probe and publish expose the card abstraction.
-  const fs::path policy_dir = dir / "policy-v3";
+  const fs::path policy_dir = dir / "policy-schema-v3";
   fs::create_directory(policy_dir);
-  const fs::path policy_path = policy_dir / "generation-v3-0001.db";
-  const PublishedPolicy published_v3 = publish_policy(path, policy_path, "publish-v3-engine-1");
+  const fs::path policy_path = policy_dir / "generation-schema-v3-0001.db";
+  const PublishedPolicy published_v3 =
+      publish_policy(path, policy_path, "publish-schema-v3-engine-1");
   CHECK(published_v3.sha256_hex == sha256_file_hex(policy_path));
   CHECK(published_v3.file_bytes == fs::file_size(policy_path));
 
@@ -1452,20 +1454,20 @@ static int test_roundtrip_v3(const fs::path& dir) {
   CHECK(probe.sizes.has_value());
   CHECK(probe.information_sets == exported.policy.rows().size());
 
-  // The published policy round-trips through the v3 loader.
+  // The published policy round-trips through the schema-v3 loader.
   const LoadedArtifact published_loaded =
       load_artifact(policy_path, LoadOptions{published_v3.file_bytes, published_v3.sha256});
   CHECK(published_loaded.bundle.manifest.kind == ArtifactKind::Policy);
   CHECK(published_loaded.bundle.nseat.has_value());
   CHECK(published_loaded.bundle.nseat->card_id == bs::abstraction::suit_canonicalization_id());
   if (compare_seat_result_exact(exported, *published_loaded.bundle.nseat) != 0) {
-    std::printf("v3 published-policy seat-result comparison failed\n");
+    std::printf("schema-v3 published-policy seat-result comparison failed\n");
     return 1;
   }
 
   // Digest verification: a tampered card_abstraction_digest is rejected.
   {
-    const fs::path tampered = dir / "roundtrip-v3-tampered-digest.db";
+    const fs::path tampered = dir / "roundtrip-schema-v3-tampered-digest.db";
     fs::copy_file(path, tampered);
     {
       RawDb raw(tampered);
@@ -1488,7 +1490,7 @@ static int test_roundtrip_v3(const fs::path& dir) {
     CHECK(trained.termination == NSeatTerminationPhase::Complete);
     const SeatTrainingResult bad_export =
         export_seat_policy(trained, tree, ranges, bs::abstraction::suit_canonicalization_id());
-    const fs::path bad_path = dir / "roundtrip-v3-noncanonical.db";
+    const fs::path bad_path = dir / "roundtrip-schema-v3-noncanonical.db";
     CHECK(throws_artifact([&] { create_checkpoint(bad_path, bad_export, provenance); },
                           ArtifactErrorKind::InvalidArgument));
   }
@@ -1577,7 +1579,7 @@ static int test_roundtrip_preflop(const fs::path& dir) {
   CHECK(probe.sizes.has_value());
   CHECK(probe.information_sets == exported.policy.rows().size());
 
-  // The published policy round-trips through the v2 loader.
+  // The published policy round-trips through the schema-v2 loader.
   const LoadedArtifact published_loaded =
       load_artifact(policy_path, LoadOptions{published.file_bytes, published.sha256});
   CHECK(published_loaded.bundle.manifest.kind == ArtifactKind::Policy);
@@ -1587,7 +1589,7 @@ static int test_roundtrip_preflop(const fs::path& dir) {
     return 1;
   }
 
-  // A flop-rooted v2 artifact must NOT match the preflop rules identifier and
+  // A flop-rooted schema-v2 artifact must NOT match the preflop rules identifier and
   // vice versa: the reader dispatches on rules_id, so a preflop root_street
   // with the flop-rooted rules_id is rejected as UnsupportedVersion.
   {
@@ -1595,7 +1597,7 @@ static int test_roundtrip_preflop(const fs::path& dir) {
     fs::copy_file(path, tampered);
     {
       RawDb raw(tampered, SQLITE_OPEN_READWRITE);
-      raw.exec("UPDATE game SET rules_id = 'rfc0009-unified-flop-v1' WHERE id = 1");
+      raw.exec("UPDATE game SET rules_id = 'rfc0009-unified-flop-schema-v1' WHERE id = 1");
     }
     CHECK(throws_artifact([&] { (void)load_artifact(tampered); },
                           ArtifactErrorKind::UnsupportedVersion));
@@ -2022,8 +2024,8 @@ static int test_corruption(const fs::path& dir) {
         throws_artifact([&] { (void)load_artifact(path); }, ArtifactErrorKind::UnsupportedVersion));
   }
   {
-    // A v1 file whose user_version is bumped to 2 is now a *supported* version,
-    // so open_validated selects the schema-v2 DDL set; the v1 stored SQL does
+    // A schema-v1 file whose user_version is bumped to 2 is now a *supported* version,
+    // so open_validated selects the schema-v2 DDL set; the schema-v1 stored SQL does
     // not match it and is rejected as InvalidSchema (wrong-version stored
     // text), not UnsupportedVersion.
     const fs::path path = scratch("bad-version.db");
@@ -2268,7 +2270,7 @@ void overwrite_table_sql(const fs::path& path, const std::string& table, const s
 }
 
 // The roundtrip cases have already independently validated these native
-// schema-v2/v3 files. Keep only three contiguous states to make each fault
+// schema-v2/schema-v3 files. Keep only three contiguous states to make each fault
 // injection cheap; the ordered reader must still consume both complete cursors.
 static int test_seat_stream_adversarial(const fs::path& dir) {
   const char* kStatesNoCheck =
@@ -2351,7 +2353,9 @@ static int test_seat_stream_adversarial(const fs::path& dir) {
   };
 
   for (const int version : {2, 3}) {
-    const std::string prefix = "roundtrip-v" + std::to_string(version);
+    // Source checkpoint produced by the roundtrip-schema-v2/v3 cases in the
+    // shared test workspace; the name must match those case directories.
+    const std::string prefix = "roundtrip-schema-v" + std::to_string(version);
     const fs::path original = dir.parent_path() / prefix / (prefix + "-checkpoint.db");
     const fs::path source = dir / ("stream-v" + std::to_string(version) + ".db");
     fs::copy_file(original, source);
@@ -2803,9 +2807,9 @@ int main() {
   };
   const Case cases[] = {
       {"roundtrip", test_roundtrip},
-      {"roundtrip-v2", test_roundtrip_v2},
+      {"roundtrip-schema-v2", test_roundtrip_v2},
       {"nseat-algorithm-identity", test_nseat_algorithm_identity},
-      {"roundtrip-v3", test_roundtrip_v3},
+      {"roundtrip-schema-v3", test_roundtrip_v3},
       {"roundtrip-preflop", test_roundtrip_preflop},
       {"roundtrip-preflop-3way", test_roundtrip_preflop_3way},
       {"canonical-keys", test_canonical_keys},

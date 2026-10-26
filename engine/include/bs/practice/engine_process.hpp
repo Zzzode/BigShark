@@ -1,7 +1,7 @@
-// practice/engine_process.hpp — C++ v2 engine process client.
+// practice/engine_process.hpp - C++ framed-engine process client.
 //
 // Spawns the engine host (bigshark-engine --serve-proto) as a child process
-// and communicates via ULEB128-framed v2 Protobuf envelopes. One client
+// and communicates via ULEB128-framed Protobuf envelopes. One client
 // instance serves all bot seats in a practice session: the same host process
 // receives every DecisionRequest, so all five bot decisions come from the
 // same loaded artifact library and resolver state.
@@ -19,15 +19,15 @@
 #include <string_view>
 #include <vector>
 
-// Forward-declare the v2 protobuf types so the header stays protobuf-free.
-namespace bigshark::engine::v2 {
+// Forward-declare the engine protobuf types so the header stays protobuf-free.
+namespace bigshark::engine {
 class Envelope;
 class GetCapabilitiesResponse;
-}  // namespace bigshark::engine::v2
+}  // namespace bigshark::engine
 
-// Short alias for the v2 protobuf namespace, used throughout the practice
+// Short alias for the engine protobuf namespace, used throughout the practice
 // engine client.
-namespace pv2 = bigshark::engine::v2;
+namespace pe = bigshark::engine;
 
 namespace bs::practice {
 
@@ -65,9 +65,9 @@ class EngineProcess {
   // last_error() and the process is not running.
   bool start();
 
-  // Sends one v2 envelope and returns the correlated response envelope.
+  // Sends one framed envelope and returns the correlated response envelope.
   // Returns nullptr on timeout, protocol error, or if the process died.
-  std::unique_ptr<pv2::Envelope> request(const pv2::Envelope& request);
+  std::unique_ptr<pe::Envelope> request(const pe::Envelope& request);
 
   // Terminates the engine host process.
   void stop();
@@ -76,7 +76,7 @@ class EngineProcess {
   const std::string& last_error() const noexcept { return last_error_; }
 
   // Capabilities from the handshake (empty until start() succeeds).
-  const pv2::GetCapabilitiesResponse& capabilities() const noexcept;
+  const pe::GetCapabilitiesResponse& capabilities() const noexcept;
 
  private:
   EngineProcessConfig config_;
@@ -85,7 +85,7 @@ class EngineProcess {
   int stdin_fd_ = -1;
   int stdout_fd_ = -1;
   std::uint64_t request_counter_ = 0;
-  std::unique_ptr<pv2::GetCapabilitiesResponse> capabilities_;
+  std::unique_ptr<pe::GetCapabilitiesResponse> capabilities_;
 };
 
 }  // namespace bs::practice

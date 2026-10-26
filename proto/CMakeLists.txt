@@ -58,8 +58,8 @@ configure_file(
 set(BIGSHARK_PROTO_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated/cpp")
 set(BIGSHARK_PROTO_TOOLCHAIN_DIR "${CMAKE_CURRENT_BINARY_DIR}/toolchain-js")
 set(BIGSHARK_PROTO_GENERATED_FILES
-  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v2/engine.pb.cc"
-  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v2/engine.pb.h"
+  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/engine.pb.cc"
+  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/engine.pb.h"
   "${BIGSHARK_PROTO_GENERATED_DIR}/buf/validate/validate.pb.cc"
   "${BIGSHARK_PROTO_GENERATED_DIR}/buf/validate/validate.pb.h"
 )
@@ -73,7 +73,7 @@ add_custom_command(
   COMMAND ${BIGSHARK_BUF_EXECUTABLE} generate
           --template "${CMAKE_CURRENT_BINARY_DIR}/buf.gen.yaml"
   DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/bigshark/engine/v2/engine.proto"
+    "${CMAKE_CURRENT_SOURCE_DIR}/bigshark/engine/engine.proto"
     "${CMAKE_CURRENT_SOURCE_DIR}/buf.yaml"
     "${CMAKE_CURRENT_SOURCE_DIR}/buf.lock"
     "${CMAKE_CURRENT_SOURCE_DIR}/buf.gen.cmake.yaml.in"
@@ -90,7 +90,7 @@ add_custom_command(
 add_custom_target(protobuf-generate DEPENDS ${BIGSHARK_PROTO_GENERATED_FILES})
 
 add_library(bigshark_protocol STATIC
-  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/v2/engine.pb.cc"
+  "${BIGSHARK_PROTO_GENERATED_DIR}/bigshark/engine/engine.pb.cc"
   "${BIGSHARK_PROTO_GENERATED_DIR}/buf/validate/validate.pb.cc"
 )
 add_dependencies(bigshark_protocol protobuf-generate)
@@ -145,19 +145,26 @@ endif()
 
 # libFuzzer target for the untrusted-input framing, envelope parse, and
 # request validator/mapper paths. Off by default so release and ASan ctest
-# runs are unaffected; see docs/development/build-and-test.md. Apple Clang
-# does not ship the libclang_rt.fuzzer runtime, so under AppleClang the
-# target links a standalone ASan/UBSan driver (fuzz_main.cpp) instead; pass
-# BIGSHARK_FUZZ_LIBFUZZER=ON with Homebrew LLVM for coverage-guided fuzzing.
+# runs are unaffected; see docs/development/build-and-test.md. The entry point
+# (fuzz_harness.cpp) and the standalone main (fuzz_standalone_driver.cpp) are
+# separate translation units, so both configurations link without a
+# conditional main or a duplicate-symbol hazard.
 option(BIGSHARK_ENABLE_FUZZ "Build the protocol fuzz target" OFF)
 option(BIGSHARK_FUZZ_LIBFUZZER "Link the fuzz target against libFuzzer" OFF)
 if(BIGSHARK_ENABLE_FUZZ)
   if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     message(FATAL_ERROR "BIGSHARK_ENABLE_FUZZ requires Clang.")
   endif()
+  # The harness TU is always present; the standalone driver is added only
+  # without libFuzzer, whose runtime supplies main.
   set(BIGSHARK_FUZZ_SOURCES
-    "${BIGSHARK_ENGINE_DIR}/tests/fuzz_main.cpp"
+    "${BIGSHARK_ENGINE_DIR}/tests/fuzz_harness.cpp"
   )
+  if(NOT BIGSHARK_FUZZ_LIBFUZZER)
+    list(APPEND BIGSHARK_FUZZ_SOURCES
+      "${BIGSHARK_ENGINE_DIR}/tests/fuzz_standalone_driver.cpp"
+    )
+  endif()
   if(BIGSHARK_FUZZ_LIBFUZZER)
     set(BIGSHARK_FUZZ_SANITIZERS fuzzer,address,undefined)
   else()

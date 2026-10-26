@@ -1,6 +1,6 @@
 // RFC 0009 W2b: the concrete seat-indexed policy (D3).
 //
-// The v2 artifact's in-memory form. The n-seat trainer (W2a) keys its rows by
+// The schema-v2 artifact's in-memory form. The n-seat trainer (W2a) keys its rows by
 // `NSeatInformationKey{own_card_bucket, node_index}`: the bucket abstracts the
 // acting seat's two private cards and the node index abstracts the concrete
 // board value, so one tree serves every sampled flop of the rooted profile.
@@ -16,7 +16,7 @@
 // and a map from a concrete `InformationKey` (actor = seat) to a policy row.
 // The two are deliberately separate types so the two-seat route's artifacts
 // and bytes cannot drift. `SeatTrainingResult` mirrors `NSeatTrainingResult`'s
-// scalar report fields and is the value `create_checkpoint` persists as a v2
+// scalar report fields and is the value `create_checkpoint` persists as a schema-v2
 // artifact.
 //
 // The information key uses the SAME layout `information_key(HeadsUpState, ...)`
@@ -37,7 +37,7 @@
 #include <optional>
 #include <vector>
 
-// RFC 0009 D3 artifact storage reconstructs an immutable SeatPolicy from a v2
+// RFC 0009 D3 artifact storage reconstructs an immutable SeatPolicy from a schema-v2
 // file through this one sanctioned assembler. The grant adds no mutator to the
 // public facade and changes no solver behavior.
 namespace bs::artifacts::detail {
@@ -66,9 +66,9 @@ class SeatPolicy {
   const std::vector<std::vector<WeightedHand>>& ranges() const noexcept { return ranges_; }
   const abstraction::AbstractionId& action_id() const noexcept { return action_id_; }
   // RFC 0009 W4c: the declared card abstraction under which this policy was
-  // trained. nullopt marks an exact-board policy (schema v2): the stored board
+  // trained. nullopt marks an exact-board policy (schema-v2): the stored board
   // is the one concrete flop the policy serves. A set id marks a class policy
-  // (schema v3): the stored board is the canonical representative of its class
+  // (schema-v3): the stored board is the canonical representative of its class
   // and the resident layer canonicalizes a query into those coordinates before
   // lookup. The artifact writer verifies the stored board is already canonical
   // for the suit-canonicalization id; for any other id it records the
@@ -81,7 +81,7 @@ class SeatPolicy {
                                                const tree::AbstractTree& tree,
                                                const std::vector<std::vector<WeightedHand>>& ranges,
                                                std::optional<abstraction::AbstractionId> card_id);
-  // The artifact reader (RFC 0009 D3) reconstructs a SeatPolicy from a v2 file;
+  // The artifact reader (RFC 0009 D3) reconstructs a SeatPolicy from a schema-v2 file;
   // it is the one production consumer granted write access, mirroring
   // PolicyAssembler's relationship to HeadsUpPolicy.
   friend class ::bs::artifacts::detail::SeatPolicyAssembler;
@@ -96,7 +96,7 @@ class SeatPolicy {
 // Result of exporting a trained n-seat policy to concrete seat-indexed rows.
 // Mirrors `NSeatTrainingResult`'s scalar report fields (the export does no
 // training, so the counts are the trainer's) and adds the abstraction identity
-// and terminal depth the v2 artifact manifest records.
+// and terminal depth the schema-v2 artifact manifest records.
 struct SeatTrainingResult {
   NSeatTerminationPhase termination = NSeatTerminationPhase::ResourceLimit;
   std::uint64_t completed_iterations = 0;
@@ -110,9 +110,9 @@ struct SeatTrainingResult {
   std::size_t batch_size = 1;
   std::uint64_t completed_epochs = 0;
   abstraction::AbstractionId action_id{};
-  // The declared card abstraction (see SeatPolicy::card_id). The v2 writer
+  // The declared card abstraction (see SeatPolicy::card_id). The schema-v2 writer
   // persists a nullopt value as a schema-v2 artifact; a set value is persisted
-  // as schema v3.
+  // as schema-v3.
   std::optional<abstraction::AbstractionId> card_id{};
   poker::TerminalDepth terminal_depth = poker::TerminalDepth::River;
   SeatPolicy policy;
@@ -132,17 +132,17 @@ struct SeatTrainingResult {
 // emitted), matching `NSeatPolicy::lookup`'s no-fill semantics.
 //
 // `ranges` is the per-seat range vector the trainer was trained with; it is
-// carried into the result so the v2 artifact can persist it (the trainer's
+// carried into the result so the schema-v2 artifact can persist it (the trainer's
 // result type does not store ranges -- they are a training input). Throws
 // std::invalid_argument if the tree and result disagree on game identity or
 // action abstraction, or if a tree/result invariant is violated.
 //
 // RFC 0009 W4c: `card_id` declares the card abstraction under which the
 // training board was chosen. The default nullopt marks an exact-board policy
-// (persisted as schema v2). A caller that canonicalized the training root
+// (persisted as schema-v2). A caller that canonicalized the training root
 // passes the matching id (e.g. `suit_canonicalization_id()`) so the artifact
-// self-describes as a class policy (persisted as schema v3). The caller is
-// responsible for having trained on the canonical representative; the v3
+// self-describes as a class policy (persisted as schema-v3). The caller is
+// responsible for having trained on the canonical representative; the schema-v3
 // writer enforces this for the suit-canonicalization id.
 SeatTrainingResult export_seat_policy(
     const NSeatTrainingResult& result, const tree::AbstractTree& tree,

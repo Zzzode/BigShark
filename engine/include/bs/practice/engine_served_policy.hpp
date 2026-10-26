@@ -1,8 +1,8 @@
 // practice/engine_served_policy.hpp — BehaviorPolicy backed by the engine host.
 //
 // Injects the engine host's decision pipeline into a PracticeTable bot seat.
-// Each bot decision builds a v2 DecisionRequest from the current GameState,
-// sends it to the shared EngineProcess, and converts the v2 DecisionResponse
+// Each bot decision builds an engine DecisionRequest from the current GameState,
+// sends it to the shared EngineProcess, and converts the engine DecisionResponse
 // into a PolicyAction distribution. One EngineProcess instance is shared
 // across all bot seats so every decision comes from the same loaded artifact
 // library and resolver state.

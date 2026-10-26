@@ -6,9 +6,9 @@ Status: Current
 unusable historical input explicitly; zero decisions do not establish play
 coverage. It never joins a room or submits an action.
 
-`node bin/replay.mjs --synthetic` reuses the frozen River v0 golden fixtures as
-a fixed engineering corpus. These inputs are synthetic, not historical hand
-records. The output labels their origin and reports no historical coverage.
+`node bin/replay.mjs --synthetic` reuses the frozen synthetic River golden
+fixtures as a fixed engineering corpus. These inputs are synthetic, not
+historical hand records. The output labels their origin and reports no historical coverage.
 This checks legal action/amount behavior on the engine; the existing golden
 and differential suites separately check exact strategy responses.
 

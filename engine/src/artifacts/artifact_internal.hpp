@@ -136,8 +136,8 @@ class PolicyAssembler {
                       solver::PolicyRow row);
 };
 
-// The v2 (RFC 0009 D3) analogue of PolicyAssembler: the one production consumer
-// granted access to SeatPolicy's private identity and rows, used by the v2
+// The schema-v2 (RFC 0009 D3) analogue of PolicyAssembler: the one production consumer
+// granted access to SeatPolicy's private identity and rows, used by the schema-v2
 // artifact reader to reconstruct an immutable SeatPolicy from a validated file.
 class SeatPolicyAssembler {
  public:

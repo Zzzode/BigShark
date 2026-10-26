@@ -21,7 +21,7 @@ import {
   StrategySchema,
   UtilityProfile,
   type Envelope,
-} from '../../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+} from '../../../../build/generated/ts/bigshark/engine/engine_pb.js';
 
 const CONTINUATION = 0x80;
 const PAYLOAD_MASK = 0x7f;
@@ -124,7 +124,7 @@ function decisionResponseEnvelope(request: Envelope): Envelope {
 function capabilitiesEnvelope(): Envelope {
   const capabilities = create(GetCapabilitiesResponseSchema, {
     supportedProtocolVersions: [0, 1, 2, 3],
-    engineBuildVersion: 'fake-v2.0',
+    engineBuildVersion: 'fake-test-build',
     capabilities: [
       {
         minDealtPlayers: 2,

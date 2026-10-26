@@ -104,6 +104,8 @@ const char* to_string(BlueprintMiss miss) noexcept {
       return "zero-probability-hero-combination";
     case BlueprintMiss::SeatCountNotSupported:
       return "seat-count-not-supported";
+    case BlueprintMiss::ClassNotTrainedForRoot:
+      return "class-not-trained-for-root";
   }
   return "unknown";
 }

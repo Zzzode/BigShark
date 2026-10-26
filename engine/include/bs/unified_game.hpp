@@ -4,9 +4,9 @@
 // and belief) and the resolver (terminal-only gadget). It replaces the
 // two-seat-only `solver::HeadsUpGame` in the serving path so a 3..10-seat
 // artifact can load and serve through the same engine. The root identity is a
-// `poker::GameDef`; the per-seat ranges, sizing schedule, and the v1-only
+// `poker::GameDef`; the per-seat ranges, sizing schedule, and the schema-v1-only
 // fixed runout ride alongside it. `fixed_runout` is preserved field-for-field
-// so certified two-seat v1 fixed-runout artifacts do not regress.
+// so certified two-seat schema-v1 fixed-runout artifacts do not regress.
 //
 // It lives in the SOLVER domain so `bs::resolver` depends on it without a
 // layering inversion; `bs::resident` implements `resolver::BlueprintSource`
@@ -40,7 +40,7 @@ struct UnifiedGame {
   abstraction::AbstractionId action_id{};
   // A fixed runout defines a different, conditional validation game. All fixed
   // cards are reserved before dealing private hands or any earlier public card.
-  // v1 artifacts may carry one; v2 artifacts leave it empty.
+  // Schema-v1 artifacts may carry one; schema-v2 artifacts leave it empty.
   std::array<std::optional<int>, 2> fixed_runout{};
 };
 
@@ -55,7 +55,7 @@ inline constexpr std::size_t kUnifiedGameCopyAccountingBytes = 1024;
 static_assert(kUnifiedGameCopyAccountingBytes >= sizeof(UnifiedGame),
               "the declared unified game-copy charge must stay at least the real struct size");
 
-// Converts a two-seat `HeadsUpGame` (the v1 artifact form) to the unified view.
+// Converts a two-seat `HeadsUpGame` (the schema-v1 artifact form) to the unified view.
 // The root maps field-for-field onto a flop-rooted two-seat `GameDef`
 // (`preflop` and `blinds_posted` carried across, zero for a flop-rooted game),
 // and the ranges, sizing schedule, and fixed runout are preserved.

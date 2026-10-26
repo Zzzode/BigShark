@@ -62,7 +62,7 @@ FrozenManifest sample_manifest(const FrozenArtifactRows& rows) {
   m.action_abstraction.digest = 0x1111111111111111ULL;
   m.card_abstraction.name = "category-tiers";
   m.card_abstraction.version = 1;
-  m.card_abstraction.parameters = "v1";
+  m.card_abstraction.parameters = "unknown-tier";
   m.card_abstraction.digest = 0x2222222222222222ULL;
   m.translator = nearest_target_translator_id();
   m.geometry_matrix_hash = 0x3333333333333333ULL;

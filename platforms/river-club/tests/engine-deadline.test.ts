@@ -11,7 +11,7 @@ import {
   ExpandedStrategySchema,
   SolverSource,
   type Envelope,
-} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+} from '../../../build/generated/ts/bigshark/engine/engine_pb.js';
 import { decide, safeFallback } from '../src/engine.js';
 import type { EngineClient, EngineConfig, ExecutableDecision, RiverRoom } from '../src/types.js';
 

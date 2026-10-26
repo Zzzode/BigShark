@@ -656,7 +656,7 @@ int test_zero_spr_equity_fallback() {
   CHECK(std::isfinite(values[1]));
   CHECK(std::abs(values[0] + values[1]) < 1e-9);
 
-  std::printf("  zero_spr_equity_fallback PASS (v0=%.4f v1=%.4f)\n", values[0], values[1]);
+  std::printf("  zero_spr_equity_fallback PASS (a=%.4f b=%.4f)\n", values[0], values[1]);
   return 0;
 }
 

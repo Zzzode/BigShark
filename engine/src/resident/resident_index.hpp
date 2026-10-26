@@ -90,7 +90,7 @@ class ResidentIndex {
   // Flatten one complete policy's rows into the immutable buffers.
   void build(const std::map<solver::InformationKey, solver::PolicyRow>& rows);
   // RFC 0009 D4: flatten a schema-v2 seat-generic policy's rows. The row layout
-  // is identical (actions + probabilities); the v2 visits field is not resident.
+  // is identical (actions + probabilities); the schema-v2 visits field is not resident.
   void build(const std::map<solver::InformationKey, solver::SeatPolicyRow>& rows);
 
   // Compact an information key (uint64 words) into a byte string. Returns the
@@ -147,7 +147,7 @@ class ResidentIndex {
   void resolve(const RowRecord& record, CompactRowView& out) const;
 
   // Shared flattening for the two row types. Only `.actions` and
-  // `.probabilities` are read; the v2 `visits` field is not resident.
+  // `.probabilities` are read; the schema-v2 `visits` field is not resident.
   template <class Row>
   void build_rows(const std::map<solver::InformationKey, Row>& rows);
 

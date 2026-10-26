@@ -29,7 +29,7 @@ import {
   Street,
   UtilityProfile,
   type Envelope,
-} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+} from '../../../build/generated/ts/bigshark/engine/engine_pb.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fakeEngine = join(here, 'fixtures', 'fake-proto-engine.js');
@@ -150,7 +150,7 @@ test('warmup, capabilities handshake, and echo', async t => {
   }
   // Capabilities were stored during handshake.
   assert.ok(engine.capabilities.length > 0);
-  assert.equal(engine.buildVersion, 'fake-v2.0');
+  assert.equal(engine.buildVersion, 'fake-test-build');
   assert.equal(engine.protocolVersion, 3);
 });
 

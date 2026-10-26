@@ -1,7 +1,7 @@
 // practice/engine_served_policy.cpp — engine-host-backed BehaviorPolicy.
 #include "bs/practice/engine_served_policy.hpp"
 
-#include <bigshark/engine/v2/engine.pb.h>
+#include <bigshark/engine/engine.pb.h>
 
 #include <algorithm>
 #include <array>
@@ -13,59 +13,59 @@
 namespace bs::practice {
 namespace {
 
-// Convert an engine card id (0..51, rank = id >> 2, suit = id & 3) to a v2
+// Convert an engine card id (0..51, rank = id >> 2, suit = id & 3) to an engine
 // Card message.
-pv2::Card to_v2_card(int card_id) {
-  pv2::Card card;
-  card.set_rank(static_cast<pv2::Rank>((card_id >> 2) + 1));
-  card.set_suit(static_cast<pv2::Suit>((card_id & 3) + 1));
+pe::Card to_wire_card(int card_id) {
+  pe::Card card;
+  card.set_rank(static_cast<pe::Rank>((card_id >> 2) + 1));
+  card.set_suit(static_cast<pe::Suit>((card_id & 3) + 1));
   return card;
 }
 
-// Convert the engine street enum to v2 Street.
-pv2::Street to_v2_street(poker::Street street) {
+// Convert the engine street enum to the wire Street.
+pe::Street to_wire_street(poker::Street street) {
   switch (street) {
     case poker::Street::Preflop:
-      return pv2::STREET_PREFLOP;
+      return pe::STREET_PREFLOP;
     case poker::Street::Flop:
-      return pv2::STREET_FLOP;
+      return pe::STREET_FLOP;
     case poker::Street::Turn:
-      return pv2::STREET_TURN;
+      return pe::STREET_TURN;
     case poker::Street::River:
-      return pv2::STREET_RIVER;
+      return pe::STREET_RIVER;
   }
-  return pv2::STREET_PREFLOP;
+  return pe::STREET_PREFLOP;
 }
 
-// Convert the engine ActionType to v2 ActionType.
-pv2::ActionType to_v2_action_type(poker::ActionType type) {
+// Convert the engine ActionType to the wire ActionType.
+pe::ActionType to_wire_action_type(poker::ActionType type) {
   switch (type) {
     case poker::ActionType::Fold:
-      return pv2::ACTION_TYPE_FOLD;
+      return pe::ACTION_TYPE_FOLD;
     case poker::ActionType::Check:
-      return pv2::ACTION_TYPE_CHECK;
+      return pe::ACTION_TYPE_CHECK;
     case poker::ActionType::Call:
-      return pv2::ACTION_TYPE_CALL;
+      return pe::ACTION_TYPE_CALL;
     case poker::ActionType::Bet:
-      return pv2::ACTION_TYPE_BET;
+      return pe::ACTION_TYPE_BET;
     case poker::ActionType::Raise:
-      return pv2::ACTION_TYPE_RAISE;
+      return pe::ACTION_TYPE_RAISE;
   }
-  return pv2::ACTION_TYPE_FOLD;
+  return pe::ACTION_TYPE_FOLD;
 }
 
-// Convert v2 ActionType to engine ActionType.
-poker::ActionType from_v2_action_type(pv2::ActionType type) {
+// Convert the wire ActionType to the engine ActionType.
+poker::ActionType from_wire_action_type(pe::ActionType type) {
   switch (type) {
-    case pv2::ACTION_TYPE_FOLD:
+    case pe::ACTION_TYPE_FOLD:
       return poker::ActionType::Fold;
-    case pv2::ACTION_TYPE_CHECK:
+    case pe::ACTION_TYPE_CHECK:
       return poker::ActionType::Check;
-    case pv2::ACTION_TYPE_CALL:
+    case pe::ACTION_TYPE_CALL:
       return poker::ActionType::Call;
-    case pv2::ACTION_TYPE_BET:
+    case pe::ACTION_TYPE_BET:
       return poker::ActionType::Bet;
-    case pv2::ACTION_TYPE_RAISE:
+    case pe::ACTION_TYPE_RAISE:
       return poker::ActionType::Raise;
     default:
       return poker::ActionType::Fold;
@@ -76,7 +76,7 @@ poker::ActionType from_v2_action_type(pv2::ActionType type) {
 // Layers are contribution levels: for each unique net contribution level L
 // (ascending), the layer amount is (L - prev) * count(net >= L), and the
 // eligible seats are live players with net >= L.
-std::vector<pv2::PotLayer> build_pot_layers(const poker::GameState& state) {
+std::vector<pe::PotLayer> build_pot_layers(const poker::GameState& state) {
   const auto& players = state.players();
   const std::size_t n = state.player_count();
 
@@ -94,7 +94,7 @@ std::vector<pv2::PotLayer> build_pot_layers(const poker::GameState& state) {
   std::sort(levels.begin(), levels.end());
   levels.erase(std::unique(levels.begin(), levels.end()), levels.end());
 
-  std::vector<pv2::PotLayer> layers;
+  std::vector<pe::PotLayer> layers;
   poker::Chips prev = 0;
   for (poker::Chips level : levels) {
     const poker::Chips diff = level - prev;
@@ -106,10 +106,10 @@ std::vector<pv2::PotLayer> build_pot_layers(const poker::GameState& state) {
     if (count == 0 || diff == 0)
       continue;
 
-    pv2::PotLayer layer;
+    pe::PotLayer layer;
     layer.set_contribution_level(static_cast<std::uint64_t>(level));
     layer.set_amount(static_cast<std::uint64_t>(diff) * count);
-    layer.set_status(pv2::LAYER_STATUS_PENDING);
+    layer.set_status(pe::LAYER_STATUS_PENDING);
     for (std::size_t i = 0; i < n; ++i) {
       if (nets[i] >= level && !players[i].folded)
         layer.add_eligible_seats(static_cast<std::uint32_t>(i));
@@ -124,9 +124,9 @@ std::vector<pv2::PotLayer> build_pot_layers(const poker::GameState& state) {
 // at street boundaries with the actual board cards from the GameState.
 // Call actions carry the correct incremental amount computed by tracking
 // street commitments through the replay.
-std::vector<pv2::TransitionEvent> build_transition_path(const poker::GameState& state,
-                                                        const stage6::HandLog& log) {
-  std::vector<pv2::TransitionEvent> path;
+std::vector<pe::TransitionEvent> build_transition_path(const poker::GameState& state,
+                                                       const stage6::HandLog& log) {
+  std::vector<pe::TransitionEvent> path;
   std::uint64_t seq = 0;
   const auto& def = state.def();
   const std::size_t n = state.player_count();
@@ -148,12 +148,12 @@ std::vector<pv2::TransitionEvent> build_transition_path(const poker::GameState& 
   };
 
   auto add_board_deal = [&](poker::Street street, const std::vector<int>& cards) {
-    pv2::TransitionEvent event;
+    pe::TransitionEvent event;
     event.set_sequence(seq++);
-    pv2::BoardDeal* deal = event.mutable_board_deal();
-    deal->set_street(to_v2_street(street));
+    pe::BoardDeal* deal = event.mutable_board_deal();
+    deal->set_street(to_wire_street(street));
     for (int card : cards)
-      deal->add_cards()->CopyFrom(to_v2_card(card));
+      deal->add_cards()->CopyFrom(to_wire_card(card));
     path.push_back(std::move(event));
     // Reset street commitments at the street boundary.
     street_committed.fill(0);
@@ -163,13 +163,13 @@ std::vector<pv2::TransitionEvent> build_transition_path(const poker::GameState& 
     for (const auto& logged : actions) {
       const std::size_t actor = logged.seat;
       poker::Chips paid = 0;
-      pv2::TransitionEvent event;
+      pe::TransitionEvent event;
       event.set_sequence(seq++);
-      pv2::ActionEvent* action = event.mutable_action();
+      pe::ActionEvent* action = event.mutable_action();
       action->set_sequence(seq);
-      action->set_street(to_v2_street(street));
+      action->set_street(to_wire_street(street));
       action->set_actor_seat(static_cast<std::uint32_t>(actor));
-      action->set_action(to_v2_action_type(logged.action.type));
+      action->set_action(to_wire_action_type(logged.action.type));
 
       switch (logged.action.type) {
         case poker::ActionType::Fold:
@@ -232,26 +232,26 @@ std::vector<pv2::TransitionEvent> build_transition_path(const poker::GameState& 
 }
 
 // Build the legal actions from the GameState's legal actions.
-std::vector<pv2::LegalAction> build_legal_actions(const poker::LegalActions& legal) {
-  std::vector<pv2::LegalAction> result;
+std::vector<pe::LegalAction> build_legal_actions(const poker::LegalActions& legal) {
+  std::vector<pe::LegalAction> result;
   if (legal.fold) {
-    pv2::LegalAction a;
-    a.set_type(pv2::ACTION_TYPE_FOLD);
+    pe::LegalAction a;
+    a.set_type(pe::ACTION_TYPE_FOLD);
     result.push_back(std::move(a));
   }
   if (legal.check) {
-    pv2::LegalAction a;
-    a.set_type(pv2::ACTION_TYPE_CHECK);
+    pe::LegalAction a;
+    a.set_type(pe::ACTION_TYPE_CHECK);
     result.push_back(std::move(a));
   }
   if (legal.call) {
-    pv2::LegalAction a;
-    a.set_type(pv2::ACTION_TYPE_CALL);
+    pe::LegalAction a;
+    a.set_type(pe::ACTION_TYPE_CALL);
     result.push_back(std::move(a));
   }
   if (legal.aggressive) {
-    pv2::LegalAction a;
-    a.set_type(to_v2_action_type(legal.aggressive->type));
+    pe::LegalAction a;
+    a.set_type(to_wire_action_type(legal.aggressive->type));
     a.set_min_target_total(static_cast<std::uint64_t>(legal.aggressive->minimum));
     a.set_max_target_total(static_cast<std::uint64_t>(legal.aggressive->maximum));
     a.set_all_in_only(legal.aggressive->all_in_only);
@@ -260,47 +260,47 @@ std::vector<pv2::LegalAction> build_legal_actions(const poker::LegalActions& leg
   return result;
 }
 
-// Build a v2 DecisionRequest from the GameState, HandLog, and HoleCards.
-pv2::DecisionRequest build_request(const poker::GameState& state, std::size_t hero_seat,
-                                   stage6::HoleCards hole, const stage6::HandLog& log,
-                                   std::uint32_t solve_budget_ms, std::uint64_t seed,
-                                   std::uint64_t decision_index) {
+// Build an engine DecisionRequest from the GameState, HandLog, and HoleCards.
+pe::DecisionRequest build_request(const poker::GameState& state, std::size_t hero_seat,
+                                  stage6::HoleCards hole, const stage6::HandLog& log,
+                                  std::uint32_t solve_budget_ms, std::uint64_t seed,
+                                  std::uint64_t decision_index) {
   const auto& def = state.def();
   const auto& players = state.players();
   const std::size_t n = state.player_count();
 
-  pv2::DecisionRequest request;
-  pv2::HandState* hand = request.mutable_state();
+  pe::DecisionRequest request;
+  pe::HandState* hand = request.mutable_state();
 
   // GameDefinition.
-  pv2::GameDefinition* game = hand->mutable_game();
-  game->set_variant(pv2::GAME_VARIANT_NLHE);
-  game->set_betting_structure(pv2::BETTING_STRUCTURE_NO_LIMIT);
-  game->set_game_type(pv2::GAME_TYPE_CASH);
+  pe::GameDefinition* game = hand->mutable_game();
+  game->set_variant(pe::GAME_VARIANT_NLHE);
+  game->set_betting_structure(pe::BETTING_STRUCTURE_NO_LIMIT);
+  game->set_game_type(pe::GAME_TYPE_CASH);
   game->set_table_capacity(static_cast<std::uint32_t>(n));
-  pv2::AmountUnit* unit = game->mutable_amount_unit();
+  pe::AmountUnit* unit = game->mutable_amount_unit();
   unit->set_name("chip");
   unit->set_decimal_places(0);
   game->set_small_blind(static_cast<std::uint64_t>(def.big_blind / 2));
   game->set_big_blind(static_cast<std::uint64_t>(def.big_blind));
   game->set_ante(0);
   game->set_button_ante(0);
-  pv2::RuleProfile* rules = game->mutable_rule_profile();
-  rules->set_settlement(pv2::SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON);
-  rules->set_reopening(pv2::REOPENING_RULE_NEVER_CUMULATIVE);
-  rules->set_runout(pv2::RUNOUT_RULE_SINGLE);
+  pe::RuleProfile* rules = game->mutable_rule_profile();
+  rules->set_settlement(pe::SETTLEMENT_RULE_CLOCKWISE_LEFT_OF_BUTTON);
+  rules->set_reopening(pe::REOPENING_RULE_NEVER_CUMULATIVE);
+  rules->set_runout(pe::RUNOUT_RULE_SINGLE);
   rules->set_dealt_seat_count(static_cast<std::uint32_t>(n));
 
   // Hand identity.
   hand->set_hand_id("practice-" + std::to_string(decision_index));
   hand->set_decision_index(decision_index);
-  hand->set_street(to_v2_street(state.street()));
+  hand->set_street(to_wire_street(state.street()));
   hand->set_button_seat(static_cast<std::uint32_t>(def.button));
   hand->set_hero_seat(static_cast<std::uint32_t>(hero_seat));
 
   // Player states.
   for (std::size_t i = 0; i < n; ++i) {
-    pv2::PlayerState* p = hand->add_players();
+    pe::PlayerState* p = hand->add_players();
     p->set_seat(static_cast<std::uint32_t>(i));
     p->set_starting_stack(static_cast<std::uint64_t>(def.stacks[i]));
     p->set_stack(static_cast<std::uint64_t>(players[i].stack));
@@ -308,11 +308,11 @@ pv2::DecisionRequest build_request(const poker::GameState& state, std::size_t he
     p->set_gross_contributed(static_cast<std::uint64_t>(players[i].contributed));
     p->set_refunded(static_cast<std::uint64_t>(players[i].refunded));
     if (players[i].folded)
-      p->set_status(pv2::PLAYER_STATUS_FOLDED);
+      p->set_status(pe::PLAYER_STATUS_FOLDED);
     else if (players[i].all_in)
-      p->set_status(pv2::PLAYER_STATUS_ALL_IN);
+      p->set_status(pe::PLAYER_STATUS_ALL_IN);
     else
-      p->set_status(pv2::PLAYER_STATUS_ACTIVE);
+      p->set_status(pe::PLAYER_STATUS_ACTIVE);
   }
 
   // Forced contributions (blinds). Heads-up: button posts SB. 3+ seats:
@@ -320,26 +320,26 @@ pv2::DecisionRequest build_request(const poker::GameState& state, std::size_t he
   const poker::Chips sb = def.big_blind / 2;
   const std::size_t sb_seat = (n == 2) ? def.button : (def.button + 1) % n;
   const std::size_t bb_seat = (n == 2) ? (def.button + 1) % n : (def.button + 2) % n;
-  pv2::ForcedContribution* sb_forced = hand->add_forced_contributions();
+  pe::ForcedContribution* sb_forced = hand->add_forced_contributions();
   sb_forced->set_seat(static_cast<std::uint32_t>(sb_seat));
-  sb_forced->set_type(pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND);
+  sb_forced->set_type(pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND);
   sb_forced->set_amount(static_cast<std::uint64_t>(sb));
-  pv2::ForcedContribution* bb_forced = hand->add_forced_contributions();
+  pe::ForcedContribution* bb_forced = hand->add_forced_contributions();
   bb_forced->set_seat(static_cast<std::uint32_t>(bb_seat));
-  bb_forced->set_type(pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND);
+  bb_forced->set_type(pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND);
   bb_forced->set_amount(static_cast<std::uint64_t>(def.big_blind));
 
   // Hero hole cards.
-  hand->add_hero_hole_cards()->CopyFrom(to_v2_card(hole[0]));
-  hand->add_hero_hole_cards()->CopyFrom(to_v2_card(hole[1]));
+  hand->add_hero_hole_cards()->CopyFrom(to_wire_card(hole[0]));
+  hand->add_hero_hole_cards()->CopyFrom(to_wire_card(hole[1]));
 
   // Board.
   for (int card : state.board())
-    hand->add_board()->CopyFrom(to_v2_card(card));
+    hand->add_board()->CopyFrom(to_wire_card(card));
 
   // Pot.
-  pv2::PotState* pot = hand->mutable_pot();
-  pot->set_phase(pv2::POT_PHASE_ACTION);
+  pe::PotState* pot = hand->mutable_pot();
+  pot->set_phase(pe::POT_PHASE_ACTION);
   for (auto& layer : build_pot_layers(state))
     pot->add_layers()->Swap(&layer);
   pot->set_pot_total(static_cast<std::uint64_t>(state.pot()));
@@ -356,23 +356,23 @@ pv2::DecisionRequest build_request(const poker::GameState& state, std::size_t he
   // Observation provenance. FULL coverage requires a non-empty transition
   // path; the first decision of a hand (preflop, no prior actions) uses
   // MID_HAND_ATTACH and falls back to the safe distribution.
-  pv2::ObservationProvenance* provenance = hand->mutable_provenance();
-  provenance->set_source(pv2::OBSERVATION_SOURCE_SUPPLIED);
+  pe::ObservationProvenance* provenance = hand->mutable_provenance();
+  provenance->set_source(pe::OBSERVATION_SOURCE_SUPPLIED);
   provenance->set_coverage(hand->transition_path_size() > 0
-                               ? pv2::OBSERVATION_COVERAGE_FULL
-                               : pv2::OBSERVATION_COVERAGE_MID_HAND_ATTACH);
+                               ? pe::OBSERVATION_COVERAGE_FULL
+                               : pe::OBSERVATION_COVERAGE_MID_HAND_ATTACH);
   provenance->set_controller_epoch("practice");
   provenance->set_observed_event_count(static_cast<std::uint32_t>(hand->transition_path_size()));
 
   // Decision options.
-  pv2::DecisionOptions* options = request.mutable_options();
+  pe::DecisionOptions* options = request.mutable_options();
   options->set_strategy_profile("tag");
   options->set_solve_time_budget_ms(solve_budget_ms);
   options->set_seed(seed);
   options->set_include_sampled_action(true);
   options->set_include_full_strategy(false);
-  options->set_solver_mode(pv2::SOLVER_MODE_AUTOMATIC);
-  options->set_utility_profile(pv2::UTILITY_PROFILE_CASH_CHIP);
+  options->set_solver_mode(pe::SOLVER_MODE_AUTOMATIC);
+  options->set_utility_profile(pe::UTILITY_PROFILE_CASH_CHIP);
 
   return request;
 }
@@ -406,12 +406,12 @@ std::vector<stage6::PolicyAction> EngineServedPolicy::distribution(
   if (!log)
     log = &empty_log;
 
-  // Build the v2 DecisionRequest.
-  pv2::DecisionRequest request = build_request(state, seat, hole, *log, solve_budget_ms_,
-                                               context.decision_seed, hand_counter_++);
+  // Build the engine DecisionRequest.
+  pe::DecisionRequest request = build_request(state, seat, hole, *log, solve_budget_ms_,
+                                              context.decision_seed, hand_counter_++);
 
   // Wrap in an envelope.
-  pv2::Envelope envelope;
+  pe::Envelope envelope;
   envelope.set_protocol_version(3);
   envelope.set_request_id("practice-" + std::to_string(hand_counter_));
   envelope.mutable_decision_request()->Swap(&request);
@@ -429,14 +429,14 @@ std::vector<stage6::PolicyAction> EngineServedPolicy::distribution(
     return fallback_distribution(state, seat);
   }
 
-  const pv2::DecisionResponse& decision = response->decision_response();
+  const pe::DecisionResponse& decision = response->decision_response();
   if (decision.has_error()) {
     ++fallbacks_;
     return fallback_distribution(state, seat);
   }
 
   // Extract the action policy list from either strategy shape.
-  const google::protobuf::RepeatedPtrField<pv2::ActionPolicy>* actions = nullptr;
+  const google::protobuf::RepeatedPtrField<pe::ActionPolicy>* actions = nullptr;
   if (decision.has_strategy())
     actions = &decision.strategy().actions();
   else if (decision.has_expanded_strategy())
@@ -450,9 +450,9 @@ std::vector<stage6::PolicyAction> EngineServedPolicy::distribution(
   // Convert ActionPolicy[] to PolicyAction[].
   std::vector<stage6::PolicyAction> result;
   result.reserve(static_cast<std::size_t>(actions->size()));
-  for (const pv2::ActionPolicy& ap : *actions) {
+  for (const pe::ActionPolicy& ap : *actions) {
     poker::Action action;
-    action.type = from_v2_action_type(ap.type());
+    action.type = from_wire_action_type(ap.type());
     if (ap.has_target_total())
       action.target_total = static_cast<poker::Chips>(ap.target_total());
     result.push_back({action, ap.probability()});

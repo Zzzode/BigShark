@@ -157,8 +157,8 @@ bool mw_take_fold(int step) {
 //    This is not hypothetical. The multiway constructor re-derived `all_in`
 //    after posting blinds but not after posting antes, so a seat emptied by an
 //    ante stayed `pending`, `next_actor` selected it, and `legal()` offered it a
-//    free check with nothing behind. The omission was invisible because the v1
-//    validator rejects every non-zero ante before any state is built, and no
+//    free check with nothing behind. The omission was invisible because the
+//    semantic validator rejects every non-zero ante before any state is built, and no
 //    test used an ante at all. It is asserted here against the invariants the
 //    rest of this file already relies on, so the ante path stops being the one
 //    payment route that does not maintain all-in status.

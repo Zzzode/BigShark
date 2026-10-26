@@ -1,9 +1,9 @@
 // RFC 0008 stage 5 decision-provenance tests. The oracle below is STRUCTURAL:
 // it predicts the source the router must declare from the Ctx shape and the
 // backend hint, never by calling the mapper or trusting result().exact. It
-// also keeps an independent copy of the FROZEN minor-0/1 reason-prefix
+// also keeps an independent copy of the legacy reason-prefix
 // inference solely as a journal-compatibility cross-check, pinning the exact
-// discrepancy set (the four preflop chart folds) that minor 2 now labels
+// discrepancy set (the four preflop chart folds) that the current mapper labels
 // truthfully. Every sourced decision is additionally checked to be the same
 // Decision the legacy evaluatePolicy path returns.
 #include <array>
@@ -43,7 +43,7 @@ Legal legalNoBet() {
 
 // Independent re-coding of the frozen reason-text inference (response_mapper
 // solverSource): its own table, never shared with production code. This is
-// what minor 0/1 still emit; it exists here only to pin the divergence.
+// what the legacy inference table emits; it exists here only to pin the divergence.
 DecisionSource legacyInferredSource(const std::string& reason) {
   static const std::array<const char*, 14> kPrefixes = {
       "gto-cfr",    "gto",        "short jam",   "short premium", "RFI",
@@ -96,7 +96,7 @@ bs::Ctx preflopBase() {
 }  // namespace
 
 int main() {
-  // --- Pre-dispatch no-hole fold (v1-unreachable, core-only arm) ----------
+  // --- Pre-dispatch no-hole fold (unreachable after validation, core-only arm) ---
   {
     bs::Ctx ctx;
     ctx.street = "preflop";
@@ -167,7 +167,7 @@ int main() {
     check(sourced.decision.action == "fold", label + " is a fold");
     check(sourced.decision.reason.rfind(expectedPrefix, 0) == 0,
           label + " reason prefix pinned, got: " + sourced.decision.reason);
-    // Pinned divergence: minor 0/1 inference calls this a heuristic answer.
+    // Pinned divergence: the legacy inference calls this a heuristic answer.
     check(legacyInferredSource(sourced.decision.reason) == DecisionSource::PostflopHeuristic,
           label + " is in the legacy-inference discrepancy set");
     ++foldIndex;

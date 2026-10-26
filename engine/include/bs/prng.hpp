@@ -17,7 +17,7 @@ class SplitMix64 {
   SplitMix64() = default;
   explicit constexpr SplitMix64(std::uint64_t seed) : state_(seed) {}
 
-  // Distinct, non-zero domain constant for the v1 protocol sampler stream. It
+  // Distinct, non-zero domain constant for the protocol sampler stream. It
   // must never equal a trainer stream state initialization (the trainer seeds
   // its state with the raw seed).
   static constexpr std::uint64_t kProtocolSamplerDomain = 0x425356312d73616dULL;  // "BSV1-sam"

@@ -19,7 +19,7 @@ import {
   Street,
   StrategySchema,
   UtilityProfile,
-} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+} from '../../../build/generated/ts/bigshark/engine/engine_pb.js';
 import {
   decisionEnvelope,
   fromDecisionResponse,

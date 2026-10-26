@@ -20,7 +20,7 @@
 namespace bs {
 namespace {
 
-namespace pv2 = ::bigshark::engine::v2;
+namespace pe = ::bigshark::engine;
 
 constexpr std::size_t kMaxRequestIdBytes = 128;
 
@@ -48,48 +48,48 @@ std::optional<std::pair<std::uint32_t, std::size_t>> decodeVarint32(std::string_
   return std::nullopt;  // Too many bytes for a uint32.
 }
 
-const char* messageFor(pv2::ErrorCode code) {
+const char* messageFor(pe::ErrorCode code) {
   switch (code) {
-    case pv2::ERROR_CODE_INVALID_REQUEST:
+    case pe::ERROR_CODE_INVALID_REQUEST:
       return "invalid request";
-    case pv2::ERROR_CODE_UNSUPPORTED_PROTOCOL:
+    case pe::ERROR_CODE_UNSUPPORTED_PROTOCOL:
       return "unsupported protocol version";
-    case pv2::ERROR_CODE_UNSUPPORTED_GAME:
+    case pe::ERROR_CODE_UNSUPPORTED_GAME:
       return "unsupported game";
-    case pv2::ERROR_CODE_UNSUPPORTED_FEATURE:
+    case pe::ERROR_CODE_UNSUPPORTED_FEATURE:
       return "unsupported feature";
-    case pv2::ERROR_CODE_NO_DECISION:
+    case pe::ERROR_CODE_NO_DECISION:
       return "engine produced no decision";
-    case pv2::ERROR_CODE_DEADLINE_EXCEEDED:
+    case pe::ERROR_CODE_DEADLINE_EXCEEDED:
       return "solve deadline exceeded";
-    case pv2::ERROR_CODE_RESOURCE_EXHAUSTED:
+    case pe::ERROR_CODE_RESOURCE_EXHAUSTED:
       return "resource exhausted";
-    case pv2::ERROR_CODE_INTERNAL:
+    case pe::ERROR_CODE_INTERNAL:
       return "internal error";
-    case pv2::ERROR_CODE_GUARANTEE_BELOW_REQUEST:
+    case pe::ERROR_CODE_GUARANTEE_BELOW_REQUEST:
       return "guarantee below requested minimum";
-    case pv2::ERROR_CODE_HISTORY_INCOMPLETE:
+    case pe::ERROR_CODE_HISTORY_INCOMPLETE:
       return "action history is incomplete";
-    case pv2::ERROR_CODE_REPLAY_MISMATCH:
+    case pe::ERROR_CODE_REPLAY_MISMATCH:
       return "replayed state does not match declared snapshot";
-    case pv2::ERROR_CODE_INCOMPATIBLE_ROOT:
+    case pe::ERROR_CODE_INCOMPATIBLE_ROOT:
       return "no strategy root matches the game definition";
-    case pv2::ERROR_CODE_OFF_TREE_AMOUNT:
+    case pe::ERROR_CODE_OFF_TREE_AMOUNT:
       return "legal action amount is outside the policy";
-    case pv2::ERROR_CODE_RULES_UNCONFIRMED:
+    case pe::ERROR_CODE_RULES_UNCONFIRMED:
       return "rule profile has not been confirmed";
-    case pv2::ERROR_CODE_UNKNOWN_UTILITY:
+    case pe::ERROR_CODE_UNKNOWN_UTILITY:
       return "requested utility profile is not supported";
     default:
       return "unspecified error";
   }
 }
 
-bool retryableFor(pv2::ErrorCode code) {
+bool retryableFor(pe::ErrorCode code) {
   switch (code) {
-    case pv2::ERROR_CODE_RESOURCE_EXHAUSTED:
-    case pv2::ERROR_CODE_INTERNAL:
-    case pv2::ERROR_CODE_DEADLINE_EXCEEDED:
+    case pe::ERROR_CODE_RESOURCE_EXHAUSTED:
+    case pe::ERROR_CODE_INTERNAL:
+    case pe::ERROR_CODE_DEADLINE_EXCEEDED:
       return true;
     default:
       return false;
@@ -101,10 +101,10 @@ bool retryableFor(pv2::ErrorCode code) {
 // annotations (AnnotateSize). With C++17 guaranteed copy elision, prvalues
 // are constructed directly in the parameter; std::move call sites use the
 // noexcept move constructor. Swap moves internal pointers without copying.
-EnvelopeResult respondWithDecision(const std::string& requestId, pv2::DecisionResponse response) {
+EnvelopeResult respondWithDecision(const std::string& requestId, pe::DecisionResponse response) {
   EnvelopeResult result;
   result.outcome = EnvelopeOutcome::Respond;
-  pv2::Envelope envelope;
+  pe::Envelope envelope;
   envelope.set_protocol_version(3);
   envelope.set_request_id(requestId);
   envelope.mutable_decision_response()->Swap(&response);
@@ -116,15 +116,15 @@ EnvelopeResult respondWithDecision(const std::string& requestId, pv2::DecisionRe
 // The measurement covers validation, state reconstruction, blueprint lookup,
 // and solve — the full receipt-to-action budget. Error responses carry no
 // metadata and are left untouched.
-void stampSolveTime(pv2::DecisionResponse& response, std::chrono::steady_clock::time_point start) {
+void stampSolveTime(pe::DecisionResponse& response, std::chrono::steady_clock::time_point start) {
   const auto elapsed = std::chrono::steady_clock::now() - start;
   const auto us = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(elapsed).count());
   switch (response.result_case()) {
-    case pv2::DecisionResponse::kStrategy:
+    case pe::DecisionResponse::kStrategy:
       response.mutable_strategy()->mutable_solver()->set_solve_time_us(us);
       break;
-    case pv2::DecisionResponse::kExpandedStrategy:
+    case pe::DecisionResponse::kExpandedStrategy:
       response.mutable_expanded_strategy()->mutable_solver()->set_solve_time_us(us);
       break;
     default:
@@ -133,10 +133,10 @@ void stampSolveTime(pv2::DecisionResponse& response, std::chrono::steady_clock::
 }
 
 EnvelopeResult respondWithCapabilities(const std::string& requestId,
-                                       pv2::GetCapabilitiesResponse response) {
+                                       pe::GetCapabilitiesResponse response) {
   EnvelopeResult result;
   result.outcome = EnvelopeOutcome::Respond;
-  pv2::Envelope envelope;
+  pe::Envelope envelope;
   envelope.set_protocol_version(3);
   envelope.set_request_id(requestId);
   envelope.mutable_get_capabilities_response()->Swap(&response);
@@ -168,7 +168,7 @@ ResolveResult lookupResolving(const HostServices& services, const ReconstructedS
 // Constructs the operational fallback decision: check if legal, otherwise
 // call if legal, otherwise fold. This is the labeled fallback served when
 // both the blueprint and the resolver miss.
-bs::Decision operationalFallbackDecision(const pv2::DecisionRequest& request) {
+bs::Decision operationalFallbackDecision(const pe::DecisionRequest& request) {
   bs::Decision decision;
   // RFC 0032 stage 3: a postflop snapshot wider than a flop is a turn- or
   // river-rooted decision. The resident library stores a three-card board, so a
@@ -180,10 +180,10 @@ bs::Decision operationalFallbackDecision(const pv2::DecisionRequest& request) {
       request.state().board_size() >= 4 ? "turn_root_unserved" : "operational-fallback";
   bool canCheck = false;
   bool canCall = false;
-  for (const pv2::LegalAction& legal : request.state().legal_actions()) {
-    if (legal.type() == pv2::ACTION_TYPE_CHECK)
+  for (const pe::LegalAction& legal : request.state().legal_actions()) {
+    if (legal.type() == pe::ACTION_TYPE_CHECK)
       canCheck = true;
-    else if (legal.type() == pv2::ACTION_TYPE_CALL)
+    else if (legal.type() == pe::ACTION_TYPE_CALL)
       canCall = true;
   }
   if (canCheck)
@@ -195,49 +195,52 @@ bs::Decision operationalFallbackDecision(const pv2::DecisionRequest& request) {
   return decision;
 }
 
-pv2::ErrorCode mapMissToError(BlueprintMiss miss) {
+pe::ErrorCode mapMissToError(BlueprintMiss miss) {
   switch (miss) {
     case BlueprintMiss::None:
-      return pv2::ERROR_CODE_UNSPECIFIED;
+      return pe::ERROR_CODE_UNSPECIFIED;
     case BlueprintMiss::MissingHistory:
-      return pv2::ERROR_CODE_HISTORY_INCOMPLETE;
+      return pe::ERROR_CODE_HISTORY_INCOMPLETE;
     case BlueprintMiss::OffTree:
     case BlueprintMiss::OffTreeAmount:
     case BlueprintMiss::ZeroProbabilityObservedAction:
-      return pv2::ERROR_CODE_OFF_TREE_AMOUNT;
+      return pe::ERROR_CODE_OFF_TREE_AMOUNT;
     case BlueprintMiss::RootIdentityMismatch:
     case BlueprintMiss::RootNotSupported:
     case BlueprintMiss::SeatCountNotSupported:
-      return pv2::ERROR_CODE_INCOMPATIBLE_ROOT;
+    // RFC 0035: the ledger resolves but the class is not trained for that
+    // root, so the requested root is incompatible for this decision.
+    case BlueprintMiss::ClassNotTrainedForRoot:
+      return pe::ERROR_CODE_INCOMPATIBLE_ROOT;
     default:
-      return pv2::ERROR_CODE_UNSUPPORTED_FEATURE;
+      return pe::ERROR_CODE_UNSUPPORTED_FEATURE;
   }
 }
 
-pv2::ErrorCode mapReplayMissToError(ReplayMiss miss) {
+pe::ErrorCode mapReplayMissToError(ReplayMiss miss) {
   switch (miss) {
     case ReplayMiss::None:
-      return pv2::ERROR_CODE_UNSPECIFIED;
+      return pe::ERROR_CODE_UNSPECIFIED;
     case ReplayMiss::HistoryIncomplete:
-      return pv2::ERROR_CODE_HISTORY_INCOMPLETE;
+      return pe::ERROR_CODE_HISTORY_INCOMPLETE;
     case ReplayMiss::ReplayMismatch:
-      return pv2::ERROR_CODE_REPLAY_MISMATCH;
+      return pe::ERROR_CODE_REPLAY_MISMATCH;
     case ReplayMiss::IncompatibleRoot:
-      return pv2::ERROR_CODE_INCOMPATIBLE_ROOT;
+      return pe::ERROR_CODE_INCOMPATIBLE_ROOT;
     case ReplayMiss::OffTreeAmount:
-      return pv2::ERROR_CODE_OFF_TREE_AMOUNT;
+      return pe::ERROR_CODE_OFF_TREE_AMOUNT;
     case ReplayMiss::RulesUnconfirmed:
-      return pv2::ERROR_CODE_RULES_UNCONFIRMED;
+      return pe::ERROR_CODE_RULES_UNCONFIRMED;
     case ReplayMiss::UnsupportedFeature:
-      return pv2::ERROR_CODE_UNSUPPORTED_FEATURE;
+      return pe::ERROR_CODE_UNSUPPORTED_FEATURE;
   }
-  return pv2::ERROR_CODE_UNSUPPORTED_FEATURE;
+  return pe::ERROR_CODE_UNSUPPORTED_FEATURE;
 }
 
 }  // namespace
 
-MappingError::MappingError(pv2::ErrorCode code, std::string message, bool retryable,
-                           std::vector<pv2::FieldViolation> violations)
+MappingError::MappingError(pe::ErrorCode code, std::string message, bool retryable,
+                           std::vector<pe::FieldViolation> violations)
     : std::runtime_error(std::move(message)),
       code_(code),
       retryable_(retryable),
@@ -246,13 +249,13 @@ MappingError::MappingError(pv2::ErrorCode code, std::string message, bool retrya
 void ValidationReport::add(const std::string& fieldPath, const std::string& description) {
   if (violations.size() >= static_cast<std::size_t>(kMaxFieldViolations)) {
     if (violations.size() == static_cast<std::size_t>(kMaxFieldViolations)) {
-      pv2::FieldViolation& last = violations.back();
+      pe::FieldViolation& last = violations.back();
       last.set_field_path("");
       last.set_description("further violations truncated");
     }
     return;
   }
-  pv2::FieldViolation& violation = violations.emplace_back();
+  pe::FieldViolation& violation = violations.emplace_back();
   violation.set_field_path(fieldPath);
   violation.set_description(description);
 }
@@ -262,53 +265,53 @@ EnvelopeResult handleEnvelope(const std::string& frame) {
 }
 
 EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& services) {
-  pv2::Envelope envelope;
+  pe::Envelope envelope;
   if (!envelope.ParseFromArray(frame.data(), static_cast<int>(frame.size()))) {
     return respondWithDecision(
-        "", errorResponse(pv2::ERROR_CODE_INVALID_REQUEST, "malformed envelope", false));
+        "", errorResponse(pe::ERROR_CODE_INVALID_REQUEST, "malformed envelope", false));
   }
 
   const std::string requestId = envelope.request_id();
   if (requestId.empty() || requestId.size() > kMaxRequestIdBytes) {
-    return respondWithDecision("", errorResponse(pv2::ERROR_CODE_INVALID_REQUEST,
+    return respondWithDecision("", errorResponse(pe::ERROR_CODE_INVALID_REQUEST,
                                                  "request_id must be 1..128 characters", false));
   }
   if (!isValidUtf8(requestId)) {
-    return respondWithDecision("", errorResponse(pv2::ERROR_CODE_INVALID_REQUEST,
-                                                 "request_id must be valid UTF-8", false));
+    return respondWithDecision(
+        "", errorResponse(pe::ERROR_CODE_INVALID_REQUEST, "request_id must be valid UTF-8", false));
   }
 
   if (envelope.protocol_version() != 3) {
-    return respondWithDecision(
-        requestId, errorResponse(pv2::ERROR_CODE_UNSUPPORTED_PROTOCOL,
-                                 "only protocol version 3 is supported by the v2 handler", false));
+    return respondWithDecision(requestId,
+                               errorResponse(pe::ERROR_CODE_UNSUPPORTED_PROTOCOL,
+                                             "only protocol version 3 is supported", false));
   }
 
   switch (envelope.payload_case()) {
-    case pv2::Envelope::kGetCapabilitiesRequest:
+    case pe::Envelope::kGetCapabilitiesRequest:
       return respondWithCapabilities(requestId, buildCapabilities(services.blueprintAdvertised(),
                                                                   services.resolvingAdvertised()));
 
-    case pv2::Envelope::kGetCapabilitiesResponse:
+    case pe::Envelope::kGetCapabilitiesResponse:
       return respondWithDecision(
-          requestId, errorResponse(pv2::ERROR_CODE_INVALID_REQUEST,
+          requestId, errorResponse(pe::ERROR_CODE_INVALID_REQUEST,
                                    "capability responses are not accepted by the host", false));
 
-    case pv2::Envelope::kDecisionResponse:
+    case pe::Envelope::kDecisionResponse:
       return respondWithDecision(
-          requestId, errorResponse(pv2::ERROR_CODE_INVALID_REQUEST,
+          requestId, errorResponse(pe::ERROR_CODE_INVALID_REQUEST,
                                    "decision responses are not accepted by the host", false));
 
-    case pv2::Envelope::kDecisionRequest:
+    case pe::Envelope::kDecisionRequest:
       break;
 
-    case pv2::Envelope::PAYLOAD_NOT_SET:
+    case pe::Envelope::PAYLOAD_NOT_SET:
       return respondWithDecision(requestId,
-                                 errorResponse(pv2::ERROR_CODE_INVALID_REQUEST,
+                                 errorResponse(pe::ERROR_CODE_INVALID_REQUEST,
                                                "envelope requires exactly one payload", false));
   }
 
-  const pv2::DecisionRequest& request = envelope.decision_request();
+  const pe::DecisionRequest& request = envelope.decision_request();
   try {
     // T6: receipt-to-action timing. Covers validation, reconstruction,
     // blueprint lookup, and solve.
@@ -316,8 +319,8 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
 
     // Phase 1: semantic validation.
     ValidationReport report;
-    const pv2::ErrorCode validationCode = validateDecisionRequest(request, report);
-    if (validationCode != pv2::ERROR_CODE_UNSPECIFIED) {
+    const pe::ErrorCode validationCode = validateDecisionRequest(request, report);
+    if (validationCode != pe::ERROR_CODE_UNSPECIFIED) {
       return respondWithDecision(
           requestId, errorResponse(validationCode, messageFor(validationCode),
                                    retryableFor(validationCode), std::move(report.violations)));
@@ -327,67 +330,67 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
     ReconstructedState recon;
     ReplayMiss replayMiss = ReplayMiss::None;
     if (!reconstructHandState(request, recon, replayMiss)) {
-      const pv2::ErrorCode code = mapReplayMissToError(replayMiss);
+      const pe::ErrorCode code = mapReplayMissToError(replayMiss);
       return respondWithDecision(requestId,
                                  errorResponse(code, messageFor(code), retryableFor(code)));
     }
 
     // Phase 3: route by solver_mode.
-    const pv2::SolverMode mode = request.options().solver_mode();
+    const pe::SolverMode mode = request.options().solver_mode();
     switch (mode) {
-      case pv2::SOLVER_MODE_BLUEPRINT: {
+      case pe::SOLVER_MODE_BLUEPRINT: {
         const BlueprintLookup lookup = lookupBlueprint(services, recon);
         if (!lookup.hit) {
-          const pv2::ErrorCode code = mapMissToError(lookup.miss);
+          const pe::ErrorCode code = mapMissToError(lookup.miss);
           return respondWithDecision(requestId,
                                      errorResponse(code, messageFor(code), retryableFor(code)));
         }
-        pv2::DecisionResponse response = mapBlueprintResponse(request, lookup.row);
+        pe::DecisionResponse response = mapBlueprintResponse(request, lookup.row);
         stampSolveTime(response, decisionStart);
         return respondWithDecision(requestId, std::move(response));
       }
 
-      case pv2::SOLVER_MODE_RESOLVING: {
+      case pe::SOLVER_MODE_RESOLVING: {
         const ResolveResult resolve =
             lookupResolving(services, recon, request.options().solve_time_budget_ms());
         if (resolve.outcome == ResolveOutcome::Unsupported) {
-          const pv2::ErrorCode code = mapMissToError(resolve.miss);
+          const pe::ErrorCode code = mapMissToError(resolve.miss);
           return respondWithDecision(requestId,
                                      errorResponse(code, messageFor(code), retryableFor(code)));
         }
-        pv2::DecisionResponse response = mapResolvedResponse(request, resolve.row, resolve.outcome);
+        pe::DecisionResponse response = mapResolvedResponse(request, resolve.row, resolve.outcome);
         stampSolveTime(response, decisionStart);
         return respondWithDecision(requestId, std::move(response));
       }
 
-      case pv2::SOLVER_MODE_AUTOMATIC: {
+      case pe::SOLVER_MODE_AUTOMATIC: {
         // Blueprint first; on miss, the terminal-only resolver; if the
         // resolver also misses, the labeled operational fallback.
         const BlueprintLookup lookup = lookupBlueprint(services, recon);
         if (lookup.hit) {
-          pv2::DecisionResponse response = mapBlueprintResponse(request, lookup.row);
+          pe::DecisionResponse response = mapBlueprintResponse(request, lookup.row);
           stampSolveTime(response, decisionStart);
           return respondWithDecision(requestId, std::move(response));
         }
         const ResolveResult resolve =
             lookupResolving(services, recon, request.options().solve_time_budget_ms());
         if (resolve.outcome != ResolveOutcome::Unsupported) {
-          pv2::DecisionResponse response =
+          pe::DecisionResponse response =
               mapResolvedResponse(request, resolve.row, resolve.outcome);
           stampSolveTime(response, decisionStart);
           return respondWithDecision(requestId, std::move(response));
         }
-        pv2::DecisionResponse response =
+        pe::DecisionResponse response =
             mapOperationalFallbackResponse(request, operationalFallbackDecision(request));
         stampSolveTime(response, decisionStart);
         return respondWithDecision(requestId, std::move(response));
       }
 
-      case pv2::SOLVER_MODE_HEURISTIC: {
+      case pe::SOLVER_MODE_HEURISTIC: {
         // Map the request to a heuristic context and decide.
         bs::Ctx context;
-        const pv2::ErrorCode mapCode = validateAndMap(request, report, context);
-        if (mapCode != pv2::ERROR_CODE_UNSPECIFIED) {
+        const pe::ErrorCode mapCode = validateAndMap(request, report, context);
+        if (mapCode != pe::ERROR_CODE_UNSPECIFIED) {
           return respondWithDecision(
               requestId, errorResponse(mapCode, messageFor(mapCode), retryableFor(mapCode),
                                        std::move(report.violations)));
@@ -396,16 +399,16 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
         if (answer.decision.action.empty()) {
           return respondWithDecision(
               requestId,
-              errorResponse(pv2::ERROR_CODE_NO_DECISION, messageFor(pv2::ERROR_CODE_NO_DECISION),
-                            retryableFor(pv2::ERROR_CODE_NO_DECISION)));
+              errorResponse(pe::ERROR_CODE_NO_DECISION, messageFor(pe::ERROR_CODE_NO_DECISION),
+                            retryableFor(pe::ERROR_CODE_NO_DECISION)));
         }
-        pv2::DecisionResponse response = mapHeuristicResponse(request, answer);
+        pe::DecisionResponse response = mapHeuristicResponse(request, answer);
         stampSolveTime(response, decisionStart);
         return respondWithDecision(requestId, std::move(response));
       }
 
       default:
-        return respondWithDecision(requestId, errorResponse(pv2::ERROR_CODE_INVALID_REQUEST,
+        return respondWithDecision(requestId, errorResponse(pe::ERROR_CODE_INVALID_REQUEST,
                                                             "unsupported solver mode", false));
     }
   } catch (const MappingError& error) {
@@ -413,11 +416,11 @@ EnvelopeResult handleEnvelope(const std::string& frame, const HostServices& serv
                                                         error.retryable(), error.violations()));
   } catch (const std::bad_alloc&) {
     return respondWithDecision(requestId,
-                               errorResponse(pv2::ERROR_CODE_RESOURCE_EXHAUSTED,
-                                             messageFor(pv2::ERROR_CODE_RESOURCE_EXHAUSTED), true));
+                               errorResponse(pe::ERROR_CODE_RESOURCE_EXHAUSTED,
+                                             messageFor(pe::ERROR_CODE_RESOURCE_EXHAUSTED), true));
   } catch (const std::exception& error) {
     return respondWithDecision(requestId,
-                               errorResponse(pv2::ERROR_CODE_INTERNAL, error.what(), true));
+                               errorResponse(pe::ERROR_CODE_INTERNAL, error.what(), true));
   }
 }
 

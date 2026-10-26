@@ -101,12 +101,12 @@ std::vector<PolicyAction> translate_coarse_to_exact(const poker::GameState& stat
                                                     const std::vector<PolicyAction>& coarse_dist,
                                                     const TranslatorId& id) {
   // The rule identity is name+version (a default-constructed TranslatorId is
-  // the frozen v1 rule); digest/parameters describe it and do not gate
-  // projection.
-  const TranslatorId& v1 = declared_translator_id();
-  if (id.name != v1.name || id.version != v1.version) {
-    // Only the frozen v1 rule exists; an unknown id must never project under
-    // v1 semantics silently.
+  // the declared coarse-to-exact rule); digest/parameters describe it and do
+  // not gate projection.
+  const TranslatorId& declared = declared_translator_id();
+  if (id.name != declared.name || id.version != declared.version) {
+    // Only the declared rule exists; an unknown id must never project under
+    // that rule's semantics silently.
     throw std::invalid_argument("translator: unknown translator id " + id.to_string());
   }
   if (state.phase() != poker::Phase::Action || state.actor() != seat)

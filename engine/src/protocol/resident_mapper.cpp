@@ -27,7 +27,7 @@
 namespace bs {
 namespace {
 
-namespace pv2 = ::bigshark::engine::v2;
+namespace pe = ::bigshark::engine;
 
 using poker::Action;
 using poker::ActionType;
@@ -40,17 +40,17 @@ using poker::Street;
 
 // proto card: (Rank-1)*4 + (Suit-1) into the poker id space rank*4+suit with
 // rank 0..12 (2..A) and suit 0..3 (s,h,d,c).
-int pokerCard(const pv2::Card& card) {
+int pokerCard(const pe::Card& card) {
   return (static_cast<int>(card.rank()) - 1) * 4 + (static_cast<int>(card.suit()) - 1);
 }
 
-Street pokerStreet(pv2::Street street) {
+Street pokerStreet(pe::Street street) {
   switch (street) {
-    case pv2::STREET_FLOP:
+    case pe::STREET_FLOP:
       return Street::Flop;
-    case pv2::STREET_TURN:
+    case pe::STREET_TURN:
       return Street::Turn;
-    case pv2::STREET_RIVER:
+    case pe::STREET_RIVER:
       return Street::River;
     default:
       return Street::Preflop;
@@ -60,19 +60,19 @@ Street pokerStreet(pv2::Street street) {
 // Provenance gate: only FULL coverage with OFFICIAL_RESPONSE or SUPPLIED
 // source allows hand-start replay. JOURNAL_RECOVERY, MID_HAND_ATTACH, and GAP
 // are rejected because a stateless host cannot verify their coverage.
-bool coverageAllowsReplay(const pv2::ObservationProvenance& provenance) {
-  if (provenance.coverage() != pv2::OBSERVATION_COVERAGE_FULL)
+bool coverageAllowsReplay(const pe::ObservationProvenance& provenance) {
+  if (provenance.coverage() != pe::OBSERVATION_COVERAGE_FULL)
     return false;
-  if (provenance.source() == pv2::OBSERVATION_SOURCE_JOURNAL_RECOVERY)
+  if (provenance.source() == pe::OBSERVATION_SOURCE_JOURNAL_RECOVERY)
     return false;
   return true;
 }
 
 // One validated action in actor space.
 struct PlannedAction {
-  pv2::Street street;
+  pe::Street street;
   std::size_t actor;
-  pv2::ActionType kind;
+  pe::ActionType kind;
   Chips target;
   Chips paid;
   Chips potBefore;
@@ -81,9 +81,9 @@ struct PlannedAction {
 
 }  // namespace
 
-bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedState& out,
+bool reconstructHandState(const pe::DecisionRequest& request, ReconstructedState& out,
                           ReplayMiss& miss) {
-  const pv2::HandState& state = request.state();
+  const pe::HandState& state = request.state();
   auto fail = [&](ReplayMiss reason) {
     miss = reason;
     out.state.reset();
@@ -110,16 +110,16 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
     return fail(ReplayMiss::UnsupportedFeature);
 
   // Only SB and BB forced contributions.
-  for (const pv2::ForcedContribution& forced : state.forced_contributions())
-    if (forced.type() != pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND &&
-        forced.type() != pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND)
+  for (const pe::ForcedContribution& forced : state.forced_contributions())
+    if (forced.type() != pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND &&
+        forced.type() != pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND)
       return fail(ReplayMiss::UnsupportedFeature);
 
   // ---- Player mapping: sort by seat, rotate so button is actor 0 -----------
-  std::vector<const pv2::PlayerState*> bySeat;
-  for (const pv2::PlayerState& player : state.players())
+  std::vector<const pe::PlayerState*> bySeat;
+  for (const pe::PlayerState& player : state.players())
     bySeat.push_back(&player);
-  std::sort(bySeat.begin(), bySeat.end(), [](const pv2::PlayerState* a, const pv2::PlayerState* b) {
+  std::sort(bySeat.begin(), bySeat.end(), [](const pe::PlayerState* a, const pe::PlayerState* b) {
     return a->seat() < b->seat();
   });
   for (std::size_t i = 1; i < seat_count; ++i)
@@ -142,7 +142,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
               bySeat.end());
 
   // actorPlayer[actor_index] = wire PlayerState pointer (button-first order)
-  const std::vector<const pv2::PlayerState*> actorPlayer = bySeat;
+  const std::vector<const pe::PlayerState*> actorPlayer = bySeat;
 
   // seatToActor[wire_seat] = actor_index (button-first order)
   std::unordered_map<std::uint32_t, std::size_t> seatToActor;
@@ -160,7 +160,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
   }
 
   // Hero must be ACTIVE (validator already checks, but double-check).
-  if (actorPlayer[out.hero_actor]->status() != pv2::PLAYER_STATUS_ACTIVE)
+  if (actorPlayer[out.hero_actor]->status() != pe::PLAYER_STATUS_ACTIVE)
     return fail(ReplayMiss::IncompatibleRoot);
 
   // ---- Cards: hero hole cards and board ------------------------------------
@@ -176,10 +176,10 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
   std::array<bool, 52> used{};
   used[heroCards[0]] = used[heroCards[1]] = true;
   std::vector<int> boardCards;
-  for (const pv2::TransitionEvent& event : state.transition_path()) {
-    if (event.transition_case() != pv2::TransitionEvent::kBoardDeal)
+  for (const pe::TransitionEvent& event : state.transition_path()) {
+    if (event.transition_case() != pe::TransitionEvent::kBoardDeal)
       continue;
-    for (const pv2::Card& card : event.board_deal().cards()) {
+    for (const pe::Card& card : event.board_deal().cards()) {
       const int id = pokerCard(card);
       if (id < 0 || id >= 52 || used[id])
         return fail(ReplayMiss::ReplayMismatch);
@@ -194,7 +194,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
   // ---- Blinds from forced contributions ------------------------------------
   const Chips bigBlind = state.game().big_blind();
   std::array<Chips, poker::kMaxUnifiedSeats> blindsPosted{};
-  for (const pv2::ForcedContribution& forced : state.forced_contributions()) {
+  for (const pe::ForcedContribution& forced : state.forced_contributions()) {
     const auto it = seatToActor.find(forced.seat());
     if (it == seatToActor.end())
       return fail(ReplayMiss::ReplayMismatch);
@@ -202,10 +202,10 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
   }
   // Exactly one SB and one BB.
   int sb_count = 0, bb_count = 0;
-  for (const pv2::ForcedContribution& forced : state.forced_contributions()) {
-    if (forced.type() == pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND)
+  for (const pe::ForcedContribution& forced : state.forced_contributions()) {
+    if (forced.type() == pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND)
       ++sb_count;
-    else if (forced.type() == pv2::FORCED_CONTRIBUTION_TYPE_BIG_BLIND)
+    else if (forced.type() == pe::FORCED_CONTRIBUTION_TYPE_BIG_BLIND)
       ++bb_count;
   }
   if (sb_count != 1 || bb_count != 1)
@@ -239,8 +239,8 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
 
   // Verify blind positions for 3+ seats (heads-up uses the button=SB convention).
   if (seat_count > 2) {
-    for (const pv2::ForcedContribution& forced : state.forced_contributions()) {
-      const std::size_t expected = forced.type() == pv2::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND
+    for (const pe::ForcedContribution& forced : state.forced_contributions()) {
+      const std::size_t expected = forced.type() == pe::FORCED_CONTRIBUTION_TYPE_SMALL_BLIND
                                        ? poker::small_blind_seat(rootDef)
                                        : poker::big_blind_seat(rootDef);
       if (seatToActor.at(forced.seat()) != expected)
@@ -251,7 +251,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
   // ---- Parse transition path into planned actions and board deals ----------
   std::vector<PlannedAction> planned;
   struct PlannedBoardDeal {
-    pv2::Street street;
+    pe::Street street;
     std::vector<int> cards;
   };
   std::vector<PlannedBoardDeal> boardDeals;
@@ -259,12 +259,12 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
   // Track street commitments for bet/raise disambiguation.
   std::array<Chips, poker::kMaxUnifiedSeats> streetPaid{};
   streetPaid = blindsPosted;
-  pv2::Street ledgerStreet = pv2::STREET_PREFLOP;
+  pe::Street ledgerStreet = pe::STREET_PREFLOP;
 
-  for (const pv2::TransitionEvent& event : state.transition_path()) {
+  for (const pe::TransitionEvent& event : state.transition_path()) {
     switch (event.transition_case()) {
-      case pv2::TransitionEvent::kBoardDeal: {
-        const pv2::BoardDeal& deal = event.board_deal();
+      case pe::TransitionEvent::kBoardDeal: {
+        const pe::BoardDeal& deal = event.board_deal();
         if (deal.street() < ledgerStreet)
           return fail(ReplayMiss::ReplayMismatch);
         if (deal.street() != ledgerStreet) {
@@ -273,13 +273,13 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
         }
         PlannedBoardDeal plannedDeal;
         plannedDeal.street = deal.street();
-        for (const pv2::Card& card : deal.cards())
+        for (const pe::Card& card : deal.cards())
           plannedDeal.cards.push_back(pokerCard(card));
         boardDeals.push_back(std::move(plannedDeal));
         break;
       }
-      case pv2::TransitionEvent::kAction: {
-        const pv2::ActionEvent& action = event.action();
+      case pe::TransitionEvent::kAction: {
+        const pe::ActionEvent& action = event.action();
         if (action.street() < ledgerStreet)
           return fail(ReplayMiss::ReplayMismatch);
         if (action.street() != ledgerStreet) {
@@ -294,25 +294,25 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
         Chips paid = 0;
         Chips target = 0;
         switch (action.action()) {
-          case pv2::ACTION_TYPE_FOLD:
-          case pv2::ACTION_TYPE_CHECK:
+          case pe::ACTION_TYPE_FOLD:
+          case pe::ACTION_TYPE_CHECK:
             if (action.has_target_total() ||
                 (action.has_incremental_amount() && action.incremental_amount() != 0))
               return fail(ReplayMiss::ReplayMismatch);
             break;
-          case pv2::ACTION_TYPE_CALL:
+          case pe::ACTION_TYPE_CALL:
             if (action.has_target_total() || !action.has_incremental_amount() ||
                 action.incremental_amount() == 0)
               return fail(ReplayMiss::ReplayMismatch);
             paid = action.incremental_amount();
             break;
-          case pv2::ACTION_TYPE_BET:
+          case pe::ACTION_TYPE_BET:
             if (!action.has_target_total() || streetPaid[actor] != 0)
               return fail(ReplayMiss::ReplayMismatch);
             target = action.target_total();
             paid = target;
             break;
-          case pv2::ACTION_TYPE_RAISE:
+          case pe::ACTION_TYPE_RAISE:
             if (!action.has_target_total() || action.target_total() <= streetPaid[actor])
               return fail(ReplayMiss::ReplayMismatch);
             target = action.target_total();
@@ -326,7 +326,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
         streetPaid[actor] += paid;
         break;
       }
-      case pv2::TransitionEvent::TRANSITION_NOT_SET:
+      case pe::TransitionEvent::TRANSITION_NOT_SET:
         return fail(ReplayMiss::ReplayMismatch);
     }
   }
@@ -341,8 +341,8 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
     std::size_t actionIdx = 0;
 
     // Replay events in transition_path order.
-    for (const pv2::TransitionEvent& event : state.transition_path()) {
-      if (event.transition_case() == pv2::TransitionEvent::kBoardDeal) {
+    for (const pe::TransitionEvent& event : state.transition_path()) {
+      if (event.transition_case() == pe::TransitionEvent::kBoardDeal) {
         // Deal board cards.
         const PlannedBoardDeal& deal = boardDeals[boardDealIdx++];
         for (int card : deal.cards) {
@@ -350,7 +350,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
             return fail(ReplayMiss::ReplayMismatch);
           cursor = cursor.after_card(card);
         }
-      } else if (event.transition_case() == pv2::TransitionEvent::kAction) {
+      } else if (event.transition_case() == pe::TransitionEvent::kAction) {
         const PlannedAction& planned_action = planned[actionIdx++];
         if (cursor.phase() != Phase::Action || !cursor.actor().has_value() ||
             *cursor.actor() != planned_action.actor)
@@ -360,17 +360,17 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
 
         Action nativeAction{};
         switch (planned_action.kind) {
-          case pv2::ACTION_TYPE_FOLD:
+          case pe::ACTION_TYPE_FOLD:
             nativeAction = {ActionType::Fold};
             break;
-          case pv2::ACTION_TYPE_CHECK:
+          case pe::ACTION_TYPE_CHECK:
             nativeAction = {ActionType::Check};
             break;
-          case pv2::ACTION_TYPE_CALL:
+          case pe::ACTION_TYPE_CALL:
             nativeAction = {ActionType::Call};
             break;
-          case pv2::ACTION_TYPE_BET:
-          case pv2::ACTION_TYPE_RAISE: {
+          case pe::ACTION_TYPE_BET:
+          case pe::ACTION_TYPE_RAISE: {
             // The engine distinguishes Bet (opening the street, due == 0) from
             // Raise (facing an existing bet).
             Chips high = 0;
@@ -378,9 +378,9 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
               high = std::max(high, cursor.players()[a].street_committed);
             const Chips due = high - cursor.players()[planned_action.actor].street_committed;
             // Postflop BET and RAISE are distinct observations.
-            if (planned_action.street != pv2::STREET_PREFLOP &&
-                ((planned_action.kind == pv2::ACTION_TYPE_BET && due != 0) ||
-                 (planned_action.kind == pv2::ACTION_TYPE_RAISE && due == 0)))
+            if (planned_action.street != pe::STREET_PREFLOP &&
+                ((planned_action.kind == pe::ACTION_TYPE_BET && due != 0) ||
+                 (planned_action.kind == pe::ACTION_TYPE_RAISE && due == 0)))
               return fail(ReplayMiss::ReplayMismatch);
             nativeAction = {due == 0 ? ActionType::Bet : ActionType::Raise, planned_action.target};
             break;
@@ -417,7 +417,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
     // native refunded == wire refunded (F), native stack == wire stack.
     for (std::size_t actor = 0; actor < seat_count; ++actor) {
       const auto& chips = cursor.players()[actor];
-      const pv2::PlayerState& player = *actorPlayer[actor];
+      const pe::PlayerState& player = *actorPlayer[actor];
       if (chips.stack != player.stack())
         return fail(ReplayMiss::ReplayMismatch);
       if (chips.street_committed != player.street_committed())
@@ -427,9 +427,9 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
       if (chips.refunded != player.refunded())
         return fail(ReplayMiss::ReplayMismatch);
       // Folded/all-in status.
-      const pv2::PlayerStatus expectedStatus = chips.folded   ? pv2::PLAYER_STATUS_FOLDED
-                                               : chips.all_in ? pv2::PLAYER_STATUS_ALL_IN
-                                                              : pv2::PLAYER_STATUS_ACTIVE;
+      const pe::PlayerStatus expectedStatus = chips.folded   ? pe::PLAYER_STATUS_FOLDED
+                                              : chips.all_in ? pe::PLAYER_STATUS_ALL_IN
+                                                             : pe::PLAYER_STATUS_ACTIVE;
       if (player.status() != expectedStatus)
         return fail(ReplayMiss::ReplayMismatch);
     }
@@ -444,25 +444,25 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
     bool wireHasFold = false, wireHasCheck = false, wireHasCall = false;
     bool wireHasBet = false, wireHasRaise = false;
     Chips wireMinTarget = 0, wireMaxTarget = 0;
-    for (const pv2::LegalAction& legal : state.legal_actions()) {
+    for (const pe::LegalAction& legal : state.legal_actions()) {
       switch (legal.type()) {
-        case pv2::ACTION_TYPE_FOLD:
+        case pe::ACTION_TYPE_FOLD:
           wireHasFold = true;
           break;
-        case pv2::ACTION_TYPE_CHECK:
+        case pe::ACTION_TYPE_CHECK:
           wireHasCheck = true;
           break;
-        case pv2::ACTION_TYPE_CALL:
+        case pe::ACTION_TYPE_CALL:
           wireHasCall = true;
           break;
-        case pv2::ACTION_TYPE_BET:
+        case pe::ACTION_TYPE_BET:
           wireHasBet = true;
           if (legal.has_min_target_total())
             wireMinTarget = legal.min_target_total();
           if (legal.has_max_target_total())
             wireMaxTarget = legal.max_target_total();
           break;
-        case pv2::ACTION_TYPE_RAISE:
+        case pe::ACTION_TYPE_RAISE:
           wireHasRaise = true;
           if (legal.has_min_target_total())
             wireMinTarget = legal.min_target_total();
@@ -491,7 +491,7 @@ bool reconstructHandState(const pv2::DecisionRequest& request, ReconstructedStat
         return fail(ReplayMiss::ReplayMismatch);
     }
 
-    if (state.street() == pv2::STREET_PREFLOP) {
+    if (state.street() == pe::STREET_PREFLOP) {
       // ---- Preflop decision: hand-start root for blueprint identity --------
       // The preflop blueprint's root is the hand-start state (starting stacks,
       // zero contributions, blinds-only pot, no board). Build the GameState

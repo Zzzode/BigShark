@@ -16,7 +16,7 @@ The bot roster is deliberately labelled by what it does:
 | --- | --- |
 | `easy` | Uniform random over the declared finite action menu (fold/check/call, minimum raise, five declared pot fractions, and the cap). Loose and unpredictable, not strategic. |
 | `medium` | The pinned preflop charts plus the postflop Monte-Carlo-equity heuristic — standard ABC poker. The engine records this policy as `Guarantee::Approximate`; it is **not** a solved equilibrium and is never labelled "GTO". |
-| `engine` | A local `bigshark-engine --serve-proto` process decides every bot action through the v2 framed Protobuf protocol. The engine loads resident blueprints and flop libraries when configured; without them it serves the labeled operational fallback. A descriptive label, never "GTO". |
+| `engine` | A local `bigshark-engine --serve-proto` process decides every bot action through the framed Protobuf protocol. The engine loads resident blueprints and flop libraries when configured; without them it serves the labeled operational fallback. A descriptive label, never "GTO". |
 
 The `easy` and `medium` rosters are self-contained offline policies. A trained
 equilibrium policy is not bundled offline: the stage-6 coarse candidate
@@ -117,8 +117,8 @@ leaf that never links those targets.
 
 The `Engine` difficulty tier spawns one `bigshark-engine --serve-proto` child
 process and injects an `EngineServedPolicy` for every bot seat. The policy
-converts the current `GameState` and `HandLog` into a v2 `DecisionRequest`,
-sends it through the ULEB128-framed protocol, and converts the v2
+converts the current `GameState` and `HandLog` into an engine `DecisionRequest`,
+sends it through the ULEB128-framed protocol, and converts the engine
 `DecisionResponse` into a `PolicyAction` distribution. One `EngineProcess`
 instance is shared across all bot seats so every decision comes from the same
 loaded artifact library and resolver state.
@@ -131,7 +131,7 @@ The engine tier is implemented in:
   implementation that delegates to the engine host.
 - `engine/src/practice/engine_process.cpp` — fork/exec, pipe I/O, ULEB128
   framing, poll-based timeout.
-- `engine/src/practice/engine_served_policy.cpp` — `GameState` → v2
+- `engine/src/practice/engine_served_policy.cpp` - `GameState` -> engine
   `DecisionRequest` conversion (G/F ledger, pot layers, transition path with
   board cards and call amounts, forced contributions, legal actions,
   provenance).

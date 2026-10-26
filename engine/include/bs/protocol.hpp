@@ -86,6 +86,9 @@ enum class BlueprintMiss : std::uint8_t {
   OpponentRangeFullyBlocked,
   ZeroProbabilityHeroCombination,
   SeatCountNotSupported,
+  // RFC 0035: a trained root matches the ledger but the canonical class is
+  // absent from that root's dense index row.
+  ClassNotTrainedForRoot,
 };
 
 const char* to_string(BlueprintMiss miss) noexcept;

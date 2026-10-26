@@ -25,8 +25,8 @@ enum class Guarantee {
 int guaranteeRank(Guarantee level);
 bool guaranteeMeets(Guarantee achieved, Guarantee required);
 
-// Canonical on-wire tokens (SolverMetadata.guarantee_level, negotiated
-// minor 2). One source of truth for the five-token vocabulary.
+// Canonical on-wire tokens (SolverMetadata.guarantee_level on the negotiated
+// wire contract). One source of truth for the five-token vocabulary.
 const char* guaranteeToken(Guarantee level);
 
 // THE normative mapping for policy-producible sources. Default-less

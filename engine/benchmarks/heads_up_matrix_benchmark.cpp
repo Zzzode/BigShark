@@ -1,7 +1,7 @@
-// RFC 0004 Stage 4 frozen heads-up matrix benchmark (schema_version 3 CSV).
+// RFC 0004 Stage 4 frozen heads-up matrix benchmark (schema-v3 CSV).
 //
-// This runner is deliberately INDEPENDENT of the schema-version-2 runners:
-// the v2 files stay byte-for-byte unchanged and this CSV is never
+// This runner is deliberately INDEPENDENT of the schema-v2 runners:
+// the schema-v2 files stay byte-for-byte unchanged and this CSV is never
 // reinterpreted as theirs (RFC 0004 lines 324-326). It exercises the frozen
 // Stage 4 release suite pinned by RFC 0004 lines 235-237:
 //   - dry (rainbow disconnected), two-tone connected, paired, and monotone

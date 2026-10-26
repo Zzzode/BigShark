@@ -365,9 +365,9 @@ int test_uniform_on_unvisited_policy() {
     b.action = config.action;
     b.manifest = manifest_for(bucket, config, again.rows, again.report.iterations_completed);
     b.rows = again.rows;
-    std::vector<CandidateBinding> v2;
-    v2.push_back(std::move(b));
-    CandidateBehaviorPolicy strict(std::move(v2), CandidateMissPolicy::UniformOnUnvisited);
+    std::vector<CandidateBinding> bindings;
+    bindings.push_back(std::move(b));
+    CandidateBehaviorPolicy strict(std::move(bindings), CandidateMissPolicy::UniformOnUnvisited);
     const GameDef other_def = rooted_def(other, {0, 6, 21});
     HandLog log;
     PolicyContext ctx;

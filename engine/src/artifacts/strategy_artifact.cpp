@@ -572,9 +572,9 @@ constexpr const char* kReaderPragmas =
     "PRAGMA mmap_size=0;"
     "PRAGMA cache_size=-65536;";
 
-// Schema v1 (RFC 0004 heads-up profile). FROZEN byte-for-byte: the v1 DDL
-// text is never edited, and every v1 fixture's stored SQL must match it
-// exactly. The seat-generic schema v2 (RFC 0009 D3) lives in kSchemaDdlV2.
+// Schema-v1 (RFC 0004 heads-up profile). FROZEN byte-for-byte: the schema-v1 DDL
+// text is never edited, and every schema-v1 fixture's stored SQL must match it
+// exactly. The seat-generic schema-v2 (RFC 0009 D3) lives in kSchemaDdlV2.
 const char* const kSchemaDdlV1[] = {
     "CREATE TABLE manifest ("
     " id INTEGER PRIMARY KEY CHECK (id = 1),"
@@ -689,14 +689,14 @@ const char* const kSchemaDdlV1[] = {
     ") STRICT;",
 };
 
-// Schema v2 (RFC 0009 D3): the seat-generic profile. manifest gains a declared
+// Schema-v2 (RFC 0009 D3): the seat-generic profile. manifest gains a declared
 // AbstractionId and terminal depth; game becomes seat-generic (player_count,
 // button 0..9, ante, root_street 0..3, terminal_depth) and drops the fixed
 // stack0/1/contribution0/1 columns; game_seats stores one (stack, contribution)
 // row per occupied seat; ranges/information_states admit player 0..9; sizes
 // admits street 0..3; bounds gains the (seat, combo) dimension. bounds has NO
 // writer in W2b (validated-when-present). actions/training/measurements are
-// byte-identical to v1. The writer supports flop-rooted games only.
+// byte-identical to schema-v1. The writer supports flop-rooted games only.
 const char* const kSchemaDdlV2[] = {
     "CREATE TABLE manifest ("
     " id INTEGER PRIMARY KEY CHECK (id = 1),"
@@ -822,11 +822,11 @@ const char* const kSchemaDdlV2[] = {
     ") STRICT;",
 };
 
-// RFC 0009 W4c: schema v3 is the seat-generic profile plus a declared card
-// abstraction on the manifest. A v2 artifact serves one exact board; a v3
+// RFC 0009 W4c: schema-v3 is the seat-generic profile plus a declared card
+// abstraction on the manifest. A schema-v2 artifact serves one exact board; a schema-v3
 // artifact serves a board CLASS, and its stored board is the canonical
 // representative under the declared card abstraction. Only the manifest
-// differs from v2, so the v3 DDL reuses the nine unchanged table definitions
+// differs from schema-v2, so the schema-v3 DDL reuses the nine unchanged table definitions
 // by reference (verify_schema_objects compares stored CREATE text
 // byte-for-byte, so the shared statements must stay defined exactly once).
 const char* const kManifestDdlV3 =
@@ -1144,7 +1144,7 @@ void write_all(dt::Db& db, const ArtifactManifest& manifest, const TrainingResul
   }
 }
 
-// --- v2 (RFC 0009 D3) writer: seat-generic ---
+// --- schema-v2 (RFC 0009 D3) writer: seat-generic ---
 
 void write_schema_v2(dt::Db& db) {
   std::string ddl;
@@ -1164,7 +1164,7 @@ void write_schema_v3(dt::Db& db) {
   db.exec(ddl, "create schema");
 }
 
-// Validates the GameDef identity the v2 writer persists. The v2 profile stores
+// Validates the GameDef identity the schema-v2 writer persists. The schema-v2 profile stores
 // rooted flop/turn/river games only: a rooted board carries 3..5 cards, no
 // blinds are posted at the root (the GameState constructor seats the declared
 // stacks/contributions verbatim, so the stack/contribution round-trip is the
@@ -1185,7 +1185,7 @@ void validate_game_v2(const GameDef& game) {
   check(game.big_blind > 0 && game.big_blind <= kMaxStoredChips, ArtifactErrorKind::InvalidArgument,
         "big blind outside the numeric profile");
   check(game.ante == 0, ArtifactErrorKind::InvalidArgument,
-        "nonzero ante is not supported by the v2 profile");
+        "nonzero ante is not supported by the seat-generic schema-v2 profile");
   const bool is_preflop_flop_terminal =
       game.board_size == 0 && game.preflop && game.terminal == TerminalDepth::Flop;
   if (is_preflop_flop_terminal) {
@@ -1211,10 +1211,10 @@ void validate_game_v2(const GameDef& game) {
   } else {
     check(game.board_size == 3 || game.board_size == 4 || game.board_size == 5,
           ArtifactErrorKind::InvalidArgument,
-          "v2 writer supports rooted flop/turn/river games (board_size 3..5) or heads-up "
+          "schema-v2 writer supports rooted flop/turn/river games (board_size 3..5) or heads-up "
           "flop-terminal preflop games (board_size 0, preflop, terminal=Flop)");
     check(!game.preflop, ArtifactErrorKind::InvalidArgument,
-          "v2 writer does not support preflop games without flop-terminal depth");
+          "schema-v2 writer does not support preflop games without flop-terminal depth");
   }
   check(game.variant == RulesVariant::NoLimitHoldem, ArtifactErrorKind::InvalidArgument,
         "unsupported rules variant");
@@ -1239,10 +1239,10 @@ void validate_game_v2(const GameDef& game) {
   }
 }
 
-// Validates the seat-generic result the v2 writer persists. Mirrors
+// Validates the seat-generic result the schema-v2 writer persists. Mirrors
 // validate_content's policy-row checks; there are no raw training rows because
 // SeatPolicyRow carries only actions, probabilities, and visits (visits are not
-// persisted -- the actions table is byte-identical to v1).
+// persisted -- the actions table is byte-identical to schema-v1).
 void validate_content_v2(const SeatTrainingResult& result) {
   const GameDef& game = result.policy.game();
   validate_game_v2(game);
@@ -1318,7 +1318,7 @@ ArtifactManifest manifest_for_v2(const SeatTrainingResult& result,
   manifest.abstraction_parameters = result.action_id.parameters;
   manifest.abstraction_digest = result.action_id.digest;
   manifest.terminal_depth = result.terminal_depth;
-  // The v2 writer ignores this (no card columns); the v3 writer persists it.
+  // The schema-v2 writer ignores this (no card columns); the schema-v3 writer persists it.
   manifest.card_abstraction = result.card_id;
   return manifest;
 }
@@ -1355,7 +1355,7 @@ void insert_manifest_v2(dt::Db& db, const ArtifactManifest& manifest) {
   (void)insert.step("insert manifest");
 }
 
-// RFC 0009 W4c: the v3 manifest insert adds the four card-abstraction columns.
+// RFC 0009 W4c: the schema-v3 manifest insert adds the four card-abstraction columns.
 // The caller (write_all_v3) guarantees card_abstraction is present.
 void insert_manifest_v3(dt::Db& db, const ArtifactManifest& manifest) {
   check(manifest.card_abstraction.has_value(), ArtifactErrorKind::InvalidArgument,
@@ -1551,7 +1551,7 @@ void write_all_v2(dt::Db& db, const ArtifactManifest& manifest, const SeatTraini
   }
 }
 
-// RFC 0009 W4c: the v3 write transaction. Identical to v2 except the schema
+// RFC 0009 W4c: the schema-v3 write transaction. Identical to schema-v2 except the schema
 // version, the DDL set, and the manifest insert (which carries the card
 // abstraction). The game/seats/sizes/ranges/policy inserts are shared.
 void write_all_v3(dt::Db& db, const ArtifactManifest& manifest, const SeatTrainingResult& result) {
@@ -1941,7 +1941,7 @@ void read_auxiliary_tables(dt::Db& db) {
   }
 }
 
-// --- v2 (RFC 0009 D3) reader: seat-generic ---
+// --- schema-v2 (RFC 0009 D3) reader: seat-generic ---
 
 ArtifactManifest read_manifest_v2(dt::Db& db) {
   dt::Stmt query(db.get(),
@@ -1985,7 +1985,7 @@ ArtifactManifest read_manifest_v2(dt::Db& db) {
       static_cast<std::size_t>(read_bounded_i64(query, i++, "information_sets"));
   manifest.accounted_bytes =
       static_cast<std::size_t>(read_bounded_i64(query, i++, "accounted_bytes"));
-  // v2 identity fields.
+  // Schema-v2 identity fields.
   manifest.abstraction_name = std::string(query.column_text(i++));
   check(!manifest.abstraction_name.empty(), ArtifactErrorKind::InvalidSchema,
         "abstraction_name is empty");
@@ -2009,7 +2009,7 @@ ArtifactManifest read_manifest_v2(dt::Db& db) {
   return manifest;
 }
 
-// RFC 0009 W4c: the v3 manifest reader. Identical to v2 plus the four
+// RFC 0009 W4c: the schema-v3 manifest reader. Identical to schema-v2 plus the four
 // card-abstraction columns, reconstructed into an AbstractionId whose digest
 // is verified against the stored name/version/parameters.
 ArtifactManifest read_manifest_v3(dt::Db& db) {
@@ -2072,7 +2072,7 @@ ArtifactManifest read_manifest_v3(dt::Db& db) {
   check(terminal_depth_raw == 0 || terminal_depth_raw == 1, ArtifactErrorKind::InvalidSchema,
         "terminal_depth must be 0 (river) or 1 (flop)");
   manifest.terminal_depth = static_cast<poker::TerminalDepth>(terminal_depth_raw);
-  // v3 card-abstraction identity.
+  // Schema-v3 card-abstraction identity.
   abstraction::AbstractionId card;
   card.name = std::string(query.column_text(i++));
   check(!card.name.empty(), ArtifactErrorKind::InvalidSchema, "card_abstraction_name is empty");
@@ -2128,11 +2128,11 @@ GameDef read_game_v2(dt::Db& db) {
   game.big_blind = static_cast<Chips>(read_bounded_i64(query, i++, "big_blind"));
   const Chips ante = static_cast<Chips>(read_bounded_i64(query, i++, "ante"));
   check(ante == 0, ArtifactErrorKind::UnsupportedVersion,
-        "nonzero ante is not supported by the v2 profile");
+        "nonzero ante is not supported by the seat-generic schema-v2 profile");
   game.ante = ante;
   const std::int64_t root_street = query.column_i64(i++);
   check(root_street >= 0 && root_street <= 3, ArtifactErrorKind::UnsupportedVersion,
-        "v2 reader supports root_street 0..3");
+        "schema-v2 reader supports root_street 0..3");
   if (is_preflop) {
     check(root_street == 3, ArtifactErrorKind::InvalidSchema,
           "preflop rules identifier requires root_street == 3");
@@ -2140,7 +2140,7 @@ GameDef read_game_v2(dt::Db& db) {
     // player_count range is validated above (2..10); no seat-count gate here.
   } else {
     check(root_street <= 2, ArtifactErrorKind::UnsupportedVersion,
-          "v2 reader supports rooted flop/turn/river games only (root_street 0..2)");
+          "schema-v2 reader supports rooted flop/turn/river games only (root_street 0..2)");
   }
   const std::int64_t terminal_depth_raw = query.column_i64(i++);
   check(terminal_depth_raw == 0 || terminal_depth_raw == 1, ArtifactErrorKind::InvalidSchema,
@@ -2314,9 +2314,9 @@ std::map<std::int64_t, StoredState> read_states_v2(dt::Db& db, std::size_t playe
   return read_states(db, player_count, false);
 }
 
-// Validates the v2 bounds table, whose dimension is (public_root, seat, combo)
-// rather than v1's responder_combo. The measurements table is byte-identical to
-// v1 and is validated by the shared loop.
+// Validates the schema-v2 bounds table, whose dimension is (public_root, seat, combo)
+// rather than schema-v1's responder_combo. The measurements table is byte-identical to
+// schema-v1 and is validated by the shared loop.
 void read_auxiliary_tables_v2(dt::Db& db, std::size_t player_count) {
   dt::Stmt bounds_query(db.get(),
                         "SELECT public_root, seat, combo, baseline_cf_mass, normalized_bound"
@@ -2384,7 +2384,7 @@ const std::set<std::string> kAllowedTablesV2{
 
 const SchemaSet kSchemaV1{kSchemaDdlV1, kAllowedTablesV1, "v1"};
 const SchemaSet kSchemaV2{kSchemaDdlV2, kAllowedTablesV2, "v2"};
-// RFC 0009 W4c: v3 shares v2's table set; only the manifest DDL differs.
+// RFC 0009 W4c: schema-v3 shares schema-v2's table set; only the manifest DDL differs.
 const std::set<std::string> kAllowedTablesV3 = kAllowedTablesV2;
 const SchemaSet kSchemaV3{kSchemaDdlV3, kAllowedTablesV3, "v3"};
 
@@ -2781,9 +2781,9 @@ ArtifactProbe probe_path(const std::filesystem::path& path, const LoadOptions& o
   if (opened.schema_version == kArtifactSchemaVersionV2 ||
       opened.schema_version == kArtifactSchemaVersionV3) {
     // RFC 0009 D4: materialize the seat-generic identity. The resident path
-    // projects a two-seat flop-rooted v2/v3 source onto its heads-up view; the
-    // probe itself only carries the identity and SQL aggregates. Schema v3
-    // differs from v2 only in the manifest, already read above.
+    // projects a two-seat flop-rooted schema-v2/schema-v3 source onto its heads-up view; the
+    // probe itself only carries the identity and SQL aggregates. Schema-v3
+    // differs from schema-v2 only in the manifest, already read above.
     GameDef game = read_game_v2(db);
     read_game_seats(db, game);
     probe.sizes = read_sizes_v2(db);
@@ -2868,7 +2868,7 @@ void create_checkpoint(const std::filesystem::path& path, const SeatTrainingResu
   open_writer(db, path.string(), true);
   try {
     if (result.card_id.has_value()) {
-      // A class policy (schema v3). Verify the declared id is self-consistent
+      // A class policy (schema-v3). Verify the declared id is self-consistent
       // and, for the suit-canonicalization card abstraction, that the stored
       // board is already the canonical class representative -- the resident
       // layer canonicalizes a query into these coordinates, so a

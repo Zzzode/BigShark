@@ -1,7 +1,7 @@
-// practice/engine_process.cpp — C++ v2 engine process client implementation.
+// practice/engine_process.cpp - C++ framed-engine process client implementation.
 #include "bs/practice/engine_process.hpp"
 
-#include <bigshark/engine/v2/engine.pb.h>
+#include <bigshark/engine/engine.pb.h>
 #include <poll.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -152,7 +152,7 @@ bool EngineProcess::start() {
   stdout_fd_ = out_pipe[0];
 
   // Capabilities handshake: send GetCapabilitiesRequest.
-  pv2::Envelope request;
+  pe::Envelope request;
   request.set_protocol_version(3);
   request.set_request_id("cap-0");
   request.mutable_get_capabilities_request();
@@ -171,11 +171,11 @@ bool EngineProcess::start() {
   }
 
   capabilities_ =
-      std::make_unique<pv2::GetCapabilitiesResponse>(response->get_capabilities_response());
+      std::make_unique<pe::GetCapabilitiesResponse>(response->get_capabilities_response());
   return true;
 }
 
-std::unique_ptr<pv2::Envelope> EngineProcess::request(const pv2::Envelope& req) {
+std::unique_ptr<pe::Envelope> EngineProcess::request(const pe::Envelope& req) {
   if (!running()) {
     last_error_ = "engine process not running";
     return nullptr;
@@ -225,7 +225,7 @@ std::unique_ptr<pv2::Envelope> EngineProcess::request(const pv2::Envelope& req) 
     return nullptr;
   }
 
-  auto response = std::make_unique<pv2::Envelope>();
+  auto response = std::make_unique<pe::Envelope>();
   if (!response->ParseFromString(response_payload)) {
     last_error_ = "failed to parse response envelope";
     return nullptr;
@@ -267,8 +267,8 @@ void EngineProcess::stop() {
   }
 }
 
-const pv2::GetCapabilitiesResponse& EngineProcess::capabilities() const noexcept {
-  static const pv2::GetCapabilitiesResponse empty;
+const pe::GetCapabilitiesResponse& EngineProcess::capabilities() const noexcept {
+  static const pe::GetCapabilitiesResponse empty;
   return capabilities_ ? *capabilities_ : empty;
 }
 

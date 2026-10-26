@@ -3,8 +3,8 @@
 // You are the ONLY human at a 2..10-seat table; every other seat is an offline
 // bot (Easy = uniform random over the declared menu, Medium = the pinned chart
 // + Monte-Carlo-equity heuristic, i.e. ABC poker — NOT a solved "GTO" policy,
-// Engine = a local bigshark-engine process serving decisions through the v2
-// framed protocol). The table deals real shuffled cards, posts blinds, plays
+// Engine = a local bigshark-engine process serving decisions through the
+// framed engine protocol). The table deals real shuffled cards, posts blinds, plays
 // street by street, rotates the button, and tracks your session result in big
 // blinds. Every hand restarts every seat at the fixed buy-in; it is a local
 // training tool, never a money game, and it makes no network call and reads no

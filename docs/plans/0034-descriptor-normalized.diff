@@ -1,0 +1,276 @@
+1031c1031
+<           "typeName": ".bigshark.engine.v2.SettlementRule"
+---
+>           "typeName": ".bigshark.engine.SettlementRule"
+1062c1062
+<           "typeName": ".bigshark.engine.v2.ReopeningRule"
+---
+>           "typeName": ".bigshark.engine.ReopeningRule"
+1093c1093
+<           "typeName": ".bigshark.engine.v2.RunoutRule"
+---
+>           "typeName": ".bigshark.engine.RunoutRule"
+1166c1166
+<           "typeName": ".bigshark.engine.v2.GameVariant"
+---
+>           "typeName": ".bigshark.engine.GameVariant"
+1197c1197
+<           "typeName": ".bigshark.engine.v2.BettingStructure"
+---
+>           "typeName": ".bigshark.engine.BettingStructure"
+1228c1228
+<           "typeName": ".bigshark.engine.v2.GameType"
+---
+>           "typeName": ".bigshark.engine.GameType"
+1284c1284
+<           "typeName": ".bigshark.engine.v2.AmountUnit"
+---
+>           "typeName": ".bigshark.engine.AmountUnit"
+1346c1346
+<           "typeName": ".bigshark.engine.v2.RakePolicy"
+---
+>           "typeName": ".bigshark.engine.RakePolicy"
+1357c1357
+<           "typeName": ".bigshark.engine.v2.StraddlePolicy"
+---
+>           "typeName": ".bigshark.engine.StraddlePolicy"
+1384c1384
+<           "typeName": ".bigshark.engine.v2.RuleProfile"
+---
+>           "typeName": ".bigshark.engine.RuleProfile"
+1437c1437
+<           "typeName": ".bigshark.engine.v2.Rank"
+---
+>           "typeName": ".bigshark.engine.Rank"
+1468c1468
+<           "typeName": ".bigshark.engine.v2.Suit"
+---
+>           "typeName": ".bigshark.engine.Suit"
+1609c1609
+<           "typeName": ".bigshark.engine.v2.PlayerStatus"
+---
+>           "typeName": ".bigshark.engine.PlayerStatus"
+1685c1685
+<           "typeName": ".bigshark.engine.v2.ForcedContributionType"
+---
+>           "typeName": ".bigshark.engine.ForcedContributionType"
+1764c1764
+<           "typeName": ".bigshark.engine.v2.Street"
+---
+>           "typeName": ".bigshark.engine.Street"
+1822c1822
+<           "typeName": ".bigshark.engine.v2.ActionType"
+---
+>           "typeName": ".bigshark.engine.ActionType"
+1919c1919
+<           "typeName": ".bigshark.engine.v2.Street"
+---
+>           "typeName": ".bigshark.engine.Street"
+1950c1950
+<           "typeName": ".bigshark.engine.v2.Card"
+---
+>           "typeName": ".bigshark.engine.Card"
+1981c1981
+<           "typeName": ".bigshark.engine.v2.ActionEvent"
+---
+>           "typeName": ".bigshark.engine.ActionEvent"
+1991c1991
+<           "typeName": ".bigshark.engine.v2.BoardDeal"
+---
+>           "typeName": ".bigshark.engine.BoardDeal"
+2126c2126
+<           "typeName": ".bigshark.engine.v2.LayerStatus"
+---
+>           "typeName": ".bigshark.engine.LayerStatus"
+2219c2219
+<           "typeName": ".bigshark.engine.v2.PotPhase"
+---
+>           "typeName": ".bigshark.engine.PotPhase"
+2228c2228
+<           "typeName": ".bigshark.engine.v2.PotLayer"
+---
+>           "typeName": ".bigshark.engine.PotLayer"
+2280c2280
+<           "typeName": ".bigshark.engine.v2.ActionType"
+---
+>           "typeName": ".bigshark.engine.ActionType"
+2361c2361
+<           "typeName": ".bigshark.engine.v2.ObservationSource"
+---
+>           "typeName": ".bigshark.engine.ObservationSource"
+2392c2392
+<           "typeName": ".bigshark.engine.v2.ObservationCoverage"
+---
+>           "typeName": ".bigshark.engine.ObservationCoverage"
+2470c2470
+<           "typeName": ".bigshark.engine.v2.GameDefinition"
+---
+>           "typeName": ".bigshark.engine.GameDefinition"
+2539c2539
+<           "typeName": ".bigshark.engine.v2.Street"
+---
+>           "typeName": ".bigshark.engine.Street"
+2624c2624
+<           "typeName": ".bigshark.engine.v2.PlayerState"
+---
+>           "typeName": ".bigshark.engine.PlayerState"
+2655c2655
+<           "typeName": ".bigshark.engine.v2.Card"
+---
+>           "typeName": ".bigshark.engine.Card"
+2684c2684
+<           "typeName": ".bigshark.engine.v2.Card"
+---
+>           "typeName": ".bigshark.engine.Card"
+2711c2711
+<           "typeName": ".bigshark.engine.v2.PotState"
+---
+>           "typeName": ".bigshark.engine.PotState"
+2720c2720
+<           "typeName": ".bigshark.engine.v2.ForcedContribution"
+---
+>           "typeName": ".bigshark.engine.ForcedContribution"
+2729c2729
+<           "typeName": ".bigshark.engine.v2.TransitionEvent"
+---
+>           "typeName": ".bigshark.engine.TransitionEvent"
+2760c2760
+<           "typeName": ".bigshark.engine.v2.LegalAction"
+---
+>           "typeName": ".bigshark.engine.LegalAction"
+2795c2795
+<           "typeName": ".bigshark.engine.v2.ObservationProvenance"
+---
+>           "typeName": ".bigshark.engine.ObservationProvenance"
+2923c2923
+<           "typeName": ".bigshark.engine.v2.SolverMode"
+---
+>           "typeName": ".bigshark.engine.SolverMode"
+2974c2974
+<           "typeName": ".bigshark.engine.v2.GuaranteeLevel"
+---
+>           "typeName": ".bigshark.engine.GuaranteeLevel"
+3005c3005
+<           "typeName": ".bigshark.engine.v2.UtilityProfile"
+---
+>           "typeName": ".bigshark.engine.UtilityProfile"
+3054c3054
+<           "typeName": ".bigshark.engine.v2.HandState"
+---
+>           "typeName": ".bigshark.engine.HandState"
+3081c3081
+<           "typeName": ".bigshark.engine.v2.DecisionOptions"
+---
+>           "typeName": ".bigshark.engine.DecisionOptions"
+3125c3125
+<           "typeName": ".bigshark.engine.v2.ActionType"
+---
+>           "typeName": ".bigshark.engine.ActionType"
+3249c3249
+<           "typeName": ".bigshark.engine.v2.ActionType"
+---
+>           "typeName": ".bigshark.engine.ActionType"
+3316c3316
+<           "typeName": ".bigshark.engine.v2.SolverSource"
+---
+>           "typeName": ".bigshark.engine.SolverSource"
+3701c3701
+<           "typeName": ".bigshark.engine.v2.UtilityProfile"
+---
+>           "typeName": ".bigshark.engine.UtilityProfile"
+3770c3770
+<           "typeName": ".bigshark.engine.v2.ActionPolicy"
+---
+>           "typeName": ".bigshark.engine.ActionPolicy"
+3781c3781
+<           "typeName": ".bigshark.engine.v2.SelectedAction"
+---
+>           "typeName": ".bigshark.engine.SelectedAction"
+3808c3808
+<           "typeName": ".bigshark.engine.v2.SolverMetadata"
+---
+>           "typeName": ".bigshark.engine.SolverMetadata"
+3857c3857
+<           "typeName": ".bigshark.engine.v2.ActionPolicy"
+---
+>           "typeName": ".bigshark.engine.ActionPolicy"
+3868c3868
+<           "typeName": ".bigshark.engine.v2.SelectedAction"
+---
+>           "typeName": ".bigshark.engine.SelectedAction"
+3895c3895
+<           "typeName": ".bigshark.engine.v2.SolverMetadata"
+---
+>           "typeName": ".bigshark.engine.SolverMetadata"
+4017c4017
+<           "typeName": ".bigshark.engine.v2.ErrorCode"
+---
+>           "typeName": ".bigshark.engine.ErrorCode"
+4064c4064
+<           "typeName": ".bigshark.engine.v2.FieldViolation"
+---
+>           "typeName": ".bigshark.engine.FieldViolation"
+4087c4087
+<           "typeName": ".bigshark.engine.v2.Strategy"
+---
+>           "typeName": ".bigshark.engine.Strategy"
+4097c4097
+<           "typeName": ".bigshark.engine.v2.EngineError"
+---
+>           "typeName": ".bigshark.engine.EngineError"
+4107c4107
+<           "typeName": ".bigshark.engine.v2.ExpandedStrategy"
+---
+>           "typeName": ".bigshark.engine.ExpandedStrategy"
+4287c4287
+<           "typeName": ".bigshark.engine.v2.Street"
+---
+>           "typeName": ".bigshark.engine.Street"
+4349c4349
+<           "typeName": ".bigshark.engine.v2.RuleProfile"
+---
+>           "typeName": ".bigshark.engine.RuleProfile"
+4380c4380
+<           "typeName": ".bigshark.engine.v2.UtilityProfile"
+---
+>           "typeName": ".bigshark.engine.UtilityProfile"
+4411c4411
+<           "typeName": ".bigshark.engine.v2.ObservationCoverage"
+---
+>           "typeName": ".bigshark.engine.ObservationCoverage"
+4442c4442
+<           "typeName": ".bigshark.engine.v2.SolverMode"
+---
+>           "typeName": ".bigshark.engine.SolverMode"
+4473c4473
+<           "typeName": ".bigshark.engine.v2.GuaranteeLevel"
+---
+>           "typeName": ".bigshark.engine.GuaranteeLevel"
+4617c4617
+<           "typeName": ".bigshark.engine.v2.CapabilityTuple"
+---
+>           "typeName": ".bigshark.engine.CapabilityTuple"
+4736c4736
+<           "typeName": ".bigshark.engine.v2.GetCapabilitiesRequest"
+---
+>           "typeName": ".bigshark.engine.GetCapabilitiesRequest"
+4746c4746
+<           "typeName": ".bigshark.engine.v2.GetCapabilitiesResponse"
+---
+>           "typeName": ".bigshark.engine.GetCapabilitiesResponse"
+4756c4756
+<           "typeName": ".bigshark.engine.v2.DecisionRequest"
+---
+>           "typeName": ".bigshark.engine.DecisionRequest"
+4766c4766
+<           "typeName": ".bigshark.engine.v2.DecisionResponse"
+---
+>           "typeName": ".bigshark.engine.DecisionResponse"
+4796c4796
+<   "name": "bigshark/engine/v2/engine.proto",
+---
+>   "name": "bigshark/engine/engine.proto",
+4798c4798
+<   "package": "bigshark.engine.v2",
+---
+>   "package": "bigshark.engine",

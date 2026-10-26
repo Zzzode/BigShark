@@ -7,7 +7,7 @@
 // private to the implementation and never appear here. The library is offline
 // only: no host, service, or live-decision path links it in this stage.
 //
-// Artifact v1: SQLite database, application_id 0x42534754 ("BSGT"),
+// Artifact schema-v1: SQLite database, application_id 0x42534754 ("BSGT"),
 // user_version 1, STRICT tables, foreign keys, prepared statements, and the
 // RFC 0005 canonical ASCII information key. Checkpoints are mutable files
 // updated by one transaction per complete iteration (rollback journaling,
@@ -59,9 +59,9 @@ inline constexpr const char* kNumericProfileV1 =
 inline constexpr const char* kRulesIdentifierV1 = "rfc0004-heads-up-flop-v1";
 inline constexpr const char* kUtilityIdentifier = "zero-sum-chip-net-side-pot";
 
-// RFC 0009 D3: schema v2 is the seat-generic profile. The DDL set, key grammar,
-// rules identifier, and numeric profile are all version-keyed; a v1 artifact
-// loads with an unchanged digest and a v2 artifact is rejected by a v1 reader.
+// RFC 0009 D3: schema-v2 is the seat-generic profile. The DDL set, key grammar,
+// rules identifier, and numeric profile are all version-keyed; a schema-v1 artifact
+// loads with an unchanged digest and a schema-v2 artifact is rejected by a schema-v1 reader.
 inline constexpr std::uint32_t kArtifactSchemaVersionV2 = 2;
 inline constexpr std::uint32_t kArtifactSchemaVersionV3 = 3;
 inline constexpr const char* kNumericProfileV2 =
@@ -125,20 +125,20 @@ struct ArtifactManifest {
   std::size_t nodes = 0;
   std::size_t information_sets = 0;
   std::size_t accounted_bytes = 0;
-  // RFC 0009 D3 (schema v2 only): the declared action abstraction and terminal
-  // depth. The v1 writer/reader leave these at their defaults; the v2 writer
-  // derives them from the SeatTrainingResult and the v2 reader reconstructs the
+  // RFC 0009 D3 (schema-v2 only): the declared action abstraction and terminal
+  // depth. The schema-v1 writer/reader leave these at their defaults; the schema-v2 writer
+  // derives them from the SeatTrainingResult and the schema-v2 reader reconstructs the
   // SeatPolicy's action_id from them.
   std::string abstraction_name;
   std::uint32_t abstraction_version = 0;
   std::string abstraction_parameters;
   std::uint64_t abstraction_digest = 0;
   poker::TerminalDepth terminal_depth = poker::TerminalDepth::River;
-  // RFC 0009 W4c (schema v3 only): the declared card abstraction. A v2
-  // artifact (exact board) leaves this nullopt; a v3 artifact (class policy)
+  // RFC 0009 W4c (schema-v3 only): the declared card abstraction. A schema-v2
+  // artifact (exact board) leaves this nullopt; a schema-v3 artifact (class policy)
   // carries the id under which its stored board is the canonical class
-  // representative. The v2 writer/reader leave this at nullopt; the v3 writer
-  // derives it from the SeatTrainingResult and the v3 reader reconstructs the
+  // representative. The schema-v2 writer/reader leave this at nullopt; the schema-v3 writer
+  // derives it from the SeatTrainingResult and the schema-v3 reader reconstructs the
   // SeatPolicy's card_id from it.
   std::optional<abstraction::AbstractionId> card_abstraction;
 };
@@ -160,9 +160,9 @@ using TrainingRows = std::map<solver::InformationKey, TrainingRow>;
 // immutable policy, counters, seed, and PRNG state. `rows` is empty for a
 // published policy and complete for a checkpoint.
 //
-// RFC 0009 D3 (schema v2): a v2 artifact populates `nseat` instead of `result`
-// and `rows`. The two arms are mutually exclusive — a v1 load leaves `nseat`
-// nullopt and a v2 load leaves `result`/`rows` at their defaults. Callers that
+// RFC 0009 D3 (schema-v2): a schema-v2 artifact populates `nseat` instead of `result`
+// and `rows`. The two arms are mutually exclusive — a schema-v1 load leaves `nseat`
+// nullopt and a schema-v2 load leaves `result`/`rows` at their defaults. Callers that
 // need the seat-generic policy dispatch on `nseat.has_value()`.
 struct ArtifactBundle {
   ArtifactManifest manifest;
@@ -178,7 +178,7 @@ struct CheckpointProvenance {
   ValidationState validation = ValidationState::Unvalidated;
 };
 
-// RFC 0009 D3: provenance for a seat-generic (schema v2) checkpoint. Mirrors
+// RFC 0009 D3: provenance for a seat-generic (schema-v2) checkpoint. Mirrors
 // CheckpointProvenance; an empty algorithm string derives result identity.
 struct SeatCheckpointProvenance {
   std::string algorithm_revision;
@@ -250,9 +250,9 @@ struct ArtifactProbe {
   // Revision-1 identity. Default-constructed for a schema-v2 probe, where the
   // seat-generic fields below carry the identity instead.
   solver::HeadsUpGame game;
-  // RFC 0009 D4 (schema v2 only): the seat-generic identity. Populated only
-  // for a v2 probe. The resident path projects a two-seat flop-rooted v2
-  // identity onto its heads-up view; turn/river-rooted and 3+-seat v2 sources
+  // RFC 0009 D4 (schema-v2 only): the seat-generic identity. Populated only
+  // for a schema-v2 probe. The resident path projects a two-seat flop-rooted schema-v2
+  // identity onto its heads-up view; turn/river-rooted and 3+-seat schema-v2 sources
   // are refused there as LoadFailed until the state layer generalizes.
   std::optional<poker::GameDef> game_def;
   std::optional<std::vector<std::vector<solver::WeightedHand>>> ranges;

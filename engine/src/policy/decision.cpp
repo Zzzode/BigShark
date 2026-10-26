@@ -20,7 +20,7 @@ namespace bs {
 
 // Preflop BB-rounded sizes were historically clamped to the raw legal bounds
 // (raiseMin can be 0), not to max(1, raiseMin); preserve that literal range
-// so in-range results are bit-identical to the v0 path.
+// so in-range results stay bit-identical to the established preflop path.
 static int clampRawLegal(std::int64_t v, const Legal& L) {
   return static_cast<int>(
       std::clamp(v, static_cast<std::int64_t>(L.raiseMin), static_cast<std::int64_t>(L.raiseMax)));
@@ -467,9 +467,10 @@ static std::optional<SourcedDecision> riverAnswer(const Ctx& c, const std::array
 
 SourcedDecision evaluatePolicySourced(const Ctx& c, RiverBackendHint backend) {
   if (c.hole.size() != 2)
-    // Defensive pre-dispatch fold. Unreachable on a validated v1 request
-    // (the validator requires exactly two hole cards); present on the v0/JSON
-    // path, which keeps its historical classification.
+    // Defensive pre-dispatch fold. Unreachable after request validation
+    // (exactly two hole cards are required); retained for a state
+    // constructed through the non-validated JSON entry, which keeps its
+    // historical classification.
     return {{"fold", 0, "no hole cards", -1, -1}, DecisionSource::PostflopHeuristic};
   const std::string k = key169(cardId(c.hole[0]), cardId(c.hole[1]));
   if (c.street == "preflop")

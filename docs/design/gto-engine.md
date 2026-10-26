@@ -48,7 +48,7 @@ flowchart TD
   Ranges --> Budget{Exact solve fits budget?}
   Budget -->|Yes| LP[Sequence-form LP]
   Budget -->|No| DCFR[Bounded DCFR]
-  Resident -->|Miss, minor-2 AUTOMATIC| Resolve[Terminal-only resolver]
+  Resident -->|Miss, AUTOMATIC| Resolve[Terminal-only resolver]
   Resolve -->|Hit| Translate
   Resolve -->|Miss| Fallback[Operational fallback]
   LP --> Translate[Translate and validate action]
@@ -286,14 +286,14 @@ The RFC 0007 measured 606 info sets at 3 BB is the abstracted count
 (conditioned on hole-card buckets), not the raw tree node count.
 
 The heads-up preflop profile is wired into the resident decision path.
-RFC 0019 extends negotiated minor-2 preflop reconstruction to 2..10 dealt
+RFC 0019 extends negotiated preflop reconstruction to 2..10 dealt
 seats using the same exact `GameState` replay. Folded seats remain indexed;
 each newly admitted multiway action's actual payment and each player's final
 status are checked. Sparse physical seats and multiway blind positions retain
-their native meaning. Minor 1 keeps the heads-up reconstruction profile.
+their native meaning. 
 The equal-hand-start-stack, no-side-pot/ante/rake/straddle limits still apply.
 Reconstruction is not policy coverage: an unmatched root still misses, and
-minor-2 AUTOMATIC uses its labeled operational fallback, not the charts.
+AUTOMATIC uses its labeled operational fallback, not the charts.
 Explicit heuristic/legacy paths retain their chart behavior. No six-seat
 production artifact or complete six-max GTO qualification is established by
 this internal prerequisite; see the complete six-max delivery register.
@@ -316,7 +316,7 @@ history. In lazy mode, non-flop-library specs (e.g., the preflop profile) are pr
 own GameDef at startup and set up for on-demand loading, instead of inheriting
 the flop library's shared game definition.
 
-RFC 0021 additionally uses this same hand-start replay for minor-2 multiway
+RFC 0021 additionally uses this same hand-start replay for multiway
 postflop requests containing supplied preflop actions. A River-terminal replay
 reaches the complete flop and rebases to the real button, dealt-seat indices,
 per-seat net contributions, stacks, pot and folded bitmap. Postflop service
@@ -325,7 +325,7 @@ original preflop observations. Strict failure does not retry the earlier
 equal-contribution inference. Native refunds and existing unsupported utility
 still refuse; public observation completeness, action-conditioned ranges and
 six-max strategy qualification are not established by supplied-history replay.
-Legacy minor-0/1, heads-up and postflop-only paths stay unchanged. RFC 0020
+The heads-up and postflop-only legacy paths stay unchanged. RFC 0020
 prevents matching a differently folded artifact root.
 
 ## Abstract Public Betting Tree and Unified Solve (RFC 0008 Stage 4)
@@ -635,26 +635,26 @@ STRICT tables, foreign keys enforced, prepared statements throughout, and a
 compile/runtime requirement of SQLite 3.37 or newer. Three schema versions
 coexist; `open_validated` selects the DDL by `user_version`:
 
-- **v1** (`user_version = 1`, frozen): the original two-seat schema. The
+- **schema-v1** (`user_version = 1`, frozen): the original two-seat schema. The
   `game` table carries both stacks/contributions inline; `info_key_revision`
-  is the v1 key grammar.
-- **v2** (`user_version = 2`, RFC 0009 D3): the seat-generic schema. A new
+  is the schema-v1 key grammar.
+- **schema-v2** (`user_version = 2`, RFC 0009 D3): the seat-generic schema. A new
   `game_seats` table holds per-seat stack/contribution for 2..10 seats, the
   `game` table gains `player_count`, `root_street`, `ante`, and
   `terminal_depth`, and the manifest gains `terminal_depth`. The key grammar
-  is `info_key_revision = 2`. A v2 artifact serves one exact board.
-- **v3** (`user_version = 3`, RFC 0009 W4c-i): the seat-generic schema plus a
+  is `info_key_revision = 2`. A schema-v2 artifact serves one exact board.
+- **schema-v3** (`user_version = 3`, RFC 0009 W4c-i): the seat-generic schema plus a
   declared card abstraction on the manifest. Only the manifest differs from
-  v2; the nine other table definitions are reused byte-for-byte. A v3
+  schema-v2; the nine other table definitions are reused byte-for-byte. A schema-v3
   artifact serves a board *class*, and its stored flop is the canonical
   representative under the declared abstraction.
 
-The v2/v3 tables:
+The schema-v2/schema-v3 tables:
 
 | Table | Content |
 | --- | --- |
-| `manifest` | Singleton: artifact kind (`checkpoint`/`policy`), algorithm revision, information-key revision (2), numeric profile, validation state, engine revision, completed iterations, PRNG identifier, seed and PRNG state (16 lowercase hex digits), run status, node/set/byte counters, action/terminal abstraction declaration, `terminal_depth`, and (v3 only) the card-abstraction declaration: `card_abstraction_name`, `card_abstraction_version`, `card_abstraction_parameters`, `card_abstraction_digest` (16 lowercase hex digits, verified against name/version/parameters) |
-| `game` | Singleton: rules and utility identifiers, player count (2..10), button, big blind, ante, root street, terminal depth, flop (canonical representative for v3), optional fixed turn/river, pot |
+| `manifest` | Singleton: artifact kind (`checkpoint`/`policy`), algorithm revision, information-key revision (2), numeric profile, validation state, engine revision, completed iterations, PRNG identifier, seed and PRNG state (16 lowercase hex digits), run status, node/set/byte counters, action/terminal abstraction declaration, `terminal_depth`, and (schema-v3 only) the card-abstraction declaration: `card_abstraction_name`, `card_abstraction_version`, `card_abstraction_parameters`, `card_abstraction_digest` (16 lowercase hex digits, verified against name/version/parameters) |
+| `game` | Singleton: rules and utility identifiers, player count (2..10), button, big blind, ante, root street, terminal depth, flop (canonical representative for schema-v3), optional fixed turn/river, pot |
 | `game_seats` | `(seat)` primary key: per-seat stack and contribution for 2..10 seats |
 | `sizes` | Ordered `(street, kind, ordinal)` rational bet/raise numerator and denominator |
 | `ranges` | `(player, combo)` primary key, canonical zero-based unordered combo id 0..1325, nonnegative finite REAL weight |
@@ -804,14 +804,14 @@ root but different range/size identity are both refused as duplicates. A
 fixed turn or river card that differs from the artifact's reserved runout
 misses exactly as `HeadsUpPolicy::lookup` diverges.
 
-For a v3 (class-based) artifact the stored flop is the canonical
+For a schema-v3 (class-based) artifact the stored flop is the canonical
 representative of its board class, so the root match is against the query
 flop's canonical form, not the query flop itself. The resident boundary
 computes the suit relabel `canonicalize(query_flop)` once per query and
 applies it at every point a concrete card enters the artifact's coordinate
 system: the root match, the runout comparison, the public-path replay, the
 information-key prefix board, and the hero combo lookup. The blocking check
-and the returned `hero_cards` stay in concrete coordinates. A v2 artifact
+and the returned `hero_cards` stay in concrete coordinates. A schema-v2 artifact
 has no card abstraction; its relabel is the identity and the path is
 unchanged. The relabel, the canonical flop, and a canonical prefix-board
 scratch buffer live in `ResidentScratch` alongside the reach and key
@@ -842,7 +842,7 @@ SQLite call, no lock, and no heap allocation: every buffer a query touches
 lives in a caller-owned `ResidentScratch` (per-player per-combo raw reach,
 marginals, per-card mass, partner mass, an action-probability scratch, a fixed
 256-word key, a compact-key byte buffer, an action-expansion scratch, a
-probability-deference scratch, and the v3 canonical-translation buffers: a
+probability-deference scratch, and the schema-v3 canonical-translation buffers: a
 4-entry suit relabel, the 3-card canonical flop, and a 5-card canonical
 prefix-board scratch). The compact key and action formats are exact (no
 quantization); the boundary defers the codebook (or doubles) into the scratch
@@ -1826,7 +1826,7 @@ bust prizes minus pre-hand equity produce prize-unit utility. No chip-EV
 conversion, rake, inferred remote stacks, or implicit provider rules apply.
 
 The arithmetic is isolated from strategy routing. Production tournament
-support remains disabled pending settlement integration, v2 protocol and
+support remains disabled pending settlement integration, the framed engine protocol and
 provider gates. Tests independently enumerate finish permutations, including
 1,089 grid fixtures and 120 seeded fixtures, plus analytic and bust cases.
 

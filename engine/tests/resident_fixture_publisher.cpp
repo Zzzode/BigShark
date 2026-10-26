@@ -44,8 +44,8 @@ TrainingLimits fastLimits() {
 }
 
 // Deeper SPR root chosen so the default sizing schedule produces six root
-// actions (check plus bet totals 5,7,15,30,40), which proves the minor-1
-// distribution is not truncated to the minor-0 five-entry cap.
+// actions (check plus bet totals 5,7,15,30,40), which proves the full menu
+// is published rather than a truncated five-entry cap.
 //
 // Button is 0 to match the resident mapper convention: the mapper rotates
 // actor indices so the button is always at index 0 before root matching.

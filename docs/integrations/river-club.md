@@ -66,11 +66,20 @@ with:
   applied by the engine at street close.
 - **Phase-tagged pot layers**: `PotState` with `PENDING` layers built from
   `room.pots` when present, or from net contributions (`G - F`) otherwise.
+  `room.pots` is an undocumented provider field; the side-pot certification
+  gate and the authoritative-field status of every reconstructed input are
+  audited in the [provider public-field audit](provider-public-field-audit.md).
 - **TransitionEvent path**: `ActionEvent` and `BoardDeal` events with
   `potBefore` and `stackAfter` tracked incrementally from blinds through
   every action.
-- **ObservationProvenance**: `source = PROVIDER`, `coverage = FULL`,
-  `controllerEpoch = handId:revision`.
+- **ObservationProvenance**: `source = OFFICIAL_RESPONSE`; `coverage = FULL`
+  only when the hand was first observed at revision 0 with no prior actions
+  and every subsequent event window aligned without a gap. A mid-hand attach,
+  controller restart, or unalignable window fails closed to
+  `MID_HAND_ATTACH`; `controllerEpoch` is
+  `<ledger-uuid>:<restart-count>:<handId>`. See
+  [provider public-field audit](provider-public-field-audit.md) for the
+  structural limits of event-window continuity.
 - **RuleProfile**: settlement, reopening, runout, and dealt seat count.
 - **DecisionOptions**: `utilityProfile = CASH_CHIP`.
 

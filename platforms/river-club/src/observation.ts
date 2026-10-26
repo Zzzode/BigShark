@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import {
   ObservationCoverage,
   ObservationSource,
-} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+} from '../../../build/generated/ts/bigshark/engine/engine_pb.js';
 import { isRecord } from './json.js';
 import { isRiverRoom, type Card, type RiverEvent, type RiverRoom } from './types.js';
 

@@ -117,7 +117,7 @@ enum class PracticeDifficulty {
   Easy,    // declared-menu uniform random bot: loose, passive/aggressive random
   Medium,  // pinned preflop charts + postflop Monte-Carlo heuristic (ABC poker)
   Engine,  // engine-served tier: a local bigshark-engine process decides through
-           // the v1 framed contract; a descriptive label, never "GTO". The
+           // the framed wire contract; a descriptive label, never "GTO". The
            // PracticeTable leaves Engine bot seats null; the caller must inject
            // a policy via set_bot() before the first hand.
 };

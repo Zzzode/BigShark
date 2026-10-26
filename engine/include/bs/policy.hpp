@@ -9,8 +9,8 @@
 namespace bs {
 
 // The policy source that selected a decision. Storage sources (resident
-// blueprint, resolving certifier) do not appear here: they are selected at
-// the v1 protocol boundary, not inside the policy. MultistreetCfr is never
+// blueprint, resolving certifier) do not appear here: they are selected in
+// the protocol layer, not inside the policy. MultistreetCfr is never
 // produced on a decision path but is kept for switch totality over the RFC
 // 0008 seven-source normative table.
 enum class DecisionSource {

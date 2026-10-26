@@ -14,6 +14,7 @@ integration, and development documentation.
 | Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | IDL, pinned generation, compatibility baseline, and conformance vectors |
 | Reference | [Exploitability and NashConv](reference/exploitability.md) | Current | The three normalisations, which harness computes what, and the resident fixture conventions |
 | Integration | [River Club](integrations/river-club.md) | Current | River Club adapter, state machine, and operational mapping |
+| Integration | [Provider public-field audit](integrations/provider-public-field-audit.md) | Current | Authoritative vs undocumented provider fields and the T1b/T2 side-pot gate |
 | Development | [Build and test](development/build-and-test.md) | Current | CMake presets, formatting, tests, sanitizers, and release publishing |
 | Development | [Benchmarking](development/benchmarking.md) | Current | Reproducible solver-quality fixtures, metrics, and thresholds |
 | Development | [Offline practice table](development/practice-table.md) | Current | Local human-vs-bot practice for 2..10 seats, bot difficulty labels, and the offline boundary |
@@ -23,11 +24,11 @@ integration, and development documentation.
 | RFC | [RFC 0002: Protobuf engine protocol](rfcs/0002-protobuf-engine-protocol.md) | Implementing | Typed messages, framing, compatibility, and generated bindings |
 | RFC | [RFC 0003: Strict TypeScript application layer](rfcs/0003-typescript-application-layer.md) | Implemented | Strongly typed applications, adapters, clients, tools, and compiled launchers |
 | RFC | [RFC 0004: Heads-up blueprint](rfcs/0004-heads-up-blueprint.md) | Implementing | Real betting rules, multi-size offline training, coverage, and quality gates |
-| RFC | [RFC 0005: Artifacts and resolving](rfcs/0005-strategy-artifacts-and-resolving.md) | Implementing | Durable strategies, bounded lookup, certified on-tree resolving, and minor-1 integration |
+| RFC | [RFC 0005: Artifacts and resolving](rfcs/0005-strategy-artifacts-and-resolving.md) | Implementing | Durable strategies, bounded lookup, certified on-tree resolving, and wire-contract integration |
 | RFC | [RFC 0006: Extended poker utility](rfcs/0006-extended-poker-utility.md) | Implementing | Side pots, rake, ICM, experimental multiway evaluation, and production prerequisites |
 | RFC | [RFC 0007: Preflop profile abstraction](rfcs/0007-preflop-profile-abstraction.md) | Implementing | Bounded preflop training for a declared small profile, policy-derived continuation ranges, and coexistence with existing artifacts |
 | RFC | [RFC 0008: Unified N-player architecture](rfcs/0008-unified-n-player-architecture.md) | Implementing | One game definition for 2..10 seats, a versioned abstraction layer with measured error, one solver interface, explicit guarantee levels, and staged removal of superseded paths |
-| RFC | [RFC 0009: Unified engine delivery](rfcs/0009-unified-engine-delivery.md) | Implementing | Live promotion and wiring, a seat-parameterized solve seam, artifact schema v2 with abstraction identity, generalized resolving, flop coverage, and the heuristic demotion |
+| RFC | [RFC 0009: Unified engine delivery](rfcs/0009-unified-engine-delivery.md) | Implementing | Live promotion and wiring, a seat-parameterized solve seam, artifact schema-v2 with abstraction identity, generalized resolving, flop coverage, and the heuristic demotion |
 | RFC | [RFC 0010: Multiway frontier evaluation](rfcs/0010-multiway-frontier-evaluation.md) | Accepted | N-way equity frontier evaluator, relaxed player-count gates, and N-way preflop profile training |
 | RFC | [RFC 0011: Turn and river continuation strategy](rfcs/0011-turn-river-strategy.md) | Accepted | On-demand subgame resolving for turn/river decisions, river frontier evaluator, and virtual turn/river deals |
 | RFC | [RFC 0012: Flop library performance optimization](rfcs/0012-flop-library-performance.md) | Implemented | Parallel training, consolidated mmap binary format, lazy class loading, and warm-start training |
@@ -36,10 +37,10 @@ integration, and development documentation.
 | RFC | [RFC 0016: Synchronous MCCFR batches and correct strategy averaging](rfcs/0016-synchronous-mccfr-averaging.md) | Implemented | Frozen-profile training epochs, independent full-action averaging, and revision-aware checkpoint compatibility |
 | RFC | [RFC 0017: Training pipeline allocation cost](rfcs/0017-training-pipeline-allocation-cost.md) | Implemented | Allocation-efficient revision-two deltas, exact export reuse, ordered seat-artifact loading, and matched end-to-end measurements |
 | RFC | [RFC 0018: Zero-rake settlement fast path](rfcs/0018-zero-rake-settlement-fast-path.md) | Implemented | Preserve exact settlement while avoiding provably zero percentage calculations |
-| RFC | [RFC 0019: N-seat preflop reconstruction](rfcs/0019-nseat-preflop-reconstruction.md) | Implemented | Exact minor-2 multiway replay; an internal prerequisite, not six-max GTO completion |
+| RFC | [RFC 0019: N-seat preflop reconstruction](rfcs/0019-nseat-preflop-reconstruction.md) | Implemented | Exact multiway replay on the negotiated wire contract; an internal prerequisite, not six-max GTO completion |
 | RFC | [RFC 0020: Folded-root policy identity](rfcs/0020-folded-root-policy-identity.md) | Implemented | Reject a different root live set before resident or direct resolver lookup |
 | RFC | [RFC 0021: N-seat cross-street reconstruction](rfcs/0021-nseat-cross-street-reconstruction.md) | Implemented | Replay supplied hand history into the true flop root; public provenance and complete six-max remain open |
-| RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Implementing | Coherent v2 ledger, public observations and rule identity; provider gates remain open |
+| RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Implementing | Coherent full-state ledger, public observations and rule identity; provider gates remain open |
 | RFC | [RFC 0023: Artifact startup and decision deadlines](rfcs/0023-artifact-startup-and-decision-deadlines.md) | Implemented | Root-aware startup allowance and bounded active waits; no six-max quality claim |
 | RFC | [RFC 0024: Depth-limited resolving](rfcs/0024-depth-limited-resolving.md) | Implemented | Street-boundary value estimation for scalable subgame solving; enabling architecture for six-max |
 | RFC | [RFC 0025: Off-tree decision handling](rfcs/0025-off-tree-decision-handling.md) | Implemented | Flop-rooted depth-limited resolving and off-tree action-line tolerance |
@@ -51,6 +52,7 @@ integration, and development documentation.
 | RFC | [RFC 0031: Measure postflop card-abstraction error](rfcs/0031-measure-card-abstraction-error.md) | Accepted | Defer finer bucketing until abstraction loss is measured; pin the bucket scheme in build identity |
 | RFC | [RFC 0032: Preserve the full board through the decision pipeline](rfcs/0032-turn-river-board-addressing.md) | Implementing | Stop re-rooting every postflop decision to three cards; repair the subgame digest contract; pin the current truncation with a baseline test |
 | RFC | [RFC 0033: Flop library root reachability](rfcs/0033-flop-library-root-reachability.md) | Implementing | Correct the stored root ledger so the shipped six-way library can answer a real limped flop, and record the one-root-per-class scope limit |
+| RFC | [RFC 0034: Unversioned engine protocol](rfcs/0034-unversioned-engine-protocol.md) | Implemented | One unversioned proto package, regenerated baseline, restored protocol fuzz target, and removal of internal generation naming |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [RFC 0009 implementation](plans/0009-implementation.md) | Current | Unified engine delivery stages W1-W5, status, and evidence |

@@ -47,6 +47,7 @@ their own RFC.
 | [0031](0031-measure-card-abstraction-error.md) | Measure Postflop Card-Abstraction Error Before Changing It | Accepted | Engine abstraction, engine solver, engine flop library |
 | [0032](0032-turn-river-board-addressing.md) | Preserve the Full Board Through the Decision Pipeline | Implementing | Engine resident, River adapter, engine protocol |
 | [0033](0033-flop-library-root-reachability.md) | Make the Flop Library's Root Identity Reachable from a Real Hand | Implementing | Engine flop library, engine resident, engine benchmarks, engine tests |
+| [0034](0034-unversioned-engine-protocol.md) | Unversioned Single-Form Engine Protocol | Implemented | Proto, engine protocol, engine host, node client, river adapter, engine tests, docs |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.

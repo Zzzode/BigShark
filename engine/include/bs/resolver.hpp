@@ -1,7 +1,7 @@
 // RFC 0005 Stage 9 bounded resolving gadget with independent best-response
 // certification, generalized to 2..10 seats (RFC 0009 W2c-ii-c, RFC 0011). Offline
-// solver-domain component; it never opens a database, never touches the wire,
-// and never changes v0/minor-0 behavior.
+// solver-domain component; it never opens a database and never touches the
+// wire.
 //
 // The resolver re-solves a SINGLE, terminal-only postflop hero decision rooted
 // at a reconstructed descendant of an immutable blueprint game. It builds a

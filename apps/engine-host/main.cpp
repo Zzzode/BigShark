@@ -451,6 +451,8 @@ class ResidentHostServices final : public bs::HostServices {
         return bs::BlueprintMiss::ZeroProbabilityHeroCombination;
       case MissReason::SeatCountNotSupported:
         return bs::BlueprintMiss::SeatCountNotSupported;
+      case MissReason::ClassNotTrainedForRoot:
+        return bs::BlueprintMiss::ClassNotTrainedForRoot;
     }
     return bs::BlueprintMiss::OffTree;
   }
@@ -621,6 +623,83 @@ std::string served_field_list(yyjson_val* served, const char* key) {
   return out;
 }
 
+// RFC 0035: print one resident-served-root line per directory entry and
+// reconcile the manifest's served_roots[] against the mounted BSFLIB03
+// directory. Without this an operator sees a class count and concludes every
+// flop state is served, when each root answers only its exact ledger.
+//
+// When the binary mounts (the normal, published case) the directory is
+// authoritative: each entry's ledger and class_count must match the mounted
+// root or startup aborts. When it does not mount (e.g. a digest test fixture
+// with placeholder bytes), lines fall back to the manifest arrays so the
+// operator still sees what the manifest claims.
+bool report_and_reconcile_served_roots(const std::filesystem::path& bin_path, yyjson_val* root,
+                                       const std::string& pinned_hex) {
+  yyjson_val* served_roots = yyjson_is_obj(root) ? yyjson_obj_get(root, "served_roots") : nullptr;
+  if (!yyjson_is_arr(served_roots))
+    return true;  // no served_roots: nothing to report (older/foreign manifest)
+
+  bs::resident::MmapLibrary mounted;
+  bool have_directory = false;
+  try {
+    mounted.open(bin_path, /*verify_sha256=*/false);
+    have_directory = mounted.root_count() == yyjson_arr_size(served_roots);
+  } catch (const std::exception&) {
+    have_directory = false;
+  }
+
+  const std::size_t n = yyjson_arr_size(served_roots);
+  for (std::size_t i = 0; i < n; ++i) {
+    yyjson_val* served = yyjson_arr_get(served_roots, i);
+    if (!yyjson_is_obj(served)) {
+      std::cerr << "flop-library: served_roots[" << i << "] is not an object\n";
+      return false;
+    }
+    const std::string stacks = served_field_list(served, "stacks");
+    const std::string contribs = served_field_list(served, "contributions");
+    const std::string folded = served_field_list(served, "folded");
+    if (have_directory) {
+      const bs::resident::RootDirectoryEntry& directory_root =
+          mounted.root(static_cast<std::uint32_t>(i));
+      const auto dir_list = [&](const char* kind) {
+        std::string out;
+        for (std::size_t s = 0; s < mounted.game().def.player_count; ++s) {
+          if (s)
+            out += ',';
+          if (std::string(kind) == "stacks")
+            out += std::to_string(directory_root.stacks[s]);
+          else if (std::string(kind) == "contributions")
+            out += std::to_string(directory_root.contributions[s]);
+          else
+            out += directory_root.folded[s] ? "1" : "0";
+        }
+        return out;
+      };
+      const std::string dir_stacks = dir_list("stacks");
+      const std::string dir_contribs = dir_list("contributions");
+      const std::string dir_folded = dir_list("folded");
+      yyjson_val* pot_val = yyjson_obj_get(served, "pot");
+      yyjson_val* class_count_val = yyjson_obj_get(served, "class_count");
+      const bool ledger_ok = dir_stacks == stacks && dir_contribs == contribs &&
+                             dir_folded == folded && yyjson_is_uint(pot_val) &&
+                             yyjson_get_uint(pot_val) == directory_root.pot &&
+                             yyjson_is_uint(class_count_val) &&
+                             yyjson_get_uint(class_count_val) == directory_root.class_count;
+      if (!ledger_ok) {
+        std::cerr << "flop-library: served_roots[" << i
+                  << "] disagrees with the mounted BSFLIB03 root directory for " << bin_path
+                  << '\n';
+        return false;
+      }
+    }
+    std::cerr << "resident-served-root " << bin_path.parent_path() << " root=" << i
+              << " stacks=" << stacks << " contributions=" << contribs << " folded=" << folded
+              << '\n';
+  }
+  (void)pinned_hex;
+  return true;
+}
+
 // RFC 0027: verify a directory-resolved binary library at startup. The
 // manifest's digest must equal the sidecar, and the file hash must equal both.
 // An explicitly passed <file.bin> keeps its documented sidecar-only default
@@ -669,17 +748,9 @@ bool verify_pinned_binary_library(const std::filesystem::path& bin_path) {
     std::cerr << "flop-library: content digest disagrees with manifest for " << bin_path << '\n';
     return false;
   }
-  // RFC 0033: report the ONE root shape this library answers. Without this an
-  // operator sees a class count and concludes every flop state is served, when
-  // same_root admits exactly one ledger per class.
-  yyjson_val* served = yyjson_is_obj(root) ? yyjson_obj_get(root, "served_root") : nullptr;
-  if (yyjson_is_obj(served)) {
-    const std::string stacks = served_field_list(served, "stacks");
-    const std::string contribs = served_field_list(served, "contributions");
-    const std::string folded = served_field_list(served, "folded");
-    std::cerr << "resident-served-root " << bin_path.parent_path() << " stacks=" << stacks
-              << " contributions=" << contribs << " folded=" << folded << '\n';
-  }
+  // RFC 0035: report and reconcile the served_roots[] against the directory.
+  if (!report_and_reconcile_served_roots(bin_path, root, pinned_hex))
+    return false;
   return true;
 }
 

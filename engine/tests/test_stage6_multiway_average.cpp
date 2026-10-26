@@ -1025,7 +1025,7 @@ int test_mixed_equilibrium_discriminates_weighting() {
   config.action = mix_action();
   config.card_kind = bs::abstraction::CardBucketKind::Identity;
   config.geometry_matrix_hash = 0x4d49584e54454402ULL;
-  config.chart_digest_sha256 = "mix-equilibrium-item4-v2";
+  config.chart_digest_sha256 = "mix-equilibrium-item4";
 
   const GameDef def = mix_def();
   const JointDealTable deals = mix_deals();

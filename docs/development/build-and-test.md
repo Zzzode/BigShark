@@ -121,29 +121,37 @@ The framed protocol parsers are native untrusted-input code, so the
 full ASan ctest (not only the new targets) is required after changes to
 `engine/src/protocol/`.
 
-Two complete native verification cases have sanitizer-specific wall allowances,
-without changing their fixtures, iterations, seeds, numerical thresholds or
-production limits. `postflop_templates` retains the release 180-second CTest
-watchdog and uses 900 seconds under sanitizers. The heads-up two-seat reference
-cross-check inside `stage6_br_estimator` retains five-minute training/evaluation
-budgets in release and uses fifteen minutes for each phase under sanitizers;
-every other fixture's limits remain unchanged. It still requires all eight
+Three complete native verification cases have sanitizer-specific wall
+allowances, without changing their fixtures, iterations, seeds, numerical
+thresholds or production limits. `postflop_templates` retains the release
+180-second CTest watchdog and uses 900 seconds under sanitizers.
+`stage6_measured_policy` retains the release 900-second watchdog and uses
+5,400 seconds under sanitizers: its exhaustive node enumeration runs ~150
+seconds in release and the observed sanitizer overhead across the stage-6
+walks reaches 30-40x, so the 6x allowance killed a still-advancing run at
+900 seconds. The heads-up two-seat reference cross-check inside
+`stage6_br_estimator` retains five-minute training/evaluation budgets in
+release and uses fifteen minutes for each phase under sanitizers; every
+other fixture's limits remain unchanged. It still requires all eight
 training iterations before any evaluation. Its diagnostics report actual
 phase time and resource counters. A private
 `test_stage6_br_estimator --two-seat-crosscheck` entry isolates that same case
 for diagnosis only; CTest's no-argument entry always runs the full suite.
 
-`resident` needs the same kind of allowance and does not have one. It takes
-about 308 seconds in release, and the sanitizer overhead measured across the
-rest of this suite is 18x-62x per case (median roughly 27x). Per-case timing in
-release shows where the cost sits: `resident projection` alone takes about 104
-seconds, the two three-seat belief fixtures about 78 and 75, and the remaining
-twenty cases together well under a minute. Under ASan those first three are the
-cases that exhaust the budget. Two operational
-notes for anyone re-running this: the suite prints per case, but an unwrapped
-`timeout ... > log` buffers it, so a zero-byte log means "buffered", not "stuck"
-— use `stdbuf -oL`; and the suite owns a fixed temp directory
-(`/tmp/bs-resident-test`), so a direct run and a CTest run must never overlap.
+`resident` has no CTest watchdog (the test target sets no TIMEOUT property),
+so a sanitizer run is allowed to run to completion rather than killed. In the
+full ASan run on 2026-10-25 it passed after 12,044 seconds (about three hours
+twenty minutes). It takes about 308 seconds in release, and the sanitizer
+overhead measured
+is 18x-62x per case (median roughly 27x). Per-case timing in release shows
+where the cost sits: `resident projection` alone takes about 104 seconds, the
+two three-seat belief fixtures about 78 and 75, and the remaining twenty
+cases together well under a minute. Under ASan those first three are the
+cases that exhaust the budget. Two operational notes for anyone re-running
+this: the suite prints per case, but an unwrapped `timeout ... > log` buffers
+it, so a zero-byte log means "buffered", not "stuck" — use `stdbuf -oL`; and
+the suite owns a fixed temp directory (`/tmp/bs-resident-test`), so a direct
+run and a CTest run must never overlap.
 
 The gap is in the test configuration, not in the product: the suite passes in
 release, and the code paths this RFC touched pass under ASan through
@@ -182,15 +190,23 @@ cmake --build --preset asan --target fuzz_proto
 ```
 
 The target feeds arbitrary bytes to the ULEB128 frame decoder, Envelope
-parser, semantic validator, and request mapper. The standalone driver mutates
-both framing seeds and a version-controlled set of serialized structured
-decision envelopes (`engine/tests/fuzz_seeds.hpp`: a valid decision plus
-type/street/rank/suit 99 and -1 open-enum attacks, big-blind option, side
-pot, oversized pot, unknown status, and forced-solver seeds). It asserts no
-crash, hang, or out-of-bounds access and that any rejection is a clean
-`EngineError` or closed connection, never a fold-shaped strategy. The solver
-is not exercised by the fuzzer because its solve budget is for validated
-inputs.
+parser, semantic validator, and request mapper. The harness
+(`engine/tests/fuzz_harness.cpp`) and the standalone main
+(`engine/tests/fuzz_standalone_driver.cpp`) are separate translation units,
+so the same sources link under both standalone ASan/UBSan and libFuzzer
+without a conditional `main`. The driver mutates framing seeds and a
+current-schema set of serialized envelopes (`engine/tests/fuzz_seeds.hpp`,
+sharing the legal builder with `test_conformance`): a capabilities
+request/response, a valid heuristic decision, open-enum attacks on every
+validated enum (action type, street, rank, suit, guarantee token, solver
+mode, utility profile, game variant/structure/type, player status),
+oversized pot fields, a decision response frame, and wrong
+`protocol_version` values. The fixed negative corpus asserts a clean
+`EngineError` or closed connection, never a strategy response; the
+100,000-input mutation campaign asserts only no crash, hang, or escaping
+throw, because a valid AUTOMATIC request without resident services
+legitimately reaches the labeled operational fallback. The solver is not
+exercised because its solve budget is for validated inputs.
 
 ## Formatting
 
@@ -270,7 +286,7 @@ ctest --preset release -R '^protobuf_'
 ```
 
 `proto:check` runs linting, formatting, breaking checks against
-`proto/baseline/v2.binpb`, C++ and TypeScript generation, and generated
+`proto/baseline/engine.binpb`, C++ and TypeScript generation, and generated
 TypeScript checking. Generated files live under
 `build/generated`.
 

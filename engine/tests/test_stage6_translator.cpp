@@ -127,16 +127,18 @@ void test_id_identity() {
   // A default-constructed id names the same rule (name+version) and projects.
   TranslatorId id;
   check(id.name == filled.name && id.version == filled.version,
-        "a default-constructed translator id names the frozen v1 rule");
+        "a default-constructed translator id names the declared coarse-to-exact rule");
   check(declared_translator_id().to_string() == id.to_string(),
         "declared id string equals the default name/version");
   TranslatorId other;
   other.name = "something-else";
-  throws_runtime("an unknown translator id is rejected, not projected under v1 semantics", [&] {
-    GameState state(three_seat_preflop(200));
-    const std::vector<PolicyAction> coarse{{{poker::ActionType::Fold, 0}, 1.0}};
-    (void)translate_coarse_to_exact(state, *state.actor(), coarse, other);
-  });
+  throws_runtime(
+      "an unknown translator id is rejected, not projected under the declared rule's semantics",
+      [&] {
+        GameState state(three_seat_preflop(200));
+        const std::vector<PolicyAction> coarse{{{poker::ActionType::Fold, 0}, 1.0}};
+        (void)translate_coarse_to_exact(state, *state.actor(), coarse, other);
+      });
 }
 
 void test_passive_passthrough() {

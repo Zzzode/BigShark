@@ -196,7 +196,7 @@ target_link_libraries(bigshark_resolver
 
 # RFC 0005 Stage 6 resident policy lookup. Offline-only, immutable compact
 # indices over validated artifacts; it never opens SQLite on a lookup and is
-# not linked by the policy, service, host, v0, or protocol targets.
+# not linked by the policy, service, host, or protocol targets.
 add_library(bigshark_resident STATIC
   src/resident/resident_policy.cpp
   src/resident/public_reach.cpp
@@ -808,8 +808,9 @@ target_link_libraries(bigshark_practice
 target_compile_options(bigshark_practice PRIVATE -Werror=switch)
 
 # T7: engine-host-backed practice policy. Spawns the engine host and serves
-# bot decisions through the v2 framed-protocol pipeline. Kept separate from
-# bigshark_practice so the offline core never links the protocol or service.
+# bot decisions through the framed-engine protocol pipeline. Kept separate
+# from bigshark_practice so the offline core never links the protocol or
+# service.
 add_library(bigshark_practice_engine STATIC
   src/practice/engine_process.cpp
   src/practice/engine_served_policy.cpp

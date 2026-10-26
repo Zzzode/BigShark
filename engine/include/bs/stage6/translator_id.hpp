@@ -12,7 +12,7 @@ struct TranslatorId {
   std::string name = "rfc0008-coarse-to-exact";
   std::uint32_t version = 1;
   // Declared projection rule parameters (round-half tie direction, fallback
-  // chain). Empty for the frozen v1 rule.
+  // chain). Empty for the declared coarse-to-exact rule.
   std::string parameters;
   std::uint64_t digest = 0;
 
@@ -20,9 +20,10 @@ struct TranslatorId {
   bool operator==(const TranslatorId&) const = default;
 };
 
-// The frozen v1 translator identity. The digest is computed by the eval-side
-// translator component (which owns the rule text); core treats it as an opaque
-// recorded value, so this returns name/version/parameters with digest 0 and
+// The declared coarse-to-exact translator identity. The digest is computed by
+// the eval-side translator component (which owns the rule text); core treats
+// it as an opaque recorded value, so this returns name/version/parameters
+// with digest 0 and
 // the eval side fills the digest when a manifest is finalized.
 TranslatorId nearest_target_translator_id();
 

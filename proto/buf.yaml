@@ -7,6 +7,10 @@ deps:
 lint:
   use:
     - STANDARD
+  # RFC 0034: the package is deliberately unversioned; there is a single wire
+  # form, so the package-version-suffix convention does not apply.
+  except:
+    - PACKAGE_VERSION_SUFFIX
 breaking:
   use:
     - FILE

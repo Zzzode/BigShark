@@ -559,15 +559,15 @@ int test_cache_repeatability() {
   const EquityFrontierEvaluator eval;
 
   const std::array<std::array<int, 2>, 3> broadway = {{{cAs, cKh}, {cAd, cKc}, {cAh, cKd}}};
-  const auto v1 = eval.evaluate(flop, broadway, ledger);
-  const auto v2 = eval.evaluate(flop, broadway, ledger);
-  CHECK(v1 == v2);
+  const auto first_eval = eval.evaluate(flop, broadway, ledger);
+  const auto second_eval = eval.evaluate(flop, broadway, ledger);
+  CHECK(first_eval == second_eval);
 
   // Different hands (one seat has a pair instead of broadway) → different
   // equity for that seat.
   const std::array<std::array<int, 2>, 3> mixed = {{{cAs, cKh}, {cAd, cKc}, {c9s, c9d}}};
-  const auto v3 = eval.evaluate(flop, mixed, ledger);
-  CHECK(v3[2] != v2[2]);
+  const auto third_eval = eval.evaluate(flop, mixed, ledger);
+  CHECK(third_eval[2] != second_eval[2]);
   return 0;
 }
 

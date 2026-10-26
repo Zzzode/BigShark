@@ -4,7 +4,7 @@ Status: Current
 
 ## Scope
 
-`proto/bigshark/engine/v2/engine.proto` is the authoritative engine protocol
+`proto/bigshark/engine/engine.proto` is the authoritative engine protocol
 definition (RFC 0022). It is a coherent full-state protocol with a G/F
 contribution ledger, phase-tagged pot layers, observation provenance, and
 capability tuples. The engine-host accepts `protocol_version` field 1 == 3
@@ -27,7 +27,7 @@ are macOS and Linux on arm64 and x86-64.
 
 ## Contract
 
-The package is `bigshark.engine.v2`. One `Envelope` carries a protocol
+The package is `bigshark.engine` (RFC 0034: the single unversioned wire form). One `Envelope` carries a protocol
 version (3), caller-generated request ID, and exactly one payload:
 
 - capability request;
@@ -84,7 +84,7 @@ poker, solver, and policy APIs.
 
 ## Compatibility
 
-`proto/baseline/v2.binpb` is the accepted descriptor baseline used only for
+`proto/baseline/engine.binpb` is the accepted descriptor baseline used only for
 Buf breaking checks. It is not an alternate schema source. The compatibility
 policy is:
 
@@ -92,7 +92,7 @@ policy is:
 - additive fields and enum values are allowed;
 - receivers preserve unknown fields;
 - unknown enum values remain representable;
-- breaking changes require a new package version.
+- breaking changes are handled by the RFC process against the `engine.binpb` descriptor baseline.
 
 ## Verification
 

@@ -13,7 +13,7 @@ import {
   type CapabilityTuple,
   type Envelope,
   type GetCapabilitiesResponse,
-} from '../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
+} from '../../build/generated/ts/bigshark/engine/engine_pb.js';
 
 // --- ULEB128 frame codec ---------------------------------------------------
 
