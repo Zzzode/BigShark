@@ -73,14 +73,17 @@ dispositions; witness tests pass; Engine Build Contract; ASan.
 
 Status: executing with local compute (offline training, no live play).
 
-1. Current `artifacts/**/library.bin` and the capped `.db` artifacts are
+1. Current `artifacts/**/library.bin` and the capped `.db` artifacts were
    preserved outside the repository under `~/.bigshark-backups/`
    (`ac1-16w-pre0030`, `profiles-pre0030/`,
-   `flop-library-6way-fullrange-pre0030`).
+   `flop-library-6way-fullrange-pre0030`) at Stage-3 time; the whole
+   backup tree was deleted on 2026-10-26 by maintainer direction.
 2. Rebuilds, all with explicit `|max-raises=` tokens:
    - `ac1-16w`: identity (`rfc0007-pot-fractions`) cap 0, full range, 160
      classes, 2 seats, 100 BB, 1,000 iterations; rebuilt pack-direct
-     (RFC 0027).
+     (RFC 0027). Retired from `artifacts/` on 2026-10-26 as the narrow
+     early library with no mount consumer; this line is the historical
+     Stage-3 build record.
    - `preflop-profile` (2p, cap 0), `preflop-profile-3way` (3p 10 BB,
      identity; needs `--max-infosets 2000000 --train-bytes 8589934592`
      because the Preflop169-retaining trainer needs ~1.58M information
@@ -92,8 +95,9 @@ Status: executing with local compute (offline training, no live play).
      classes, 6 seats, 200-chip start / 2 contribution, 1,000 iterations.
    - The `preflop-profile-validation` artifact is an RFC 0029 measurement
      artifact whose generation procedure (postflop `.nsp` policy
-     directory) is not pinned; it is preserved in the backup and is
-     regenerated with the T-09 replay program rather than guessed.
+     directory) is not pinned; it was preserved in the backup (deleted
+     2026-10-26) and is regenerated with the T-09 replay program rather
+     than guessed.
 3. The AC9 local audit runs `python3 -I tools/artifact-audit/ac9-token-audit.py
    artifacts`, which opens every `.db` manifest table and every
    `manifest.json` carrying `action_abstraction_parameters`, and fails on a

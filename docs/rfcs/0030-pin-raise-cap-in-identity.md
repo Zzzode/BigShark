@@ -649,7 +649,10 @@ start tests. Stage 3 completed on 2026-10-25:
 - Every service artifact was rebuilt pack-direct with the explicit
   `|max-raises=<N>` identity token under the correct identity family
   (`rfc0007-pot-fractions`; an initial rebuild mislabelled as the coarse
-  family was discarded): `ac1-16w` (2-seat, 160 classes, cap 0),
+  family was discarded): `ac1-16w` (2-seat, 160 classes, cap 0 — retired
+  2026-10-26 as the narrow early library; no consumer mounted it and the
+  full-range six-way library is authoritative; the record here is the
+  historical Stage-3 build fact),
   `preflop-profile` (2-seat, cap 0), `preflop-profile-3way` (3-seat 10 BB,
   cap 0; needed raised trainer caps `--max-infosets 2000000
   --train-bytes 8589934592` because Preflop169 retains ~1.58M information
@@ -660,10 +663,12 @@ start tests. Stage 3 completed on 2026-10-25:
   Complete.
 - The packed libraries are the final BSFLIB03 single form after RFC 0035;
   the six-way full-range library (1,755 classes, 100% flops, 188,432,384
-  bytes, cap 1, 198-chip-behind 12-chip limped root) and ac1-16w both
-  mount with matching SHA-256 sidecars and pass the bundled reachability
-  test. Tokenless predecessors are preserved under
-  `~/.bigshark-backups/`.
+  bytes, cap 1, 198-chip-behind 12-chip limped root) mounts with matching
+  SHA-256 sidecars and passes the bundled reachability test. At Stage-3
+  time ac1-16w mounted the same way (historical fact; that narrow early
+  library was retired 2026-10-26). The tokenless predecessors were kept
+  under `~/.bigshark-backups/` at the time; that backup tree was deleted
+  on 2026-10-26 by maintainer direction.
 - AC9 local audit: `python3 -I tools/artifact-audit/ac9-token-audit.py
   artifacts` reports 5 pass / 0 fail / 3 skip (the three preflop profile
   manifests delegate to their tokenized `.db` rows).

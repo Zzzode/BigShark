@@ -171,7 +171,11 @@ production caps.
   | `preflop-profile-5way` | 5 seats, 100 BB | 1 | Complete, 0.26 GB |
   | `preflop-profile-6way` | 6 seats, 100 BB | 1 | Complete, 1.01 GB |
   | `flop-library-6way-fullrange` | 6 live, limped root | 1 | BSFLIB03, 1,755 classes, 188,432,384 B, sha256 `55c3e976…` |
-  | `ac1-16w` | 2 seats, 160 flop classes | 0 | narrow early library |
+
+  The former `ac1-16w` narrow early library (2 seats, 160 flop classes,
+  cap 0) was retired on 2026-10-26 with the other legacy artifacts: it
+  had no code or mount consumer and the full-range six-way library is the
+  authoritative flop artifact.
 
   The former `preflop-profile-3way` (3 seats, 10 BB, cap 0) validation
   artifact was retired on 2026-10-26 and moved to

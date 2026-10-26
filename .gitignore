@@ -84,7 +84,8 @@ artifacts/preflop-profile-6way/
 # remain canonical. Never commit files under artifacts/.
 artifacts/flop-library-25bb.bin
 artifacts/flop-library-25bb.bin.sha256
-artifacts/ac1-16w/
+# The narrow early ac1-16w library was retired 2026-10-26; the catch-all
+# below keeps any rebuilt copy untracked.
 
 # Catch-all: never commit anything under the top-level artifacts/ directory
 # (the specific patterns above document the expected contents; this guards

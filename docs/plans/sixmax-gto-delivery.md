@@ -156,9 +156,10 @@ budgets still need independent approval before a passing claim is possible.
 - **RFC 0030 stage 3 executing (2026-10-25)**: all service artifacts are
   rebuilt with explicit cap tokens under the correct **identity**
   (`rfc0007-pot-fractions`) family — the earlier coarse-labeled attempt was
-  discarded. `ac1-16w`, the 2p/3p/6p preflop profiles, and the six-way
-  full-range library rebuilds run pack-direct; tokenless predecessors are
-  preserved under `~/.bigshark-backups/`. The AC9 local audit
+  discarded. `ac1-16w` (retired 2026-10-26), the 2p/3p/6p preflop
+  profiles, and the six-way full-range library rebuilds ran pack-direct;
+  tokenless predecessors were preserved under `~/.bigshark-backups/`
+  until the backup tree was deleted on 2026-10-26. The AC9 local audit
   (`tools/artifact-audit/ac9-token-audit.py`) gates the result. The
   RFC 0029 validation artifact awaits the T-09 replay program.
 - **RFC 0033 (flop library root reachability) Implemented**: the shipped
