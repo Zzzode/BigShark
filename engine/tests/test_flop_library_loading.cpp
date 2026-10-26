@@ -16,6 +16,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <array>
+#include <bs/flop_library.hpp>
+#include <bs/heads_up.hpp>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -375,28 +378,96 @@ void test_binary_cannot_mix_with_resident_root() {
 
 }  // namespace
 
-// RFC 0033: the startup line names the ONE root shape the library answers. An
-// operator who sees a class count must not infer that every flop state is
-// served, so the server must say which ledger it answers.
+// RFC 0035: the startup lines name every root shape the library answers, one
+// per served_roots[] entry. An operator who sees a class count must not infer
+// that every flop state is served, so the server says which ledgers it answers.
 void test_served_root_reported() {
   const auto dir = make_temp_dir();
   CHECK(!dir.empty());
-  write_file(dir / "library.bin", "BSFLIB02-test-bytes");
+  write_file(dir / "library.bin", "BSFLIB03-test-bytes");
   const std::string actual = sha256_of(dir / "library.bin");
   write_file(dir / "library.bin.sha256", actual + "  library.bin\n");
+  // The dummy .bin does not mount, so the startup report falls back to the
+  // manifest arrays and still prints one line per entry.
   const std::string manifest = R"({"library_bin":"library.bin","library_bin_sha256":")" + actual +
-                               R"(","classes":[],"served_root":{"button":0,)"
+                               R"(","classes":[],"served_roots":[)"
+                               R"({"root_id":0,"line_tag":"limped","pot":12,)"
                                R"("stacks":[198,198,198,198,198,198],)"
                                R"("contributions":[2,2,2,2,2,2],)"
-                               R"("folded":[false,false,false,false,false,false]}})";
+                               R"("folded":[false,false,false,false,false,false],)"
+                               R"("live_count":6,"range_profile":1,"class_count":1755,)"
+                               R"("covered_flops":22100,"total_flops":22100,"section_bytes":0},)"
+                               R"({"root_id":1,"line_tag":"srp","pot":30,)"
+                               R"("stacks":[170,170,170,170,170,170],)"
+                               R"("contributions":[6,6,4,4,4,6],)"
+                               R"("folded":[false,false,false,false,false,false],)"
+                               R"("live_count":6,"range_profile":1,"class_count":1755,)"
+                               R"("covered_flops":22100,"total_flops":22100,"section_bytes":0}]})";
   write_file(dir / "manifest.json", manifest);
 
   const RunResult result = run_engine({"--flop-library", dir.string(), "--serve-proto"});
   CHECK(result.exit_code == 0);
   CHECK(result.stderr_output.find("resident-served-root") != std::string::npos);
-  CHECK(result.stderr_output.find("stacks=198,198,198,198,198,198") != std::string::npos);
+  // Exactly two lines, one per root, with the differing ledgers visible.
+  CHECK(result.stderr_output.find("root=0 stacks=198,198,198,198,198,198") != std::string::npos);
   CHECK(result.stderr_output.find("contributions=2,2,2,2,2,2") != std::string::npos);
+  CHECK(result.stderr_output.find("root=1 stacks=170,170,170,170,170,170") != std::string::npos);
+  CHECK(result.stderr_output.find("contributions=6,6,4,4,4,6") != std::string::npos);
   CHECK(result.stderr_output.find("folded=0,0,0,0,0,0") != std::string::npos);
+
+  std::filesystem::remove_all(dir);
+}
+
+// RFC 0035: build a REAL tiny BSFLIB03 through the builder, then verify the
+// host reports the served root and that a manifest whose served_roots ledger
+// disagrees with the mounted directory aborts startup.
+void test_served_roots_reconcile_with_directory() {
+  const auto dir = make_temp_dir();
+  CHECK(!dir.empty());
+  const auto lib_dir = dir / "lib";
+  const auto range = bs::flop_library::declared_library_range();
+  bs::flop_library::LibraryManifest manifest;
+  try {
+    manifest = bs::flop_library::build_library(lib_dir, /*class_count=*/1, /*iterations=*/8,
+                                               /*seed=*/7, /*starting_stack=*/6,
+                                               /*contribution=*/2, range, /*player_count=*/2);
+  } catch (const std::exception& e) {
+    std::fprintf(stderr, "real library build failed: %s\n", e.what());
+    CHECK(false);
+    std::filesystem::remove_all(dir);
+    return;
+  }
+  CHECK(manifest.served_roots.size() == 1);
+
+  // Matching manifest: the engine mounts the directory, reconciles it, prints
+  // the one startup line, and exits cleanly on EOF.
+  {
+    const RunResult result = run_engine({"--flop-library", lib_dir.string(), "--serve-proto"});
+    CHECK(result.exit_code == 0);
+    CHECK(result.stderr_output.find("resident-served-root") != std::string::npos);
+    CHECK(result.stderr_output.find("root=0") != std::string::npos);
+    CHECK(result.stderr_output.find("stacks=4,4") != std::string::npos);
+    CHECK(result.stderr_output.find("contributions=2,2") != std::string::npos);
+  }
+
+  // Tamper the manifest: claim a pot the directory does not carry. The host
+  // mounts the real binary and must abort with the reconciliation message.
+  {
+    const std::filesystem::path manifest_path = lib_dir / "manifest.json";
+    std::ifstream in(manifest_path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const std::string before = "\"root_id\": 0, \"line_tag\": \"limped\", \"pot\": 4";
+    const std::string after = "\"root_id\": 0, \"line_tag\": \"limped\", \"pot\": 99";
+    CHECK(content.find(before) != std::string::npos);
+    const std::size_t pos = content.find(before);
+    content.replace(pos, before.size(), after);
+    write_file(manifest_path, content);
+
+    const RunResult result = run_engine({"--flop-library", lib_dir.string(), "--serve-proto"});
+    CHECK(result.exit_code == 2);
+    CHECK(result.stderr_output.find("disagrees with the mounted BSFLIB03 root directory") !=
+          std::string::npos);
+  }
 
   std::filesystem::remove_all(dir);
 }
@@ -415,6 +486,7 @@ int main() {
   test_binary_manifest_digest_mismatch();
   test_binary_cannot_mix_with_resident_root();
   test_served_root_reported();
+  test_served_roots_reconcile_with_directory();
 
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

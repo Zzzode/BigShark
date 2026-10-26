@@ -101,6 +101,24 @@ int main(int argc, char* argv[]) {
   bs::solver::UnifiedGame game;
   game.def = first_policy.game();
   game.sizes = first_policy.sizes();
+  game.action_id = first_policy.action_id();
+
+  // RFC 0035: the legacy SQLite conversion packs a single BSFLIB03 root whose
+  // ledger is taken from the first artifact's game def. The line tag is a
+  // diagnostic label and defaults to limped; exact matching uses the ledger.
+  std::vector<bs::resident::RootDirectoryEntry> roots(1);
+  bs::resident::RootDirectoryEntry& sole = roots[0];
+  sole.root_id = 0;
+  sole.line_tag = bs::resident::RootLineTag::Limped;
+  sole.range_profile = bs::resident::RootRangeProfile::LiveUniform;
+  sole.pot = static_cast<std::uint64_t>(game.def.pot);
+  for (std::size_t s = 0; s < game.def.player_count; ++s) {
+    sole.stacks[s] = static_cast<std::uint64_t>(game.def.stacks[s]);
+    sole.contributions[s] = static_cast<std::uint64_t>(game.def.contributions[s]);
+    sole.folded[s] = game.def.folded[s] ? 1 : 0;
+    if (!game.def.folded[s])
+      ++sole.live_count;
+  }
 
   // Streaming supplier: loads one artifact at a time. The returned
   // PackClassInput borrows pointers into `current`; they are valid until the
@@ -128,6 +146,7 @@ int main(int argc, char* argv[]) {
     }
 
     bs::resident::PackClassInput input;
+    input.root_id = 0;  // single-root legacy conversion
     input.class_id = class_id_from_filename(artifact_paths[index]);
     if (input.class_id == ~0u)
       input.class_id = static_cast<std::uint32_t>(index);
@@ -146,7 +165,8 @@ int main(int argc, char* argv[]) {
 
   // Pack the binary library using the streaming writer.
   try {
-    bs::resident::pack_binary_library_streaming(output_path, game, artifact_paths.size(), supplier);
+    bs::resident::pack_binary_library_streaming(output_path, game, roots, artifact_paths.size(),
+                                                supplier);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "error: pack failed: %s\n", e.what());
     return 1;

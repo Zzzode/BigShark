@@ -43,15 +43,16 @@ int g_failures = 0;
 // Construct the GameDef for one class root from the manifest identity.
 poker::GameDef class_root_def(const flop_library::LibraryManifest& manifest,
                               std::size_t class_index) {
+  const std::uint64_t served_contribution = manifest.served_roots[0].root.contributions[0];
   poker::GameDef def{};
   def.player_count = manifest.player_count;
   def.button = 0;
   def.big_blind = manifest.big_blind;
   for (std::size_t s = 0; s < manifest.player_count; ++s) {
-    def.stacks[s] = manifest.stack;
-    def.contributions[s] = manifest.contribution;
+    def.stacks[s] = manifest.served_roots[0].root.stacks[0];
+    def.contributions[s] = static_cast<poker::Chips>(served_contribution);
   }
-  def.pot = static_cast<poker::Chips>(manifest.player_count * manifest.contribution);
+  def.pot = static_cast<poker::Chips>(manifest.player_count * served_contribution);
   const auto& board = manifest.classes[class_index].canonical_board;
   def.board = {board[0], board[1], board[2], 0, 0};
   def.board_size = 3;
@@ -61,15 +62,16 @@ poker::GameDef class_root_def(const flop_library::LibraryManifest& manifest,
 
 // Build the shared game def for lazy mode (board zeroed; set per-class).
 poker::GameDef shared_def(const flop_library::LibraryManifest& manifest) {
+  const std::uint64_t served_contribution = manifest.served_roots[0].root.contributions[0];
   poker::GameDef def{};
   def.player_count = manifest.player_count;
   def.button = 0;
   def.big_blind = manifest.big_blind;
   for (std::size_t s = 0; s < manifest.player_count; ++s) {
-    def.stacks[s] = manifest.stack;
-    def.contributions[s] = manifest.contribution;
+    def.stacks[s] = manifest.served_roots[0].root.stacks[0];
+    def.contributions[s] = static_cast<poker::Chips>(served_contribution);
   }
-  def.pot = static_cast<poker::Chips>(manifest.player_count * manifest.contribution);
+  def.pot = static_cast<poker::Chips>(manifest.player_count * served_contribution);
   def.board_size = 0;
   def.terminal = poker::TerminalDepth::Flop;
   return def;
@@ -106,15 +108,16 @@ std::vector<std::string> write_sqlite_class_artifacts(const fs::path& dir,
   const auto card_id = abstraction::suit_canonicalization_id();
   for (std::size_t i = 0; i < manifest.class_count; ++i) {
     const auto& board = manifest.classes[i].canonical_board;
+    const std::uint64_t served_contribution = manifest.served_roots[0].root.contributions[0];
     poker::GameDef def{};
     def.player_count = manifest.player_count;
     def.button = 0;
     def.big_blind = manifest.big_blind;
     for (std::size_t s = 0; s < manifest.player_count; ++s) {
-      def.stacks[s] = manifest.stack;
-      def.contributions[s] = manifest.contribution;
+      def.stacks[s] = manifest.served_roots[0].root.stacks[0];
+      def.contributions[s] = static_cast<poker::Chips>(served_contribution);
     }
-    def.pot = static_cast<poker::Chips>(manifest.player_count * manifest.contribution);
+    def.pot = static_cast<poker::Chips>(manifest.player_count * served_contribution);
     def.board = {board[0], board[1], board[2], 0, 0};
     def.board_size = 3;
     def.terminal = poker::TerminalDepth::Flop;

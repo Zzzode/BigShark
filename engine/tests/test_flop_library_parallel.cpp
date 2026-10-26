@@ -88,7 +88,7 @@ bool test_parallel_matches_serial(const fs::path& dir) {
   // No checkpoint and no section staging directory remain after assembly.
   for (std::size_t i = 0; i < class_count; ++i) {
     char stem[16];
-    std::snprintf(stem, sizeof(stem), "class-%04zu", i);
+    std::snprintf(stem, sizeof(stem), "root-0000-class-%04zu", i);
     CHECK(!fs::exists(parallel_dir / (std::string(stem) + "-checkpoint.bswarm")));
   }
   CHECK(!fs::exists(parallel_dir / ".sections"));
@@ -302,8 +302,14 @@ bool test_sealed_resume_at_interruption_points(const fs::path& dir) {
     sealed.node_cap = static_cast<std::uint32_t>(tree.nodes().size());
     sealed.bucket_cap = 169;
     sealed.key_kind = bs::solver::kNSeatCardKind;
+    sealed.tree_shape_digest = bs::tree::tree_shape_digest(tree);
+    // RFC 0035: match the single limped root the resumed build declares.
+    const bs::flop_library::RootSpec ckpt_root =
+        bs::flop_library::make_limped_root_spec(player_count, stack, contribution);
+    const std::span<const bs::flop_library::RootSpec> ckpt_roots(&ckpt_root, 1);
+    sealed.root_table_hash = bs::flop_library::root_table_hash(player_count, ckpt_roots);
     sealed.rows = trained.raw_rows;
-    const fs::path checkpoint = lib_dir / "class-0000-checkpoint.bswarm";
+    const fs::path checkpoint = lib_dir / "root-0000-class-0000-checkpoint.bswarm";
     bs::artifacts::save_sealed_checkpoint(checkpoint, sealed);
 
     // G1: a sealed checkpoint for this class is far below the 1 MB bound and
@@ -349,8 +355,14 @@ bool test_sealed_resume_at_interruption_points(const fs::path& dir) {
     sealed.node_cap = static_cast<std::uint32_t>(tree.nodes().size());
     sealed.bucket_cap = 169;
     sealed.key_kind = bs::solver::kNSeatCardKind;
+    sealed.tree_shape_digest = bs::tree::tree_shape_digest(tree);
+    // RFC 0035: match the single limped root the resumed build declares.
+    const bs::flop_library::RootSpec ckpt_root =
+        bs::flop_library::make_limped_root_spec(player_count, stack, contribution);
+    const std::span<const bs::flop_library::RootSpec> ckpt_roots(&ckpt_root, 1);
+    sealed.root_table_hash = bs::flop_library::root_table_hash(player_count, ckpt_roots);
     sealed.rows = trained.raw_rows;
-    const fs::path checkpoint = lib_dir / "class-0000-checkpoint.bswarm";
+    const fs::path checkpoint = lib_dir / "root-0000-class-0000-checkpoint.bswarm";
     bs::artifacts::save_sealed_checkpoint(checkpoint, sealed);
 
     const bs::flop_library::LibraryManifest resumed = bs::flop_library::build_library(
@@ -385,7 +397,7 @@ bool test_sealed_preflight_branches(const fs::path& dir) {
   {
     const fs::path lib_dir = dir / "preflight-torn";
     fs::create_directories(lib_dir);
-    const fs::path checkpoint = lib_dir / "class-0000-checkpoint.bswarm";
+    const fs::path checkpoint = lib_dir / "root-0000-class-0000-checkpoint.bswarm";
     {
       std::ofstream out(checkpoint, std::ios::binary);
       out << "BSWARM01";  // a truncated header: magic only
@@ -397,6 +409,101 @@ bool test_sealed_preflight_branches(const fs::path& dir) {
     CHECK(!fs::exists(checkpoint));
   }
 
+  return true;
+}
+
+// RFC 0035: a BSWARM03 checkpoint whose tree-shape witness and digests match
+// but whose root-table hash names another declared root table is refused by
+// name before rows are adopted. The tree witness already guards roots with
+// differing trees; this witness guards the root SET even when one per-pair
+// tree shape agrees.
+bool test_checkpoint_root_table_hash_refused(const fs::path& dir) {
+  const auto range = bs::flop_library::declared_library_range();
+  const std::size_t class_count = 1;
+  const std::uint64_t iterations = 16;
+  const bs::poker::Chips stack = 6;
+  const bs::poker::Chips contribution = 2;
+  const std::size_t player_count = 2;
+  const std::uint64_t seed = 20261035;
+
+  const auto classes = bs::flop_library::enumerate_classes();
+  const std::array<int, 3> board = classes[0];
+
+  bs::poker::GameDef def;
+  def.player_count = static_cast<std::uint8_t>(player_count);
+  def.button = 0;
+  def.big_blind = 2;
+  for (std::size_t s = 0; s < player_count; ++s) {
+    def.stacks[s] = stack - contribution;
+    def.contributions[s] = contribution;
+  }
+  def.pot = static_cast<bs::poker::Chips>(player_count * contribution);
+  def.board = {board[0], board[1], board[2], 0, 0};
+  def.board_size = 3;
+  def.terminal = bs::poker::TerminalDepth::Flop;
+  const bs::abstraction::ActionAbstraction action = bs::abstraction::ActionAbstraction::identity();
+  const bs::tree::AbstractTree tree(def, action);
+  const bs::gto::EquityFrontierEvaluator frontier;
+  const auto card_id = bs::abstraction::suit_canonicalization_id();
+
+  std::array<bool, 52> on_board{};
+  for (int c : board)
+    on_board[static_cast<std::size_t>(c)] = true;
+  std::vector<bs::solver::WeightedHand> seat_range;
+  for (const auto& hand : range)
+    if (!on_board[static_cast<std::size_t>(hand.cards[0])] &&
+        !on_board[static_cast<std::size_t>(hand.cards[1])])
+      seat_range.push_back(hand);
+  const std::vector<std::vector<bs::solver::WeightedHand>> ranges{seat_range, seat_range};
+
+  bs::solver::NSeatTrainerLimits limits;
+  limits.max_nodes = 10'000'000;
+  limits.max_information_sets = 5'000'000;
+  limits.wall = std::chrono::minutes{5};
+  const bs::solver::NSeatTrainingResult trained =
+      bs::solver::train_nseat(tree, ranges, iterations, seed, limits, &frontier);
+
+  const fs::path lib_dir = dir / "root-hash-mismatch";
+  fs::create_directories(lib_dir);
+  bs::flop_library::BuildParams params;
+  params.class_count = class_count;
+  params.iterations_per_class = iterations;
+  params.seed = seed;
+  params.starting_stack = stack;
+  params.contribution = contribution;
+  params.range = range;
+  params.player_count = player_count;
+  params.resume = true;
+  bs::flop_library::prepare_build_identity(lib_dir, params, /*resume=*/false);
+
+  bs::artifacts::SealedCheckpointState sealed;
+  sealed.algorithm_revision_id = trained.algorithm_revision;
+  sealed.algorithm_revision = bs::artifacts::sealed_revision_string(trained.algorithm_revision);
+  sealed.abstraction_digest = action.id().digest;
+  sealed.card_abstraction_digest = card_id.digest;
+  sealed.completed_iterations = trained.completed_iterations;
+  sealed.batch_size = trained.batch_size;
+  sealed.completed_epochs = trained.completed_epochs;
+  sealed.node_cap = static_cast<std::uint32_t>(tree.nodes().size());
+  sealed.bucket_cap = 169;
+  sealed.key_kind = bs::solver::kNSeatCardKind;
+  sealed.tree_shape_digest = bs::tree::tree_shape_digest(tree);  // matching witness
+  sealed.root_table_hash = 0x0123456789abcdefULL;                // names another table
+  sealed.rows = trained.raw_rows;
+  const fs::path checkpoint = lib_dir / "root-0000-class-0000-checkpoint.bswarm";
+  bs::artifacts::save_sealed_checkpoint(checkpoint, sealed);
+
+  std::string message;
+  bool refused = false;
+  try {
+    bs::flop_library::build_library_worker(lib_dir, 0, 1, params);
+  } catch (const std::runtime_error& error) {
+    refused = true;
+    message = error.what();
+  }
+  CHECK(refused);
+  CHECK(message.find("root table hash") != std::string::npos);
+  CHECK(fs::exists(checkpoint));  // hard refusal preserves the checkpoint
   return true;
 }
 
@@ -508,6 +615,7 @@ int main() {
   ok = test_sealed_resume_at_interruption_points(dir) && ok;
   ok = test_sealed_preflight_branches(dir) && ok;
   ok = test_resume_rejects_layout_change(dir) && ok;
+  ok = test_checkpoint_root_table_hash_refused(dir) && ok;
   ok = test_merge_reuses_prior_manifest(dir) && ok;
 
   fs::remove_all(dir, ec);

@@ -1327,8 +1327,13 @@ if(BUILD_TESTING)
   add_executable(test_flop_library_loading tests/test_flop_library_loading.cpp)
   target_compile_definitions(test_flop_library_loading PRIVATE
     ENGINE_PATH="$<TARGET_FILE:bigshark-engine>")
-  # RFC 0027: the pin tests hash a stub library with libcrypto.
-  target_link_libraries(test_flop_library_loading PRIVATE ${BS_OPENSSL_CRYPTO_TARGET})
+  # RFC 0027: the pin tests hash a stub library with libcrypto. RFC 0035: the
+  # served_roots reconciliation test builds a real BSFLIB03 through the
+  # builder library, so it links bigshark_flop_library too.
+  target_link_libraries(test_flop_library_loading PRIVATE
+    ${BS_OPENSSL_CRYPTO_TARGET}
+    bigshark_flop_library
+  )
   add_dependencies(test_flop_library_loading bigshark-engine)
   add_test(NAME flop_library_loading COMMAND test_flop_library_loading)
 

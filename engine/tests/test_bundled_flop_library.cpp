@@ -90,8 +90,25 @@ int main(int argc, char** argv) {
 
   bs::resident::MmapLibrary lib;
   lib.open(bin, /*verify_sha256=*/false);
-  bs::poker::GameDef record = lib.game().def;
+  // RFC 0035: the ledger lives in the root directory; the published library is
+  // the one limped production root. A published artifact always has exactly
+  // one root for this test, so the single-root accessors apply.
+  if (lib.root_count() != 1) {
+    std::fprintf(stderr,
+                 "bundled_flop_library: expected the published library to carry one root "
+                 "(got %zu)\n",
+                 lib.root_count());
+    return 1;
+  }
+  const auto& directory_root = lib.root(0);
   const auto& board = lib.canonical_board(lib.class_id_at(0));
+  bs::poker::GameDef record = lib.game().def;
+  record.pot = static_cast<bs::poker::Chips>(directory_root.pot);
+  for (std::size_t s = 0; s < record.player_count; ++s) {
+    record.stacks[s] = static_cast<bs::poker::Chips>(directory_root.stacks[s]);
+    record.contributions[s] = static_cast<bs::poker::Chips>(directory_root.contributions[s]);
+    record.folded[s] = directory_root.folded[s] != 0;
+  }
   record.board = {board[0], board[1], board[2], 0, 0};
   record.board_size = 3;
 

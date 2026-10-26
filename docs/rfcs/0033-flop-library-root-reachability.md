@@ -1,10 +1,10 @@
 ---
 rfc: "0033"
 subject: "Make the Flop Library's Root Identity Reachable from a Real Hand"
-status: "Implementing"
+status: "Implemented"
 authors: "BigShark maintainers"
 created: "2026-10-22"
-updated: "2026-10-23"
+updated: "2026-10-24"
 owners: "Engine flop library, engine resident, engine benchmarks, engine tests"
 supersedes: ""
 superseded-by: ""
@@ -970,8 +970,10 @@ previous convention, which is a re-run, not a restore.
 
 ## Implementation Record
 
-Status: Implementing. Stages 1-3 of the Rollout Plan have landed; the artifact
-rebuild (stage 2 of the plan's numbering) has not run.
+Status: Implemented (2026-10-24). All Rollout Plan stages landed, including
+the artifact rebuild; the Engine Build Contract, release ctest, and Node
+checks are green. The one-root-per-class scope limit is carried forward by
+RFC 0035 (multi-root library), whose root universe is chosen from miss data.
 
 **Landed.** `make_def` derives `stacks = starting_stack - contribution` and
 rejects a starting stack that does not exceed the contribution
@@ -1041,6 +1043,14 @@ messages, which no test covered before; `test_served_root_reported` asserts the
 startup line. The convention gate that runs in CI without the artifact is
 `test_flop_library`, which builds its own library and asserts chip conservation
 in the packed header.
+
+**2026-10-24 re-audit.** A full AC walk-through confirmed every criterion has
+code or test evidence. One genuine gap was closed: the "checkpoint
+card-abstraction mismatch" message was named in the AC and thrown by
+`train_one_class` but had no test (only the card-bucket-kind refusal did).
+`test_checkpoint_messages_pinned` now also tampers `card_abstraction_digest`
+alone and asserts the refusal names the card abstraction and not the action
+digest. All ACs are therefore satisfied by tests rather than only by source.
 
 ## Decision
 

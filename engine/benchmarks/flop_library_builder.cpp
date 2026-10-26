@@ -187,9 +187,8 @@ bs::flop_library::BuildParams make_params(const Args& args) {
   params.player_count = args.player_count;
   params.action = args.coarse ? bs::abstraction::ActionAbstraction::declared(
                                     bs::abstraction::default_size_schedule(),
-                                    bs::abstraction::CoverSeeds::DeclaredOnly)
-                              : bs::abstraction::ActionAbstraction::identity();
-  params.action.set_max_raises_per_street(args.raise_cap);
+                                    bs::abstraction::CoverSeeds::DeclaredOnly, args.raise_cap)
+                              : bs::abstraction::ActionAbstraction::identity(args.raise_cap);
   params.resume = args.resume;
   params.range_name = args.full_range ? "full" : "premium";
   params.layout = args.doubles ? bs::resident::ProbabilityLayout::Doubles
@@ -260,9 +259,11 @@ void cleanup_incomplete_artifacts(const std::filesystem::path& out_dir) {
 // a spawn failure has no progress to keep.
 void cleanup_failed_build(const std::filesystem::path& out_dir, std::size_t class_count) {
   std::error_code ec;
+  // The CLI builds the single default limped root, so checkpoints use the
+  // RFC 0035 root-0 naming. Multi-root builds go through the programmatic API.
   for (std::size_t i = 0; i < class_count; ++i) {
     char stem[32];
-    std::snprintf(stem, sizeof(stem), "class-%04zu", i);
+    std::snprintf(stem, sizeof(stem), "root-0000-class-%04zu", i);
     std::filesystem::remove(out_dir / (std::string(stem) + "-checkpoint.bswarm"), ec);
   }
   std::filesystem::remove_all(out_dir / ".sections", ec);
@@ -281,8 +282,7 @@ int run_parallel(const Args& args) {
   // scan this replaces was the reason the parallel path drifted from the
   // serial one; the helper now owns torn/revision/stale/no-identity, reads
   // sealed headers only (RFC 0028), and runs before any worker is forked.
-  bs::flop_library::preflight_resume(args.out_dir, params.class_count, params.iterations_per_class,
-                                     params.resume);
+  bs::flop_library::preflight_resume(args.out_dir, params, params.resume);
   // RFC 0027: the parent owns the build identity. Write it before spawning so
   // every worker validates the same layout/identity and a resume can compare.
   bs::flop_library::prepare_build_identity(args.out_dir, params, params.resume);

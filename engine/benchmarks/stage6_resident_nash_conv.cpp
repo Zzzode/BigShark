@@ -114,12 +114,14 @@ Options parse(int argc, char** argv) {
 // The scalars this driver needs from `manifest.json`. Parsed here rather than
 // in a library API because nothing else consumes them: the resident set reads
 // the packed binary directly, and this driver is the only reader of the
-// fixture's declared parameters.
+// fixture's declared parameters. RFC 0035: the ledger lives in
+// served_roots[0] (the fixture library is single-root).
 struct FixtureScalars {
   std::size_t player_count = 0;
   Chips big_blind = 0;
   Chips stack = 0;
   Chips contribution = 0;
+  Chips pot = 0;
   std::string action_id;
   std::vector<std::array<int, 3>> canonical_boards;
 };
@@ -157,8 +159,28 @@ FixtureScalars read_fixture_scalars(const fs::path& manifest_path) {
   FixtureScalars out;
   out.player_count = static_cast<std::size_t>(as_int(require("player_count"), "player_count"));
   out.big_blind = static_cast<Chips>(as_int(require("big_blind"), "big_blind"));
-  out.stack = static_cast<Chips>(as_int(require("stack"), "stack"));
-  out.contribution = static_cast<Chips>(as_int(require("contribution"), "contribution"));
+
+  // RFC 0035: the per-root ledger. The fixture is a single-root library.
+  yyjson_val* served_roots = yyjson_obj_get(root, "served_roots");
+  if (!yyjson_is_arr(served_roots) || yyjson_arr_size(served_roots) < 1)
+    throw std::runtime_error("manifest is missing a non-empty 'served_roots' array");
+  yyjson_val* served = yyjson_arr_get(served_roots, 0);
+  if (!yyjson_is_obj(served))
+    throw std::runtime_error("manifest served_roots[0] is not an object");
+  const auto require_root = [served](const char* key) -> yyjson_val* {
+    yyjson_val* value = yyjson_obj_get(served, key);
+    if (!value)
+      throw std::runtime_error(std::string("manifest served_roots[0] is missing '") + key + "'");
+    return value;
+  };
+  yyjson_val* stacks = require_root("stacks");
+  yyjson_val* contribs = require_root("contributions");
+  if (!yyjson_is_arr(stacks) || yyjson_arr_size(stacks) < 1 || !yyjson_is_arr(contribs) ||
+      yyjson_arr_size(contribs) < 1)
+    throw std::runtime_error("manifest served_roots[0] ledger arrays are empty");
+  out.stack = static_cast<Chips>(as_int(yyjson_arr_get(stacks, 0), "stacks[0]"));
+  out.contribution = static_cast<Chips>(as_int(yyjson_arr_get(contribs, 0), "contributions[0]"));
+  out.pot = static_cast<Chips>(as_int(require_root("pot"), "pot"));
 
   // The action abstraction identity decides the tree the fixture was trained
   // on; reconstructing a different one would make every lookup miss.
@@ -250,7 +272,7 @@ GameDef fixture_def(const FixtureScalars& manifest, std::size_t class_index) {
     def.stacks[s] = manifest.stack;
     def.contributions[s] = manifest.contribution;
   }
-  def.pot = static_cast<Chips>(manifest.player_count * manifest.contribution);
+  def.pot = static_cast<Chips>(manifest.pot);
   def.board = {board[0], board[1], board[2], 0, 0};
   def.board_size = 3;
   def.terminal = TerminalDepth::Flop;

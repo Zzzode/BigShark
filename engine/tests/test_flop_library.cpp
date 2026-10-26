@@ -3,7 +3,7 @@
 // Verifies the class enumeration, the declared range, the coverage counter,
 // and that build_library produces schema-v3 artifacts whose declared card
 // abstraction is the suit-canonicalization id, with honest manifest
-// measurements. The resident v3 lookup path itself is tested in
+// measurements. The resident schema-v3 lookup path itself is tested in
 // test_resident_policy (W4c-ii).
 #include <array>
 #include <bs/abstraction.hpp>
@@ -129,9 +129,12 @@ bool test_build_library(const fs::path& dir) {
   CHECK(manifest.seed == 20261002);
   CHECK(manifest.player_count == 2);
   CHECK(manifest.big_blind == 2);
-  CHECK(manifest.starting_stack == 6);
-  CHECK(manifest.stack == 4);  // chips behind = starting_stack - contribution
-  CHECK(manifest.contribution == 2);
+  CHECK(manifest.served_roots.size() == 1);
+  const auto& served = manifest.served_roots[0];
+  CHECK(served.root.stacks[0] == 4);  // chips behind = starting_stack - contribution
+  CHECK(served.root.contributions[0] == 2);
+  CHECK(served.root.pot == 4);
+  CHECK(served.root.live_count == 2);
   CHECK(manifest.card_id == bs::abstraction::suit_canonicalization_id());
   CHECK(fs::exists(dir / "manifest.json"));
 
@@ -141,8 +144,8 @@ bool test_build_library(const fs::path& dir) {
   CHECK(fs::exists(dir / manifest.library_bin));
   CHECK(!fs::exists(dir / ".sections"));
   for (const auto& entry : manifest.classes) {
-    char stem[32];
-    std::snprintf(stem, sizeof(stem), "class-%04zu",
+    char stem[40];
+    std::snprintf(stem, sizeof(stem), "root-%04u-class-%04zu", entry.root_id,
                   static_cast<std::size_t>(&entry - manifest.classes.data()));
     CHECK(!fs::exists(dir / (std::string(stem) + ".db")));
     CHECK(!fs::exists(dir / (std::string(stem) + "-checkpoint.bswarm")));
@@ -155,28 +158,26 @@ bool test_build_library(const fs::path& dir) {
   // classes, and its sidecar matches the measured digest.
   bs::resident::MmapLibrary library;
   library.open(dir / manifest.library_bin);
-  CHECK(library.class_count() == manifest.class_count);
+  CHECK(library.root_count() == 1);
+  CHECK(library.root_class_ids(0).size() == manifest.class_count);
   CHECK(library.sha256_hex() == manifest.library_bin_sha256);
-  for (const auto& entry : manifest.classes) {
-    const std::int32_t class_id = library.class_id_for_board(entry.canonical_board);
+  for (const auto& entry : manifest.served_roots[0].classes) {
+    const std::int32_t class_id = library.class_id_for_root_board(0, entry.canonical_board);
     CHECK(class_id >= 0);
-    CHECK(library.canonical_board(static_cast<std::uint32_t>(class_id)) == entry.canonical_board);
+    CHECK(library.canonical_board(0, static_cast<std::uint32_t>(class_id)) ==
+          entry.canonical_board);
   }
 
   // RFC 0033: the stored root must be chip-conserving, which is what makes it
-  // reachable from a real hand. The header carries `stacks` (chips behind) and
-  // `contributions` separately, so their sum plus the pot must equal the
-  // buy-in times the seat count. The defect this RFC fixes recorded the buy-in
-  // in `stacks` while also recording the contribution, giving 1212 chips in a
-  // 1200-chip game.
+  // reachable from a real hand. The directory carries stacks (chips behind)
+  // and contributions separately, so their sum plus the pot must equal the
+  // buy-in times the seat count.
   {
-    const bs::poker::GameDef& header = library.game().def;
-    bs::poker::Chips total = header.pot;
-    for (std::size_t s = 0; s < header.player_count; ++s)
-      total += header.stacks[s];
-    CHECK(total == header.player_count * (manifest.stack + manifest.contribution));
-    CHECK(header.stacks[0] == manifest.stack);
-    CHECK(header.contributions[0] == manifest.contribution);
+    const auto& root = library.root(0);
+    bs::poker::Chips total = static_cast<bs::poker::Chips>(root.pot);
+    for (std::size_t s = 0; s < manifest.player_count; ++s)
+      total += static_cast<bs::poker::Chips>(root.stacks[s]);
+    CHECK(total == manifest.player_count * (served.root.stacks[0] + served.root.contributions[0]));
   }
 
   // Independently recompute storage from the file itself.
@@ -218,8 +219,8 @@ bool test_build_library_coarse(const fs::path& dir) {
 bool test_build_library_raise_cap(const fs::path& dir) {
   const auto range = bs::flop_library::declared_library_range();
   auto action = bs::abstraction::ActionAbstraction::declared(
-      bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly);
-  action.set_max_raises_per_street(1);
+      bs::abstraction::default_size_schedule(), bs::abstraction::CoverSeeds::DeclaredOnly,
+      /*max_raises_per_street=*/1);
   const bs::flop_library::LibraryManifest manifest =
       bs::flop_library::build_library(dir, 1, 50, 20261002, 6, 2, range, 2, action);
 
@@ -242,6 +243,166 @@ bool test_build_library_raise_cap(const fs::path& dir) {
 }
 
 }  // namespace
+
+// RFC 0035: a two-root build trains one section per (root, class), records a
+// served_roots[] entry per ledger, packs a BSFLIB03 file the resident reader
+// mounts with both roots, and refuses to share sections/checkpoints with a
+// different root table.
+bool test_multi_root_build(const fs::path& dir) {
+  const auto range = bs::flop_library::declared_library_range();
+
+  bs::flop_library::BuildParams params;
+  params.class_count = 2;
+  params.iterations_per_class = 16;
+  params.seed = 20261035;
+  params.player_count = 2;
+  params.range = range;
+  params.range_name = "premium";
+  // Recorded in build.json even though the explicit roots below override the
+  // derived single-root shape; keeps the single-root resume comparison focused
+  // on the root table rather than these scalars.
+  params.starting_stack = 6;
+  params.contribution = 2;
+  // Two explicit, ledger-distinct roots: the limped production root (4
+  // behind, 2 in, pot 4) and an SRP root (12 behind, 6 in, pot 12).
+  params.roots = {
+      bs::flop_library::make_limped_root_spec(2, 6, 2),
+      bs::flop_library::RootSpec{},
+  };
+  auto& srp = params.roots[1];
+  srp.root_id = 1;
+  srp.line_tag = bs::resident::RootLineTag::SingleRaisedPot;
+  srp.range_profile = bs::resident::RootRangeProfile::LiveUniform;
+  srp.stacks = {12, 12};
+  srp.contributions = {6, 6};
+  srp.pot = 12;
+  srp.live_count = 2;
+
+  const bs::flop_library::LibraryManifest manifest =
+      bs::flop_library::build_library(dir / "two", params);
+
+  CHECK(manifest.served_roots.size() == 2);
+  CHECK(manifest.served_roots[0].root.pot == 4);
+  CHECK(manifest.served_roots[1].root.pot == 12);
+  CHECK(manifest.served_roots[0].root.line_tag == bs::resident::RootLineTag::Limped);
+  CHECK(manifest.served_roots[1].root.line_tag == bs::resident::RootLineTag::SingleRaisedPot);
+  CHECK(manifest.served_roots[0].class_count >= 1);
+  CHECK(manifest.served_roots[1].class_count == manifest.served_roots[0].class_count);
+  for (const auto& served : manifest.served_roots) {
+    CHECK(served.covered_flops > 0);
+    CHECK(served.total_flops == 22100);
+    CHECK(served.section_bytes > 0);
+  }
+  // Two roots × the dealable class stride.
+  CHECK(manifest.class_count == 2 * manifest.served_roots[0].class_count);
+  // The manifest JSON carries served_roots[], not the old single block.
+  std::ifstream mf(dir / "two" / "manifest.json");
+  const std::string json((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>());
+  CHECK(json.find("\"served_roots\"") != std::string::npos);
+  CHECK(json.find("\"root_table_hash\"") != std::string::npos);
+  CHECK(json.find("\"served_root\"") == std::string::npos);
+
+  // The packed file mounts with both roots and dense, distinct index rows.
+  bs::resident::MmapLibrary library;
+  library.open(dir / "two" / manifest.library_bin);
+  CHECK(library.root_count() == 2);
+  CHECK(library.root(0).pot == 4);
+  CHECK(library.root(1).pot == 12);
+  CHECK(library.root_class_ids(0).size() == manifest.served_roots[0].class_count);
+  CHECK(library.root_class_ids(1).size() == manifest.served_roots[1].class_count);
+  for (const auto& served : manifest.served_roots)
+    for (const auto& entry : served.classes) {
+      const std::int32_t cid =
+          library.class_id_for_root_board(entry.root_id, entry.canonical_board);
+      CHECK(cid >= 0);
+      CHECK(library.has_class(entry.root_id, static_cast<std::uint32_t>(cid)));
+    }
+
+  // The ordered root-table hash distinguishes the two-root table from the
+  // single limped root the positional builder would declare.
+  const std::uint64_t two_root_hash = bs::flop_library::root_table_hash(
+      2, std::span<const bs::flop_library::RootSpec>(params.roots));
+  const bs::flop_library::RootSpec single = bs::flop_library::make_limped_root_spec(2, 6, 2);
+  const std::uint64_t one_root_hash =
+      bs::flop_library::root_table_hash(2, std::span<const bs::flop_library::RootSpec>(&single, 1));
+  CHECK(two_root_hash != one_root_hash);
+  CHECK(manifest.root_table_hash == two_root_hash);
+
+  // Per-(root,class) stride independence: one worker trains the even class
+  // stride across BOTH roots, the other worker the odd stride, and assembly
+  // reproduces the serial artifact. The staged sections use distinct
+  // root-prefixed names, so the two roots never collide on the same file.
+  {
+    const fs::path stride_dir = dir / "two-stride";
+    fs::create_directories(stride_dir);
+    bs::flop_library::prepare_build_identity(stride_dir, params, /*resume=*/false);
+    bs::flop_library::build_library_worker(stride_dir, 0, 2, params);
+    // Worker 0 (class stride 0) staged a section for BOTH roots.
+    CHECK(fs::exists(stride_dir / ".sections" / "root-0000-class-0000.bsf"));
+    CHECK(fs::exists(stride_dir / ".sections" / "root-0001-class-0000.bsf"));
+    CHECK(!fs::exists(stride_dir / ".sections" / "root-0000-class-0001.bsf"));
+    bs::flop_library::build_library_worker(stride_dir, 1, 2, params);
+    const bs::flop_library::LibraryManifest strided =
+        bs::flop_library::assemble_library(stride_dir, params);
+    CHECK(strided.library_bin_sha256 == manifest.library_bin_sha256);
+  }
+
+  // Resuming the same two-root output reproduces the identical artifact (the
+  // successful build removed its staging dir, so this retrains).
+  params.resume = true;
+  const bs::flop_library::LibraryManifest resumed =
+      bs::flop_library::build_library(dir / "two", params);
+  CHECK(resumed.library_bin_sha256 == manifest.library_bin_sha256);
+
+  // A resume request whose root table differs from the staged build identity
+  // fails the root-table-hash comparison before any worker starts. Build
+  // identity is written pre-training, so this uses prepare_build_identity
+  // directly (assembly removes the staging dir on success).
+  {
+    const fs::path identity_dir = dir / "identity-two";
+    fs::create_directories(identity_dir);
+    bs::flop_library::prepare_build_identity(identity_dir, params, /*resume=*/false);
+    bs::flop_library::BuildParams one = params;
+    one.roots.clear();
+    one.starting_stack = 6;
+    one.contribution = 2;
+    one.resume = true;
+    bool threw = false;
+    std::string message;
+    try {
+      bs::flop_library::prepare_build_identity(identity_dir, one, /*resume=*/true);
+    } catch (const std::runtime_error& error) {
+      threw = true;
+      message = error.what();
+    }
+    CHECK(threw);
+    CHECK(message.find("root_table_hash") != std::string::npos ||
+          message.find("root_count") != std::string::npos);
+  }
+  return true;
+}
+
+// RFC 0035: the reserved line-conditioned range profile (2) is refused — a
+// BSFLIB03 section carries exactly one range vector.
+bool test_reserved_range_profile_refused(const fs::path& dir) {
+  const auto range = bs::flop_library::declared_library_range();
+  bs::flop_library::BuildParams params;
+  params.class_count = 1;
+  params.iterations_per_class = 8;
+  params.seed = 1;
+  params.player_count = 2;
+  params.range = range;
+  params.roots = {bs::flop_library::make_limped_root_spec(2, 6, 2)};
+  params.roots[0].range_profile = static_cast<bs::resident::RootRangeProfile>(2);
+  bool threw = false;
+  try {
+    (void)bs::flop_library::build_library(dir / "reserved-profile", params);
+  } catch (const std::invalid_argument& error) {
+    threw = std::string(error.what()).find("range_profile") != std::string::npos;
+  }
+  CHECK(threw);
+  return true;
+}
 
 // RFC 0033: the builder argument is a starting stack, and the root's chips
 // behind are derived from it. A starting stack that does not exceed the
@@ -271,11 +432,9 @@ bool test_starting_stack_derivation(const fs::path& dir) {
       bs::flop_library::build_library(dir / "small", 1, 8, 7, 6, 2, range);
   const bs::flop_library::LibraryManifest large =
       bs::flop_library::build_library(dir / "large", 1, 8, 7, 12, 2, range);
-  CHECK(small.starting_stack == 6);
-  CHECK(small.stack == 4);
-  CHECK(large.starting_stack == 12);
-  CHECK(large.stack == 10);
-  CHECK(small.contribution == large.contribution);
+  CHECK(small.served_roots[0].root.stacks[0] == 4);
+  CHECK(large.served_roots[0].root.stacks[0] == 10);
+  CHECK(small.served_roots[0].root.contributions[0] == large.served_roots[0].root.contributions[0]);
 
   // The two roots differ, so the same class must not answer both.
   CHECK(small.library_bin_sha256 != large.library_bin_sha256);
@@ -296,6 +455,8 @@ int main() {
   ok = test_build_library(dir) && ok;
   ok = test_build_library_coarse(dir / "coarse") && ok;
   ok = test_build_library_raise_cap(dir / "raise-cap") && ok;
+  ok = test_multi_root_build(dir) && ok;
+  ok = test_reserved_range_profile_refused(dir) && ok;
   ok = test_starting_stack_derivation(dir) && ok;
 
   fs::remove_all(dir, ec);

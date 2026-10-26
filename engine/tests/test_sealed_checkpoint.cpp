@@ -1,4 +1,4 @@
-// RFC 0028: BSWARM01 sealed warm-start checkpoint codec.
+// RFC 0028/RFC 0030/RFC 0035: BSWARM03 sealed warm-start checkpoint codec.
 //
 // The codec is the only place `visits` can be verified: no published artifact
 // carries it, so an artifact-byte comparison cannot detect a `visits` error.
@@ -93,6 +93,7 @@ SealedCheckpointState make_state() {
   state.node_cap = 4096;
   state.bucket_cap = 169;
   state.key_kind = CardBucketKind::Preflop169;
+  state.tree_shape_digest = 0x0123456789abcdefULL;
   state.rows[{3, 10}] = make_row(2, 0.5, 11);
   state.rows[{3, 200}] = make_row(3, 1.25, 12);
   state.rows[{7, 10}] = make_row(2, -2.5, 13);
@@ -138,6 +139,11 @@ bool round_trip() {
   CHECK(loaded.node_cap == state.node_cap);
   CHECK(loaded.bucket_cap == state.bucket_cap);
   CHECK(loaded.key_kind == state.key_kind);
+  // RFC 0030: the BSWARM02 witness round-trips (still present in BSWARM03).
+  CHECK(loaded.tree_shape_digest.has_value());
+  CHECK(*loaded.tree_shape_digest == *state.tree_shape_digest);
+  // RFC 0035: the root-table witness round-trips.
+  CHECK(loaded.root_table_hash == state.root_table_hash);
   CHECK(loaded.rows.size() == state.rows.size());
   for (const auto& [key, row] : state.rows) {
     const auto it = loaded.rows.find(key);
@@ -223,11 +229,30 @@ bool rejects_malformed() {
     write_bytes(path, bytes);
     CHECK(expects_failure(path));
   }
-  // Wrong version.
+  // Wrong version (BSWARM03 is version 3; a foreign u32 is rejected).
   {
     auto bytes = original;
-    put_u32_at(bytes, kOffVersion, 2);
+    put_u32_at(bytes, kOffVersion, 99);
     const fs::path path = dir / "bad-version.bswarm";
+    write_bytes(path, bytes);
+    CHECK(expects_failure(path));
+  }
+  // RFC 0030: a BSWARM01 magic is foreign, not decoded by the new codec.
+  {
+    auto bytes = original;
+    const char old_magic[8] = {'B', 'S', 'W', 'A', 'R', 'M', '0', '1'};
+    std::memcpy(bytes.data() + kOffMagic, old_magic, 8);
+    const fs::path path = dir / "old-magic.bswarm";
+    write_bytes(path, bytes);
+    CHECK(expects_failure(path));
+  }
+  // RFC 0035: a BSWARM02 magic is foreign too — the bump added the
+  // root-table witness and no dual reader exists.
+  {
+    auto bytes = original;
+    const char old_magic[8] = {'B', 'S', 'W', 'A', 'R', 'M', '0', '2'};
+    std::memcpy(bytes.data() + kOffMagic, old_magic, 8);
+    const fs::path path = dir / "bswarm02-magic.bswarm";
     write_bytes(path, bytes);
     CHECK(expects_failure(path));
   }
@@ -425,6 +450,7 @@ bool size_is_key_proportional() {
   state.node_cap = 1024;
   state.bucket_cap = 169;
   state.key_kind = CardBucketKind::Preflop169;
+  state.tree_shape_digest = 0xabcdef0123456789ULL;
   for (std::uint32_t bucket = 0; bucket < 3; ++bucket) {
     for (std::uint64_t node = 0; node < 4; ++node) {
       state.rows[{bucket, node}] = make_row(2, 0.0, 1);

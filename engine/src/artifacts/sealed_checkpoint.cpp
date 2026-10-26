@@ -1,4 +1,4 @@
-// RFC 0028: the BSWARM01 sealed warm-start checkpoint codec.
+// RFC 0028: the sealed warm-start checkpoint codec (BSWARM03 per RFC 0035).
 //
 // See bs/sealed_checkpoint.hpp for the format contract and the rationale. This
 // file is deliberately self-contained: it links no database and performs no
@@ -44,10 +44,10 @@ namespace {
 using solver::NSeatInformationKey;
 using solver::NSeatRawRow;
 
-constexpr char kMagic[8] = {'B', 'S', 'W', 'A', 'R', 'M', '0', '1'};
+constexpr char kMagic[8] = {'B', 'S', 'W', 'A', 'R', 'M', '0', '3'};
 
 // The packed action target is 16 bits, so a checkpoint cannot carry a menu
-// whose aggressive target exceeds it. This is the same ceiling BSFLIB02
+// whose aggressive target exceeds it. This is the same ceiling BSFLIB03
 // accepts, and it is checked rather than truncated.
 constexpr std::uint64_t kMaxPackedTarget = 0xffffu;
 
@@ -79,9 +79,15 @@ constexpr std::size_t kOffTotalActions = 96;
 constexpr std::size_t kOffPayloadBytes = 104;
 constexpr std::size_t kOffPayloadDigest = 112;
 constexpr std::size_t kOffAlgorithmRevision = 120;
+// RFC 0030 BSWARM02: the 184-byte v1 header ends with the revision string;
+// the tree-shape witness follows at 184. RFC 0035 BSWARM03: the declared
+// root-table hash follows at 192, taking the fixed header to 200.
+constexpr std::size_t kOffTreeShapeDigest = 184;
+constexpr std::size_t kOffRootTableHash = 192;
 
-static_assert(kOffAlgorithmRevision + kAlgorithmRevisionChars == kSealedCheckpointHeaderBytes,
-              "the fixed header length must cover the revision string");
+static_assert(kOffRootTableHash + 8 == kSealedCheckpointHeaderBytes,
+              "the fixed header length must cover the revision string, the "
+              "BSWARM02 tree-shape witness, and the BSWARM03 root-table hash");
 
 // The digest is written only when an identity is present. The present flag
 // keeps an absent identity distinct from a present one whose digest happens to
@@ -172,6 +178,10 @@ void validate_state(const SealedCheckpointState& state) {
     fail("sealed checkpoint: node_cap must be positive");
   if (state.bucket_cap == 0)
     fail("sealed checkpoint: bucket_cap must be positive");
+  // RFC 0030: the BSWARM02 witness is mandatory; a writer without a tree cannot
+  // seal a resumable checkpoint.
+  if (!state.tree_shape_digest.has_value())
+    fail("sealed checkpoint: tree_shape_digest is required (BSWARM02)");
   const std::uint32_t ceiling = bucket_ceiling(state.key_kind);
   for (const auto& [key, row] : state.rows) {
     if (key.own_card_bucket >= state.bucket_cap || key.own_card_bucket >= ceiling)
@@ -315,6 +325,8 @@ struct Header {
   std::uint64_t payload_bytes = 0;
   std::uint64_t payload_digest = 0;
   std::string algorithm_revision;
+  std::uint64_t tree_shape_digest = 0;
+  std::uint64_t root_table_hash = 0;
 };
 
 std::vector<std::uint8_t> read_file(const std::filesystem::path& path) {
@@ -388,6 +400,8 @@ Header decode_header(std::span<const std::uint8_t> bytes, const std::filesystem:
   h.total_actions = get_u64(bytes, kOffTotalActions);
   h.payload_bytes = get_u64(bytes, kOffPayloadBytes);
   h.payload_digest = get_u64(bytes, kOffPayloadDigest);
+  h.tree_shape_digest = get_u64(bytes, kOffTreeShapeDigest);
+  h.root_table_hash = get_u64(bytes, kOffRootTableHash);
 
   // The revision string must be NUL-terminated inside its 64 bytes and must
   // agree with the numeric revision, which is what the trainer consumes.
@@ -444,6 +458,8 @@ void save_sealed_checkpoint(const std::filesystem::path& path, const SealedCheck
   put_u64(header, kOffPayloadDigest, fnv1a_bytes(payload));
   const char* revision = sealed_revision_string(state.algorithm_revision_id);
   std::memcpy(header.data() + kOffAlgorithmRevision, revision, std::strlen(revision));
+  put_u64(header, kOffTreeShapeDigest, state.tree_shape_digest.value());
+  put_u64(header, kOffRootTableHash, state.root_table_hash);
 
   std::error_code ec;
   const std::filesystem::path parent = path.parent_path();
@@ -502,6 +518,8 @@ SealedCheckpointState inspect_sealed_checkpoint(const std::filesystem::path& pat
   state.node_cap = h.node_cap;
   state.bucket_cap = h.bucket_cap;
   state.key_kind = h.key_kind;
+  state.tree_shape_digest = h.tree_shape_digest;
+  state.root_table_hash = h.root_table_hash;
   return state;
 }
 
@@ -546,6 +564,8 @@ SealedCheckpointState load_sealed_checkpoint(const std::filesystem::path& path) 
   state.node_cap = h.node_cap;
   state.bucket_cap = h.bucket_cap;
   state.key_kind = h.key_kind;
+  state.tree_shape_digest = h.tree_shape_digest;
+  state.root_table_hash = h.root_table_hash;
 
   const std::uint32_t ceiling = bucket_ceiling(h.key_kind);
   NSeatInformationKey previous{};

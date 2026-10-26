@@ -13,9 +13,10 @@
 //   - resident blueprint storage and lookup over complete supported roots;
 //   - hero-card-independent public belief (per-combo public reach);
 //   - the separate hero-private blocker filter at final action selection.
-// This stage does NOT wire the host, service, policy, v0, or protocol layers,
+// This stage does NOT wire the host, service, decision, or protocol layers,
 // does not implement the resolving gadget or certification, and exposes no
-// bound, guarantee, or certification symbol. Artifact v1 never writes bounds;
+// bound, guarantee, or certification symbol. A blueprint artifact never
+// writes bounds;
 // a loaded policy is therefore advertised for BLUEPRINT lookup only. Resident
 // continuations are loaded, but certification bounds do not yet exist.
 #pragma once
@@ -23,6 +24,7 @@
 #include <array>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
+#include <bs/mmap_library.hpp>  // RFC 0035: RootDirectoryEntry for mmap_root()
 #include <bs/resolver.hpp>
 #include <bs/strategy_artifact.hpp>
 #include <cstddef>
@@ -102,6 +104,11 @@ enum class MissReason : std::uint8_t {
   // resident belief model's exact range (2..10). The artifact loads and
   // advertises, and the resolver source still serves it.
   SeatCountNotSupported,
+  // RFC 0035: a trained root matches the query's exact ledger, but the
+  // canonical flop class is absent from that root's dense index row (zero
+  // offset). Distinct from RootNotSupported, which means no trained root
+  // matches the ledger at all.
+  ClassNotTrainedForRoot,
 };
 
 const char* to_string(MissReason reason) noexcept;
@@ -128,7 +135,7 @@ struct SupportedRootSpec {
   std::optional<artifacts::Sha256Digest> expected_sha256;
   // RFC 0012 Phase 3: when set, the resident set can construct this root's
   // game identity without loading the artifact (lazy mode). The canonical
-  // board is the class representative stored in the v3 artifact.
+  // board is the class representative stored in a schema-v3 artifact.
   std::optional<std::array<int, 3>> canonical_board = std::nullopt;
 };
 
@@ -223,10 +230,11 @@ struct ResidentScratch {
   // index stores probabilities as uint8 indices into a per-root codebook, the
   // boundary defers them here so the public view exposes exact doubles.
   std::array<double, 32> probability_scratch{};
-  // RFC 0009 W4c-ii: canonical translation for class-based (v3) artifacts.
-  // canonical_relabel[s] = canonical suit for concrete suit s (identity for
-  // v2). canonical_flop is the artifact's canonical flop board, which equals
-  // the query's flop for v2 and is the class representative for v3.
+  // RFC 0009 W4c-ii: canonical translation for class-based (schema-v3)
+  // artifacts. canonical_relabel[s] = canonical suit for concrete suit s
+  // (identity for schema-v2). canonical_flop is the artifact's canonical
+  // flop board, which equals the query's flop for schema-v2 and is the class
+  // representative for schema-v3.
   // canonical_board_buf is scratch space for the canonical prefix board used
   // in key building. All three are set per query at the resident boundary
   // before any downstream function reads them.
@@ -274,6 +282,12 @@ class ResidentPolicySet {
   std::size_t advertised_roots() const noexcept;
   std::size_t total_resident_bytes() const noexcept;
   const RootLoadResult& root_result(std::size_t index) const;
+
+  // RFC 0035: the mounted BSFLIB03 root directory. Returns zero roots for a
+  // set without a binary library. The host uses these for the startup
+  // served-root report and to reconcile the manifest against the directory.
+  std::size_t mmap_root_count() const noexcept;
+  const RootDirectoryEntry& mmap_root(std::size_t index) const;
 
   // Compute the hero-card-independent public belief at a public decision
   // node. The state is matched by its canonical root identity. When

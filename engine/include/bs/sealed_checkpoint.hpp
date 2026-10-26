@@ -27,11 +27,16 @@
 namespace bs::artifacts {
 
 // The sealed file's fixed header length. Payload offsets are relative to the
-// payload start, not to the file.
-inline constexpr std::uint32_t kSealedCheckpointHeaderBytes = 184;
+// payload start, not to the file. RFC 0030 (BSWARM02) appends the
+// tree_shape_digest u64 at the end of the 184-byte v1 header; RFC 0035
+// (BSWARM03) appends the declared root-table hash u64 at offset 192, taking
+// the fixed header to 200.
+inline constexpr std::uint32_t kSealedCheckpointHeaderBytes = 200;
 
-// Version of the BSWARM01 layout. Bumped only by a redesign of this file.
-inline constexpr std::uint32_t kSealedCheckpointVersion = 1;
+// BSWARM03 layout version. The magic changed with RFC 0030 (BSWARM01→02) and
+// RFC 0035 (BSWARM02→03); there is no codec for an older magic, so an old
+// checkpoint is foreign and follows the corruption/discard path.
+inline constexpr std::uint32_t kSealedCheckpointVersion = 3;
 
 // The canonical provenance string for a numeric trainer revision, or nullptr
 // when this build does not know the revision. The header stores both a numeric
@@ -71,6 +76,13 @@ struct SealedCheckpointState {
   // rows are adopted. Required on save and load; absent only when a caller is
   // constructing state in memory.
   std::optional<std::uint64_t> tree_shape_digest;
+  // RFC 0035: BSWARM03 FNV-1a hash of the declared, ordered root table. The
+  // tree-shape witness already differs across roots whose trees differ, but
+  // two root tables can contain the same root ledger in a different set; this
+  // names the table so a warm start refuses a checkpoint written for another
+  // root table even when the per-(root,class) tree shape happens to agree.
+  // Required on save and load for a BSWARM03 checkpoint.
+  std::uint64_t root_table_hash = 0;
   std::map<solver::NSeatInformationKey, solver::NSeatRawRow> rows;
 };
 

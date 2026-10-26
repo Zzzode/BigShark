@@ -102,7 +102,7 @@ bool same_root(const GameDef& a, const GameDef& b,
 
 // W4c-ii: apply a suit relabel to a card id. relabel[s] = canonical suit, so
 // new_card = rank*4 + relabel[old_suit]. The identity relabel {0,1,2,3} leaves
-// every card unchanged, which is the v2 (exact-board) case.
+// every card unchanged, which is the schema-v2 (exact-board) case.
 int relabel_card(int card, const std::array<int, 4>& relabel) {
   return (card / 4) * 4 + relabel[static_cast<std::size_t>(card % 4)];
 }
@@ -110,20 +110,20 @@ int relabel_card(int card, const std::array<int, 4>& relabel) {
 // Build the unified solver view of a schema-v2 identity. The in-memory
 // information key layout is identical across revisions (make_information_key
 // and information_key(HeadsUpState) emit the same words for the same state),
-// so the v2 game's rows are keyed compatibly and the resident replay serves
+// so the schema-v2 game's rows are keyed compatibly and the resident replay serves
 // them unchanged. W2c-ii-a loads every seat count: the belief and hero-decision
 // queries are exact for 2..10 seats (RFC 0011), while the resolver source
-// already serves the unified game. Turn/river-rooted v2 sources stay refused
+// already serves the unified game. Turn/river-rooted schema-v2 sources stay refused
 // until the resident root generalizes (RFC 0009 D4).
 UnifiedGame build_v2_game(const GameDef& game,
                           const std::vector<std::vector<solver::WeightedHand>>& ranges,
                           const abstraction::SizeSchedule& sizes) {
   // RFC 0007: a preflop flop-terminal root (board_size == 0) is accepted
-  // alongside flop-rooted (board_size == 3) sources. Turn/river-rooted v2
+  // alongside flop-rooted (board_size == 3) sources. Turn/river-rooted schema-v2
   // sources stay refused until the resident root generalizes (RFC 0009 D4).
   if (game.board_size != 3 && game.board_size != 0)
     throw std::invalid_argument(
-        "resident path supports only flop-rooted or preflop v2 artifacts; got board_size " +
+        "resident path supports only flop-rooted or preflop schema-v2 artifacts; got board_size " +
         std::to_string(game.board_size));
   UnifiedGame built;
   built.def = game;
@@ -275,6 +275,8 @@ const char* to_string(MissReason reason) noexcept {
       return "opponent-range-fully-blocked";
     case MissReason::SeatCountNotSupported:
       return "seat-count-not-supported";
+    case MissReason::ClassNotTrainedForRoot:
+      return "class-not-trained-for-root";
   }
   return "unknown";
 }
@@ -301,12 +303,15 @@ struct ResidentPolicySet::Record {
   ResidentIndex index{};
   bool advertised = false;
   // RFC 0009 W4c-ii: the declared card abstraction. nullopt marks an
-  // exact-board (v2) artifact; a set id marks a class policy (v3) whose
+  // exact-board (schema-v2) artifact; a set id marks a class policy (schema-v3) whose
   // stored board is the canonical class representative.
   std::optional<abstraction::AbstractionId> card_abstraction;
   // RFC 0012 Phase 2: mmap-backed class library. When non-null, lookups go
   // through the MmapLibrary instead of the ResidentIndex.
   MmapLibrary* mmap_library = nullptr;
+  // RFC 0035: the directory root this record's (root, class) section belongs
+  // to. Valid exactly when mmap_library is non-null (root 0 is a real root).
+  std::uint32_t mmap_root_id = 0;
   std::uint32_t mmap_class_id = 0;
   // RFC 0012 Phase 3: lazy loading. When true, the class is loaded on
   // demand into the LRU cache. The game def is valid at build time; the
@@ -408,7 +413,7 @@ const ResidentPolicySet::LazyEntry* ResidentPolicySet::ensure_lazy_loaded(
 // eager → ResidentIndex::find.
 bool ResidentPolicySet::find_row(const Record& record, std::span<const std::uint8_t> compact_key,
                                  CompactRowView& out) const {
-  // BSFLIB02 stores public-node/bucket rows, not concrete-combo rows, so a raw
+  // BSFLIB03 stores public-node/bucket rows, not concrete-combo rows, so a raw
   // concrete compact key cannot resolve an mmap record; callers must use
   // find_row_words for that backend. This path serves lazy/eager records.
   if (record.mmap_library)
@@ -459,7 +464,7 @@ bool ResidentPolicySet::find_row_words(const Record& record, std::span<const std
         solver::kNSeatCardKind, hole, std::span<const int>(board.data(), board_size));
     if (bucket > 0xffff)
       return false;
-    return record.mmap_library->find_bucket(record.mmap_class_id,
+    return record.mmap_library->find_bucket(record.mmap_root_id, record.mmap_class_id,
                                             std::span<const std::uint8_t>(public_key.data(), n),
                                             static_cast<std::uint16_t>(bucket), out);
   }
@@ -510,36 +515,49 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
     MmapLibrary* lib_ptr = mmap_lib.get();
     set.mmap_libraries_.push_back(std::move(mmap_lib));
 
-    for (std::size_t i = 0; i < lib_ptr->class_count(); ++i) {
-      const std::uint32_t class_id = lib_ptr->class_id_at(i);
-      Record record;
-      record.result.path = *options.binary_library_path;
-      record.result.sha256_hex = lib_ptr->sha256_hex();
-      record.result.status = RootStatus::Advertised;
-      // RFC 0026 semantics: these counts are distinct node-bucket rows and
-      // menu-action totals, not the concrete info-set/action counts a SQLite
-      // artifact reports.
-      record.result.information_sets = lib_ptr->bucket_row_count(class_id);
-      record.result.probability_count = lib_ptr->menu_action_count(class_id);
-      record.result.resident_bytes = 0;  // mmap uses no resident heap
+    // RFC 0035: one record per (root, present class). Each record's game
+    // carries the root directory ledger plus the class's canonical board;
+    // the header-level identity (sizes, full RFC 0030 action id) is shared.
+    for (std::uint32_t root_id = 0; root_id < lib_ptr->root_count(); ++root_id) {
+      const RootDirectoryEntry& root = lib_ptr->root(root_id);
+      for (std::uint32_t class_id : lib_ptr->root_class_ids(root_id)) {
+        Record record;
+        record.result.path = *options.binary_library_path;
+        record.result.sha256_hex = lib_ptr->sha256_hex();
+        record.result.status = RootStatus::Advertised;
+        // RFC 0026 semantics: these counts are distinct node-bucket rows and
+        // menu-action totals, not the concrete info-set/action counts a SQLite
+        // artifact reports.
+        record.result.information_sets = lib_ptr->bucket_row_count(root_id, class_id);
+        record.result.probability_count = lib_ptr->menu_action_count(root_id, class_id);
+        record.result.resident_bytes = 0;  // mmap uses no resident heap
 
-      // Set up the game identity: shared fields from the library header,
-      // board from the class section, ranges from the class's filtered range.
-      record.game = lib_ptr->game();
-      const auto& board = lib_ptr->canonical_board(class_id);
-      record.game.def.board = {board[0], board[1], board[2], 0, 0};
-      record.game.def.board_size = 3;
-      for (std::size_t seat = 0; seat < record.game.def.player_count; ++seat)
-        record.game.ranges[seat] = lib_ptr->class_range(class_id);
+        // Set up the game identity: shared header fields and the exact root
+        // ledger from the directory, the board from the class section, and
+        // ranges from the class's filtered range.
+        record.game = lib_ptr->game();
+        record.game.def.pot = static_cast<poker::Chips>(root.pot);
+        for (std::size_t seat = 0; seat < record.game.def.player_count; ++seat) {
+          record.game.def.stacks[seat] = static_cast<poker::Chips>(root.stacks[seat]);
+          record.game.def.contributions[seat] = static_cast<poker::Chips>(root.contributions[seat]);
+          record.game.def.folded[seat] = root.folded[seat] != 0;
+        }
+        const auto& board = lib_ptr->canonical_board(root_id, class_id);
+        record.game.def.board = {board[0], board[1], board[2], 0, 0};
+        record.game.def.board_size = 3;
+        for (std::size_t seat = 0; seat < record.game.def.player_count; ++seat)
+          record.game.ranges[seat] = lib_ptr->class_range(root_id, class_id);
 
-      record.mmap_library = lib_ptr;
-      record.mmap_class_id = class_id;
-      record.card_abstraction = abstraction::suit_canonicalization_id();
-      record.advertised = true;
+        record.mmap_library = lib_ptr;
+        record.mmap_root_id = root_id;
+        record.mmap_class_id = class_id;
+        record.card_abstraction = abstraction::suit_canonicalization_id();
+        record.advertised = true;
 
-      if (results)
-        results->push_back(record.result);
-      set.records_.push_back(std::move(record));
+        if (results)
+          results->push_back(record.result);
+        set.records_.push_back(std::move(record));
+      }
     }
     return set;
   }
@@ -658,7 +676,7 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
       } else {
         record.game = solver::to_unified_game(probe.game);
       }
-      // W4c-ii: a v3 probe carries the declared card abstraction; a v2 probe
+      // W4c-ii: a schema-v3 probe carries the declared card abstraction; a schema-v2 probe
       // leaves it at nullopt (exact board).
       record.card_abstraction = probe.manifest.card_abstraction;
 
@@ -703,8 +721,8 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
             record.game = build_v2_game(policy.game(), policy.ranges(), policy.sizes());
             record.game.action_id = policy.action_id();
             record.index.build(policy.rows());
-            // W4c-ii: the v3 reader reconstructs the card abstraction from the
-            // manifest; the v2 reader leaves it at nullopt.
+            // W4c-ii: the schema-v3 reader reconstructs the card abstraction from the
+            // manifest; the schema-v2 reader leaves it at nullopt.
             record.card_abstraction = loaded.bundle.nseat->card_id;
           } else {
             record.game = solver::to_unified_game(loaded.bundle.result.policy.game());
@@ -770,6 +788,16 @@ const RootLoadResult& ResidentPolicySet::root_result(std::size_t index) const {
   return records_.at(index).result;
 }
 
+std::size_t ResidentPolicySet::mmap_root_count() const noexcept {
+  return mmap_libraries_.empty() ? 0 : mmap_libraries_.front()->root_count();
+}
+
+const RootDirectoryEntry& ResidentPolicySet::mmap_root(std::size_t index) const {
+  if (mmap_libraries_.empty())
+    throw std::out_of_range("resident set has no binary library");
+  return mmap_libraries_.front()->root(static_cast<std::uint32_t>(index));
+}
+
 namespace {
 
 struct ResolvedRoot {
@@ -777,10 +805,10 @@ struct ResolvedRoot {
   MissReason miss = MissReason::None;
 };
 
-// W4c-ii: the canonical flop of a query against a v3 record, or nullptr for a
-// v2 record (or a query with fewer than three board cards, which same_root
-// then refuses). The storage is caller-owned so the pointer stays valid
-// through the same_root call.
+// W4c-ii: the canonical flop of a query against a schema-v3 record, or nullptr
+// for a schema-v2 record (or a query with fewer than three board cards, which
+// same_root then refuses). The storage is caller-owned so the pointer stays
+// valid through the same_root call.
 const std::array<int, 3>* canonical_query_board(const ResidentPolicySet::Record& record,
                                                 const GameDef& query_def,
                                                 std::array<int, 3>& storage) {
@@ -794,46 +822,80 @@ const std::array<int, 3>* canonical_query_board(const ResidentPolicySet::Record&
   return &storage;
 }
 
+// RFC 0035: ledger-only match between an mmap (root, class) record and the
+// query. Compares the exact root tuple same_root compares EXCLUDING the
+// board: player count, pot, big blind, button, and per-seat stacks/net
+// contributions/folded mask. A flop query against a flop-rooted class record
+// is the only case. This is how the resolver distinguishes "no trained root
+// for this ledger" (RootNotSupported) from "the root is trained but this
+// canonical class is absent from its index row" (ClassNotTrainedForRoot).
+bool mmap_ledger_matches(const ResidentPolicySet::Record& record, const GameDef& query) {
+  if (!record.mmap_library || query.board_size != 3)
+    return false;
+  const GameDef& ledger = record.game.def;
+  if (ledger.player_count != query.player_count || ledger.pot != query.pot ||
+      ledger.big_blind != query.big_blind || ledger.button != query.button)
+    return false;
+  for (std::size_t p = 0; p < ledger.player_count; ++p)
+    if (ledger.stacks[p] != query.stacks[p] || ledger.contributions[p] != query.contributions[p] ||
+        ledger.folded[p] != query.folded[p])
+      return false;
+  return true;
+}
+
 // Match the query against advertised records, honoring an optional pinned
 // artifact digest.
 ResolvedRoot resolve_root(const std::vector<ResidentPolicySet::Record>& records,
                           const GameState& state, std::optional<std::string_view> pinned_sha256) {
-  if (pinned_sha256) {
-    const ResidentPolicySet::Record* pinned = nullptr;
-    for (const ResidentPolicySet::Record& record : records)
-      if (record.result.sha256_hex == *pinned_sha256)
-        pinned = &record;
-    if (!pinned)
-      return {nullptr, MissReason::RootNotSupported};
-    if (!pinned->advertised) {
-      const MissReason reason = pinned->result.status == RootStatus::InvalidRange
-                                    ? MissReason::EmptyJointRange
-                                    : MissReason::OverBudgetNotAdvertised;
-      return {nullptr, reason};
-    }
-    std::array<int, 3> canon_board{};
-    if (!same_root(pinned->game.def, state.def(),
-                   canonical_query_board(*pinned, state.def(), canon_board)))
-      return {nullptr, MissReason::RootIdentityMismatch};
-    return {pinned, MissReason::None};
-  }
-
   const ResidentPolicySet::Record* known = nullptr;
   RootStatus known_status = RootStatus::LoadFailed;
+  // RFC 0035: set when a trained mmap root's ledger matches the query but no
+  // record's canonical board does (the class is absent for that root).
+  bool ledger_only_match = false;
+  // Under a digest pin, preserve the pre-RFC-0035 outcomes: an unknown digest
+  // is RootNotSupported and a wrong ledger on the pinned artifact is
+  // RootIdentityMismatch. The class-only miss (ClassNotTrainedForRoot) applies
+  // only when the ledger actually matches a trained mmap root.
+  bool mmap_pinned_ledger_match = false;
   for (const ResidentPolicySet::Record& record : records) {
-    std::array<int, 3> canon_board{};
-    if (!same_root(record.game.def, state.def(),
-                   canonical_query_board(record, state.def(), canon_board)))
+    if (pinned_sha256 && record.result.sha256_hex != *pinned_sha256)
       continue;
-    if (record.advertised)
-      return {&record, MissReason::None};
-    known = &record;
-    known_status = record.result.status;
+    std::array<int, 3> canon_board{};
+    if (same_root(record.game.def, state.def(),
+                  canonical_query_board(record, state.def(), canon_board))) {
+      if (record.advertised)
+        return {&record, MissReason::None};
+      known = &record;
+      known_status = record.result.status;
+    } else if (record.mmap_library) {
+      if (mmap_ledger_matches(record, state.def())) {
+        ledger_only_match = true;
+        if (pinned_sha256)
+          mmap_pinned_ledger_match = true;
+      }
+    }
   }
   if (known)
     return {nullptr, known_status == RootStatus::InvalidRange
                          ? MissReason::EmptyJointRange
                          : MissReason::OverBudgetNotAdvertised};
+  if (pinned_sha256) {
+    // Under a digest pin the artifact is named. A ledger hit with an absent
+    // class is the RFC 0035 class miss; an unknown digest stays RootNotSupported
+    // and a wrong ledger on the named artifact stays RootIdentityMismatch.
+    if (mmap_pinned_ledger_match)
+      return {nullptr, MissReason::ClassNotTrainedForRoot};
+    bool pin_names_an_artifact = false;
+    for (const ResidentPolicySet::Record& record : records)
+      if (record.result.sha256_hex == *pinned_sha256) {
+        pin_names_an_artifact = true;
+        break;
+      }
+    return {nullptr, pin_names_an_artifact ? MissReason::RootIdentityMismatch
+                                           : MissReason::RootNotSupported};
+  }
+  if (ledger_only_match)
+    return {nullptr, MissReason::ClassNotTrainedForRoot};
   return {nullptr, MissReason::RootNotSupported};
 }
 
@@ -853,7 +915,7 @@ bool card_in_chance_support(const UnifiedGame& game, std::size_t slot, int dealt
 
 // Fixed-runout boards must match HeadsUpPolicy::lookup behavior: a turn or
 // river card that diverges from the artifact's reserved runout is a miss.
-// W4c-ii: for a v3 record the dealt card is relabeled into canonical
+// W4c-ii: for a schema-v3 record the dealt card is relabeled into canonical
 // coordinates before the comparison.
 bool runout_matches(const UnifiedGame& game, const GameState& state,
                     const std::array<int, 4>& relabel) {
@@ -895,7 +957,7 @@ MissReason read_action_probabilities(const ResidentPolicySet& set,
   const std::size_t prefix_board_size = (event.street == Street::Preflop) ? 0 : 3 + prefix_street;
   // W4c-ii: build the canonical prefix board — the artifact's canonical flop
   // plus relabeled turn/river cards — so the information key matches the
-  // class-policy rows. For v2 the relabel is the identity and the canonical
+  // class-policy rows. For schema-v2 the relabel is the identity and the canonical
   // flop equals the query flop, so the board is byte-identical to the old
   // state.board() span.
   // RFC 0032: build exactly prefix_board_size cards. ASan cannot catch a short
@@ -1028,8 +1090,8 @@ ResidentAnswer ResidentPolicySet::public_belief(const GameState& state,
   // for the last seat.
   if (game.def.player_count > bs::poker::kMaxUnifiedSeats)
     return miss_answer(MissReason::SeatCountNotSupported);
-  // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
-  // For v2 the relabel is the identity and the canonical flop equals the query
+  // W4c-ii: set up the canonical translation for class-based (schema-v3) artifacts.
+  // For schema-v2 the relabel is the identity and the canonical flop equals the query
   // flop, so every downstream function behaves exactly as before.
   // RFC 0007: a preflop record (board_size == 0) has no flop to canonicalize;
   // the identity relabel and a zeroed canonical flop are correct.
@@ -1076,7 +1138,7 @@ ResidentAnswer ResidentPolicySet::hero_decision(const GameState& state,
   // with inclusion-exclusion for the last seat.
   if (game.def.player_count > bs::poker::kMaxUnifiedSeats)
     return miss_answer(MissReason::SeatCountNotSupported);
-  // W4c-ii: set up the canonical translation for class-based (v3) artifacts.
+  // W4c-ii: set up the canonical translation for class-based (schema-v3) artifacts.
   // RFC 0007: a preflop record (board_size == 0) has no flop to canonicalize.
   if (record.card_abstraction && game.def.board_size >= 3) {
     const auto canon =
@@ -1219,9 +1281,9 @@ class ResidentBlueprintSource final : public resolver::BlueprintSource {
     for (int public_card : state.board())
       if (public_card == cards[0] || public_card == cards[1])
         return std::nullopt;
-    // W4c-ii: for a v3 class policy, canonicalize the query board and relabel
+    // W4c-ii: for a schema-v3 class policy, canonicalize the query board and relabel
     // the hero's hole cards so the information key matches the artifact's
-    // canonical-coordinate rows. For v2 the relabel is the identity and the
+    // canonical-coordinate rows. For schema-v2 the relabel is the identity and the
     // canonical flop equals the query flop, so the key is byte-identical to
     // the old state.board() path.
     std::array<int, 4> relabel{0, 1, 2, 3};

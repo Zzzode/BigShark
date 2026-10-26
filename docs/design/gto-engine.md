@@ -942,8 +942,10 @@ default 6 and 2 produce 4 chips behind with SPR 1 (RFC 0033). Before RFC 0033
 the builder recorded the buy-in in `stacks` *and* the contribution in
 `contributions`, which made the root chip-non-conserving — 1212 chips in a
 1200-chip game — and therefore unreachable from any real hand. The manifest
-records both `starting_stack` and the derived `stack`, and a `served_root`
-object naming the one ledger shape every class answers.
+records both `starting_stack` and the derived `stack`, and (per RFC 0035) a
+`served_roots` array naming every trained root ledger with its class coverage.
+The CLI builds the single limped production root; multi-root builds declare an
+explicit ordered root table through `BuildParams.roots`.
 
 Deeper stacks are supported but grow the tree and artifact roughly linearly with
 the number of betting actions: at 10 BB (a starting stack of 22, giving 20
@@ -1172,15 +1174,18 @@ checks or claiming that native construction/cancellation and complete six-max
 receipt-to-action costs are qualified.
 
 **Bucket-deduplicated binary format (RFC 0026, supersedes the RFC 0012
-Phase 2 layout; RFC 0027 makes it the training output).** The builder
-serializes each trained class straight into its `BSFLIB02` section and
-assembles `library.bin`; `bigshark-flop-library-pack` remains for converting
-older directories of schema-v3 SQLite class files. N-seat training seals rows
-under
+Phase 2 layout; RFC 0027 makes it the training output; RFC 0035 promotes it to
+the multi-root `BSFLIB03` layout).** The builder serializes each trained
+(root, class) pair straight into its `BSFLIB03` section and assembles
+`library.bin`; `bigshark-flop-library-pack` remains for converting older
+single-root directories of schema-v3 SQLite class files. N-seat training
+seals rows under
 `(card_bucket(kNSeatCardKind, holding, board), tree node)`; the SQLite
 publish path copies each sealed row onto every concrete holding of that
-bucket. The packer reverses the copy and stores, per class, only:
+bucket. The packer reverses the copy and stores, per (root, class), only:
 
+- a 44-byte logical class header padded to 48 bytes, leading with `root_id`
+  and `class_id`, then the board and the node/bucket/codebook counters;
 - fixed-stride sorted node columns (`node_hash` u64, menu offset/count,
   bucket slice start/count);
 - one flat sorted `BucketEntry` table (`bucket_id`, probability-run offset);
@@ -1189,6 +1194,23 @@ bucket. The packer reverses the copy and stores, per class, only:
   indices or exact Doubles);
 - the declared range and the card/action abstraction digests plus the
   compiled card-bucket-kind ordinal in the file header.
+
+RFC 0035 replaces the file-level ledger and class offset array with a root
+directory and a dense `index[root_count][1755]` of absolute section offsets
+(0 = absent), indexed by global class id. Each 192-byte root record carries
+the exact `same_root` tuple — pot, per-seat stacks/net contributions/folded
+mask — a line tag (limped/SRP/3bet), live count, and the range profile. The
+header additionally carries the full RFC 0030 action identity (name,
+version, canonical parameters including the trailing `|max-raises=<N>` cap
+token and fraction sizes) and its digest; the reader verifies the digest
+with the strict identity/coarse-family predicates and assigns
+`game.action_id`, so packed-library turn/river continuations reconstruct the
+trained cap (a recognized tokenless line fails closed). Mount-time validation
+refuses bad/old magic (`BSFLIB02` is foreign — no dual reader), truncation of
+the header/directory/sections, duplicate root ledgers (ambiguous), index
+offsets outside the file or off the section alignment, a section whose
+`root_id`/`class_id` disagrees with the index path that addressed it, nonzero
+class-header padding, and the reserved range profile 2.
 
 The resident computes `card_bucket(kind, hero_cards, canonical_board)` at
 lookup time and resolves `(public-node hash, bucket)` with two binary
@@ -1236,15 +1258,21 @@ The earlier `BSFLIB01` layout (one resident row per concrete combo, with
 only probability *values* codebook-deduplicated) and its reader/writer were
 removed in RFC 0026.
 
-**Direct train-and-pack (RFC 0027).** A class is trained, exported, and
-serialized into its section in one step; the only intermediate is the
-per-class warm-start checkpoint. Workers write `.sections/class-NNNN.bsf`
-(`fsync` + atomic rename) and one JSONL fragment record, and the parent
-assembles the class sections into `library.bin` (`.tmp` + `fsync` + rename)
-and writes the manifest. The parent writes `.sections/build.json` before
-spawning workers and validates it on `--resume`: a section does not record
-the codebook layout kind, so a layout or identity change across a resume
-fails closed. The serializer canonicalizes the declared range to ascending
+**Direct train-and-pack (RFC 0027; multi-root per RFC 0035).** A pair is
+trained, exported, and serialized into its section in one step; the only
+intermediate is the per-(root,class) warm-start checkpoint (BSWARM03).
+Workers stride independently over (root, class) and write
+`.sections/root-NNNN-class-NNNN.bsf`
+(`fsync` + atomic rename) and one JSONL fragment record; the parent assembles
+the sections into `library.bin` (`.tmp` + `fsync` + rename), patching every
+present cell of the dense root index, and writes the manifest. The parent
+writes `.sections/build.json` before spawning workers and validates it on
+`--resume`: a section does not record the codebook layout kind, so a layout,
+identity, or ordered root-table change across a resume fails closed. Each
+checkpoint additionally carries the BSWARM03 FNV-1a root-table hash; the
+tree-shape witness guards roots with differing trees, and this witness
+guards the declared root set by name. The serializer canonicalizes the
+declared range to ascending
 `comboIndex` order, matching the order the SQLite reader always produced, so
 a direct build is byte-identical to the retired train → SQLite → pack
 pipeline. The manifest names `library_bin`, its digest and size, the range

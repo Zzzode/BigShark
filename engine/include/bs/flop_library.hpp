@@ -33,38 +33,74 @@
 
 namespace bs::flop_library {
 
-// One trained class artifact in the library. RFC 0027: a class is stored as a
-// section inside the packed library, not as a standalone file, so records name
-// the class by board and carry its exact measurements instead of a filename.
+// RFC 0035: the declared root table the builder trains. A root is the exact
+// ledger tuple same_root matches (pot, per-seat stacks/net contributions/
+// folded mask) plus its diagnostic labels; the type is the same directory
+// entry the packed BSFLIB03 file carries. Phase 1 supports only the
+// live-uniform range profile; the reserved line-conditioned value (2) is
+// refused. Root ids are the table positions and are assigned by order.
+using RootSpec = resident::RootDirectoryEntry;
+
+// RFC 0035: the production single-root shape — every seat live, equal
+// contributions, no folds. Keeps the RFC 0033 derivation (chips behind are
+// `starting_stack - contribution`) in one place: the CLI defaults to this one
+// root, and multi-root builds declare their table explicitly.
+RootSpec make_limped_root_spec(std::size_t player_count, poker::Chips starting_stack,
+                               poker::Chips contribution,
+                               resident::RootLineTag line_tag = resident::RootLineTag::Limped);
+
+// RFC 0035: FNV-1a 64-bit hash of the declared, ORDERED root table. The
+// canonical byte stream begins with the player count (one byte) and then, per
+// root in table order, the line tag (u8), pot (u64 LE), stacks and
+// contributions (player_count × u64 LE), folded mask (player_count × u8),
+// live count (u8), and range profile (u8). Fixed field strides make the
+// encoding unambiguous without separators; the ordering matters, so two
+// different root sets never share a hash.
+std::uint64_t root_table_hash(std::size_t player_count, std::span<const RootSpec> roots);
+
+// One trained (root, class) artifact entry in the library. RFC 0027: a class
+// is stored as a section inside the packed library, so records name the pair
+// by board and carry its exact measurements instead of a filename.
 struct ClassEntry {
+  std::uint32_t root_id = 0;
   std::array<int, 3> canonical_board{};
   std::size_t stored_rows = 0;  // concrete policy rows persisted
   std::uint64_t completed_iterations = 0;
   std::size_t information_sets = 0;  // trainer's bucket-keyed table size
-  std::size_t section_bytes = 0;     // unpadded BSFLIB02 section length
+  std::size_t section_bytes = 0;     // unpadded BSFLIB03 section length
+};
+
+// RFC 0035: one root's coverage and storage as recorded in the manifest's
+// served_roots array. Every measurement is exact (counted, not estimated).
+struct ServedRootEntry {
+  RootSpec root;
+  std::size_t class_count = 0;       // trained classes for this root
+  std::size_t covered_flops = 0;     // of 22,100 concrete flops
+  std::size_t total_flops = 0;       // 22,100
+  std::uintmax_t section_bytes = 0;  // sum of unpadded section lengths
+  std::vector<ClassEntry> classes;
 };
 
 // The honest record of one library build, written as manifest.json beside the
 // artifacts. Every measurement is exact (counted, not estimated); the
 // coverage fraction is covered_flops / total_flops.
 struct LibraryManifest {
-  abstraction::AbstractionId card_id;    // suit-canonical-v1
+  abstraction::AbstractionId card_id;  // suit-canonical-v1
+  abstraction::CardBucketKind card_bucket_kind =
+      solver::kNSeatCardKind;            // RFC 0031: ordinal pinned in build.json and checkpoints
   abstraction::AbstractionId action_id;  // identity or declared-coarse
   std::size_t player_count = 0;
   poker::Chips big_blind = 0;
-  // RFC 0033: the one root shape every class answers. same_root compares
-  // player_count, pot, big_blind, button, board, and per-seat
-  // (stacks, contributions, folded), so this is the whole reachable set.
-  std::uint32_t served_root_button = 0;
-  poker::Chips starting_stack = 0;  // buy-in per seat (chips)
-  poker::Chips stack = 0;           // chips behind at the root: starting_stack - contribution
-  poker::Chips contribution = 0;    // per-seat pot contribution (chips)
   std::uint64_t iterations_per_class = 0;
   std::uint64_t seed = 0;
-  // RFC 0024: cap on full raises per street (0 = no cap). Recorded so the
-  // published artifact carries the action-abstraction configuration that
-  // shaped its tree; the cap is not part of the AbstractionId digest.
+  // RFC 0024: cap on full raises per street (0 = no cap). RFC 0030 pins it in
+  // the action-abstraction digest and records it here for the manifest.
   std::uint8_t max_raises_per_street = 0;
+  // RFC 0035: one entry per trained root, each naming the exact ledger, the
+  // line/range labels, and the class coverage. This replaces the single
+  // served_root block.
+  std::vector<ServedRootEntry> served_roots;
+  // Flat per-(root,class) records, root-major then class-ascending.
   std::vector<ClassEntry> classes;
   // Canonical boards geometrically undealable for this (range, seat_count):
   // the board leaves too few range cards to give every seat a distinct hand
@@ -72,10 +108,10 @@ struct LibraryManifest {
   // joint-deal stream under ANY sampler, so they are excluded rather than
   // failed; recorded explicitly so coverage is never silently underclaimed.
   std::vector<std::array<int, 3>> undealable_boards;
-  // Honest measurements.
-  std::size_t class_count = 0;       // classes in this library
+  // Honest measurements (totals across every root).
+  std::size_t class_count = 0;       // sections in this library
   std::size_t total_classes = 0;     // 1,755
-  std::size_t covered_flops = 0;     // of 22,100 concrete flops
+  std::size_t covered_flops = 0;     // sum across roots (of 22,100 concrete flops each)
   std::size_t total_flops = 0;       // 22,100
   std::uintmax_t storage_bytes = 0;  // size of the packed library file
   // RFC 0027: the packed library file is the artifact.
@@ -90,6 +126,8 @@ struct LibraryManifest {
   std::string range;
   std::size_t range_combo_count = 0;
   std::uint64_t range_digest = 0;
+  // RFC 0035: the declared root table hash (build identity / checkpoints).
+  std::uint64_t root_table_hash = 0;
 };
 
 // Enumerate all 1,755 canonical flop classes, sorted by canonical board id
@@ -120,12 +158,11 @@ std::vector<solver::WeightedHand> declared_full_library_range();
 bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
                        const std::vector<solver::WeightedHand>& range);
 
-// Build a class library: train each of the first `class_count` canonical
-// classes (by board-id order) and serialize it straight into its BSFLIB02
-// section, then assemble `library.bin` + `manifest.json` into `out_dir`
-// (RFC 0027). No per-class SQLite policy artifact is written; the only
-// intermediate is the per-class warm-start checkpoint. Throws on any failure
-// (no partial library is published).
+// Build a class library with the single limped production root: train each
+// of the first `class_count` canonical classes (by board-id order) and
+// serialize it straight into its BSFLIB03 section, then assemble
+// `library.bin` + `manifest.json` into `out_dir` (RFC 0027). Multi-root
+// builds go through BuildParams.roots and build_library(BuildParams).
 //
 // `player_count` sets the number of seats (2..10). All seats use the same
 // range and stack profile. The manifest records the player count so the
@@ -137,14 +174,14 @@ bool class_is_dealable(const std::array<int, 3>& board, std::size_t seat_count,
 // (RFC 0008 DeclaredOnly) removes those forced seeds, making 10 BB+ training
 // practical at the cost of a coarser menu.
 //
-// RFC 0012 Phase 4: when `resume` is true, each class warm-starts from its
-// `class-NNNN-checkpoint.db` if present (verifying the abstraction digests
-// before continuing), and a checkpoint is written every 256 iterations so a
-// crashed build can resume. The per-iteration PRNG streams depend on the
-// absolute iteration number, so a warm-started run is bitwise-identical to a
-// from-scratch run at the same iteration count. RFC 0027: class sections
-// already renamed under `.sections/` are skipped, and the requested build
-// identity is checked against `.sections/build.json` first.
+// RFC 0012 Phase 4: when `resume` is true, each (root, class) warm-starts
+// from its checkpoint if present (verifying the identity witnesses before
+// continuing), and a checkpoint is written every 256 iterations. The
+// per-iteration PRNG streams depend on the absolute iteration number, so a
+// warm-started run is bitwise-identical to a from-scratch run at the same
+// iteration count. RFC 0027: sections already staged under `.sections/` are
+// skipped, and the requested build identity is checked against
+// `.sections/build.json` first.
 LibraryManifest build_library(
     const std::filesystem::path& out_dir, std::size_t class_count,
     std::uint64_t iterations_per_class, std::uint64_t seed, poker::Chips starting_stack,
@@ -161,9 +198,17 @@ struct BuildParams {
   std::size_t class_count = 0;
   std::uint64_t iterations_per_class = 0;
   std::uint64_t seed = 0;
-  // RFC 0033: the buy-in. The root's chips behind are stack - contribution.
+  // RFC 0033: the buy-in for the default single-root shape. The root's chips
+  // behind are stack - contribution. Used only when `roots` is empty, in
+  // which case the builder declares one live-uniform limped root with equal
+  // per-seat ledgers. An explicit multi-root table ignores these.
   poker::Chips starting_stack = 0;
   poker::Chips contribution = 0;
+  // RFC 0035: the declared root table. Empty means "one limped root derived
+  // from starting_stack/contribution/player_count". Roots are trained in
+  // order; root ids are table positions; each root trains the same canonical
+  // class stride. The reserved line-conditioned profile (2) is refused.
+  std::vector<RootSpec> roots;
   std::vector<solver::WeightedHand> range;
   std::size_t player_count = 2;
   abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity();
@@ -181,13 +226,20 @@ std::uint64_t range_digest(const std::vector<solver::WeightedHand>& range);
 // RFC 0033: the resume decision, shared by the serial library path and the
 // parallel builder parent so the two cannot drift. Contract, applied in order:
 //
-//   1. torn checkpoint          -> discard and retrain
+//   1. torn checkpoint          -> discard and retrain (including any legacy
+//                                  BSWARM01 file under the BSWARM02 codec)
 //   2. incompatible revision    -> refuse
 //   3. incompatible digest/rows -> deferred to `train_one_class`, which runs
 //                                  them before the stale removal
 //   4. stale but complete       -> classify as disposable; removed later by
 //                                  `train_one_class`, never here
 //   5. valid state, no identity -> refuse
+//
+// RFC 0030 adds a worker-side sixth refusal: a BSWARM02 tree-shape witness
+// mismatch (or a foreign card bucket kind) hard-refuses in `train_one_class`
+// before any row is adopted, with the checkpoint preserved. It is checked
+// before the stale-but-complete branch, since a witness mismatch is the
+// stronger drift signal.
 //
 // Dispositions 2 and 4 can apply to the same file with opposite outcomes, so
 // the order is load-bearing. The section scan is what protects `library.bin`:
@@ -196,8 +248,7 @@ std::uint64_t range_digest(const std::vector<solver::WeightedHand>& range);
 // `iterations_per_class` is required to distinguish a stale-but-complete
 // checkpoint from one genuinely in flight; `inspect_sealed_checkpoint` returns
 // the completed count header-only.
-void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_count,
-                      std::uint64_t iterations_per_class, bool resume);
+void preflight_resume(const std::filesystem::path& out_dir, const BuildParams& params, bool resume);
 
 // RFC 0027: establish `.sections/build.json` (the build identity) before any
 // worker starts. On a fresh build the parent writes it; on `--resume` it
@@ -207,22 +258,31 @@ void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_co
 void prepare_build_identity(const std::filesystem::path& out_dir, const BuildParams& params,
                             bool resume);
 
-// RFC 0027: parallel worker entry point. Trains the classes at indices
-// `worker_id`, `worker_id + parallel`, `worker_id + 2*parallel`, ... below
-// class_count, writing each completed class to
-// `.sections/class-NNNN.bsf` and one JSON line to
-// `.sections/manifest-part-<worker_id>.jsonl`. Sections the parent already has
-// under `.sections/` are skipped. Called by a forked child process; the parent
-// detects failure via the exit status. Concurrent workers write disjoint
-// files, so no locking is required.
+// RFC 0027: parallel worker entry point. Trains the (root, class) stride at
+// indices `worker_id`, `worker_id + parallel`, ... below class_count for
+// EVERY declared root, writing each completed class to
+// `.sections/root-NNNN-class-NNNN.bsf` and one JSON line to
+// `.sections/manifest-part-<worker_id>.jsonl`. Pairs the parent already has
+// under `.sections/` are skipped. Called by a forked child process; the
+// parent detects failure via the exit status. Concurrent workers write
+// disjoint files, so no locking is required.
 void build_library_worker(const std::filesystem::path& out_dir, std::size_t worker_id,
                           std::size_t parallel, const BuildParams& params);
 
-// RFC 0027: assemble the library after every worker exits. Derives the expected
-// dealable class set from `params`, requires a section for each, reconciles the
-// worker fragments, writes `library.bin` + `.sha256` + `manifest.json`, and
-// removes `.sections/`. Throws naming the missing or inconsistent class.
+// RFC 0027/RFC 0035: assemble the library after every worker exits. Derives
+// the expected dealable class set from `params` (the same set for every
+// root), requires a section for every (root, class) pair, reconciles the
+// worker fragments, writes `library.bin` + `.sha256` + `manifest.json` with a
+// served_roots[] entry per root, and removes `.sections/`. Throws naming the
+// missing or inconsistent pair.
 LibraryManifest assemble_library(const std::filesystem::path& out_dir, const BuildParams& params);
+
+// RFC 0035: the programmatic multi-root entry point. Builds the library
+// described by `params`, declaring params.roots explicitly (an empty table
+// becomes the single limped production root). Serial and parallel parent
+// callers both go through this; the positional build_library() wrapper is a
+// thin adapter over a one-root BuildParams.
+LibraryManifest build_library(const std::filesystem::path& out_dir, const BuildParams& params);
 
 // Write the manifest as JSON to `out_dir / "manifest.json"`.
 void write_manifest(const LibraryManifest& manifest, const std::filesystem::path& out_dir);

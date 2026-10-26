@@ -1,4 +1,4 @@
-// RFC 0026 AC4: cold-open and bucket-lookup microbenchmark for a BSFLIB02
+// RFC 0026 AC4: cold-open and bucket-lookup microbenchmark for a BSFLIB03
 // packed flop library. Reports mmap open (header parse, no full-file hash),
 // class-section parse, and a point-lookup throughput for synthetic queries.
 // Manual target, NOT a CTest (operates on a large on-disk library).
@@ -54,7 +54,7 @@ int main(int argc, char** argv) {
     pub.push_back(static_cast<std::uint8_t>(board[2]));
     for (std::uint16_t b = 1; b <= 9; ++b) {
       CompactRowView v;
-      if (lib.find_bucket(class_id, pub, b, v)) {
+      if (lib.find_bucket(0, class_id, pub, b, v)) {
         std::printf("root hit seat=%u bucket=%u count=%u\n", seat, b, v.count);
         ++hits;
         if (hit_bucket == 0)
@@ -76,7 +76,7 @@ int main(int argc, char** argv) {
     probe.push_back(static_cast<std::uint8_t>(board[1]));
     probe.push_back(static_cast<std::uint8_t>(board[2]));
     CompactRowView v;
-    if (lib.find_bucket(class_id, probe, hit_bucket, v)) {
+    if (lib.find_bucket(0, class_id, probe, hit_bucket, v)) {
       hit_seat = seat;
       break;
     }
@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
   const auto q0 = clk::now();
   for (std::size_t i = 0; i < lookups; ++i) {
     CompactRowView v;
-    if (lib.find_bucket(class_id, pub, hit_bucket, v))
+    if (lib.find_bucket(0, class_id, pub, hit_bucket, v))
       sink += v.count;
   }
   const auto q1 = clk::now();

@@ -397,7 +397,7 @@ std::vector<OracleDeal> oracle_deals(const HeadsUpGame& game) {
 
 // --- RFC 0009 W2c schema-v2 resident projection fixtures -------------------
 
-// A two-seat flop-rooted v2 game: the only v2 shape the resident data layer
+// A two-seat flop-rooted schema-v2 game: the only schema-v2 shape the resident data layer
 // projects onto its heads-up view (RFC 0009 D4). Postflop the non-button
 // seat acts first (HeadsUpState actor = 1 - button), matching the GameState
 // opener, so the root decision rows belong to seat 1.
@@ -424,7 +424,7 @@ std::vector<std::vector<WeightedHand>> two_seat_flop_ranges_v2() {
   };
 }
 
-// A three-seat flop-rooted v2 game: the resident projection refuses it
+// A three-seat flop-rooted schema-v2 game: the resident projection refuses it
 // (W2c-ii owns the state-layer generalization), so it must never advertise.
 GameDef three_seat_flop_def_v2() {
   GameDef def{};
@@ -480,7 +480,7 @@ std::vector<std::vector<WeightedHand>> three_seat_bridging_ranges_v2() {
   };
 }
 
-// A four-seat flop-rooted v2 game: it loads and advertises, but W2c-ii-b
+// A four-seat flop-rooted schema-v2 game: it loads and advertises, but W2c-ii-b
 // conditions belief exactly only for two and three seats, so a 4-seat belief
 // or hero-decision query misses declared (SeatCountNotSupported).
 GameDef four_seat_flop_def_v2() {
@@ -507,10 +507,10 @@ std::vector<std::vector<WeightedHand>> four_seat_flop_ranges_v2() {
 
 // --- RFC 0009 W4c-ii schema-v3 class-policy resident fixtures --------------
 
-// A two-seat flop-rooted v3 game on a suit-canonical board. {2s, 7h, Kd} has
+// A two-seat flop-rooted schema-v3 game on a suit-canonical board. {2s, 7h, Kd} has
 // suits {0,1,2} in rank order, so the suit-canonicalization relabel is the
 // identity and the board is its own class representative -- the precondition
-// the v3 writer's board-canonical integrity check enforces.
+// the schema-v3 writer's board-canonical integrity check enforces.
 GameDef two_seat_flop_canonical_def_v3() {
   GameDef def{};
   def.player_count = 2;
@@ -526,7 +526,7 @@ GameDef two_seat_flop_canonical_def_v3() {
 
 // Same ranks {2,7,K} with suits permuted out of canonical order: {2h, 7s, Kd}
 // has suits {1,0,2}, so the canonical relabel swaps spades and hearts and the
-// board is NOT its own class representative. A v3 artifact trained on the
+// board is NOT its own class representative. A schema-v3 artifact trained on the
 // canonical board above must still serve a query rooted at this board.
 GameDef two_seat_flop_noncanonical_def_v3() {
   GameDef def = two_seat_flop_canonical_def_v3();
@@ -538,7 +538,7 @@ GameDef two_seat_flop_noncanonical_def_v3() {
 // plus a third seat-0 combo holding 9s so the turn-card relabel is
 // discriminating: dealing 9h (which relabels to 9s) must block it, while a
 // no-op relabel would leave 9h != 9s and miss the block. The ranges are
-// expressed in CANONICAL coordinates (the v3 artifact stores the class
+// expressed in CANONICAL coordinates (the schema-v3 artifact stores the class
 // policy, not a concrete-board policy).
 std::vector<std::vector<WeightedHand>> two_seat_flop_ranges_v3() {
   return {
@@ -547,7 +547,7 @@ std::vector<std::vector<WeightedHand>> two_seat_flop_ranges_v3() {
   };
 }
 
-// A two-seat turn-rooted v2 game: the resident projection is flop-rooted
+// A two-seat turn-rooted schema-v2 game: the resident projection is flop-rooted
 // only, so a turn/river-rooted source is refused as LoadFailed until the
 // state layer generalizes (W2c-ii). The flop-rooted ranges stay off this
 // board (the fourth card is 9s, absent from every combo).
@@ -570,7 +570,7 @@ struct PublishedNSeatFixture {
   std::string sha256_hex;
 };
 
-// Train, checkpoint, and publish a seat-generic v2 policy. W4c-ii: an optional
+// Train, checkpoint, and publish a seat-generic schema-v2 policy. W4c-ii: an optional
 // card_id produces a schema-v3 class policy instead.
 PublishedNSeatFixture publish_nseat_fixture(
     const GameDef& def, const std::vector<std::vector<WeightedHand>>& ranges,
@@ -580,16 +580,16 @@ PublishedNSeatFixture publish_nseat_fixture(
   const NSeatTrainingResult trained =
       train_nseat(tree, ranges, iterations, 20260930, NSeatTrainerLimits{});
   if (trained.termination != NSeatTerminationPhase::Complete) {
-    std::printf("v2 fixture training did not complete for %s\n", name.c_str());
+    std::printf("schema-v2 fixture training did not complete for %s\n", name.c_str());
     std::abort();
   }
   const SeatTrainingResult exported = export_seat_policy(trained, tree, ranges, card_id);
-  const fs::path checkpoint = dir / (name + "-v2-checkpoint.db");
-  const fs::path policy_path = dir / (name + "-v2-policy.db");
+  const fs::path checkpoint = dir / (name + "-schema-v2-checkpoint.db");
+  const fs::path policy_path = dir / (name + "-schema-v2-policy.db");
   SeatCheckpointProvenance provenance;
-  provenance.engine_revision = "resident-v2-test-1";
+  provenance.engine_revision = "resident-schema-v2-test-1";
   create_checkpoint(checkpoint, exported, provenance);
-  const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-v2-1");
+  const PublishedPolicy published = publish_policy(checkpoint, policy_path, "resident-schema-v2-1");
   return {policy_path, def, published.sha256_hex};
 }
 
@@ -816,7 +816,7 @@ static bool test_golden_reach(const fs::path& dir) {
   overrides.emplace(key_of(root, qh_jh), thirds);
 
   const PublishedFixture fixture = publish_game(game, 1, overrides, dir, "golden");
-  // v1 never writes certification bounds or measurements: they exist,
+  // schema-v1 never writes certification bounds or measurements: they exist,
   // validate, and read as empty. Resident continuations are blueprint-only.
   {
     sqlite3* raw = nullptr;
@@ -1803,7 +1803,7 @@ static bool test_probe_api(const fs::path& dir) {
 // ---------------------------------------------------------------------------
 // RFC 0009 W2c-ii-a: schema-v2 flop-rooted resident projection.
 //
-// The resident data layer projects a flop-rooted v2 SeatPolicy onto the
+// The resident data layer projects a flop-rooted schema-v2 SeatPolicy onto the
 // unified GameState view and serves it through the resident query path. A
 // two-seat source answers belief and hero queries; a three-seat source is
 // advertised at load but misses every resident query with
@@ -1812,7 +1812,7 @@ static bool test_probe_api(const fs::path& dir) {
 // ---------------------------------------------------------------------------
 
 static bool test_resident_projection(const fs::path& dir) {
-  // Two-seat flop-rooted v2: advertised and served through the projection.
+  // Two-seat flop-rooted schema-v2: advertised and served through the projection.
   const PublishedNSeatFixture fixture =
       publish_nseat_fixture(two_seat_flop_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2proj");
 
@@ -1853,7 +1853,7 @@ static bool test_resident_projection(const fs::path& dir) {
     row_sum += hero.hero_row.probabilities[i];
   CHECK(near(row_sum, 1.0, 1e-9));
 
-  // Three-seat v2: the load generalizes to the unified view and advertises,
+  // Three-seat schema-v2: the load generalizes to the unified view and advertises,
   // and W2c-ii-b serves its belief and hero-decision queries exactly. The
   // fixture's combos are all mutually card-distinct, so the root marginals
   // are just the declared range weights normalized per seat.
@@ -1905,7 +1905,7 @@ static bool test_resident_projection(const fs::path& dir) {
     three_row_sum += three_hero.hero_row.probabilities[i];
   CHECK(near(three_row_sum, 1.0, 1e-9));
 
-  // Two-seat turn-rooted v2: the projection is flop-rooted only, so a
+  // Two-seat turn-rooted schema-v2: the projection is flop-rooted only, so a
   // turn/river-rooted source is refused as LoadFailed at load.
   const PublishedNSeatFixture turn =
       publish_nseat_fixture(two_seat_turn_def_v2(), two_seat_flop_ranges_v2(), 200, dir, "v2turn");
@@ -1930,7 +1930,7 @@ static bool test_resident_projection(const fs::path& dir) {
 // ---------------------------------------------------------------------------
 
 static bool test_v3_resident_projection(const fs::path& dir) {
-  // Train and publish a v3 class policy on the canonical board {2s,7h,Kd}.
+  // Train and publish a schema-v3 class policy on the canonical board {2s,7h,Kd}.
   const PublishedNSeatFixture fixture =
       publish_nseat_fixture(two_seat_flop_canonical_def_v3(), two_seat_flop_ranges_v3(), 200, dir,
                             "v3proj", bs::abstraction::suit_canonicalization_id());
@@ -1990,10 +1990,10 @@ static bool test_v3_resident_projection(const fs::path& dir) {
     row_sum += hero.hero_row.probabilities[i];
   CHECK(near(row_sum, 1.0, 1e-9));
 
-  // The resolver blueprint source also serves the v3 artifact. A
+  // The resolver blueprint source also serves the schema-v3 artifact. A
   // resolver_source over the non-canonical query board returns a row for the
   // actor's CONCRETE cards {Qh,Qd} (which relabel to canonical {Qs,Qd}),
-  // exercising the v3 branch in ResidentBlueprintSource::row: canonicalize,
+  // exercising the schema-v3 branch in ResidentBlueprintSource::row: canonicalize,
   // hero-card relabel, canonical prefix-board build, and key lookup.
   {
     auto source = residents.resolver_source(noncanon_state, root_history, std::nullopt);
@@ -2839,7 +2839,7 @@ static bool test_codebook_layouts(const fs::path&) {
 }
 
 // ---------------------------------------------------------------------------
-// Empty bounds: v1 artifacts are advertised for blueprint lookup only and the
+// Empty bounds: schema-v1 artifacts are advertised for blueprint lookup only and the
 // public header exposes no bound, guarantee, or certification symbol.
 
 // ---------------------------------------------------------------------------
@@ -2948,6 +2948,209 @@ static bool test_wide_board_root_identity() {
 
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+
+// RFC 0035: two-root BSFLIB03 ResidentPolicySet round-trip. Packs one class per
+// root with distinct ledgers (a limped root and a single-raised-pot root),
+// mounts it through ResidentPolicySet::build, and verifies an exact ledger hit
+// per root, a non-matching ledger miss, the ClassNotTrainedForRoot miss when
+// the ledger resolves but the canonical class is absent, and the load failure
+// a duplicate-ledger directory produces.
+static bool test_multi_root_mmap_resident(const fs::path& dir) {
+  using bs::resident::MmapLibrary;
+  using bs::resident::PackClassInput;
+  using bs::resident::ProbabilityLayout;
+  using bs::resident::ResidentOptions;
+  using bs::resident::ResidentPolicySet;
+  using bs::resident::RootDirectoryEntry;
+  using bs::resident::RootLineTag;
+  using bs::resident::RootLoadResult;
+  using bs::resident::RootRangeProfile;
+
+  const std::array<int, 3> board{0, 1, 2};
+  const Action checka{ActionType::Check, 0};
+  const Action beta{ActionType::Bet, 100};
+
+  const std::vector<WeightedHand> range = {{{3, 4}, 1.0}, {{5, 6}, 1.0}};
+  auto rows_for = [&](std::size_t actor) {
+    std::map<InformationKey, SeatPolicyRow> rows;
+    for (auto h : range) {
+      InformationKey key;
+      key.push_back(actor);
+      key.push_back(static_cast<std::uint64_t>(h.cards[0]));
+      key.push_back(static_cast<std::uint64_t>(h.cards[1]));
+      key.push_back(3);
+      key.push_back(board[0]);
+      key.push_back(board[1]);
+      key.push_back(board[2]);
+      rows[key] =
+          SeatPolicyRow{.actions = {checka, beta}, .probabilities = {0.4, 0.6}, .visits = 10};
+    }
+    return rows;
+  };
+  auto root_rows = rows_for(0);
+
+  auto make_root = [&](std::uint32_t id, RootLineTag tag, std::uint64_t contrib) {
+    RootDirectoryEntry root;
+    root.root_id = id;
+    root.line_tag = tag;
+    root.range_profile = RootRangeProfile::LiveUniform;
+    root.stacks = {200 - contrib, 200 - contrib};
+    root.contributions = {contrib, contrib};
+    root.pot = 2 * contrib;
+    root.live_count = 2;
+    return root;
+  };
+  const RootDirectoryEntry limped = make_root(0, RootLineTag::Limped, 2);
+  const RootDirectoryEntry srp = make_root(1, RootLineTag::SingleRaisedPot, 6);
+
+  UnifiedGame game;
+  game.def.player_count = 2;
+  game.def.button = 0;
+  game.def.big_blind = 2;
+  game.def.pot = 0;
+  game.def.terminal = TerminalDepth::Flop;
+  game.sizes = bs::abstraction::default_size_schedule();
+  game.action_id = bs::abstraction::ActionAbstraction::identity(1).id();
+
+  std::vector<PackClassInput> inputs(2);
+  for (std::uint32_t r = 0; r < 2; ++r) {
+    inputs[r].root_id = r;
+    inputs[r].class_id = 0;
+    inputs[r].canonical_board = board;
+    inputs[r].rows = &root_rows;
+    inputs[r].range = &range;
+    inputs[r].card_abstraction_digest = bs::abstraction::suit_canonicalization_id().digest;
+    inputs[r].action_abstraction_digest = game.action_id.digest;
+  }
+
+  const fs::path bin = dir / "two_root.bin";
+  bs::resident::pack_binary_library(
+      bin, game,
+      std::span<const RootDirectoryEntry>(std::array<RootDirectoryEntry, 2>{limped, srp}), inputs);
+
+  ResidentOptions options;
+  options.binary_library_path = bin;
+  options.verify_binary_library = false;
+  std::vector<RootLoadResult> results;
+  ResidentPolicySet set = ResidentPolicySet::build({}, options, &results);
+  CHECK(set.advertised_roots() == 2);
+  CHECK(set.mmap_root_count() == 2);
+  for (const auto& r : results)
+    CHECK(r.status == RootStatus::Advertised);
+
+  auto query_def = [&](const RootDirectoryEntry& root, std::array<int, 3> query_board) {
+    GameDef def{};
+    def.player_count = 2;
+    def.button = 0;
+    def.big_blind = 2;
+    def.stacks[0] = static_cast<Chips>(root.stacks[0]);
+    def.stacks[1] = static_cast<Chips>(root.stacks[1]);
+    def.contributions[0] = static_cast<Chips>(root.contributions[0]);
+    def.contributions[1] = static_cast<Chips>(root.contributions[1]);
+    def.pot = static_cast<Chips>(root.pot);
+    def.board = {query_board[0], query_board[1], query_board[2], 0, 0};
+    def.board_size = 3;
+    def.terminal = TerminalDepth::Flop;
+    return def;
+  };
+
+  ResidentScratch scratch;
+  // Exact ledger hit for each trained root.
+  {
+    const GameState state(query_def(limped, board));
+    const auto answer = set.public_belief(state, {}, std::nullopt, scratch);
+    CHECK(answer.hit);
+  }
+  {
+    const GameState state(query_def(srp, board));
+    const auto answer = set.public_belief(state, {}, std::nullopt, scratch);
+    CHECK(answer.hit);
+  }
+  // A non-matching ledger (contributions/pot of 3/6, stacks 197) is a valid
+  // game but not one of the two trained roots: RootNotSupported, no nearest
+  // root.
+  {
+    RootDirectoryEntry other = limped;
+    other.stacks = {197, 197};
+    other.contributions = {3, 3};
+    other.pot = 6;
+    const GameState state(query_def(other, board));
+    const auto answer = set.public_belief(state, {}, std::nullopt, scratch);
+    CHECK(!answer.hit);
+    CHECK(answer.reason == MissReason::RootNotSupported);
+  }
+  // A ledger matching the SRP root with a WRONG per-seat stack likewise never
+  // resolves (exact ledger identity, no nearest root).
+  {
+    RootDirectoryEntry wrong_stack = srp;
+    wrong_stack.stacks[0] = 195;
+    const GameState state(query_def(wrong_stack, board));
+    const auto answer = set.public_belief(state, {}, std::nullopt, scratch);
+    CHECK(!answer.hit);
+    CHECK(answer.reason == MissReason::RootNotSupported);
+  }
+  // The ledger matches the limped root, but the canonical class is absent from
+  // its index row (only class 0 is trained): ClassNotTrainedForRoot.
+  {
+    // canonical({4,5,6}) is a different canonical class than the trained
+    // {0,1,2} board (canonicalization never changes rank/suit category).
+    const auto other_canon = bs::abstraction::canonicalize({4, 5, 6}).board;
+    CHECK(other_canon != board);
+    const GameState state(query_def(limped, other_canon));
+    const auto answer = set.public_belief(state, {}, std::nullopt, scratch);
+    CHECK(!answer.hit);
+    CHECK(answer.reason == MissReason::ClassNotTrainedForRoot);
+  }
+
+  // Duplicate-root directory: mounting fails, so build reports a load failure
+  // (never a miss) and advertises nothing. Patch the second root record of the
+  // real file to repeat the first ledger.
+  {
+    std::ifstream in(bin, std::ios::binary);
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+    const auto u32at = [&](std::size_t at) {
+      return static_cast<std::uint32_t>(bytes[at]) |
+             (static_cast<std::uint32_t>(bytes[at + 1]) << 8) |
+             (static_cast<std::uint32_t>(bytes[at + 2]) << 16) |
+             (static_cast<std::uint32_t>(bytes[at + 3]) << 24);
+    };
+    const std::uint32_t name_len = u32at(48);
+    const std::uint32_t params_len = u32at(56);
+    const std::size_t params_pos = (64u + name_len + 7) & ~std::size_t{7};
+    const std::size_t sizes_pos = (params_pos + params_len + 7) & ~std::size_t{7};
+    std::size_t schedule = 0;
+    for (std::size_t street = 0; street < 4; ++street) {
+      const std::uint8_t bets = bytes[sizes_pos + schedule];
+      const std::uint8_t raises = bytes[sizes_pos + schedule + 1];
+      schedule += 2 + static_cast<std::size_t>(bets) * 16 + static_cast<std::size_t>(raises) * 16;
+    }
+    const std::size_t directory_pos = sizes_pos + schedule;
+    const std::size_t root1 = directory_pos + 192;
+    for (std::size_t off = 8; off < 186; ++off)
+      bytes[root1 + off] = bytes[directory_pos + off];
+    const fs::path dup = dir / "dup_roots.bin";
+    {
+      std::ofstream out(dup, std::ios::binary | std::ios::trunc);
+      out.write(reinterpret_cast<const char*>(bytes.data()),
+                static_cast<std::streamsize>(bytes.size()));
+    }
+    std::error_code ec;
+    fs::copy_file(bin.string() + ".sha256", dup.string() + ".sha256",
+                  fs::copy_options::overwrite_existing, ec);
+    ResidentOptions dup_options;
+    dup_options.binary_library_path = dup;
+    dup_options.verify_binary_library = false;
+    std::vector<RootLoadResult> dup_results;
+    ResidentPolicySet dup_set = ResidentPolicySet::build({}, dup_options, &dup_results);
+    CHECK(dup_set.advertised_roots() == 0);
+    CHECK(!dup_results.empty());
+    CHECK(dup_results.front().status == RootStatus::LoadFailed);
+  }
+  return true;
+}
+
 static bool test_blueprint_only() {
 #ifdef BS_RESIDENT_HEADER_PATH
   std::ifstream header(BS_RESIDENT_HEADER_PATH);
@@ -2999,7 +3202,7 @@ int main() {
       {"shared combo ranges", test_shared_combo_ranges},
       {"probe api", test_probe_api},
       {"resident projection", test_resident_projection},
-      {"v3 resident projection", test_v3_resident_projection},
+      {"schema-v3 resident projection", test_v3_resident_projection},
       {"preflop resident projection", test_preflop_resident},
       {"three seat belief collision", test_three_seat_belief_collision},
       {"three seat belief bridging", test_three_seat_belief_bridging},
@@ -3009,6 +3212,7 @@ int main() {
       {"index and continuity", test_index_and_continuity},
       {"codebook layouts", test_codebook_layouts},
       {"wide board root identity", [](const fs::path&) { return test_wide_board_root_identity(); }},
+      {"multi-root mmap resident", test_multi_root_mmap_resident},
       {"blueprint only", [](const fs::path&) { return test_blueprint_only(); }},
   };
 

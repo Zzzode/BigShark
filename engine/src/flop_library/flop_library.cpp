@@ -46,7 +46,6 @@ namespace {
 constexpr std::size_t kTotalClasses = 1755;
 constexpr std::size_t kTotalFlops = 22100;
 constexpr poker::Chips kDefaultBigBlind = 2;
-const char* kLibraryEngineRevision = "rfc0009-w4ciii-flop-library-v1";
 
 bool overlaps_board(const std::array<int, 2>& combo, const std::array<int, 3>& board) {
   for (int c : combo)
@@ -70,24 +69,24 @@ std::vector<solver::WeightedHand> filter_range(const std::vector<solver::Weighte
   return out;
 }
 
-// RFC 0033: `starting_stack` is the buy-in, so the root's per-seat chips behind
-// are `starting_stack - contribution`. Recording `starting_stack` in `stacks`
-// while also recording `contribution` in `contributions` counts that
-// contribution twice, which makes the root chip-non-conserving and therefore
-// unreachable from any real hand.
-poker::GameDef make_def(const std::array<int, 3>& board, poker::Chips starting_stack,
-                        poker::Chips contribution, std::size_t player_count) {
-  if (starting_stack <= contribution)
-    throw std::invalid_argument("make_def: starting stack must exceed the contribution");
+// RFC 0035: the sole root constructor. A root declares its exact ledger
+// (pot, per-seat chips behind, net contributions, folded mask); this copies
+// it onto the class game def and pins the flop board and flop-terminal depth.
+// The ledger itself is constructed by the declarer (make_limped_root_spec for
+// the production single-root shape, or an explicit multi-root table), which
+// is where RFC 0033's buy-in derivation lives.
+poker::GameDef make_def(const RootSpec& root, const std::array<int, 3>& board,
+                        std::size_t player_count) {
   poker::GameDef def{};
   def.player_count = static_cast<std::uint8_t>(player_count);
   def.button = 0;
   def.big_blind = kDefaultBigBlind;
   for (std::size_t s = 0; s < player_count; ++s) {
-    def.stacks[s] = starting_stack - contribution;
-    def.contributions[s] = contribution;
+    def.stacks[s] = static_cast<poker::Chips>(root.stacks[s]);
+    def.contributions[s] = static_cast<poker::Chips>(root.contributions[s]);
+    def.folded[s] = root.folded[s] != 0;
   }
-  def.pot = static_cast<poker::Chips>(player_count * contribution);
+  def.pot = static_cast<poker::Chips>(root.pot);
   def.board = {board[0], board[1], board[2], 0, 0};
   def.board_size = 3;
   // Flop-terminal: the tree stops after flop action. The frontier evaluator
@@ -98,9 +97,69 @@ poker::GameDef make_def(const std::array<int, 3>& board, poker::Chips starting_s
   return def;
 }
 
-std::string class_stem(std::size_t index) {
-  char buf[16];
-  std::snprintf(buf, sizeof(buf), "class-%04zu", index);
+// The declared root table for a build: params.roots verbatim when explicit,
+// otherwise the single limped root derived from the positional arguments.
+// Assigns the table-position root ids and validates the table the same way
+// the assembler/reader will, so a producer bug fails before any training.
+std::vector<RootSpec> effective_roots(const BuildParams& params) {
+  std::vector<RootSpec> roots;
+  if (params.roots.empty()) {
+    roots.push_back(
+        make_limped_root_spec(params.player_count, params.starting_stack, params.contribution));
+  } else {
+    roots = params.roots;
+    for (std::size_t r = 0; r < roots.size(); ++r)
+      roots[r].root_id = static_cast<std::uint32_t>(r);
+  }
+  if (roots.empty())
+    throw std::invalid_argument("build: at least one root is required");
+  for (const RootSpec& root : roots) {
+    if (root.range_profile != resident::RootRangeProfile::LiveUniform)
+      throw std::invalid_argument(
+          "build: reserved range_profile 2 (line-conditioned) is not representable in BSFLIB03 "
+          "(one range vector per section)");
+    if (static_cast<std::uint8_t>(root.line_tag) < 1 ||
+        static_cast<std::uint8_t>(root.line_tag) > 3)
+      throw std::invalid_argument("build: root has an invalid line_tag");
+    std::uint64_t contributed = 0;
+    std::uint8_t live = 0;
+    for (std::size_t s = 0; s < params.player_count; ++s) {
+      contributed += root.contributions[s];
+      if (root.folded[s]) {
+        if (root.stacks[s] == 0)
+          throw std::invalid_argument(
+              "build: a folded seat must keep chips behind (a zero stack is all-in)");
+      } else {
+        ++live;
+      }
+    }
+    if (live < 2)
+      throw std::invalid_argument("build: a root needs at least two live seats");
+    if (root.live_count != 0 && root.live_count != live)
+      throw std::invalid_argument("build: root live_count disagrees with its folded mask");
+    if (root.pot != contributed)
+      throw std::invalid_argument("build: root pot must equal the sum of contributions");
+    for (std::size_t s = params.player_count; s < 10; ++s)
+      if (root.stacks[s] != 0 || root.contributions[s] != 0 || root.folded[s] != 0)
+        throw std::invalid_argument("build: root carries ledger bytes at or beyond player_count");
+  }
+  for (std::size_t i = 0; i < roots.size(); ++i)
+    for (std::size_t j = 0; j < i; ++j) {
+      bool same = roots[i].pot == roots[j].pot;
+      for (std::size_t s = 0; same && s < 10; ++s)
+        same = roots[i].stacks[s] == roots[j].stacks[s] &&
+               roots[i].contributions[s] == roots[j].contributions[s] &&
+               roots[i].folded[s] == roots[j].folded[s];
+      if (same)
+        throw std::invalid_argument(
+            "build: two declared roots share one ledger; an ambiguous library is not built");
+    }
+  return roots;
+}
+
+std::string pair_stem(std::uint32_t root_id, std::size_t class_index) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "root-%04u-class-%04zu", root_id, class_index);
   return buf;
 }
 
@@ -189,9 +248,10 @@ void write_file_atomically(const std::filesystem::path& path,
   std::filesystem::rename(temp, path);
 }
 
-// One completed class as recorded by a worker: the index plus the counters the
-// parent cannot cheaply re-derive from a section header.
+// One completed pair as recorded by a worker: the root and class index plus
+// the counters the parent cannot cheaply re-derive from a section header.
 struct FragmentClass {
+  std::uint32_t root_id = 0;
   std::size_t index = 0;
   ClassEntry entry;
 };
@@ -201,16 +261,21 @@ struct FragmentClass {
 void append_fragment_line(const std::filesystem::path& sections_dir, const std::string& tag,
                           const FragmentClass& fc);
 
-// The shared game identity recorded in the packed library header. Every flop
-// class of one library differs only in its board, which lives in the section.
-solver::UnifiedGame make_unified_game(const BuildParams& params,
-                                      const std::vector<std::array<int, 3>>& classes) {
-  if (classes.empty())
-    throw std::invalid_argument("make_unified_game: no classes");
+// The shared game identity recorded in the packed library header. RFC 0035:
+// the header carries only the file-level constants (player count, big blind,
+// button, flop-terminal depth, the fraction schedule, and the full RFC 0030
+// action identity); the per-root pot/stacks/contributions/folded live in the
+// directory. The first class board is irrelevant to the header, so no board
+// is required to construct it.
+solver::UnifiedGame make_unified_game(const BuildParams& params) {
   solver::UnifiedGame game;
-  game.def = make_def(classes[0], params.starting_stack, params.contribution, params.player_count);
+  game.def.player_count = static_cast<std::uint8_t>(params.player_count);
+  game.def.button = 0;
+  game.def.big_blind = kDefaultBigBlind;
+  game.def.pot = 0;
   game.def.board = {0, 0, 0, 0, 0};
-  game.def.board_size = 3;  // the file-level identity is flop-rooted
+  game.def.board_size = 0;
+  game.def.terminal = poker::TerminalDepth::Flop;
   game.sizes = params.action.schedule();
   game.action_id = params.action.id();
   return game;
@@ -298,22 +363,28 @@ bool class_is_dealable_impl(const std::array<int, 3>& board, std::size_t seat_co
   return find_disjoint_edges(edges, 0, seat_count, used);
 }
 
-// Train one class and serialize its BSFLIB02 section. Shared by the serial
-// builder and the parallel workers. When `params.resume` is set, warm-starts
-// from an existing `class-NNNN-checkpoint.bswarm` (after verifying the abstraction
-// digests) and writes a fresh checkpoint every kCheckpointInterval iterations.
-// The per-iteration PRNG streams depend on the absolute iteration number, so a
-// warm-started run is bitwise-identical to a from-scratch run at the same
-// iteration count. RFC 0027: the exported rows go straight to the shared
-// serializer; no per-class SQLite policy artifact is written.
-ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t class_index,
-                           const std::array<int, 3>& board, const BuildParams& params,
-                           const abstraction::AbstractionId& card_id, const std::string& tag) {
-  const poker::GameDef def =
-      make_def(board, params.starting_stack, params.contribution, params.player_count);
+// Train one (root, class) pair and serialize its BSFLIB03 section. Shared by
+// the serial builder and the parallel workers. When `params.resume` is set,
+// warm-starts from the pair's `root-NNNN-class-NNNN-checkpoint.bswarm` after
+// verifying the abstraction digests, the RFC 0030 tree-shape witness, and the
+// RFC 0035 root-table hash, and writes a fresh checkpoint every
+// kCheckpointInterval iterations. The per-iteration PRNG streams depend on
+// the absolute iteration number, so a warm-started run is bitwise-identical
+// to a from-scratch run at the same iteration count. RFC 0027: the exported
+// rows go straight to the shared serializer; no per-class SQLite policy
+// artifact is written.
+ClassEntry train_one_class(const std::filesystem::path& out_dir, const RootSpec& root,
+                           std::size_t class_index, const std::array<int, 3>& board,
+                           const BuildParams& params, const abstraction::AbstractionId& card_id,
+                           std::uint64_t root_hash, const std::string& tag) {
+  const std::uint32_t root_id = root.root_id;
+  const poker::GameDef def = make_def(root, board, params.player_count);
   const std::vector<solver::WeightedHand> seat_range = filter_range(params.range, board);
   if (seat_range.empty())
     throw std::runtime_error("class " + std::to_string(class_index) + " has no off-board combos");
+  // Live-uniform (the only phase-1 profile): every seat, folded seats
+  // included, gets the board-filtered range. The joint dealer draws the
+  // folded seats' cards from this range purely for blockage.
   std::vector<std::vector<solver::WeightedHand>> ranges;
   ranges.reserve(params.player_count);
   for (std::size_t s = 0; s < params.player_count; ++s)
@@ -323,13 +394,17 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
   const gto::EquityFrontierEvaluator frontier;
   const solver::NSeatTrainerLimits limits = trainer_limits();
 
-  const std::string stem = class_stem(class_index);
+  const std::string stem = pair_stem(root_id, class_index);
   const std::filesystem::path checkpoint_path = out_dir / (stem + "-checkpoint.bswarm");
   // The sealed checkpoint declares the bounds it was written under so a file
   // from a different tree shape fails closed on load rather than landing rows
   // on the wrong nodes.
   const std::uint32_t node_cap = static_cast<std::uint32_t>(tree.nodes().size());
   const std::uint32_t bucket_cap = 169;  // Preflop169: buckets 0..168
+  // RFC 0030: the BSWARM02 whole-tree witness. Computed once per class tree;
+  // a resume recomputes this and hard-refuses any mismatch before adopting
+  // checkpoint rows.
+  const std::uint64_t tree_witness = tree::tree_shape_digest(tree);
 
   // Warm-start from an existing checkpoint if requested.
   solver::NSeatInitialState state;
@@ -344,6 +419,46 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
       if (ckpt.card_abstraction_digest != card_id.digest)
         throw std::runtime_error("class " + std::to_string(class_index) +
                                  " checkpoint card-abstraction mismatch");
+      // RFC 0031: the bucket scheme is a build identity, not only a digest.
+      // Rows keyed under a different CardBucketKind cannot warm this tree.
+      if (static_cast<std::uint8_t>(ckpt.key_kind) !=
+          static_cast<std::uint8_t>(solver::kNSeatCardKind))
+        throw std::runtime_error("class " + std::to_string(class_index) +
+                                 " checkpoint card bucket kind mismatch");
+      // RFC 0030: the tree-shape witness. This is the ONLY check that proves a
+      // checkpoint row's node ordinal still names the same node (digests,
+      // revision, and node/bucket caps cannot). Hard-refuse and preserve the
+      // file; it precedes the stale-but-complete branch.
+      if (!ckpt.tree_shape_digest.has_value() || *ckpt.tree_shape_digest != tree_witness)
+        throw std::runtime_error(
+            "class " + std::to_string(class_index) +
+            " checkpoint tree shape does not match the current tree (expected " +
+            [&] {
+              char buf[19];
+              std::snprintf(buf, sizeof(buf), "%016llx",
+                            static_cast<unsigned long long>(tree_witness));
+              return std::string(buf);
+            }() +
+            ", found " +
+            [&] {
+              if (!ckpt.tree_shape_digest.has_value())
+                return std::string("none");
+              char buf[19];
+              std::snprintf(buf, sizeof(buf), "%016llx",
+                            static_cast<unsigned long long>(*ckpt.tree_shape_digest));
+              return std::string(buf);
+            }() +
+            "); refusing resume; remove the stale checkpoint or resume a build "
+            "with matching parameters");
+      // RFC 0035: the declared root table witness. The tree-shape witness
+      // guards roots whose trees differ; this names the root SET by its
+      // ordered ledger table, so a checkpoint staged under another table is
+      // refused by name even when the per-pair tree shape agrees.
+      if (ckpt.root_table_hash != root_hash)
+        throw std::runtime_error(
+            "root " + std::to_string(root_id) + " class " + std::to_string(class_index) +
+            " checkpoint root table hash does not match the declared root table (expected " +
+            digest_hex(root_hash) + ", found " + digest_hex(ckpt.root_table_hash) + ")");
       state.rows = ckpt.rows;
       state.completed_iterations = ckpt.completed_iterations;
       state.algorithm_revision = ckpt.algorithm_revision_id;
@@ -408,6 +523,8 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
     checkpoint.node_cap = node_cap;
     checkpoint.bucket_cap = bucket_cap;
     checkpoint.key_kind = solver::kNSeatCardKind;
+    checkpoint.tree_shape_digest = tree_witness;
+    checkpoint.root_table_hash = root_hash;
     checkpoint.rows = trained.raw_rows;
     artifacts::save_sealed_checkpoint(checkpoint_path, checkpoint);
 
@@ -415,8 +532,9 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
     state.rows = std::move(trained.raw_rows);
   }
 
-  std::printf("  class %zu: %zu nodes, %zu info sets, %zu bytes, %llu iterations\n", class_index,
-              trained.nodes, trained.information_sets, trained.accounted_bytes,
+  std::printf("  root %u class %zu: %zu nodes, %zu info sets, %zu bytes, %llu iterations\n",
+              root_id, class_index, trained.nodes, trained.information_sets,
+              trained.accounted_bytes,
               static_cast<unsigned long long>(trained.completed_iterations));
 
   // Final export and section serialization. The warm-start checkpoint is
@@ -428,6 +546,7 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
       solver::export_seat_policy(trained, tree, ranges, card_id);
 
   resident::PackClassInput input;
+  input.root_id = root_id;
   input.class_id = static_cast<std::uint32_t>(class_index);
   input.canonical_board = board;
   input.rows = &exported.policy.rows();
@@ -437,6 +556,7 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
   const std::vector<std::uint8_t> section = resident::serialize_class_section(input, params.layout);
 
   ClassEntry entry;
+  entry.root_id = root_id;
   entry.canonical_board = board;
   entry.stored_rows = exported.policy.rows().size();
   entry.completed_iterations = trained.completed_iterations;
@@ -450,18 +570,25 @@ ClassEntry train_one_class(const std::filesystem::path& out_dir, std::size_t cla
   std::filesystem::create_directories(sections_dir, ec);
   if (ec)
     throw std::runtime_error("cannot create sections directory: " + ec.message());
-  const std::filesystem::path section_path = sections_dir / (stem + ".bsf");
+  const std::filesystem::path section_path =
+      sections_dir /
+      resident::root_class_section_name(root_id, static_cast<std::uint32_t>(class_index));
   write_file_atomically(section_path, section);
   // Durable completion evidence: the section (S1) and its fragment record
   // (S2). The record is appended by the single process that owns this class.
-  append_fragment_line(sections_dir, tag, FragmentClass{class_index, entry});
+  append_fragment_line(sections_dir, tag, FragmentClass{root_id, class_index, entry});
   return entry;
 }
 
-// True when this class already has a durable section from an earlier attempt.
-bool class_section_exists(const std::filesystem::path& out_dir, std::size_t class_index) {
+// True when this (root, class) pair already has a durable section from an
+// earlier attempt.
+bool class_section_exists(const std::filesystem::path& out_dir, std::uint32_t root_id,
+                          std::size_t class_index) {
   std::error_code ec;
-  return std::filesystem::exists(out_dir / kSectionsDir / (class_stem(class_index) + ".bsf"), ec);
+  return std::filesystem::exists(
+      out_dir / kSectionsDir /
+          resident::root_class_section_name(root_id, static_cast<std::uint32_t>(class_index)),
+      ec);
 }
 
 // --- RFC 0027: build identity and worker fragments -------------------------
@@ -471,6 +598,7 @@ bool class_section_exists(const std::filesystem::path& out_dir, std::size_t clas
 // reader does not bounds-check codebook indices. Any difference fails closed.
 struct BuildIdentity {
   std::string codebook;
+  std::uint8_t card_bucket_kind = 0;  // RFC 0031: abstraction::CardBucketKind ordinal
   std::uint64_t card_abstraction_digest = 0;
   std::uint64_t action_abstraction_digest = 0;
   std::string range;
@@ -489,6 +617,10 @@ struct BuildIdentity {
   std::uint64_t seed = 0;
   std::size_t class_count = 0;
   std::size_t total_classes = 0;
+  // RFC 0035: the ordered declared root table. Two runs with different root
+  // sets can never share sections or checkpoints.
+  std::uint64_t root_table_hash = 0;
+  std::size_t root_count = 0;
 };
 
 std::string codebook_name(resident::ProbabilityLayout layout) {
@@ -503,9 +635,11 @@ std::string codebook_name(resident::ProbabilityLayout layout) {
   return "codebook16";
 }
 
-BuildIdentity make_identity(const BuildParams& params, const abstraction::AbstractionId& card_id) {
+BuildIdentity make_identity(const BuildParams& params, const abstraction::AbstractionId& card_id,
+                            std::span<const RootSpec> roots) {
   BuildIdentity id;
   id.codebook = codebook_name(params.layout);
+  id.card_bucket_kind = static_cast<std::uint8_t>(solver::kNSeatCardKind);
   id.card_abstraction_digest = card_id.digest;
   id.action_abstraction_digest = params.action.id().digest;
   id.range = params.range_name;
@@ -520,6 +654,8 @@ BuildIdentity make_identity(const BuildParams& params, const abstraction::Abstra
   id.seed = params.seed;
   id.class_count = params.class_count;
   id.total_classes = kTotalClasses;
+  id.root_table_hash = flop_library::root_table_hash(params.player_count, roots);
+  id.root_count = roots.size();
   return id;
 }
 
@@ -527,6 +663,7 @@ std::string identity_json(const BuildIdentity& id) {
   std::ostringstream out;
   out << "{\n";
   out << "  \"codebook\": \"" << json_escape(id.codebook) << "\",\n";
+  out << "  \"card_bucket_kind\": " << static_cast<int>(id.card_bucket_kind) << ",\n";
   out << "  \"card_abstraction_digest\": \"" << digest_hex(id.card_abstraction_digest) << "\",\n";
   out << "  \"action_abstraction_digest\": \"" << digest_hex(id.action_abstraction_digest)
       << "\",\n";
@@ -541,6 +678,8 @@ std::string identity_json(const BuildIdentity& id) {
   out << "  \"iterations_per_class\": " << id.iterations_per_class << ",\n";
   out << "  \"seed\": " << id.seed << ",\n";
   out << "  \"class_count\": " << id.class_count << ",\n";
+  out << "  \"root_count\": " << id.root_count << ",\n";
+  out << "  \"root_table_hash\": \"" << digest_hex(id.root_table_hash) << "\",\n";
   out << "  \"total_classes\": " << id.total_classes << "\n";
   out << "}\n";
   return out.str();
@@ -576,6 +715,7 @@ BuildIdentity read_identity(const std::filesystem::path& path) {
   };
   BuildIdentity id;
   id.codebook = str_value("codebook");
+  id.card_bucket_kind = static_cast<std::uint8_t>(num_value("card_bucket_kind"));
   id.range = str_value("range");
   id.card_abstraction_digest =
       std::strtoull(str_value("card_abstraction_digest").c_str(), nullptr, 16);
@@ -592,6 +732,8 @@ BuildIdentity read_identity(const std::filesystem::path& path) {
   id.seed = num_value("seed");
   id.class_count = static_cast<std::size_t>(num_value("class_count"));
   id.total_classes = static_cast<std::size_t>(num_value("total_classes"));
+  id.root_count = static_cast<std::size_t>(num_value("root_count"));
+  id.root_table_hash = std::strtoull(str_value("root_table_hash").c_str(), nullptr, 16);
   return id;
 }
 
@@ -618,6 +760,8 @@ void require_identity_match(const BuildIdentity& requested, const BuildIdentity&
   };
   if (requested.codebook != current.codebook)
     mismatch("codebook", requested.codebook, current.codebook);
+  if (requested.card_bucket_kind != current.card_bucket_kind)
+    mismatch_num("card_bucket_kind", requested.card_bucket_kind, current.card_bucket_kind);
   if (requested.card_abstraction_digest != current.card_abstraction_digest)
     mismatch_num("card_abstraction_digest", requested.card_abstraction_digest,
                  current.card_abstraction_digest);
@@ -650,6 +794,10 @@ void require_identity_match(const BuildIdentity& requested, const BuildIdentity&
     mismatch_num("class_count", requested.class_count, current.class_count);
   if (requested.total_classes != current.total_classes)
     mismatch_num("total_classes", requested.total_classes, current.total_classes);
+  if (requested.root_count != current.root_count)
+    mismatch_num("root_count", requested.root_count, current.root_count);
+  if (requested.root_table_hash != current.root_table_hash)
+    mismatch_num("root_table_hash", requested.root_table_hash, current.root_table_hash);
 }
 
 // Append one JSON line to an owner's fragment; see the declaration above.
@@ -658,8 +806,9 @@ void append_fragment_line(const std::filesystem::path& sections_dir, const std::
   const std::filesystem::path path = sections_dir / ("manifest-part-" + tag + ".jsonl");
   const ClassEntry& e = fc.entry;
   std::ostringstream line;
-  line << "{\"index\": " << fc.index << ", \"canonical_board\": [" << e.canonical_board[0] << ", "
-       << e.canonical_board[1] << ", " << e.canonical_board[2] << "], "
+  line << "{\"root\": " << fc.root_id << ", \"index\": " << fc.index << ", \"canonical_board\": ["
+       << e.canonical_board[0] << ", " << e.canonical_board[1] << ", " << e.canonical_board[2]
+       << "], "
        << "\"stored_rows\": " << e.stored_rows << ", "
        << "\"completed_iterations\": " << e.completed_iterations << ", "
        << "\"information_sets\": " << e.information_sets << ", "
@@ -689,10 +838,10 @@ bool parse_fragment_line(const std::string& text, FragmentClass& out) {
     value = std::strtoull(begin, &end, 10);
     return end != begin;
   };
-  std::uint64_t index = 0, rows = 0, iters = 0, infos = 0, bytes = 0;
-  if (!number_after("index", index) || !number_after("stored_rows", rows) ||
-      !number_after("completed_iterations", iters) || !number_after("information_sets", infos) ||
-      !number_after("section_bytes", bytes))
+  std::uint64_t root = 0, index = 0, rows = 0, iters = 0, infos = 0, bytes = 0;
+  if (!number_after("root", root) || !number_after("index", index) ||
+      !number_after("stored_rows", rows) || !number_after("completed_iterations", iters) ||
+      !number_after("information_sets", infos) || !number_after("section_bytes", bytes))
     return false;
   const std::string board_key = "\"canonical_board\": [";
   const std::size_t board_pos = text.find(board_key);
@@ -708,7 +857,9 @@ bool parse_fragment_line(const std::string& text, FragmentClass& out) {
     while (*p == ' ' || *p == ',')
       ++p;
   }
+  out.root_id = static_cast<std::uint32_t>(root);
   out.index = static_cast<std::size_t>(index);
+  out.entry.root_id = static_cast<std::uint32_t>(root);
   out.entry.stored_rows = static_cast<std::size_t>(rows);
   out.entry.completed_iterations = iters;
   out.entry.information_sets = static_cast<std::size_t>(infos);
@@ -765,6 +916,62 @@ std::vector<FragmentClass> read_fragments(const std::filesystem::path& sections_
 
 }  // namespace
 
+// RFC 0033's derivation, exposed as the one production root: every seat live,
+// equal contributions, no folds, pot the sum of contributions. `starting_stack`
+// is the buy-in, so per-seat chips behind are `starting_stack - contribution`;
+// recording the buy-in in `stacks` would double-count the contribution and
+// make the root chip-non-conserving (the RFC 0033 defect).
+RootSpec make_limped_root_spec(std::size_t player_count, poker::Chips starting_stack,
+                               poker::Chips contribution, resident::RootLineTag line_tag) {
+  if (starting_stack <= contribution)
+    throw std::invalid_argument("make_limped_root_spec: starting stack must exceed contribution");
+  RootSpec root;
+  root.root_id = 0;
+  root.line_tag = line_tag;
+  root.range_profile = resident::RootRangeProfile::LiveUniform;
+  for (std::size_t s = 0; s < player_count; ++s) {
+    root.stacks[s] = static_cast<std::uint64_t>(starting_stack - contribution);
+    root.contributions[s] = static_cast<std::uint64_t>(contribution);
+    root.folded[s] = 0;
+  }
+  root.pot = static_cast<std::uint64_t>(player_count) * static_cast<std::uint64_t>(contribution);
+  root.live_count = static_cast<std::uint8_t>(player_count);
+  root.class_count = 0;
+  return root;
+}
+
+// RFC 0035: canonical ordered root-table hash. Fixed-stride binary fields
+// under FNV-1a 64, prefixed by the player count; see flop_library.hpp.
+std::uint64_t root_table_hash(std::size_t player_count, std::span<const RootSpec> roots) {
+  std::uint64_t h = 0xcbf29ce484222325ULL;
+  auto mix8 = [&](std::uint8_t v) {
+    h ^= v;
+    h *= 0x100000001b3ULL;
+  };
+  auto mix64 = [&](std::uint64_t v) {
+    for (int i = 0; i < 8; ++i)
+      mix8(static_cast<std::uint8_t>((v >> (i * 8)) & 0xffu));
+  };
+  mix8(static_cast<std::uint8_t>(player_count));
+  for (const RootSpec& root : roots) {
+    mix8(static_cast<std::uint8_t>(root.line_tag));
+    mix64(root.pot);
+    for (std::size_t s = 0; s < player_count; ++s)
+      mix64(root.stacks[s]);
+    for (std::size_t s = 0; s < player_count; ++s)
+      mix64(root.contributions[s]);
+    for (std::size_t s = 0; s < player_count; ++s)
+      mix8(root.folded[s] ? 1 : 0);
+    std::uint8_t live = 0;
+    for (std::size_t s = 0; s < player_count; ++s)
+      if (!root.folded[s])
+        ++live;
+    mix8(live);
+    mix8(static_cast<std::uint8_t>(root.range_profile));
+  }
+  return h;
+}
+
 // RFC 0033: the resume decision, shared by the serial library path and the
 // parallel builder parent so the two cannot drift. Its contract, in order:
 //
@@ -781,59 +988,66 @@ std::vector<FragmentClass> read_fragments(const std::filesystem::path& sections_
 // the order is load-bearing: revision and the deferred digest checks must win
 // over the stale classification, or a hard refusal would silently become a
 // full retrain.
-void preflight_resume(const std::filesystem::path& out_dir, std::size_t class_count,
-                      std::uint64_t iterations_per_class, bool resume) {
+void preflight_resume(const std::filesystem::path& out_dir, const BuildParams& params,
+                      bool resume) {
   if (!resume)
     return;
+  const std::vector<RootSpec> roots = effective_roots(params);
   const std::filesystem::path sections_dir = out_dir / kSectionsDir;
   const bool have_identity = std::filesystem::exists(sections_dir / "build.json");
   std::vector<std::string> unidentified;
-  for (std::size_t index = 0; index < class_count; ++index) {
-    // A completed class keeps its section and deletes its checkpoint, so the
-    // two are complementary: the checkpoint scan alone protects the work that
-    // would be discarded anyway. Sections are published atomically, so a
-    // present .bsf is always complete and "valid" means "present".
-    const std::filesystem::path section = sections_dir / (class_stem(index) + ".bsf");
-    std::error_code ec;
-    if (!have_identity && std::filesystem::exists(section, ec))
-      unidentified.push_back(section.string());
+  for (const RootSpec& root : roots)
+    for (std::size_t index = 0; index < params.class_count; ++index) {
+      const std::string stem = pair_stem(root.root_id, index);
+      // A completed pair keeps its section and deletes its checkpoint, so the
+      // two are complementary: the checkpoint scan alone protects the work
+      // that would be discarded anyway. Sections are published atomically, so
+      // a present .bsf is always complete and "valid" means "present".
+      const std::filesystem::path section =
+          sections_dir /
+          resident::root_class_section_name(root.root_id, static_cast<std::uint32_t>(index));
+      std::error_code ec;
+      if (!have_identity && std::filesystem::exists(section, ec))
+        unidentified.push_back(section.string());
 
-    const auto path = out_dir / (class_stem(index) + "-checkpoint.bswarm");
-    if (!std::filesystem::exists(path, ec))
-      continue;
-    artifacts::SealedCheckpointState checkpoint;
-    bool corrupt = false;
-    try {
-      // Header-only: the payload is decoded on the training path, where a
-      // mismatch is actionable. A failure here means the file cannot be a
-      // checkpoint this build wrote.
-      checkpoint = artifacts::inspect_sealed_checkpoint(path);
-    } catch (const artifacts::SealedCheckpointError&) {
-      corrupt = true;
-    } catch (const std::runtime_error&) {
-      corrupt = true;
-    }
-    if (corrupt) {
-      std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; class will retrain\n",
-                   path.string().c_str());
-      std::filesystem::remove(path, ec);
-      continue;
-    }
-    // Disposition 2 before 4: a checkpoint can carry an incompatible revision
-    // AND be stale, and the refusal must not be downgraded to a retrain.
-    if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2 ||
-        checkpoint.algorithm_revision_id != solver::kNSeatAlgorithmRevision)
-      throw std::runtime_error(
-          "incompatible checkpoint algorithm; refusing resume without modifying " + path.string());
-    if (!have_identity) {
-      // Disposition 4: classified, not removed. Removing here would run ahead
-      // of the digest and empty-row checks in train_one_class, turning those
-      // refusals into a silent retrain.
-      if (checkpoint.completed_iterations >= iterations_per_class)
+      const auto path = out_dir / (stem + "-checkpoint.bswarm");
+      if (!std::filesystem::exists(path, ec))
         continue;
-      unidentified.push_back(path.string());
+      artifacts::SealedCheckpointState checkpoint;
+      bool corrupt = false;
+      try {
+        // Header-only: the payload is decoded on the training path, where a
+        // mismatch is actionable. A failure here (including a foreign BSWARM01/
+        // 02 magic after the RFC 0035 bump) means the file cannot be a
+        // checkpoint this build wrote.
+        checkpoint = artifacts::inspect_sealed_checkpoint(path);
+      } catch (const artifacts::SealedCheckpointError&) {
+        corrupt = true;
+      } catch (const std::runtime_error&) {
+        corrupt = true;
+      }
+      if (corrupt) {
+        std::fprintf(stderr, "warning: discarding corrupt checkpoint %s; root/class will retrain\n",
+                     path.string().c_str());
+        std::filesystem::remove(path, ec);
+        continue;
+      }
+      // Disposition 2 before 4: a checkpoint can carry an incompatible revision
+      // AND be stale, and the refusal must not be downgraded to a retrain.
+      if (checkpoint.algorithm_revision != artifacts::kDefaultAlgorithmRevisionV2 ||
+          checkpoint.algorithm_revision_id != solver::kNSeatAlgorithmRevision)
+        throw std::runtime_error(
+            "incompatible checkpoint algorithm; refusing resume without modifying " +
+            path.string());
+      if (!have_identity) {
+        // Disposition 4: classified, not removed. Removing here would run ahead
+        // of the digest and empty-row checks in train_one_class, turning those
+        // refusals into a silent retrain.
+        if (checkpoint.completed_iterations >= params.iterations_per_class)
+          continue;
+        unidentified.push_back(path.string());
+      }
     }
-  }
   if (!have_identity && !unidentified.empty()) {
     std::string list;
     for (const std::string& name : unidentified)
@@ -930,6 +1144,75 @@ std::uint64_t range_digest(const std::vector<solver::WeightedHand>& range) {
   return h;
 }
 
+// Shared parameter validation for the serial path and the parallel workers.
+// Explicit multi-root tables need no positive starting_stack/contribution;
+// the single-root default derives its root from them.
+void validate_params(const BuildParams& params) {
+  if (params.class_count == 0)
+    throw std::invalid_argument("class_count must be positive");
+  if (params.iterations_per_class == 0)
+    throw std::invalid_argument("iterations must be positive");
+  if (params.range.empty())
+    throw std::invalid_argument("range must be non-empty");
+  if (params.player_count < 2 || params.player_count > 10)
+    throw std::invalid_argument("player_count must be in [2, 10]");
+  if (params.roots.empty()) {
+    if (params.starting_stack == 0 || params.contribution == 0)
+      throw std::invalid_argument("starting_stack and contribution must be positive");
+    if (params.starting_stack <= params.contribution)
+      throw std::invalid_argument("starting_stack must exceed the contribution");
+  }
+  (void)effective_roots(params);
+}
+
+LibraryManifest build_library(const std::filesystem::path& out_dir, const BuildParams& params) {
+  validate_params(params);
+
+  std::error_code ec;
+  std::filesystem::create_directories(out_dir, ec);
+  if (ec)
+    throw std::runtime_error("cannot create output directory: " + ec.message());
+
+  const std::vector<std::array<int, 3>> classes = enumerate_classes();
+  if (classes.size() != kTotalClasses)
+    throw std::runtime_error("canonical class count drifted from the pinned " +
+                             std::to_string(kTotalClasses));
+  if (params.class_count > classes.size())
+    throw std::invalid_argument("class_count exceeds total classes (" +
+                                std::to_string(classes.size()) + ")");
+
+  const std::vector<RootSpec> roots = effective_roots(params);
+  const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
+  const std::uint64_t root_hash = root_table_hash(params.player_count, roots);
+  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
+  preflight_resume(out_dir, params, params.resume);
+  // Sections without an identity record cannot be trusted for a resume.
+  if (params.resume && !std::filesystem::exists(sections_dir / "build.json", ec))
+    std::filesystem::remove_all(sections_dir, ec);
+  prepare_build_identity(out_dir, params, params.resume);
+
+  // Serial path: train, serialize, and assemble once. Failure leaves no
+  // partial library (the sections and any checkpoint are removed).
+  try {
+    for (const RootSpec& root : roots)
+      for (std::size_t i = 0; i < params.class_count; ++i) {
+        if (!class_is_dealable(classes[i], params.player_count, params.range)) {
+          if (root.root_id == 0)
+            std::printf("class %zu: undealable for %zu seats (board blocks the range); excluded\n",
+                        i, params.player_count);
+          continue;
+        }
+        if (params.resume && class_section_exists(out_dir, root.root_id, i))
+          continue;
+        (void)train_one_class(out_dir, root, i, classes[i], params, card_id, root_hash, "serial");
+      }
+  } catch (...) {
+    std::filesystem::remove_all(sections_dir, ec);
+    throw;
+  }
+  return assemble_library(out_dir, params);
+}
+
 LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t class_count,
                               std::uint64_t iterations_per_class, std::uint64_t seed,
                               poker::Chips starting_stack, poker::Chips contribution,
@@ -949,71 +1232,15 @@ LibraryManifest build_library(const std::filesystem::path& out_dir, std::size_t 
   params.resume = resume;
   params.layout = layout;
   params.range_name = range_name;
-
-  if (class_count == 0)
-    throw std::invalid_argument("class_count must be positive");
-  if (iterations_per_class == 0)
-    throw std::invalid_argument("iterations must be positive");
-  if (range.empty())
-    throw std::invalid_argument("range must be non-empty");
-  if (starting_stack == 0 || contribution == 0)
-    throw std::invalid_argument("starting_stack and contribution must be positive");
-  if (starting_stack <= contribution)
-    throw std::invalid_argument("starting_stack must exceed the contribution");
-  if (player_count < 2 || player_count > 10)
-    throw std::invalid_argument("player_count must be in [2, 10]");
-
-  std::error_code ec;
-  std::filesystem::create_directories(out_dir, ec);
-  if (ec)
-    throw std::runtime_error("cannot create output directory: " + ec.message());
-
-  const std::vector<std::array<int, 3>> classes = enumerate_classes();
-  if (classes.size() != kTotalClasses)
-    throw std::runtime_error("canonical class count drifted from the pinned " +
-                             std::to_string(kTotalClasses));
-  if (class_count > classes.size())
-    throw std::invalid_argument("class_count exceeds total classes (" +
-                                std::to_string(classes.size()) + ")");
-
-  const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
-  const std::filesystem::path sections_dir = out_dir / kSectionsDir;
-  const BuildIdentity requested = make_identity(params, card_id);
-  preflight_resume(out_dir, class_count, iterations_per_class, resume);
-  // Sections without an identity record cannot be trusted for a resume.
-  if (resume && !std::filesystem::exists(sections_dir / "build.json", ec))
-    std::filesystem::remove_all(sections_dir, ec);
-  (void)requested;
-  prepare_build_identity(out_dir, params, resume);
-
-  // Serial path: train, serialize, and assemble once. Failure leaves no
-  // partial library (the sections and any checkpoint are removed).
-  std::vector<std::uint32_t> class_ids;
-  try {
-    for (std::size_t i = 0; i < class_count; ++i) {
-      if (!class_is_dealable(classes[i], player_count, range)) {
-        std::printf("class %zu: undealable for %zu seats (board blocks the range); excluded\n", i,
-                    player_count);
-        continue;
-      }
-      if (resume && class_section_exists(out_dir, i))
-        continue;
-      (void)train_one_class(out_dir, i, classes[i], params, card_id, "serial");
-      class_ids.push_back(static_cast<std::uint32_t>(i));
-    }
-  } catch (...) {
-    std::filesystem::remove_all(sections_dir, ec);
-    throw;
-  }
-  (void)class_ids;
-  return assemble_library(out_dir, params);
+  return build_library(out_dir, params);
 }
 
 void prepare_build_identity(const std::filesystem::path& out_dir, const BuildParams& params,
                             bool resume) {
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
+  const std::vector<RootSpec> roots = effective_roots(params);
   const std::filesystem::path sections_dir = out_dir / kSectionsDir;
-  const BuildIdentity requested = make_identity(params, card_id);
+  const BuildIdentity requested = make_identity(params, card_id, roots);
   std::error_code ec;
   if (resume && std::filesystem::exists(sections_dir / "build.json", ec)) {
     require_identity_match(requested, read_identity(sections_dir / "build.json"));
@@ -1030,18 +1257,8 @@ void build_library_worker(const std::filesystem::path& out_dir, std::size_t work
     throw std::invalid_argument("parallel must be positive");
   if (worker_id >= parallel)
     throw std::invalid_argument("worker_id must be < parallel");
-  if (params.class_count == 0)
-    throw std::invalid_argument("class_count must be positive");
-  if (params.iterations_per_class == 0)
-    throw std::invalid_argument("iterations must be positive");
-  if (params.range.empty())
-    throw std::invalid_argument("range must be non-empty");
-  if (params.starting_stack == 0 || params.contribution == 0)
-    throw std::invalid_argument("starting_stack and contribution must be positive");
-  if (params.starting_stack <= params.contribution)
-    throw std::invalid_argument("starting_stack must exceed the contribution");
-  if (params.player_count < 2 || params.player_count > 10)
-    throw std::invalid_argument("player_count must be in [2, 10]");
+  validate_params(params);
+  const std::vector<RootSpec> roots = effective_roots(params);
 
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
@@ -1061,26 +1278,30 @@ void build_library_worker(const std::filesystem::path& out_dir, std::size_t work
     throw std::runtime_error(
         "worker: .sections/build.json is missing; the parent must call prepare_build_identity");
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
+  const std::uint64_t root_hash = root_table_hash(params.player_count, roots);
 
-  for (std::size_t i = worker_id; i < params.class_count; i += parallel) {
-    if (!class_is_dealable(classes[i], params.player_count, params.range))
-      continue;  // undealable class: recorded as a coverage exclusion by assembly
-    if (class_section_exists(out_dir, i))
-      continue;  // completed by an earlier attempt
-    (void)train_one_class(out_dir, i, classes[i], params, card_id, std::to_string(worker_id));
-  }
+  for (const RootSpec& root : roots)
+    for (std::size_t i = worker_id; i < params.class_count; i += parallel) {
+      if (!class_is_dealable(classes[i], params.player_count, params.range))
+        continue;  // undealable class: recorded as a coverage exclusion by assembly
+      if (class_section_exists(out_dir, root.root_id, i))
+        continue;  // completed by an earlier attempt
+      (void)train_one_class(out_dir, root, i, classes[i], params, card_id, root_hash,
+                            std::to_string(worker_id));
+    }
 }
 
 LibraryManifest assemble_library(const std::filesystem::path& out_dir, const BuildParams& params) {
   const std::vector<std::array<int, 3>> classes = enumerate_classes();
   if (params.class_count > classes.size())
     throw std::invalid_argument("class_count exceeds total classes");
+  const std::vector<RootSpec> roots = effective_roots(params);
   const abstraction::AbstractionId card_id = abstraction::suit_canonicalization_id();
+  const std::uint64_t root_hash = root_table_hash(params.player_count, roots);
   const std::filesystem::path sections_dir = out_dir / kSectionsDir;
-  const BuildIdentity requested = make_identity(params, card_id);
 
-  // Derive the expected dealable set from the build parameters, not from the
-  // fragments: a missing fragment must not silently shrink the library.
+  // The dealable set is identical for every root: dealability depends only on
+  // the board, the seat count, and the range (folded seats still draw cards).
   std::vector<std::array<int, 3>> undealable;
   std::vector<std::uint32_t> expected_ids;
   for (std::size_t i = 0; i < params.class_count; ++i) {
@@ -1090,63 +1311,91 @@ LibraryManifest assemble_library(const std::filesystem::path& out_dir, const Bui
     }
     expected_ids.push_back(static_cast<std::uint32_t>(i));
   }
-  for (std::uint32_t id : expected_ids)
-    if (!class_section_exists(out_dir, id))
-      throw std::runtime_error("assembly: class " + std::to_string(id) +
-                               " has no section (build incomplete)");
+  if (expected_ids.empty())
+    throw std::runtime_error("assembly: no dealable classes in the declared stride");
+  for (const RootSpec& root : roots)
+    for (std::uint32_t id : expected_ids)
+      if (!class_section_exists(out_dir, root.root_id, id))
+        throw std::runtime_error("assembly: root " + std::to_string(root.root_id) + " class " +
+                                 std::to_string(id) + " has no section (build incomplete)");
 
   // Section headers are authoritative; fragments supply completed_iterations
-  // when present. A fragment naming a class with no section is corruption.
-  std::map<std::uint32_t, ClassEntry> records;
+  // when present. A fragment naming a pair with no section is corruption.
+  std::map<std::pair<std::uint32_t, std::uint32_t>, ClassEntry> records;
   for (const FragmentClass& fc : read_fragments(sections_dir)) {
-    if (fc.index >= params.class_count || !class_section_exists(out_dir, fc.index))
-      throw std::runtime_error("assembly: fragment names class " + std::to_string(fc.index) +
-                               " with no section");
-    auto [it, inserted] = records.emplace(static_cast<std::uint32_t>(fc.index), fc.entry);
+    if (fc.root_id >= roots.size() || fc.index >= params.class_count ||
+        !class_section_exists(out_dir, fc.root_id, fc.index))
+      throw std::runtime_error("assembly: fragment names root " + std::to_string(fc.root_id) +
+                               " class " + std::to_string(fc.index) + " with no section");
+    auto key = std::make_pair(fc.root_id, static_cast<std::uint32_t>(fc.index));
+    auto [it, inserted] = records.emplace(key, fc.entry);
     if (!inserted && (it->second.stored_rows != fc.entry.stored_rows ||
                       it->second.completed_iterations != fc.entry.completed_iterations ||
                       it->second.information_sets != fc.entry.information_sets ||
                       it->second.section_bytes != fc.entry.section_bytes))
-      throw std::runtime_error("assembly: conflicting fragment records for class " +
-                               std::to_string(fc.index));
+      throw std::runtime_error("assembly: conflicting fragment records for root " +
+                               std::to_string(fc.root_id) + " class " + std::to_string(fc.index));
   }
 
-  std::vector<ClassEntry> entries;
-  entries.reserve(expected_ids.size());
-  for (std::uint32_t id : expected_ids) {
-    ClassEntry entry;
-    entry.canonical_board = classes[id];
-    auto it = records.find(id);
-    if (it != records.end()) {
-      entry = it->second;
-    } else {
-      // Section without a record: reconstruct the counters from its header.
-      char name[32];
-      std::snprintf(name, sizeof(name), "class-%04u.bsf", id);
-      const auto path = sections_dir / name;
-      std::error_code ec;
-      entry.section_bytes = static_cast<std::size_t>(std::filesystem::file_size(path, ec));
-      if (ec)
-        throw std::runtime_error("assembly: cannot stat section " + path.string());
-      entry.completed_iterations = params.iterations_per_class;
-      // stored_rows and information_sets are not recoverable from a section;
-      // use its bucket-row count as the honest public figure.
-      std::ifstream in(path, std::ios::binary);
-      std::array<std::uint8_t, 32> head{};
-      in.read(reinterpret_cast<char*>(head.data()), head.size());
-      if (!in)
-        throw std::runtime_error("assembly: cannot read section header " + path.string());
-      const std::uint32_t bucket_rows = static_cast<std::uint32_t>(head[20]) |
-                                        (static_cast<std::uint32_t>(head[21]) << 8) |
-                                        (static_cast<std::uint32_t>(head[22]) << 16) |
-                                        (static_cast<std::uint32_t>(head[23]) << 24);
-      entry.stored_rows = bucket_rows;
-      entry.information_sets = bucket_rows;
+  // Per-root entries, root-major then class-ascending.
+  std::vector<ServedRootEntry> served;
+  served.reserve(roots.size());
+  std::vector<ClassEntry> all_entries;
+  std::vector<resident::RootDirectoryEntry> directory_roots;
+  std::vector<std::vector<std::uint32_t>> directory_ids;
+  directory_roots.reserve(roots.size());
+  directory_ids.reserve(roots.size());
+  for (const RootSpec& declared : roots) {
+    ServedRootEntry served_root;
+    served_root.root = declared;
+    directory_roots.push_back(declared);
+    std::vector<std::uint32_t>& ids = directory_ids.emplace_back();
+    for (std::uint32_t id : expected_ids) {
+      ClassEntry entry;
+      entry.root_id = declared.root_id;
+      entry.canonical_board = classes[id];
+      auto it = records.find(std::make_pair(declared.root_id, id));
+      if (it != records.end()) {
+        entry = it->second;
+      } else {
+        // Section without a record: reconstruct the counters from its header.
+        const auto path = sections_dir / resident::root_class_section_name(declared.root_id, id);
+        std::error_code ec;
+        entry.section_bytes = static_cast<std::size_t>(std::filesystem::file_size(path, ec));
+        if (ec)
+          throw std::runtime_error("assembly: cannot stat section " + path.string());
+        entry.completed_iterations = params.iterations_per_class;
+        // stored_rows and information_sets are not recoverable from a
+        // section; use its bucket-row count as the honest public figure. The
+        // BSFLIB03 section header places total_bucket_rows at offset 24.
+        std::ifstream in(path, std::ios::binary);
+        std::array<std::uint8_t, 32> head{};
+        in.read(reinterpret_cast<char*>(head.data()), head.size());
+        if (!in)
+          throw std::runtime_error("assembly: cannot read section header " + path.string());
+        const std::uint32_t bucket_rows = static_cast<std::uint32_t>(head[24]) |
+                                          (static_cast<std::uint32_t>(head[25]) << 8) |
+                                          (static_cast<std::uint32_t>(head[26]) << 16) |
+                                          (static_cast<std::uint32_t>(head[27]) << 24);
+        entry.stored_rows = bucket_rows;
+        entry.information_sets = bucket_rows;
+      }
+      if (entry.canonical_board != classes[id])
+        throw std::runtime_error("assembly: root " + std::to_string(declared.root_id) + " class " +
+                                 std::to_string(id) +
+                                 " board disagrees between section and fragment");
+      ids.push_back(id);
+      served_root.classes.push_back(entry);
+      all_entries.push_back(std::move(entry));
     }
-    if (entry.canonical_board != classes[id])
-      throw std::runtime_error("assembly: class " + std::to_string(id) +
-                               " board disagrees between section and fragment");
-    entries.push_back(entry);
+    served_root.root.class_count = static_cast<std::uint32_t>(ids.size());
+    served_root.class_count = ids.size();
+    served_root.covered_flops = count_covered_flops(covered_boards(served_root.classes));
+    served_root.total_flops = kTotalFlops;
+    for (const ClassEntry& e : served_root.classes)
+      served_root.section_bytes += e.section_bytes;
+    served.push_back(std::move(served_root));
+    directory_roots.back().class_count = static_cast<std::uint32_t>(ids.size());
   }
 
   const std::string bin_name = "library.bin";
@@ -1155,8 +1404,8 @@ LibraryManifest assemble_library(const std::filesystem::path& out_dir, const Bui
   identity.card_abstraction_digest = card_id.digest;
   identity.action_abstraction_digest = params.action.id().digest;
   try {
-    resident::assemble_binary_library(bin_path, make_unified_game(params, classes), identity,
-                                      params.layout, sections_dir, expected_ids);
+    resident::assemble_binary_library(bin_path, make_unified_game(params), identity, params.layout,
+                                      directory_roots, sections_dir, directory_ids);
   } catch (const std::exception&) {
     std::error_code ec;
     std::filesystem::remove(bin_path, ec);
@@ -1168,25 +1417,29 @@ LibraryManifest assemble_library(const std::filesystem::path& out_dir, const Bui
   if (ec)
     throw std::runtime_error("assembly: cannot stat " + bin_path.string());
 
+  std::size_t total_covered = 0;
+  std::uintmax_t total_section_bytes = 0;
+  for (const ServedRootEntry& r : served) {
+    total_covered += r.covered_flops;
+    total_section_bytes += r.section_bytes;
+  }
+  (void)total_section_bytes;
+
   LibraryManifest manifest;
   manifest.card_id = card_id;
+  manifest.card_bucket_kind = solver::kNSeatCardKind;
   manifest.action_id = params.action.id();
   manifest.player_count = params.player_count;
   manifest.max_raises_per_street = params.action.max_raises_per_street();
   manifest.big_blind = kDefaultBigBlind;
-  // RFC 0033: `stack` keeps the chips-behind meaning every reader assumes; the
-  // buy-in is recorded separately as provenance.
-  manifest.stack = params.starting_stack - params.contribution;
-  manifest.starting_stack = params.starting_stack;
-  manifest.served_root_button = 0;  // make_def's fixed button
-  manifest.contribution = params.contribution;
   manifest.iterations_per_class = params.iterations_per_class;
   manifest.seed = params.seed;
   manifest.total_classes = kTotalClasses;
-  manifest.classes = std::move(entries);
+  manifest.served_roots = std::move(served);
+  manifest.classes = std::move(all_entries);
   manifest.undealable_boards = undealable;
   manifest.class_count = manifest.classes.size();
-  manifest.covered_flops = count_covered_flops(covered_boards(manifest.classes));
+  manifest.covered_flops = total_covered;
   manifest.total_flops = kTotalFlops;
   manifest.storage_bytes = bin_bytes;
   manifest.library_bin = bin_name;
@@ -1196,6 +1449,7 @@ LibraryManifest assemble_library(const std::filesystem::path& out_dir, const Bui
   manifest.range = params.range_name;
   manifest.range_combo_count = params.range.size();
   manifest.range_digest = range_digest(params.range);
+  manifest.root_table_hash = root_hash;
 
   write_manifest(manifest, out_dir);
   std::filesystem::remove_all(sections_dir, ec);
@@ -1214,6 +1468,7 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
   out << "  \"card_abstraction_parameters\": \"" << json_escape(manifest.card_id.parameters)
       << "\",\n";
   out << "  \"card_abstraction_digest\": \"" << digest_hex(manifest.card_id.digest) << "\",\n";
+  out << "  \"card_bucket_kind\": " << static_cast<int>(manifest.card_bucket_kind) << ",\n";
   out << "  \"action_abstraction_name\": \"" << json_escape(manifest.action_id.name) << "\",\n";
   out << "  \"action_abstraction_version\": " << manifest.action_id.version << ",\n";
   out << "  \"action_abstraction_parameters\": \"" << json_escape(manifest.action_id.parameters)
@@ -1223,34 +1478,45 @@ void write_manifest(const LibraryManifest& manifest, const std::filesystem::path
   out << "  \"max_raises_per_street\": " << static_cast<int>(manifest.max_raises_per_street)
       << ",\n";
   out << "  \"big_blind\": " << manifest.big_blind << ",\n";
-  out << "  \"starting_stack\": " << manifest.starting_stack << ",\n";
-  out << "  \"stack\": " << manifest.stack << ",\n";
-  out << "  \"contribution\": " << manifest.contribution << ",\n";
   out << "  \"iterations_per_class\": " << manifest.iterations_per_class << ",\n";
   out << "  \"seed\": " << manifest.seed << ",\n";
   out << "  \"range\": \"" << json_escape(manifest.range) << "\",\n";
   out << "  \"range_combo_count\": " << manifest.range_combo_count << ",\n";
   out << "  \"range_digest\": \"" << digest_hex(manifest.range_digest) << "\",\n";
+  out << "  \"root_table_hash\": \"" << digest_hex(manifest.root_table_hash) << "\",\n";
   out << "  \"library_bin\": \"" << json_escape(manifest.library_bin) << "\",\n";
   out << "  \"library_bin_sha256\": \"" << manifest.library_bin_sha256 << "\",\n";
   out << "  \"library_bin_bytes\": " << manifest.library_bin_bytes << ",\n";
   out << "  \"codebook\": \"" << json_escape(manifest.codebook) << "\",\n";
-  // RFC 0033: name the one root shape every class answers. An operator who
-  // sees class_count == 1755 must not infer that every flop state is served.
-  out << "  \"served_root\": {\"button\": " << manifest.served_root_button << ", \"stacks\": [";
-  for (std::size_t s = 0; s < manifest.player_count; ++s)
-    out << (s ? ", " : "") << manifest.stack;
-  out << "], \"contributions\": [";
-  for (std::size_t s = 0; s < manifest.player_count; ++s)
-    out << (s ? ", " : "") << manifest.contribution;
-  out << "], \"folded\": [";
-  for (std::size_t s = 0; s < manifest.player_count; ++s)
-    out << (s ? ", false" : "false");
-  out << "]},\n";
+  // RFC 0035: one entry per trained root, naming the exact ledger, labels,
+  // class coverage, and stored/flop totals. An operator who sees
+  // class_count == 1755 must not infer that every flop state is served.
+  out << "  \"served_roots\": [\n";
+  for (std::size_t r = 0; r < manifest.served_roots.size(); ++r) {
+    const ServedRootEntry& sr = manifest.served_roots[r];
+    out << "    {\"root_id\": " << sr.root.root_id << ", \"line_tag\": \""
+        << resident::to_string(sr.root.line_tag) << "\", \"pot\": " << sr.root.pot
+        << ", \"stacks\": [";
+    for (std::size_t s = 0; s < manifest.player_count; ++s)
+      out << (s ? ", " : "") << sr.root.stacks[s];
+    out << "], \"contributions\": [";
+    for (std::size_t s = 0; s < manifest.player_count; ++s)
+      out << (s ? ", " : "") << sr.root.contributions[s];
+    out << "], \"folded\": [";
+    for (std::size_t s = 0; s < manifest.player_count; ++s)
+      out << (s ? ", " : "") << (sr.root.folded[s] ? "true" : "false");
+    out << "], \"live_count\": " << static_cast<int>(sr.root.live_count)
+        << ", \"range_profile\": " << static_cast<int>(sr.root.range_profile)
+        << ", \"class_count\": " << sr.class_count << ", \"covered_flops\": " << sr.covered_flops
+        << ", \"total_flops\": " << sr.total_flops << ", \"section_bytes\": " << sr.section_bytes
+        << "}" << (r + 1 < manifest.served_roots.size() ? "," : "") << "\n";
+  }
+  out << "  ],\n";
   out << "  \"classes\": [\n";
   for (std::size_t i = 0; i < manifest.classes.size(); ++i) {
     const ClassEntry& e = manifest.classes[i];
     out << "    {\n";
+    out << "      \"root_id\": " << e.root_id << ",\n";
     out << "      \"canonical_board\": [" << e.canonical_board[0] << ", " << e.canonical_board[1]
         << ", " << e.canonical_board[2] << "],\n";
     out << "      \"stored_rows\": " << e.stored_rows << ",\n";
