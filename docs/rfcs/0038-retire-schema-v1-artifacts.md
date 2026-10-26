@@ -78,12 +78,13 @@ one public overload, one probe field, and three resident branches.
 - G4: the resident policy has one artifact-to-game path (the
   `game_def`/`build_v2_game` arm); the three `to_unified_game(probe.game)`
   branches are gone.
-- G5: every v1 producer is migrated rather than deleted: the
-  `bs_resident_fixture` publisher keeps its JSON contract and the w1
-  real-binary TS tests stay green; the documented resident-lookup
-  benchmark keeps all three measured sections on 2-seat v2 roots with a
-  declared new baseline; and the ~20 `test_resident_policy` scenarios
-  are mapped one-to-one onto v2 fixtures.
+- G5: every v1 producer is migrated through the rekey route rather than
+  deleted: the `bs_resident_fixture` publisher keeps its JSON contract
+  and the w1 real-binary TS tests stay green; the documented
+  resident-lookup benchmark keeps all three measured sections as
+  flop-rooted river-terminal v2 artifacts with a declared new baseline;
+  and the ~20 `test_resident_policy` scenarios are mapped one-to-one via
+  in-memory heads-up training and byte-identical key transfer.
 - G6: tests and benchmarks build and pass with no v1 fixture; design
   docs and the affected RFCs record schema v1 as Historical.
 
@@ -183,7 +184,11 @@ one public overload, one probe field, and three resident branches.
   1565, 1635, 1674, 1715, 1753, 2344, 2517, 2730`), `publish_root_only`
   (`:244`, used at `:2539`), and `publish_synthetic_policy` (`:317`,
   used at `:1487, 1501`), plus direct heads-up `create_checkpoint`
-  calls at `:591, 653, 762, 1790`. The scenarios cover golden margins,
+  calls at `:591, 653, 762, 1790` — the first three are already seat
+  (`SeatCheckpointProvenance` + `SeatTrainingResult`: the v2 projection
+  fixture, the RFC 0020 hand-authored fixture, the preflop fixture) and
+  stay untouched; only `:1787-1790` (the checkpoint-rejection probe) is
+  heads-up and migrates. The scenarios cover golden margins, free-turn,
   free-turn, the belief hook and matrix, streets/round-end, orphan seats,
   shared/zero-weight combos, probe byte accounting, miss coverage,
   continuation, the fully-blocked root, and root-only partial exports.
@@ -293,13 +298,63 @@ preload site (`:728-729`) stop constructing a
 the seat-only lazy loader needs no change, and advertising, ladder
 behavior, and metrics are otherwise unchanged.
 
+### Migration mechanism: rekey, not retrain
+
+The v1 test/benchmark producers train on **fixed runouts** — concrete
+turn and river boards (for example 9h/8s and 3s/5h) whose rows the
+scenarios and the benchmark then query. The seat training path cannot
+replace that producer: `GameDef` has no fixed-runout field,
+`train_nseat` is chance-sampled SplitMix64 MCCFR, and its
+`export_seat_policy`/`export_dfs` emits concrete rows only for nodes the
+sampled walk visited (`engine/src/solver/seat_policy.cpp:152-167`, the
+`scratch.covered` gate), so the exact boards would have no rows; full
+chance materialization is also impossible (the benchmark's single-board
+SPR-10 tree is 493,500 sets; times roughly a thousand turn/river boards
+it crosses the 1,000,000-node default limit).
+
+The migration therefore rekeys the existing in-memory training into a
+seat artifact:
+
+1. keep training in memory with `HeadsUpSolverDebug::train_full` (the
+   fixed-runout full-traversal solver, retained by the Non-Goals);
+2. derive the seat identity from `solver::to_unified_game(game)`: its
+   `GameDef`, per-seat ranges, and `SizeSchedule`;
+3. create a `SeatPolicy`, `SeatPolicyAssembler::set_identity(...,
+   action_id, card_id)` with the schedule and a matching
+   `AbstractionId` minted from `unified.sizes` (the identity must
+   reproduce the converted menu exactly — the schedule-conversion
+   requirement in Risks), and transfer every trained and override row
+   with `SeatPolicyAssembler::add_row` using the same
+   `InformationKey` words. The heads-up and seat key layouts are
+   byte-identical — pinned by `test_two_seat_byte_identity`
+   (`engine/tests/test_seat_policy.cpp:439,458`:
+   `information_key(HeadsUpState) == make_information_key(...)` for both
+   a flop state and a checked-down river state);
+4. publish the result as a **flop-rooted, river-terminal schema-v2**
+  artifact with `SeatCheckpointProvenance`
+  (`prng_identifier = kFullTraversalPrngIdentifier`, matching the full
+  traversal that produced the rows, and the program's named
+  engine/algorithm revision). The resident accepts flop-rooted
+  (`board_size == 3`) v2 sources and `build_v2_game`
+  (`resident_policy.cpp:118-135`) is an identity copy at that shape, so
+  the resident view and every fixed-board query are unchanged.
+
+`train_nseat` is used only by the scenarios that already train through
+it today (the preflop fixture and the v2 projection fixtures); it is not
+introduced into the fixed-runout producers. The test and benchmark
+programs keep depending on the in-memory heads-up solver; this is a
+test/benchmark-only dependency and adds nothing to the production
+artifact or resident path. Hand-assembled sparse rows follow the
+existing `test_folded_root_identity` precedent
+(`test_resident_policy.cpp:600-660`).
+
 ### Fixture publisher migration (required, not optional)
 
-`engine/tests/resident_fixture_publisher.cpp` is rewritten to the seat
-path: train a 2-seat flop-rooted game (the resident already accepts a
-flop-rooted 2-seat v2 source at `:669-678`), assemble rows through
-`SeatPolicyAssembler`, and publish with `SeatCheckpointProvenance` and
-the seat `create_checkpoint`/`publish_policy`. The program's JSON
+`engine/tests/resident_fixture_publisher.cpp` is rewritten through the
+rekey route above: keep its in-memory `HeadsUpSolverDebug::train_full`
+run, assemble rows through `SeatPolicyAssembler` on identical key words,
+and publish with `SeatCheckpointProvenance` and the seat
+`create_checkpoint`/`publish_policy`. The program's JSON
 summary contract (path, sha256, root envelope with flop/stacks/
 contributions/pot/bigBlind/button) is preserved field-for-field so
 `platforms/river-club/tests/w1-resident-wiring.test.ts` needs no
@@ -313,21 +368,26 @@ weakening the TS assertion.
 ### Test migration
 
 - `engine/tests/test_resident_policy.cpp`: the three v1 fixture helpers
-  (`publish_game`, `publish_root_only`, `publish_synthetic_policy`) and
-  the four direct heads-up `create_checkpoint` calls become 2-seat
-  flop-rooted v2 equivalents using `train_nseat` and
-  `SeatPolicyAssembler`. Every one of the ~20 scenarios is migrated,
-  not deleted. Two shapes need explicit treatment and are feasible
-  because `validate_content_v2` (`strategy_artifact.cpp:1246-1290`)
-  validates rows individually and never enforces range completeness:
+  (`publish_game`, `publish_root_only`, `publish_synthetic_policy`) are
+  rewritten through the rekey route (in-memory `train_full` ->
+  `to_unified_game` identity -> `SeatPolicyAssembler` row transfer on
+  identical key words -> flop-rooted river-terminal seat publish), not
+  through `train_nseat`; the single heads-up rejection probe
+  (`:1787-1790`) is rebuilt on a seat checkpoint, and the three
+  existing seat-provenance sites (`:591, :653, :762`) are untouched.
+  Every one of the ~20 scenarios is migrated, not deleted. Two shapes
+  need explicit treatment and are feasible because
+  `validate_content_v2` (`strategy_artifact.cpp:1246-1290`) validates
+  rows individually and never enforces range completeness:
   (a) the root-only partial export (`publish_root_only`) is reproduced
-  by publishing a seat artifact and suppressing the class section;
-  (b) the synthetic single-row and forced zero-probability rows are
-  assembled directly through `SeatPolicyAssembler`. Scenario roots
+  by publishing a rekeyed seat policy with the class section
+  suppressed; (b) the synthetic single-row and forced
+  zero-probability rows are assembled directly through
+  `SeatPolicyAssembler` using byte-identical seat keys. Scenario roots
   (golden margin, free-turn, hook/matrix, streets, orphan, shared/zero
   combos, probe byte accounting, miss coverage, continuation,
   fully-blocked, root-only) are mapped one-to-one in the implementation
-  plan; a scenario that cannot be expressed on the seat path is a
+  plan; a scenario whose fixed-runout rows cannot be rekeyed is a
   stop condition, not a deletion.
 - `engine/tests/test_artifacts.cpp`: delete `test_roundtrip` (v1) and
   the v1-only split/resume/crash/corruption/immutable/adversarial cases
@@ -341,27 +401,41 @@ weakening the TS assertion.
   (physical corruption rejection, immutable open, adversarial
   probabilities), that assertion is added to the matching seat fixture
   instead of being dropped.
+- `engine/tests/test_seat_policy.cpp`: the codec revision-parameter
+  removal breaks its five revision-1 call sites
+  (`:373, 379, 381, 412, 441, 461`) and the grammar-1-only rejection
+  block; delete the grammar-1 assertions, retarget the
+  unsupported-revision case to the single grammar, and KEEP the two
+  heads-up-vs-seat byte-identity checks
+  (`information_key(HeadsUpState) == make_information_key(...)`) on the
+  grammar-2 codec — they are the proof the rekey route depends on.
 - Add a focused rejection test: present a minimal SQLite file with
   `PRAGMA user_version = 1` and assert `load_artifact` and
   `probe_artifact` both throw `ArtifactErrorKind::UnsupportedVersion`,
   and that the resident turns it into `LoadFailed`.
 - `solver::to_unified_game` keeps its existing in-memory callers
   (`test_resolver.cpp`, `resolver_benchmark.cpp`, and in-memory resident
-  test setup that builds a `HeadsUpGame` directly); it is not removed.
+  test setup that builds a `HeadsUpGame` directly), plus the new rekey
+  helpers; it is not removed.
 
 ### Benchmark migration (required, not deleted)
 
 `engine/benchmarks/resident_lookup_benchmark.cpp` is migrated, not
 removed: it is the only cold/warm resident latency and zero-allocation
 regression runner documented in `docs/development/benchmarking.md`. Both
-publishers are rewritten to train and publish 2-seat flop-rooted v2
-artifacts through the seat API, and the three measured sections
-(SPR-10 sizing scan, six-root SPR-4 cold/warm and zero-allocation
-probe, zero-probability miss) issue the same resident queries through
-the v2 game view. Historical v1 numbers are explicitly not comparable to
-the migrated run; the benchmark output and `benchmarking.md` mark the
-first post-migration run as a new baseline with its root shape named.
-The `encode_public_key(..., 1)` call at `:296` follows the codec change.
+publishers keep their in-memory `HeadsUpSolverDebug::train_full`
+training (fixed runouts are essential to the benchmark's full-coverage
+query invariants at `:441-447` and the warmup requirement at
+`:518-535`) and publish through the rekey route to flop-rooted
+river-terminal v2 artifacts with the converted schedule's
+`AbstractionId`; the three measured sections (SPR-10 sizing scan,
+six-root SPR-4 cold/warm and zero-allocation probe, zero-probability
+miss) issue the same resident queries through the v2 game view. Chance
+materialization is not attempted. Historical v1 numbers are explicitly
+not comparable to the migrated run; the benchmark output and
+`benchmarking.md` mark the first post-migration run as a new baseline
+with its root shape named. The former `encode_public_key(..., 1)` call
+at `:296` is deleted with the codec revision parameter.
 
 ### Documentation
 
@@ -435,16 +509,20 @@ RFC 0038 if a stale v1 path is configured.
 3. **Delete the resident-lookup benchmark together with the v1
    publisher.** Rejected: it is the documented cold/warm latency and
    zero-allocation regression runner for the resident layer, and the
-   resident query machinery it measures is format-agnostic; migration to
-   a 2-seat v2 publisher preserves the measurement with a declared new
+   resident query machinery it measures is format-agnostic; rekeying its
+   publishers to v2 preserves the measurement with a declared new
    baseline, which costs one fixture rewrite and removes no coverage.
-3. **Hide v1 behind a build flag.** Rejected by the no-flag rule in
+4. **Hide v1 behind a build flag.** Rejected by the no-flag rule in
    CLAUDE.md ("Do not introduce feature flags to select between old and
    new implementations").
-4. **Fold this into RFC 0037's legacy retirement.** Rejected during
+5. **Fold this into RFC 0037's legacy retirement.** Rejected during
    planning: RFC 0037 owns action-abstraction caps; the artifact schema
    is a separate persisted-format contract with its own consumer
    (resident loading) and deserves independent review.
+6. **Retrain the fixed-runout fixtures with `train_nseat` instead of
+   rekeying.** Rejected by evidence: the seat trainer is
+   chance-sampled, exports only visited rows, and cannot full-chance
+   materialize the benchmark tree (see "Migration mechanism").
 
 ## Risks
 
@@ -455,14 +533,17 @@ RFC 0038 if a stale v1 path is configured.
 - **A local resident entry points at a v1 file.** Mitigation: typed
   `LoadFailed` plus the existing ladder; documented above; no shipped
   configuration does this.
-- **Fixture semantic loss.** A migrated 2-seat v2 fixture may not
-  reproduce every heads-up fixture behavior (fixed-runoff enumeration,
-  the root-only partial export, forced single/zero-probability rows).
-  Mitigation: the v2 row validator accepts individual rows without
-  enforcing completeness (verified at
-  `strategy_artifact.cpp:1246-1290`), each of the ~20 scenarios is
-  mapped one-to-one in the plan, and the real-binary w1 TS assertions
-  are the final guard; an unexpressible scenario is a stop condition
+- **Fixture semantic loss.** A migrated rekeyed fixture may not
+  reproduce every heads-up fixture behavior. The key words are
+  byte-identical (pinned), but the `AbstractionId` and `SizeSchedule`
+  stamped on the seat artifact must reproduce the converted menu
+  exactly: the rekey helper must mint the action id from
+  `to_unified_game(game).sizes` and its matching digest rather than a
+  default schedule, because a mismatched schedule would silently change
+  served menus; the fixed-runout terminal depth must be River at a
+  flop root. Each of the ~20 scenarios is mapped one-to-one in the
+  plan, and the real-binary w1 TS assertions are the final guard; an
+  unexpressible scenario or a menu mismatch is a stop condition
   requiring RFC amendment, never a deleted test.
 - **Benchmark continuity.** The migrated resident-lookup benchmark
   produces a new, non-comparable baseline; mitigating factors are that
@@ -566,21 +647,30 @@ None.
   remains in the artifact/resident production code outside in-memory
   solver/benchmark/test construction.
 - **AC5**: The `bs_resident_fixture` publisher builds as the same CMake
-  target copied to `bin/bs-resident-fixture`, emits its existing JSON
-  summary fields from a 2-seat flop-rooted v2 artifact, and both
-  real-binary blueprint serving cases in
+  target copied to `bin/bs-resident-fixture`, keeps its in-memory
+  fixed-runout training, and emits its existing JSON summary fields
+  from a flop-rooted river-terminal v2 artifact produced by the rekey
+  route (`to_unified_game` identity + `SeatPolicyAssembler` +
+  byte-identical key transfer, `AbstractionId` minted from the converted
+  schedule); both real-binary blueprint serving cases in
   `platforms/river-club/tests/w1-resident-wiring.test.ts` pass without a
-  contract change.
+  JSON contract change.
 - **AC6**: Every one of the ~20 `test_resident_policy.cpp` v1 scenarios
-  has a named 2-seat v2 counterpart in the implementation plan,
+  has a named rekeyed v2 counterpart in the implementation plan,
   including root-only partial exports and synthetic single-row / forced
-  zero-probability fixtures; every deleted v1 `test_artifacts.cpp`
-  invariant (physical corruption rejection, immutable open, adversarial
-  probability rejection, split-run/resume) has a passing v2/v3
-  counterpart; the five arm-empty assertion sites are rewritten to the
-  nseat arm; ctest passes with no skipped placeholder.
+  zero-probability fixtures; the three existing seat-provenance sites
+  are untouched and only the `:1790` heads-up rejection probe is
+  rebuilt; every deleted v1 `test_artifacts.cpp` invariant (physical
+  corruption rejection, immutable open, adversarial probability
+  rejection, split-run/resume) has a passing v2/v3 counterpart; the
+  five arm-empty assertion sites are rewritten to the nseat arm;
+  `test_seat_policy.cpp` keeps its byte-identity checks on grammar 2 and
+  loses only grammar-1 assertions; ctest passes with no skipped
+  placeholder.
 - **AC7**: The resident-lookup benchmark builds and runs all three
-  measured sections against 2-seat flop-rooted v2 artifacts; its
+  measured sections against rekeyed flop-rooted river-terminal v2
+  artifacts (in-memory `train_full` retained; full-coverage and warmup
+  invariants still satisfied; no chance materialization); its
   methodology and the labeled new baseline are recorded in
   `docs/development/benchmarking.md`.
 - **AC8**: The full Engine Build Contract release chain passes
