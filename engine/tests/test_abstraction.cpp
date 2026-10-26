@@ -1076,6 +1076,59 @@ int test_raise_cap_identity() {
   return 0;
 }
 
+int test_shape_policy() {
+  // RFC 0037: the shape-keyed cap policy is an exhaustive compiled table.
+  CHECK(std::string(kShapePolicyRevision) == "shape-policy-v1");
+
+  // Band classifier boundaries (BB).
+  CHECK(stack_band_for_bb(0) == StackBand::Shallow);
+  CHECK(stack_band_for_bb(16) == StackBand::Shallow);
+  CHECK(stack_band_for_bb(17) == StackBand::Standard);
+  CHECK(stack_band_for_bb(100) == StackBand::Standard);
+  CHECK(stack_band_for_bb(101) == StackBand::Deep);
+
+  auto shape = [](std::uint8_t players, StackBand band) { return GameShape{players, band}; };
+
+  // Frozen training table: [players 2..6] x [Shallow, Standard]. Heads-up
+  // is the only uncapped family; every 3+ seat shape is cap 1.
+  const std::uint8_t expected[5][2] = {
+      {0, 0},  // 2
+      {1, 1},  // 3
+      {1, 1},  // 4
+      {1, 1},  // 5
+      {1, 1},  // 6
+  };
+  for (std::uint8_t players = 2; players <= 6; ++players) {
+    for (std::size_t band = 0; band < 2; ++band) {
+      const auto cap = production_raise_cap(shape(players, static_cast<StackBand>(band)));
+      CHECK(cap.has_value());
+      CHECK(*cap == expected[players - 2][band]);
+    }
+  }
+
+  // Unsupported shapes return nullopt; nothing is guessed.
+  CHECK(!production_raise_cap(shape(1, StackBand::Standard)).has_value());
+  CHECK(!production_raise_cap(shape(7, StackBand::Standard)).has_value());
+  CHECK(!production_raise_cap(shape(10, StackBand::Shallow)).has_value());
+  CHECK(!production_raise_cap(shape(6, StackBand::Deep)).has_value());
+
+  // Board-3 serving activation table: training value except the one measured
+  // heads-up-standard drop and the unscoped legacy nullopt.
+  CHECK(*production_flop_resolve_cap(shape(2, StackBand::Shallow)) == 0);  // activates
+  CHECK(*production_flop_resolve_cap(shape(2, StackBand::Standard)) ==
+        kHeadsUpStandardFlopSpikeDroppedCap);  // Stage-0a byte-cap drop
+  CHECK(*production_flop_resolve_cap(shape(3, StackBand::Shallow)) == 1);
+  CHECK(*production_flop_resolve_cap(shape(3, StackBand::Standard)) == 1);
+  for (std::uint8_t players = 4; players <= 6; ++players)
+    for (StackBand band : {StackBand::Shallow, StackBand::Standard})
+      CHECK(*production_flop_resolve_cap(shape(players, band)) == 1);
+  CHECK(!production_flop_resolve_cap(shape(7, StackBand::Standard)).has_value());
+  CHECK(!production_flop_resolve_cap(shape(2, StackBand::Deep)).has_value());
+  // The legacy fallback the caller substitutes for nullopt is one raise,
+  // matching pre-RFC resolve_flop behavior.
+  CHECK(kUnscopedShapeLegacyCap == 1);
+  return 0;
+}
 
 int main() {
   struct Case {
@@ -1098,6 +1151,7 @@ int main() {
       {"own_card_token_fixtures", test_own_card_token_fixtures},
       {"suit_canonicalization_id", test_suit_canonicalization_id},
       {"raise_cap_identity", test_raise_cap_identity},
+      {"shape_policy", test_shape_policy},
   }};
   int failures = 0;
   for (const Case& item : cases) {

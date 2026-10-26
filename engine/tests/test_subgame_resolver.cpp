@@ -1042,6 +1042,111 @@ int test_flop_resolve_turn_node() {
   return 0;
 }
 
+// RFC 0037: resolve_flop builds exactly the tree the shape policy selects.
+// The resolved node count must match an independently constructed public
+// AbstractTree under the policy cap; the one activated cap-0 cell must be a
+// strictly wider tree than cap 1. (At a clean street-start flop root the
+// reconstructed def is seat-symmetric to the test def, so the button
+// relabel cannot move the node count.)
+int test_flop_resolve_shape_policy() {
+  struct Row {
+    const char* label;
+    std::size_t seats;
+    Chips stack;
+    std::uint8_t policy_cap;
+  };
+  // Two live shallow (5 BB) activates cap 0; two live standard (100 BB)
+  // stays cap 1 (Stage-0a byte-cap drop); every three-or-more-seat shape is
+  // cap 1 including three-live shallow.
+  const Row rows[] = {
+      {"2-live shallow", 2, 10, 0},
+      {"2-live standard", 2, 200, 1},
+      {"3-live shallow", 3, 6, 1},
+      {"6-live standard", 6, 200, 1},
+  };
+  const std::vector<PublicAction> no_history;
+  const ResolveLimits limits = test_limits();
+
+  for (const Row& row : rows) {
+    GameState state = make_flop_state(row.seats, row.stack);
+    const GameDef& def = state.def();
+
+    SubgameResolver resolver;
+    bs::gto::EquityFrontierEvaluator frontier;
+    resolver.set_frontier_evaluator(&frontier);
+    const auto solved = resolver.resolve_flop(state, no_history, limits);
+    CHECK(solved.status == SubgameResolveStatus::Solved);
+
+    bs::tree::TreeLimits tree_limits;
+    tree_limits.max_nodes = limits.max_nodes;
+    auto expected = std::make_unique<bs::tree::AbstractTree>(
+        def, bs::abstraction::ActionAbstraction::identity(/*max_raises=*/row.policy_cap),
+        tree_limits, bs::tree::DepthLimit::streets(1));
+    std::printf("  %s: solved=%zu nodes, policy cap %u tree=%zu nodes\n", row.label, solved.nodes,
+                static_cast<unsigned>(row.policy_cap), expected->size());
+    CHECK(solved.nodes == expected->size());
+  }
+
+  // The activated heads-up shallow cell must be wider than the cap-1 tree it
+  // replaced.
+  GameState shallow = make_flop_state(2, 10);
+  bs::tree::TreeLimits tree_limits;
+  tree_limits.max_nodes = limits.max_nodes;
+  auto cap0 = std::make_unique<bs::tree::AbstractTree>(
+      shallow.def(), bs::abstraction::ActionAbstraction::identity(0), tree_limits,
+      bs::tree::DepthLimit::streets(1));
+  auto cap1 = std::make_unique<bs::tree::AbstractTree>(
+      shallow.def(), bs::abstraction::ActionAbstraction::identity(1), tree_limits,
+      bs::tree::DepthLimit::streets(1));
+  CHECK(cap0->size() > cap1->size());
+  return 0;
+}
+
+// RFC 0037 AC7: a fold mid-flop shrinks the live count but must not re-run
+// the cap lookup. After seat 0 checks, seat 1 bets and seat 2 folds, only
+// two players remain and seat 0 faces the bet; the street-start shape is
+// still three-live shallow (cap 1), not two-live (cap 0). A preflop fold,
+// in contrast, is excluded from the street-start set.
+int test_flop_resolve_midstreet_fold_cap_stable() {
+  using bs::abstraction::GameShape;
+  using bs::abstraction::StackBand;
+
+  GameState start = make_flop_state(3, /*stack=*/6);  // 3 BB, shallow
+  GameState cursor = start;
+  cursor = cursor.after_action(0, {ActionType::Check});
+  cursor = cursor.after_action(1, {ActionType::Bet, 2});
+  cursor = cursor.after_action(2, {ActionType::Fold});
+  CHECK(cursor.live_players().size() == 2);
+
+  const std::vector<PublicAction> history = {
+      {Street::Flop, 0, {ActionType::Check}},
+      {Street::Flop, 1, {ActionType::Bet, 2}},
+      {Street::Flop, 2, {ActionType::Fold}},
+  };
+  const GameShape after_fold = SubgameResolver::flop_shape_at_street_start(cursor, history);
+  CHECK(after_fold.street_start_players == 3);
+  CHECK(after_fold.band == StackBand::Shallow);
+  // The street-start shape must select cap 1; a current-live re-lookup would
+  // have produced the two-live cap-0 cell.
+  CHECK(bs::abstraction::production_flop_resolve_cap(after_fold) == 1);
+
+  // Street start before any fold is the same shape.
+  const GameState fresh = make_flop_state(3, 6);
+  const GameShape at_start = SubgameResolver::flop_shape_at_street_start(fresh, {});
+  CHECK(at_start.street_start_players == 3);
+  CHECK(at_start.band == StackBand::Shallow);
+
+  // A preflop fold is NOT restored: two live players at the flop is a
+  // genuine two-live shape.
+  GameDef def = fresh.def();
+  def.folded[2] = true;
+  GameState two_live(def);
+  CHECK(two_live.live_players().size() == 2);
+  const GameShape two_shape = SubgameResolver::flop_shape_at_street_start(two_live, {});
+  CHECK(two_shape.street_start_players == 2);
+  return 0;
+}
+
 // RFC 0025: off-tree action line tolerance. The blueprint covers check-check
 // on the flop, but the observed history includes an off-tree bet (bet 5, not
 // in the blueprint row's menu of check/bet 2). The resolver should stop the
@@ -1120,6 +1225,8 @@ int main() {
   failures += test_flop_resolve_feasibility();
   failures += test_flop_resolve_no_frontier();
   failures += test_flop_resolve_turn_node();
+  failures += test_flop_resolve_shape_policy();
+  failures += test_flop_resolve_midstreet_fold_cap_stable();
   failures += test_off_tree_tolerance();
   failures += test_off_tree_missing_blueprint();
   if (failures == 0)

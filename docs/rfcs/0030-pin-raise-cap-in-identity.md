@@ -653,7 +653,9 @@ start tests. Stage 3 completed on 2026-10-25:
   `preflop-profile` (2-seat, cap 0), `preflop-profile-3way` (3-seat 10 BB,
   cap 0; needed raised trainer caps `--max-infosets 2000000
   --train-bytes 8589934592` because Preflop169 retains ~1.58M information
-  sets on the three-seat identity tree), and `preflop-profile-6way`
+  sets on the three-seat identity tree — this artifact was retired on
+  2026-10-26 by RFC 0037's legacy-retirement amendment; the record here
+  is the historical Stage-3 build fact), and `preflop-profile-6way`
   (6-seat, cap 1), all at their pinned iteration counts with termination
   Complete.
 - The packed libraries are the final BSFLIB03 single form after RFC 0035;

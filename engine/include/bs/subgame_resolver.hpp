@@ -53,6 +53,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -152,6 +153,24 @@ class SubgameResolver {
                                     std::span<const poker::PublicAction> history,
                                     const ResolveLimits& limits) const;
 
+  // RFC 0037: build the exact River-terminal GameDef the flop resolver would
+  // build from a live node. Public so tests can construct comparison trees
+  // that pin the shape-policy cap the resolver selected; it is a pure,
+  // side-effect-free transformation (street_committed, raise_rights,
+  // last_full_raise, folded masks, board, and the RFC 0030 raise counter are
+  // carried for both street-start and mid-street nodes).
+  static poker::GameDef build_subgame_def_from_node(const poker::GameState& node, std::size_t hero);
+
+  // RFC 0037: the flop resolver's street-start shape. Public so the
+  // mid-street-fold invariant is unit-testable without running a solve.
+  // Players who folded ON the flop (present in `history`) still count in the
+  // street-start player set, so a mid-street fold never re-runs the cap
+  // lookup; players folded before the flop are excluded. The band uses each
+  // included player's street-start stack (current stack plus current-street
+  // commitment) over the node's big blind.
+  static abstraction::GameShape flop_shape_at_street_start(
+      const poker::GameState& node, std::span<const poker::PublicAction> history);
+
  private:
   // Build the River-terminal GameDef for the subgame rooted at the turn state.
   // The subgame is a standalone game: stacks and pot come from the current
@@ -197,14 +216,6 @@ class SubgameResolver {
                                         std::span<const poker::PublicAction> turn_history,
                                         int river_card, const poker::GameDef& subgame_def);
 
-  // Build the River-terminal GameDef for a subgame rooted at the current
-  // node. Unlike build_subgame_def (which takes a blueprint-derived turn
-  // root), this builds the def directly from the live node state. It carries
-  // the node's street_committed, raise_rights, and last_full_raise, so the
-  // subgame root opens at the live decision point for both street-start and
-  // mid-street nodes.
-  static poker::GameDef build_subgame_def_from_node(const poker::GameState& node, std::size_t hero);
-
   // Build uniform prior ranges: all C(52,2)=1326 combos with weight 1.0,
   // filtered to remove combos sharing a card with the board. The same
   // range is assigned to every seat (including folded seats — the trainer
@@ -212,13 +223,34 @@ class SubgameResolver {
   static std::vector<std::vector<solver::WeightedHand>> uniform_prior_ranges(
       std::span<const int> board, std::size_t seats);
 
-  // Shared tree-build + CFR-solve + candidate-extraction logic. If
-  // walk_to_river is true, walks the solved tree from the turn root along
-  // the observed turn actions and river card to extract the candidate at
-  // the river action node. Otherwise extracts at the tree root. `board` is
-  // the decision node's board (used for information keys and the river
-  // card); it may be longer than the subgame def's board in the blueprint
-  // path, where the subgame is turn-rooted but the decision is on the river.
+  // RFC 0036 stage 0: build step of the rooted-subgame seam. Validates the
+  // depth-limit/decision-street constraint and constructs the abstract tree
+  // under the resolve's tree limits. On failure sets result.status
+  // (InvalidInput or Ineligible) and returns nullptr.
+  std::unique_ptr<tree::AbstractTree> build_rooted_subgame_tree(
+      const poker::GameDef& subgame_def, const abstraction::ActionAbstraction& action,
+      bool walk_to_river, const ResolveLimits& limits, SubgameResolveResult& result) const;
+
+  // RFC 0036 stage 0: train-and-extract step of the rooted-subgame seam.
+  // Runs CFR on a prebuilt tree, then walks to the river node when
+  // walk_to_river is true and extracts the whole-range candidate. All
+  // post-build statuses (SolveDeadline, InvalidInput, Ineligible) are
+  // written to result.
+  void train_and_extract_rooted_subgame(
+      const tree::AbstractTree& tree, const poker::GameDef& subgame_def,
+      const std::vector<std::vector<solver::WeightedHand>>& prior_ranges,
+      std::span<const int> board, std::span<const poker::PublicAction> history, std::size_t hero,
+      bool walk_to_river, const ResolveLimits& limits, SubgameResolveResult& result) const;
+
+  // Shared orchestration for rooted subgames: build via
+  // build_rooted_subgame_tree, then train and extract via
+  // train_and_extract_rooted_subgame. If walk_to_river is true, the solved
+  // tree is walked from the turn root along the observed turn actions and
+  // river card to extract the candidate at the river action node; otherwise
+  // the candidate is extracted at the tree root. `board` is the decision
+  // node's board (used for information keys and the river card); it may be
+  // longer than the subgame def's board in the blueprint path, where the
+  // subgame is turn-rooted but the decision is on the river.
   void solve_rooted_subgame(const poker::GameDef& subgame_def,
                             const abstraction::ActionAbstraction& action,
                             const std::vector<std::vector<solver::WeightedHand>>& prior_ranges,

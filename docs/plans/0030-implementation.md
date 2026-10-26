@@ -84,7 +84,9 @@ Status: executing with local compute (offline training, no live play).
    - `preflop-profile` (2p, cap 0), `preflop-profile-3way` (3p 10 BB,
      identity; needs `--max-infosets 2000000 --train-bytes 8589934592`
      because the Preflop169-retaining trainer needs ~1.58M information
-     sets on the three-seat identity tree, above the library default),
+     sets on the three-seat identity tree, above the library default;
+     retired 2026-10-26 under RFC 0037's legacy-retirement amendment —
+     this line is the historical Stage-3 build record),
      `preflop-profile-6way` (6p, identity cap 1).
    - `flop-library-6way-fullrange`: identity cap 1, full range, 1,755
      classes, 6 seats, 200-chip start / 2 contribution, 1,000 iterations.

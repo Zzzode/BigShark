@@ -33,6 +33,7 @@
 #include <bs/heads_up.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <set>
 #include <span>
 #include <stdexcept>
@@ -370,5 +371,64 @@ OwnCardToken own_card_token(const std::array<int, 2>& holding, const std::array<
 // serialize the comparison order, the tie-break, and the token shape, so any
 // future change to any of them moves the digest.
 AbstractionId suit_canonicalization_id();
+
+// RFC 0037: shape-keyed action-abstraction selection policy. One reviewed,
+// table-driven mapping from game shape to the production raise cap over the
+// unchanged rfc0007 size schedule. The table is compiled identity (not user
+// configuration): a revision is an RFC event and moves every artifact's cap
+// digest. It stays a leaf — the inputs are plain scalars the caller derives
+// from the game state.
+
+// The operating stack bands, in big blinds. The shallow/standard boundary at
+// 16 BB is the measured three-seat uncapped identity-tree cliff; above it a
+// cap >= 1 makes subgame node counts stack-independent. 100 BB is the
+// operating buy-in; Deep is an unsupported band and every table lookup
+// returns std::nullopt for it.
+enum class StackBand : std::uint8_t {
+  Shallow,   // max effective stack <= 16 BB
+  Standard,  // > 16 BB and <= 100 BB
+  Deep,      // > 100 BB: outside the supported table
+};
+
+struct GameShape {
+  // Preflop: dealt players (every seated player has cards); postflop: players
+  // live at street start.
+  std::uint8_t street_start_players = 0;
+  StackBand band = StackBand::Standard;
+  bool operator==(const GameShape&) const = default;
+};
+
+// Audit/revision token. Recorded in policy-audit output; the cap itself is
+// what enters artifact digests (the RFC 0030 |max-raises=N| token), not this
+// string.
+constexpr const char* kShapePolicyRevision = "shape-policy-v1";
+
+// Cap served at board-3 rootless resolving for shapes outside the supported
+// table (7..10 players, > 100 BB). Today's hardcoded resolve_flop cap was 1,
+// so this keeps that behavior exactly; it exists as a named constant rather
+// than an implicit default. See production_flop_resolve_cap.
+constexpr std::uint8_t kUnscopedShapeLegacyCap = 1;
+
+// Classify the deepest effective stack among live players into a band using
+// the table's big-blind denominator. Stacks above 100 BB classify as Deep and
+// make every table lookup return std::nullopt.
+StackBand stack_band_for_bb(std::uint32_t max_effective_stack_bb) noexcept;
+
+// The production TRAINING cap for a supported shape: the value builders train
+// artifacts under. Returns std::nullopt for player counts outside 2..6; deep
+// stacks (> 100 BB) are likewise outside the table. Frozen by RFC 0037:
+// heads-up is cap 0 at every depth; every three-or-more-seat shape is cap 1.
+std::optional<std::uint8_t> production_raise_cap(const GameShape& shape) noexcept;
+
+// The cap the board-3 rootless resolver (resolve_flop) SERVES for a shape,
+// i.e. the RFC 0037 activation table rather than the training table. It
+// equals production_raise_cap except for one measured serving/training
+// divergence: two-live standard, whose Stage-0a cap-0 flop tree exceeded the
+// 1 GiB builder byte cap, so serving stays at one raise
+// (kHeadsUpStandardFlopSpikeDroppedCap) even though heads-up preflop
+// training is uncapped. Unscoped shapes return std::nullopt; the caller
+// substitutes kUnscopedShapeLegacyCap so their behavior is unchanged.
+constexpr std::uint8_t kHeadsUpStandardFlopSpikeDroppedCap = 1;
+std::optional<std::uint8_t> production_flop_resolve_cap(const GameShape& shape) noexcept;
 
 }  // namespace bs::abstraction

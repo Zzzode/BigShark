@@ -71,8 +71,13 @@ artifacts/flop-library-4p/
 # measurements are summarized in docs/design/gto-engine.md)
 artifacts/preflop-profile/
 
-# Local N-way preflop profile builds (RFC 0010; same schema-v2 format)
-artifacts/preflop-profile-3way/
+# Local N-way preflop profile builds (RFC 0010 family; RFC 0037 unified
+# 100 BB set: cap 1 for 3..6 seats). The 3-seat 10 BB cap-0 profile was
+# retired 2026-10-26 and must not be rebuilt into artifacts/.
+artifacts/preflop-profile-3way-100bb/
+artifacts/preflop-profile-4way/
+artifacts/preflop-profile-5way/
+artifacts/preflop-profile-6way/
 
 # RFC 0012: packed mmap binary libraries and parallel-training verification
 # output. The .bin is a derived acceleration layer; the SQLite artifacts

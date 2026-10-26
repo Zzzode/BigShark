@@ -18,8 +18,8 @@ import {
   GetCapabilitiesRequestSchema,
   SolverSource,
   StrategySchema,
-} from '../../../build/generated/ts/bigshark/engine/v2/engine_pb.js';
-import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, autoDetectedFlopLibrary, autoDetectedFlopLibraries, warmupTimeoutMsFor, residentBudgetMiB, warmEngine } from '../src/engine.js';
+} from '../../../build/generated/ts/bigshark/engine/engine_pb.js';
+import { closeEngine, decide, parseFlopLibraries, parseResidentRoots, protoEngineLaunchArgs, resolveFlopLibraries, resolveResidentRoots, autoDetectedPreflopProfileRoots, autoDetectedFlopLibrary, autoDetectedFlopLibraries, warmupTimeoutMsFor, residentBudgetMiB, warmEngine } from '../src/engine.js';
 import {
   decisionEnvelope,
   fromDecisionResponse,
@@ -214,6 +214,61 @@ test('RFC 0027: exactly one binary library wins; mixing is a configuration error
   assert.deepEqual(sqliteOnly.libraries, [sqliteDir]);
 
   if (prior !== undefined) process.env.BIGSHARK_ENGINE_FLOP_LIBRARIES = prior;
+  rmSync(tempRoot, { recursive: true, force: true });
+});
+
+// ---- RFC 0037 preflop profile resident-root auto-discovery ----------------
+
+test('RFC 0037: auto-discovery pins each shipped preflop profile by player count', () => {
+  const prior = process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS;
+  delete process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS;
+
+  const tempRoot = mkdtempSync(join(tmpdir(), 'bs-preflop-detect-'));
+  const sha = (ch: string) => ch.repeat(64);
+  const makeProfile = (name: string, players: number, ch: string) => {
+    const dir = join(tempRoot, 'artifacts', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'preflop-profile.db'), `db-${players}`);
+    writeFileSync(
+      join(dir, 'manifest.json'),
+      JSON.stringify({ player_count: players, sha256: sha(ch) }),
+    );
+  };
+  makeProfile('preflop-profile-6way', 6, 'a');
+  makeProfile('preflop-profile', 2, 'b');
+  makeProfile('preflop-profile-3way-100bb', 3, 'c');
+
+  const roots = autoDetectedPreflopProfileRoots(tempRoot);
+  // Sorted by player count, db path pinned with the manifest sha256.
+  assert.deepEqual(
+    roots.map(r => r.path),
+    [2, 3, 6].map(n =>
+      join(tempRoot, 'artifacts',
+           n === 2 ? 'preflop-profile'
+                   : `preflop-profile-${n === 3 ? '3way-100bb' : '6way'}`,
+           'preflop-profile.db')),
+  );
+  assert.deepEqual(roots.map(r => r.sha256), [sha('b'), sha('c'), sha('a')]);
+
+  // A directory missing the db or a valid pin is skipped, not fatal.
+  const broken = join(tempRoot, 'artifacts', 'preflop-profile-broken');
+  mkdirSync(broken, { recursive: true });
+  writeFileSync(join(broken, 'manifest.json'), '{"player_count":4}');
+  assert.equal(autoDetectedPreflopProfileRoots(tempRoot).length, 3);
+
+  // resolveResidentRoots uses auto-discovery only with no explicit source.
+  assert.deepEqual(resolveResidentRoots({}, () => roots), roots);
+  assert.deepEqual(
+    resolveResidentRoots({ residentRoots: [] }, () => roots),
+    [],
+  );
+  process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS = JSON.stringify([
+    { path: '/env.db', sha256: sha('d') },
+  ]);
+  assert.equal(resolveResidentRoots({}, () => roots)[0]?.path, '/env.db');
+
+  if (prior === undefined) delete process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS;
+  else process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS = prior;
   rmSync(tempRoot, { recursive: true, force: true });
 });
 

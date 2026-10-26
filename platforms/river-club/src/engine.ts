@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readdirSync, readSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
 import { totalmem } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -101,6 +101,37 @@ export function parseResidentRoots(
   });
 }
 
+/**
+ * The resident roots the engine child is launched with.
+ *
+ * Precedence:
+ * 1. `config.residentRoots` (explicit). An empty array is the opt-out.
+ * 2. `BIGSHARK_ENGINE_RESIDENT_ROOTS` (JSON array of `{path, sha256}`).
+ * 3. Auto-discovery of the bundled standalone preflop profiles under
+ *    `<repo>/artifacts/preflop-profile*`, each pinned by its manifest sha256
+ *    (RFC 0037). The flop libraries are resolved separately by
+ *    `resolveFlopLibraries`.
+ */
+export function resolveResidentRoots(
+  config: EngineConfig,
+  autoDetect: () => ResidentRootSpec[] = autoDetectedPreflopProfileRootsCached,
+): ResidentRootSpec[] {
+  const explicit = parseResidentRoots(config);
+  if (config.residentRoots !== undefined || process.env.BIGSHARK_ENGINE_RESIDENT_ROOTS)
+    return explicit;
+  return autoDetect();
+}
+
+// The artifacts root is fixed for the process, so auto-discovery is computed
+// once and cached: `decide()` runs per hand and must not scan the artifacts
+// directory or re-parse manifests on the hot path.
+let cachedPreflopRoots: ResidentRootSpec[] | null = null;
+function autoDetectedPreflopProfileRootsCached(): ResidentRootSpec[] {
+  if (cachedPreflopRoots === null)
+    cachedPreflopRoots = autoDetectedPreflopProfileRoots();
+  return cachedPreflopRoots;
+}
+
 
 /** Whether a flop library directory's manifest names a packed `library.bin`. */
 export function isBinaryFlopLibrary(dir: string): boolean {
@@ -166,6 +197,54 @@ export function autoDetectedFlopLibraries(root: string = repoRoot): string[] {
       found.push(join(artifactsDir, entry.name));
   }
   return found.sort();
+}
+
+/**
+ * All bundled standalone preflop profile artifacts, as pinned resident-root
+ * specs. Each `artifacts/preflop-profile*` directory must contain a
+ * `preflop-profile.db` and a `manifest.json` whose `sha256` pins that db; a
+ * directory missing either, or carrying a malformed manifest, is skipped (it
+ * is not a crash: the decision then resolves through the normal ladder, and
+ * the policy audit is the fail-closed publication gate). Sorted by
+ * player_count so the launch line and the advertising test are deterministic.
+ * RFC 0037: this makes the complete 2..6 dealt-count set serve without an
+ * operator-authored config while keeping the per-file sha256 pin.
+ */
+export function autoDetectedPreflopProfileRoots(
+  root: string = repoRoot,
+): ResidentRootSpec[] {
+  const artifactsDir = join(root, 'artifacts');
+  if (!existsSync(artifactsDir)) return [];
+  const found: Array<{ playerCount: number; spec: ResidentRootSpec }> = [];
+  for (const entry of readdirSync(artifactsDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith('preflop-profile')) continue;
+    const dir = join(artifactsDir, entry.name);
+    const dbPath = join(dir, 'preflop-profile.db');
+    const manifestPath = join(dir, 'manifest.json');
+    if (!existsSync(dbPath) || !existsSync(manifestPath)) continue;
+    let manifest: { player_count?: unknown; sha256?: unknown };
+    try {
+      manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as {
+        player_count?: unknown;
+        sha256?: unknown;
+      };
+    } catch {
+      continue;
+    }
+    if (
+      typeof manifest.player_count !== 'number'
+      || typeof manifest.sha256 !== 'string'
+      || !SHA256_HEX.test(manifest.sha256)
+    )
+      continue;
+    found.push({
+      playerCount: manifest.player_count,
+      spec: { path: dbPath, sha256: manifest.sha256 },
+    });
+  }
+  return found
+    .sort((a, b) => a.playerCount - b.playerCount)
+    .map(entry => entry.spec);
 }
 
 /**
@@ -383,7 +462,7 @@ export async function decide(
   // from the fallback with the fault hidden.
   let roots: ResidentRootSpec[];
   try {
-    roots = parseResidentRoots(config);
+    roots = resolveResidentRoots(config);
   } catch (error) {
     throw new Error(
       `invalid resident root configuration: ${error instanceof Error ? error.message : String(error)}`,
@@ -479,7 +558,7 @@ export async function warmEngine(config: EngineConfig): Promise<void> {
   let libraries: string[];
   let budget: number | undefined;
   try {
-    roots = parseResidentRoots(config);
+    roots = resolveResidentRoots(config);
     const resolved = resolveFlopLibraries(config);
     libraries = resolved.libraries;
     budget = resolved.residentBudgetMiB;

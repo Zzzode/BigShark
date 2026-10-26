@@ -1418,6 +1418,132 @@ NSeatPolicy project_policy(const AbstractTree& cand, const AbstractTree& ref,
   return NSeatPolicy::from_parts(ref.def(), ref.action_id(), std::move(rows));
 }
 
+struct AblationOutcome {
+  bool declined = false;
+  std::string reason;
+  std::size_t cand_nodes = 0;
+  std::size_t ref_nodes = 0;
+  std::size_t cand_infosets = 0;
+  double inmodel_nashconv_bb = 0.0;
+  double gap_passive_bb = 0.0;
+  double gap_uniform_bb = 0.0;
+};
+
+// One RFC 0037 cell: candidate cap `cand_cap`, reference cap `ref_cap`,
+// turn-rooted streets(1) production identity geometry.
+AblationOutcome run_rfc0037_cell(std::size_t seats, int stack_bb, std::uint8_t cand_cap,
+                                 std::uint8_t ref_cap, const std::vector<std::array<int, 2>>& range,
+                                 std::uint64_t iterations, std::uint64_t seed,
+                                 const EquityFrontierEvaluator* frontier) {
+  AblationOutcome out;
+  GameDef def = make_subgame_def_np(seats, stack_bb, /*river_rooted=*/false);
+
+  std::unique_ptr<AbstractTree> cand_tree;
+  std::unique_ptr<AbstractTree> ref_tree;
+  try {
+    cand_tree = std::make_unique<AbstractTree>(def, ActionAbstraction::identity(cand_cap),
+                                               TreeLimits{}, DepthLimit::streets(1));
+    ref_tree = std::make_unique<AbstractTree>(def, ActionAbstraction::identity(ref_cap),
+                                              TreeLimits{}, DepthLimit::streets(1));
+  } catch (const std::exception& e) {
+    out.declined = true;
+    out.reason = std::string("build: ") + e.what();
+    return out;
+  }
+  out.cand_nodes = cand_tree->size();
+  out.ref_nodes = ref_tree->size();
+
+  std::vector<std::vector<WeightedHand>> ranges(def.player_count);
+  for (std::size_t p = 0; p < def.player_count; ++p)
+    for (const auto& h : range)
+      if (!blocks_board(h, def.board, def.board_size))
+        ranges[p].push_back({h, 1.0});
+
+  NSeatTrainerLimits trainer_limits;
+  trainer_limits.wall = std::chrono::seconds(600);
+  NSeatTrainingResult trained;
+  try {
+    trained = train_nseat(*cand_tree, ranges, iterations, seed, trainer_limits, frontier, nullptr);
+  } catch (const std::exception& e) {
+    out.declined = true;
+    out.reason = std::string("train: ") + e.what();
+    return out;
+  }
+  out.cand_infosets = trained.information_sets;
+
+  std::vector<long long> cand_to_ref(cand_tree->size(), -1);
+  pair_nodes_by_path(*cand_tree, *ref_tree, 0, 0, cand_to_ref);
+
+  const double bb = static_cast<double>(def.big_blind);
+  const NashConvResult inmodel =
+      compute_nash_conv(*cand_tree, &trained.policy, range, def, frontier);
+  out.inmodel_nashconv_bb = inmodel.nash_conv / bb;
+
+  for (const bool passive_fill : {true, false}) {
+    NSeatPolicy projected =
+        project_policy(*cand_tree, *ref_tree, trained.policy, cand_to_ref, passive_fill);
+    const NashConvResult translated =
+        compute_nash_conv(*ref_tree, &projected, range, def, frontier);
+    const double gap = translated.nash_conv / bb;
+    if (passive_fill)
+      out.gap_passive_bb = gap;
+    else
+      out.gap_uniform_bb = gap;
+  }
+  return out;
+}
+
+// --rfc0037-ablation seats stack-bb cand-cap ref-cap iterations seed
+// Prints one CSV row. The committed checker
+// (tools/artifact-audit/rfc0037-ablation-check.py) aggregates repeated seeds.
+int run_rfc0037_ablation(int argc, char** argv) {
+  if (argc < 8) {
+    std::fprintf(stderr,
+                 "usage: %s --rfc0037-ablation <seats> <stack-bb> <cand-cap> <ref-cap> "
+                 "<iterations> <seed>\n",
+                 argv[0]);
+    return 2;
+  }
+  const std::size_t seats = static_cast<std::size_t>(std::atoll(argv[2]));
+  const int stack_bb = std::atoi(argv[3]);
+  const auto cand_cap = static_cast<std::uint8_t>(std::atoi(argv[4]));
+  const auto ref_cap = static_cast<std::uint8_t>(std::atoi(argv[5]));
+  const std::uint64_t iterations = std::stoull(argv[6]);
+  const std::uint64_t seed = std::stoull(argv[7]);
+  const auto range = seats >= 6 ? make_rfc0036_six_range() : make_representative_range();
+  const EquityFrontierEvaluator frontier;
+
+  const AblationOutcome r =
+      run_rfc0037_cell(seats, stack_bb, cand_cap, ref_cap, range, iterations, seed, &frontier);
+  std::printf("rfc0037-ablation,%zu,%d,%u,%u,%llu,%llu,", seats, stack_bb,
+              static_cast<unsigned>(cand_cap), static_cast<unsigned>(ref_cap),
+              static_cast<unsigned long long>(iterations), static_cast<unsigned long long>(seed));
+  if (r.declined) {
+    std::printf("INFEASIBLE,%zu,%zu,,,,%s\n", r.cand_nodes, r.ref_nodes, r.reason.c_str());
+  } else {
+    std::printf("FITS,%zu,%zu,%zu,%.8f,%.8f,%.8f,\n", r.cand_nodes, r.ref_nodes, r.cand_infosets,
+                r.inmodel_nashconv_bb, r.gap_passive_bb, r.gap_uniform_bb);
+  }
+  std::fflush(stdout);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// RFC 0036 M2: river-betting model error
+// ---------------------------------------------------------------------------
+//
+// The M1 in-model NashConv cannot price the error the real river betting
+// continuation introduces because the walker and the depth-limited leaf
+// share the same all-in-equity model. M2 trains the FULL turn->river
+// reference, freezes the cap-1 depth-limited policy's TURN rows, fills the
+// reference tree's RIVER nodes two ways (reference equilibrium fill, and
+// uniform fill), and evaluates the composed policy in the full reference
+// tree. The gap over the reference baseline is the river-model error.
+//
+// Beyond-cap turn nodes (the cap-1 candidate cannot reach them) get the
+// pinned passive fill in both arms, identical to the RFC 0037 ablation, so
+// the two arms differ ONLY at river nodes (the model-error isolation).
+
 struct M2Sample {
   bool declined = false;
   std::string reason;
@@ -1597,6 +1723,9 @@ int main(int argc, char** argv) {
   bool rfc0036_m1 = false;
   bool rfc0036_m1_envelope = false;
   int arg_index = 1;
+  bool rfc0037_ablation = argc > 1 && std::string(argv[1]) == "--rfc0037-ablation";
+  if (rfc0037_ablation)
+    return run_rfc0037_ablation(argc, argv);
   bool rfc0036_m2 = argc > 1 && std::string(argv[1]) == "--rfc0036-m2";
   if (rfc0036_m2)
     return run_rfc0036_m2(argc, argv);

@@ -111,9 +111,30 @@ poker::GameDef SubgameResolver::build_subgame_def(const poker::GameState& turn_r
 
 abstraction::ActionAbstraction SubgameResolver::reconstruct_action_abstraction(
     const abstraction::AbstractionId& action_id, const abstraction::SizeSchedule& sizes) {
+  // RFC 0030 lenient reconstruction contract, distinct from the strict trainer
+  // gates. The packed library carries an EMPTY id (no parameters at all): that
+  // is a known absence and keeps the documented cap-0 fallback. An
+  // unrecognized name/version likewise falls back — it cannot be ours. But a
+  // recognized family whose parameters omit or malform the cap token carries an
+  // UNKNOWN value and must fail closed: reading it as 0 would serve menus one
+  // raise wider than a capped artifact was trained at.
+  const bool empty_id = action_id.name.empty() && action_id.version == 0 &&
+                        action_id.parameters.empty() && action_id.digest == 0;
+  if (empty_id || (!abstraction::is_identity_action_family(action_id) &&
+                   !abstraction::is_declared_coarse_action_id(action_id))) {
+    if (!empty_id &&
+        (action_id.name == "rfc0007-pot-fractions" || action_id.name == "rfc0008-declared-coarse"))
+      // Recognized family, malformed/tokenless parameters: unknown cap.
+      throw std::invalid_argument(
+          "cannot reconstruct action abstraction: recognized family without a valid "
+          "|max-raises= token; the cap is unknown");
+    return abstraction::ActionAbstraction(sizes);
+  }
+  const std::uint8_t cap = abstraction::parse_max_raises_token(action_id.parameters);
   if (abstraction::is_declared_coarse_action_id(action_id))
-    return abstraction::ActionAbstraction::declared(sizes, abstraction::CoverSeeds::DeclaredOnly);
-  return abstraction::ActionAbstraction(sizes);
+    return abstraction::ActionAbstraction::declared(sizes, abstraction::CoverSeeds::DeclaredOnly,
+                                                    cap);
+  return abstraction::ActionAbstraction(sizes, cap);
 }
 
 std::vector<std::vector<solver::WeightedHand>> SubgameResolver::derive_prior_ranges(
@@ -367,6 +388,9 @@ poker::GameDef SubgameResolver::build_subgame_def_from_node(const poker::GameSta
     if (def.street_committed[s] > 0)
       mid_street = true;
   def.last_full_raise = mid_street ? node.last_full_raise() : 0;
+  // RFC 0030: carry the raises already made this street so the subgame's cap
+  // does not reset and permit one extra raise. Street-start roots keep 0.
+  def.raises_this_street = mid_street ? node.raises_this_street() : 0;
   def.pot = node.pot();
   const auto board = node.board();
   for (std::size_t i = 0; i < board.size() && i < 5; ++i)
@@ -447,6 +471,34 @@ SubgameResolveResult SubgameResolver::resolve_uniform(const poker::GameState& no
   return result;
 }
 
+abstraction::GameShape SubgameResolver::flop_shape_at_street_start(
+    const poker::GameState& node, std::span<const poker::PublicAction> history) {
+  const std::size_t seats = node.player_count();
+  bool folded_on_flop[10] = {};
+  for (const poker::PublicAction& event : history) {
+    if (event.street == poker::Street::Flop && event.action.type == poker::ActionType::Fold &&
+        event.seat < seats)
+      folded_on_flop[event.seat] = true;
+  }
+  std::size_t street_start_players = node.live_players().size();
+  std::uint32_t max_effective_bb = 0;
+  for (std::size_t seat = 0; seat < seats; ++seat) {
+    const bool live = std::ranges::find(node.live_players(), seat) != node.live_players().end();
+    if (folded_on_flop[seat]) {
+      ++street_start_players;  // folded on THIS street: restore the street-start set
+      continue;
+    }
+    if (!live)
+      continue;  // folded before the flop: not part of this street's shape
+    const auto& player = node.players()[seat];
+    const auto start_stack = player.stack + player.street_committed;
+    max_effective_bb =
+        std::max(max_effective_bb, static_cast<std::uint32_t>(start_stack / node.def().big_blind));
+  }
+  return abstraction::GameShape{static_cast<std::uint8_t>(street_start_players),
+                                abstraction::stack_band_for_bb(max_effective_bb)};
+}
+
 SubgameResolveResult SubgameResolver::resolve_flop(const poker::GameState& node,
                                                    std::span<const poker::PublicAction> history,
                                                    const ResolveLimits& limits) const {
@@ -498,18 +550,32 @@ SubgameResolveResult SubgameResolver::resolve_flop(const poker::GameState& node,
     return result;
   }
 
-  // Identity action abstraction with max_raises_per_street=1 (RFC 0025). The
-  // raise cap bounds the branching factor so 5-6 seat depth-limited trees
-  // stay within the builder cap.
-  abstraction::ActionAbstraction action = abstraction::ActionAbstraction::identity();
-  action.set_max_raises_per_street(1);
+  // RFC 0037: the raise cap comes from the shape-keyed policy, not a
+  // hardcoded constant. The shape is fixed at STREET START and must not be
+  // re-evaluated when players fold mid-street: players who folded ON the
+  // flop still belong to the street-start set (preflop folds never reached
+  // this street and are excluded), and the street-start stack is current
+  // stack plus current-street commitment. Supported shapes resolve at their
+  // policy cap: this activates uncapped heads-up SHALLOW flops and keeps one
+  // raise for standard heads-up (the Stage-0a cap-0 tree exceeded the 1 GiB
+  // byte cap) and for every three-or-more-seat shape. Unscoped shapes
+  // (7-10 players, > 100 BB) keep the pre-RFC one-raise behavior through the
+  // named legacy constant. The cap is pinned in the id by RFC 0030.
+  const abstraction::GameShape flop_shape = flop_shape_at_street_start(node, history);
+  const std::uint8_t flop_cap = abstraction::production_flop_resolve_cap(flop_shape)
+                                    .value_or(abstraction::kUnscopedShapeLegacyCap);
+  const abstraction::ActionAbstraction action =
+      abstraction::ActionAbstraction::identity(/*max_raises_per_street=*/flop_cap);
 
   // Depth-limited resolving: streets(1) gives the flop action street, with
-  // the turn boundary valued by the frontier evaluator. This keeps the tree
-  // feasible for all seat counts (2..10): the 6-seat tree is ~466K nodes,
-  // well under the 5M builder cap. A deeper streets(2) tree (flop + turn
-  // action streets) is infeasible for 4+ seats because the turn chance node
-  // (49 outcomes) multiplies the flop action subtree.
+  // the turn boundary valued by the frontier evaluator. At cap 1 this keeps
+  // the tree feasible for all seat counts (2..10): the 6-seat tree is
+  // ~466K nodes, well under the 5M builder cap. The uncapped cap-0 cells the
+  // policy selects were measured in RFC 0037 Stage 0a: two-live shallow fits
+  // (147K nodes / 149 MiB); two-live standard exceeds the 1 GiB byte cap and
+  // is therefore deliberately not selected. A deeper streets(2) tree (flop +
+  // turn action streets) is infeasible for 4+ seats because the turn chance
+  // node (49 outcomes) multiplies the flop action subtree.
   ResolveLimits depth_limits = limits;
   depth_limits.depth_limit = tree::DepthLimit::streets(1);
 
@@ -607,11 +673,9 @@ SubgameResolveResult SubgameResolver::resolve(const poker::GameState& node,
   return result;
 }
 
-void SubgameResolver::solve_rooted_subgame(
+std::unique_ptr<tree::AbstractTree> SubgameResolver::build_rooted_subgame_tree(
     const poker::GameDef& subgame_def, const abstraction::ActionAbstraction& action,
-    const std::vector<std::vector<solver::WeightedHand>>& prior_ranges, std::span<const int> board,
-    std::span<const poker::PublicAction> history, std::size_t hero, bool walk_to_river,
-    const ResolveLimits& limits, SubgameResolveResult& result) const {
+    bool walk_to_river, const ResolveLimits& limits, SubgameResolveResult& result) const {
   // RFC 0024: validate the depth-limit/decision-street constraint. The
   // resolver always builds a turn-rooted subgame. With max_streets = 1, the
   // river Action node becomes a TerminalFrontier leaf with no action menu,
@@ -619,26 +683,30 @@ void SubgameResolver::solve_rooted_subgame(
   // River decisions require max_streets >= 2 or nullopt.
   if (walk_to_river && limits.depth_limit.max_streets && *limits.depth_limit.max_streets < 2) {
     result.status = SubgameResolveStatus::InvalidInput;
-    return;
+    return nullptr;
   }
 
-  std::unique_ptr<tree::AbstractTree> tree_ptr;
   try {
     tree::TreeLimits tree_limits;
     tree_limits.max_nodes = limits.max_nodes;
     tree_limits.max_depth = limits.max_depth;
     tree_limits.max_bytes = limits.max_bytes;
-    tree_ptr =
-        std::make_unique<tree::AbstractTree>(subgame_def, action, tree_limits, limits.depth_limit);
+    return std::make_unique<tree::AbstractTree>(subgame_def, action, tree_limits,
+                                                limits.depth_limit);
   } catch (const tree::tree_resource_exhausted&) {
     result.status = SubgameResolveStatus::Ineligible;
-    return;
+    return nullptr;
   } catch (const std::exception&) {
     result.status = SubgameResolveStatus::InvalidInput;
-    return;
+    return nullptr;
   }
-  const tree::AbstractTree& tree = *tree_ptr;
+}
 
+void SubgameResolver::train_and_extract_rooted_subgame(
+    const tree::AbstractTree& tree, const poker::GameDef& subgame_def,
+    const std::vector<std::vector<solver::WeightedHand>>& prior_ranges, std::span<const int> board,
+    std::span<const poker::PublicAction> history, std::size_t hero, bool walk_to_river,
+    const ResolveLimits& limits, SubgameResolveResult& result) const {
   // Solve the subgame with CFR.
   solver::NSeatTrainerLimits trainer_limits;
   trainer_limits.max_nodes = limits.max_nodes;
@@ -716,6 +784,19 @@ void SubgameResolver::solve_rooted_subgame(
   }
 
   result.status = SubgameResolveStatus::Solved;
+}
+
+void SubgameResolver::solve_rooted_subgame(
+    const poker::GameDef& subgame_def, const abstraction::ActionAbstraction& action,
+    const std::vector<std::vector<solver::WeightedHand>>& prior_ranges, std::span<const int> board,
+    std::span<const poker::PublicAction> history, std::size_t hero, bool walk_to_river,
+    const ResolveLimits& limits, SubgameResolveResult& result) const {
+  std::unique_ptr<tree::AbstractTree> tree =
+      build_rooted_subgame_tree(subgame_def, action, walk_to_river, limits, result);
+  if (tree == nullptr)
+    return;
+  train_and_extract_rooted_subgame(*tree, subgame_def, prior_ranges, board, history, hero,
+                                   walk_to_river, limits, result);
 }
 
 SubgameResolver::SubgameResolver() = default;

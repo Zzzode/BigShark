@@ -1,0 +1,13 @@
+2-seat 100 BB decisive-count (100,000 iters, seeds 101/202/303), cap-0 reference tree:
+
+cap-0 policy (the shipped cell): E_0(0) = 1.56-1.68 BB (in-model, optimal reference)
+cap-1 policy:  E_0(1) passive fill 15.7-16.6 BB / uniform fill 9.1-9.7 BB
+cap-2 policy:  E_0(2) passive fill  6.8-8.3 BB / uniform fill 4.6-5.5 BB
+
+The cap error is large and monotone: serving a cap-1 heads-up strategy in
+the uncapped game loses ~8-16 BB per hand at the river-equity frontier vs
+the cap-0 strategy's ~1.6 BB. Cap 2 recovers most but not all. This
+validates the frozen choice cap 0 for two-seat standard preflop training.
+(These are turn-rooted streets(1) frontier-model figures on the T3
+ten-hand fixture, not full-range live certification; they freeze the cap
+CHOICE only.)

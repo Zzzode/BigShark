@@ -2333,6 +2333,49 @@ deals, calls it, and does session accounting. The extraction exists so
 `docs/development/practice-table.md` records the same seam from the operational
 side.
 
+## Shape-Keyed Action-Abstraction Policy (RFC 0037)
+
+Production raise caps are no longer producer-local constants. One reviewed,
+compiled table in `bs::abstraction` (`kShapePolicyRevision =
+"shape-policy-v1"`) maps game shape to the production cap over the
+unchanged rfc0007 size schedule. The shape key is street-start players
+(preflop: dealt; postflop: live at street start) and the deepest effective
+stack band: Shallow (<= 16 BB), Standard (17-100 BB); Deep (> 100 BB) and
+player counts outside 2..6 return `nullopt`.
+
+Frozen training table `production_raise_cap(shape)`:
+
+| Players | Shallow | Standard |
+| --- | --- | --- |
+| 2 | 0 | 0 |
+| 3 | 1 | 1 |
+| 4 | 1 | 1 |
+| 5 | 1 | 1 |
+| 6 | 1 | 1 |
+
+Heads-up is uncapped at every band; every three-or-more-seat shape is cap
+1 at every band. The legacy 3-seat 10 BB cap-0 validation profile was
+retired on 2026-10-26 (the 100 BB buy-in is the operating band; the
+project keeps no legacy implementations), which moved the three-seat
+shallow cell 0 -> 1; see the legacy-retirement amendment in RFC 0037.
+
+Board-3 rootless serving uses `production_flop_resolve_cap(shape)` with
+one measured one-raise spike-drop: two-live standard is
+`kHeadsUpStandardFlopSpikeDroppedCap = 1` because the Stage-0a cap-0
+production-menu flop tree exceeded the 1 GiB builder byte cap. Every
+3+ seat cell reads cap 1 straight from the unified table (there is no
+per-cell deferral constant), and only two-live shallow flop resolving
+changed behavior (cap 1 -> 0; Stage-0a
+measured 147,308 nodes / 149 MiB / 133 ms). Unscoped shapes keep pre-RFC
+behavior through `kUnscopedShapeLegacyCap = 1`. The cap is fixed at street
+start; a mid-street fold never re-runs the lookup (the resolver restores
+the street-start player count from the flop fold events in history).
+`resolve_uniform` and the RFC 0036 declined multiway turn/river routes are
+not governed by this table. A BSFLIB03 library carries one file-level
+action identity, so all its roots must map to one cap; the tri-state local
+audit `tools/artifact-audit/rfc0037-policy-audit.py` enforces that and
+checks every shipped artifact against the table.
+
 ## Flop and Turn Policy
 
 The postflop evaluator combines:

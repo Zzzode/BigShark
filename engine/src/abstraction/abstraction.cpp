@@ -523,4 +523,55 @@ AbstractionId suit_canonicalization_id() {
   return id;
 }
 
+// RFC 0037 shape-keyed policy. Players index the first table axis; the band
+// classifier is intentionally a leaf over plain integers.
+namespace {
+
+constexpr std::uint32_t kShallowMaxBb = 16;
+constexpr std::uint32_t kStandardMaxBb = 100;
+
+// Frozen training table [players - 2][band], one raise cap per supported
+// shape. Heads-up is the only uncapped family (cap 0); every three-or-more
+// seat shape trains cap 1, at every depth (RFC 0037, revised 2026-10-26
+// after the legacy 3-seat 10 BB cap-0 validation profile was retired).
+constexpr std::uint8_t kTrainingCap[5][2] = {
+    // shallow, standard
+    {0, 0},  // 2 players
+    {1, 1},  // 3 players
+    {1, 1},  // 4 players
+    {1, 1},  // 5 players
+    {1, 1},  // 6 players
+
+};
+
+}  // namespace
+
+StackBand stack_band_for_bb(std::uint32_t max_effective_stack_bb) noexcept {
+  if (max_effective_stack_bb <= kShallowMaxBb)
+    return StackBand::Shallow;
+  if (max_effective_stack_bb <= kStandardMaxBb)
+    return StackBand::Standard;
+  return StackBand::Deep;
+}
+
+std::optional<std::uint8_t> production_raise_cap(const GameShape& shape) noexcept {
+  const auto players = static_cast<std::uint32_t>(shape.street_start_players);
+  if (players < 2 || players > 6 || shape.band == StackBand::Deep)
+    return std::nullopt;
+  const auto band = static_cast<std::size_t>(shape.band);
+  return kTrainingCap[players - 2][band];
+}
+
+std::optional<std::uint8_t> production_flop_resolve_cap(const GameShape& shape) noexcept {
+  const auto training = production_raise_cap(shape);
+  if (!training)
+    return std::nullopt;  // unscoped: caller substitutes kUnscopedShapeLegacyCap
+  // Two-live standard is the one serving/training divergence: the Stage-0a
+  // cap-0 flop tree exceeded the 1 GiB builder byte cap, so board-3 serving
+  // stays at one raise even though heads-up preflop training is uncapped.
+  if (shape.street_start_players == 2 && shape.band == StackBand::Standard)
+    return kHeadsUpStandardFlopSpikeDroppedCap;
+  return training;
+}
+
 }  // namespace bs::abstraction

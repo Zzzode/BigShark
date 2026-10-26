@@ -1,0 +1,20 @@
+# RFC 0037 Stage 0a heads-up flop spike (max_iterations=1000, build_repeats=3)
+Production identity rfc0007 menu, cap 0, streets(1),
+flop-rooted, equity frontier, uniform full-range priors,
+BB=2, limped contribution 2, seed 42.
+
+| shape | seats | result | nodes | action | chance | fold | showdown | frontier | depth | bytes KiB | build ms | buckets | infosets | bound | ms/iter | visits/infoset |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| flop cap0 2p 10bb | 2 | built | 147308 | 120 | 3059 | 118 | 141120 | 2891 | 14 | 148997.3 | 132.570 | 4 | 480 | 480 | 0.3140 | 4.17 |
+| flop cap0 2p 100bb | 2 | DECLINED >1GiB | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
+| flop cap0 3p 10bb diagnostic | 3 | DECLINED >1GiB | - | - | - | - | - | - | - | - | - | - | - | - | - | - |
+
+## Verdict per cell (ResolveLimits 1600 ms envelope)
+
+| cell | role | nodes <= 5000000 | infosets <= 1000000 | bytes <= 1 GiB | projected iters | verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| flop cap0 2p 10bb | activation | ok | ok | ok | 4673 | ACTIVATE |
+| flop cap0 2p 100bb | activation | FAIL | - | DECLINED: abstract tree exceeded the byte cap | - | DROP (abstract tree exceeded the byte cap) |
+| flop cap0 3p 10bb diagnostic | diagnostic | FAIL | - | DECLINED: abstract tree exceeded the byte cap | - | DROP (abstract tree exceeded the byte cap) |
+
+# end flop spike
