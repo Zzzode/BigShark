@@ -61,20 +61,30 @@ one public overload, one probe field, and three resident branches.
 
 - G1: `engine/src/artifacts` reads and writes only schema-v2/schema-v3
   artifacts, all under algorithm revision 2 identities; no symbol for
-  schema v1, `info_key_revision = 1`, `kNumericProfileV1`,
-  `kRulesIdentifierV1`, `kDefaultAlgorithmRevision` (rfc0004-rev1), or
-  `kLegacyAlgorithmRevisionV2` (nseat-rev1) remains in `engine/`.
+  schema v1, the revision-1 key grammar, `kNumericProfileV1`,
+  `kRulesIdentifierV1`, `kDefaultAlgorithmRevision`,
+  `kLegacyAlgorithmRevisionV2`, `CheckpointProvenance`, the heads-up
+  `PolicyAssembler`, or the heads-up
+  `create_checkpoint`/`commit_checkpoint`/`publish_policy` overloads
+  remains in `engine/`.
 - G2: opening a schema-v1 file through `load_artifact` or
   `probe_artifact` fails with `ArtifactErrorKind::UnsupportedVersion`;
   the resident reports `RootStatus::LoadFailed` with the diagnostic and
   never crashes; a pinned test presents a real v1 byte fixture.
 - G3: `create_checkpoint` and `publish_policy` accept only
-  `SeatTrainingResult`; the heads-up `TrainingResult` overloads and the
-  v1 `LoadedArtifact.result` arm are deleted.
+  `SeatTrainingResult`/`SeatCheckpointProvenance`; the heads-up
+  overloads, `commit_checkpoint`, the v1 `LoadedArtifact.result` arm,
+  and `ArtifactProbe.game` are deleted.
 - G4: the resident policy has one artifact-to-game path (the
   `game_def`/`build_v2_game` arm); the three `to_unified_game(probe.game)`
   branches are gone.
-- G5: tests and benchmarks build and pass with no v1 fixture; design
+- G5: every v1 producer is migrated rather than deleted: the
+  `bs_resident_fixture` publisher keeps its JSON contract and the w1
+  real-binary TS tests stay green; the documented resident-lookup
+  benchmark keeps all three measured sections on 2-seat v2 roots with a
+  declared new baseline; and the ~20 `test_resident_policy` scenarios
+  are mapped one-to-one onto v2 fixtures.
+- G6: tests and benchmarks build and pass with no v1 fixture; design
   docs and the affected RFCs record schema v1 as Historical.
 
 ## Non-Goals
@@ -104,52 +114,100 @@ one public overload, one probe field, and three resident branches.
   approximately `:2385`; dispatch at the `open_validated` definition).
   Any other value already fails with `UnsupportedVersion`.
 - **Write surface.** `write_all` creates `PRAGMA user_version = 1` and
-  runs `kSchemaDdlV1`; the public heads-up overloads
+  runs `kSchemaDdlV1`; the public heads-up overloads are
   `create_checkpoint(path, const TrainingResult&, …)`
-  (`strategy_artifact.hpp:193`) and the v1 arm of `publish_policy`
-  (`strategy_artifact.cpp:~2993,3030`) are its only callers. Outside
-  `engine/tests`, `publish_policy` is called by
-  `engine/benchmarks/preflop_profile_builder.cpp:333` (seat, v2) and
-  twice by `engine/benchmarks/resident_lookup_benchmark.cpp` — once with
-  a heads-up result (`:156-157`, the only non-test v1 producer) and once
-  with a seat result (`:204-205`). The preflop profile builder, the only
-  production artifact publisher, uses the seat overload.
+  (`strategy_artifact.hpp:193`), `commit_checkpoint(path, const
+  TrainingResult&, …)` (`strategy_artifact.hpp:211`,
+  `strategy_artifact.cpp:2902`, whose only callers are six v1
+  split/resume tests in `test_artifacts.cpp:1768-1967`), and the v1 arm
+  of `publish_policy` (`strategy_artifact.cpp:3025-3032`). The
+  non-test callers are exactly two programs, both heads-up v1:
+  - `engine/benchmarks/resident_lookup_benchmark.cpp` — the documented
+    resident cold/warm lookup benchmark
+    (`docs/development/benchmarking.md`): `publish_complete` (`:140`,
+    called at `:363` and `:399`, publishes via the heads-up overload at
+    `:153-157`) and `publish_zero_prob` (`:163`, called at `:457`,
+    publishes at `:201-205`). The file contains no `SeatTrainingResult`,
+    `train_nseat`, or `SeatCheckpointProvenance` reference: contrary to
+    an earlier draft, BOTH publish sites are v1. Its three measured
+    sections are the SPR-10 sizing scan, the six-root SPR-4 cold/warm
+    latency and zero-allocation probe, and the zero-probability miss
+    fixture; it is a default `all` build target
+    (`engine/CMakeLists.txt:481`).
+  - `engine/tests/resident_fixture_publisher.cpp:108-115` — builds a v1
+    artifact with the heads-up `PolicyAssembler` and
+    `CheckpointProvenance`. `proto/CMakeLists.txt:247-269` builds it as
+    the `bs_resident_fixture` executable and copies it to
+    `bin/bs-resident-fixture`; `platforms/river-club/tests/w1-resident-wiring.test.ts:38`
+    runs that binary and exercises two real-binary blueprint serving
+    paths against the actual engine (`:540-599`). Its JSON summary
+    (root envelope, path, sha256) is the TS test's input contract.
+  The preflop profile builder, the only production artifact publisher,
+  uses the seat overload (`preflop_profile_builder.cpp:327-336`).
 - **Read surface.** `load_path` branches on schema version: v1 reads
   `game`/`sizes`/`ranges` plus v1 state/action/training tables with
-  `read_states(..., legacy_domain = true)` (`:2631`); v2/v3 go through
-  `load_path_seat`. `LoadedArtifact` carries either `result`
+  `read_states(..., legacy_domain = true)` (`:1787-1806,1841`); v2/v3 go
+  through `load_path_seat`. `LoadedArtifact` carries either `result`
   (`HeadsUpTrainingResult`) or `nseat` (`:159-164`). `ArtifactProbe`
   carries a v1 `HeadsUpGame game` field and v2 `game_def`/`ranges`/
-  `sizes` optionals (`strategy_artifact.hpp:~248-260`).
-- **Identity surface.** v1 manifests default to
+  `sizes` optionals (`strategy_artifact.hpp:~248-260`). The resident's
+  v1 arms are: two probe sites in `build()` (`resident_policy.cpp:598`
+  and `:677`) and the eager preload path in the same `build()` try-block
+  (`:728-729` — this is the build-time preload, not the on-demand lazy
+  loader). The real lazy loader `ensure_lazy_loaded` (`:365-410`) is
+  already seat-only (`:386-387`: a non-nseat bundle returns nullptr),
+  and the probe pre-gates every lazy path, so the failure conclusion
+  below holds for both.
+- **Identity and key-codec surface.** v1 manifests default to
   `kDefaultAlgorithmRevision = "rfc0004-rev1-full-kSimple-prng1"`,
   `kNumericProfileV1`, and `kRulesIdentifierV1 =
-  "rfc0004-heads-up-flop-v1"`. The seat line still decodes
-  `kLegacyAlgorithmRevisionV2 = "rfc0009-nseat-rev1-sampled-splitmix64"`
-  as revision `{1, 0}` in `decode_nseat_algorithm`, and
-  `nseat_write_identity` can still emit it for an
-  `algorithm_revision == 1` result; a test round-trips it
+  "rfc0004-heads-up-flop-v1"`. The shared `ArtifactManifest` defaults
+  `information_key_revision = 1` (`strategy_artifact.hpp:116`). The
+  information-key codec has a revision-1 grammar
+  (`grammar_for_revision(1) -> {1,1,2,false}`,
+  `engine/src/artifacts/artifact_codec.cpp:77-84`); every surviving
+  caller outside the v1 paths passes revision 2
+  (`encode_public_key(..., 2)` in `test_seat_policy.cpp`, v2 writers,
+  and the v2 reader), with the exception of
+  `resident_lookup_benchmark.cpp:296` and
+  `test_resident_policy.cpp:2642`, both v1-fixture sites. The seat line
+  still decodes `kLegacyAlgorithmRevisionV2 =
+  "rfc0009-nseat-rev1-sampled-splitmix64"` as revision `{1, 0}` in
+  `decode_nseat_algorithm`, and `nseat_write_identity` can still emit it
+  for an `algorithm_revision == 1` result; a test round-trips it
   (`engine/tests/test_artifacts.cpp:1120-1143`).
+- **Test fixture surface beyond test_artifacts.**
+  `engine/tests/test_resident_policy.cpp` builds roughly twenty resident
+  semantic scenarios on three v1 fixture helpers: `publish_game`
+  (`:158`, used at `:818, 961, 1039, 1169, 1229, 1325, 1370, 1407,
+  1565, 1635, 1674, 1715, 1753, 2344, 2517, 2730`), `publish_root_only`
+  (`:244`, used at `:2539`), and `publish_synthetic_policy` (`:317`,
+  used at `:1487, 1501`), plus direct heads-up `create_checkpoint`
+  calls at `:591, 653, 762, 1790`. The scenarios cover golden margins,
+  free-turn, the belief hook and matrix, streets/round-end, orphan seats,
+  shared/zero-weight combos, probe byte accounting, miss coverage,
+  continuation, the fully-blocked root, and root-only partial exports.
+  The heads-up-only friend `detail::PolicyAssembler`
+  (`artifact_internal.hpp:132-141`, friend of `HeadsUpPolicy` in
+  `heads_up_solver.hpp`) is used only by these v1 producers; the seat
+  analogue `SeatPolicyAssembler` is separate and stays.
+- **v2/v3 tests touch the to-be-deleted arms.** Even current-format tests
+  assert the mutually-exclusive v1 arm is empty or read its probe field;
+  the mechanical edits are `test_artifacts.cpp:1270, 1317-1318, 1326,
+  1423, 1541-1542` (`bundle.result`/`probe.game` references inside the
+  v2/v3/preflop round-trips; each becomes the nseat-arm assertion).
 - **Shipped artifacts.** `artifacts/preflop-profile{,-3way-100bb,-4way,
   -5way,-6way}` are schema v2 with `rfc0016-nseat-rev2-frozen-batch-*`
   revisions; `artifacts/flop-library-6way-fullrange` is BSFLIB03 over v3
-  class artifacts. Nothing under `artifacts/` is schema v1.
-- **Resident consumer.** `engine/src/resident/resident_policy.cpp` has
-  the v1 arm in three places — two probe paths (`:598`, `:677`) and the
-  full lazy-load path (`:728-729`) — each via
-  `solver::to_unified_game(...)`; the v2 path uses
-  `build_v2_game(*probe.game_def, ...)`.
-- **Test surface.** `engine/tests/test_artifacts.cpp` contains a
-  heads-up `test_roundtrip` (`:954`) and v1-based
-  split-run/resume/crash/corruption/immutable/adversarial cases that
-  create v1 checkpoints with `trained.result`; the v1 algorithm-identity
-  case lives at `:1095` (`test_nseat_algorithm_identity`, including the
-  rev1 legacy round-trip). The seat-stream adversarial and v2/v3
-  round-trips already cover the same invariant classes for current
-  formats.
+  class artifacts; `flop_library_pack.cpp:85-87`,
+  `flop_library_verify_pack.cpp:104-108`, and
+  `preflop_nash_conv.cpp:50-52` all require `bundle.nseat`. Nothing
+  under `artifacts/` is schema v1.
 - **No external readers.** `grep` over `platforms/`, `clients/`,
   `apps/`, `bin/`, and `tools/replay` finds no schema-version-aware
   consumer; TypeScript and replay never open artifact SQLite files.
+  BSFLIB pack/verify code and BSWARM checkpoints have no v1 identity
+  coupling; the stage-6 frozen artifacts use `rows.bin`/`manifest.bin`.
 
 ### Assumptions
 
@@ -177,20 +235,24 @@ one public overload, one probe field, and three resident branches.
 
 ### Artifacts module
 
-1. Delete the schema-v1 dialect: `kSchemaDdlV1`, `kAllowedTablesV1`,
+The authoritative deletion set (grep-audited in AC1):
+
+1. The schema-v1 dialect: `kSchemaDdlV1`, `kAllowedTablesV1`,
    `kSchemaV1`, `write_schema`, the heads-up `write_all`,
    `insert_game`/`insert_sizes`/`insert_ranges`, the heads-up policy
    insert path, `read_game`/`read_sizes`/`read_ranges`/`validate_game`,
-   `read_auxiliary_tables` if v1-only, and the v1 manifest validator.
+   v1-only auxiliary readers, and the v1 manifest validator.
 2. `open_validated` dispatches only on versions 2 and 3; version 1 takes
    the existing `UnsupportedVersion` failure with a message naming the
    retired schema (`"unsupported schema version: 1 (schema v1 retired
    by RFC 0038)"`).
-3. Delete the heads-up public surface:
-   `create_checkpoint(path, const TrainingResult&, …)`, the v1 branch of
+3. The heads-up public surface:
+   `create_checkpoint(path, const TrainingResult&, …)`,
+   `commit_checkpoint(path, const TrainingResult&, …)` (whose only
+   callers are the deleted v1 split/resume tests), the v1 branch of
    `publish_policy`, `LoadedArtifact::result` (the heads-up arm), and
    `ArtifactProbe::game` plus its v1-only population path.
-4. Delete the legacy identities and defaults:
+4. The legacy identities and defaults:
    `kDefaultAlgorithmRevision` (rfc0004-rev1), `kNumericProfileV1`,
    `kRulesIdentifierV1`, `kLegacyAlgorithmRevisionV2`, the revision-1
    branch of `decode_nseat_algorithm`, and the revision-1 emit branch of
@@ -198,55 +260,122 @@ one public overload, one probe field, and three resident branches.
    `algorithm_revision`/`numeric_profile` becomes empty; every writer
    already populates both through `manifest_for_v2`, and the existing
    non-empty reader checks keep an unpopulated manifest invalid.
+   `ArtifactManifest.information_key_revision` stays a stored v2/v3
+   field but its default becomes `kArtifactSchemaVersionV2`; the raw
+   `kArtifactSchemaVersion = 1` constant is deleted.
    `kSampledPrngIdentifier` (`splitmix64-rev1`) stays — it names the
    sampler, not the artifact schema, and v2 manifests carry it.
-5. `read_state_fields`/`read_states` lose `legacy_domain`; the player
+5. The revision-1 information-key grammar:
+   `grammar_for_revision` loses its `revision == 1` branch, and
+   `encode_public_key`/`decode_public_key` drop the revision parameter
+   and speak only the revision-2 grammar (preflop wrapping,
+   9-player domain). The remaining callers already pass revision 2.
+   `read_state_fields`/`read_states` lose `legacy_domain`; the player
    domain is always `0..player_count-1`.
-6. `CheckpointProvenance` loses the rfc0004 default; callers that need
-   it construct the seat provenance explicitly (the preflop builder
-   already does).
+6. The heads-up-only friend class `detail::PolicyAssembler`
+   (`artifact_internal.hpp`) and its friend declaration in
+   `heads_up_solver.hpp` are deleted; `SeatPolicyAssembler` and the
+   in-memory `HeadsUpPolicy` itself are untouched.
+7. `CheckpointProvenance` (the heads-up provenance struct) is deleted
+   wholesale: every construction site disappears with the heads-up
+   checkpoint/commit paths and the two migrating v1 producers. The seat
+   `SeatCheckpointProvenance` is the only provenance struct that
+   remains.
 
 ### Resident consumer
 
 `engine/src/resident/resident_policy.cpp` keeps only the `game_def`
-arm: the two probe sites and the lazy-load site stop constructing a
+arm: the two probe sites in `build()` (`:598`, `:677`) and the eager
+preload site (`:728-729`) stop constructing a
 `to_unified_game(probe.game)` fallback. A v1 root now fails at
 `probe_artifact`/`load_artifact` and lands in the existing
 `RootStatus::LoadFailed` catch with the `UnsupportedVersion` message;
-advertising, ladder behavior, and metrics are otherwise unchanged.
+the seat-only lazy loader needs no change, and advertising, ladder
+behavior, and metrics are otherwise unchanged.
 
-### Benchmarks and tests
+### Fixture publisher migration (required, not optional)
 
-- `resident_lookup_benchmark.cpp`: the heads-up benchmark case
-  (`:156-157`) is deleted; the zero-fallback seat case (`:204-205`)
-  remains and gains the lookup coverage the deleted case shared with it
-  only if a distinct invariant is lost (expected: none — the lookup
-  machinery is format-agnostic).
-- `test_artifacts.cpp`: delete `test_roundtrip` (v1) and the v1-only
-  split/resume/crash/corruption/immutable/adversarial cases; remove the
-  revision-1 identity case from `test_nseat_algorithm_identity`. Where a
-  deleted v1 case protects a format-agnostic invariant not already
-  asserted by a v2/v3 case (physical corruption rejection, immutable
-  open, adversarial probabilities), that assertion is added to the
-  matching seat fixture instead of being dropped.
-- Add a focused rejection test: write a minimal SQLite file with
-  `PRAGMA user_version = 1` (or retain a tiny checked-in v1 header
-  fixture), and assert `load_artifact` and `probe_artifact` both throw
-  `ArtifactErrorKind::UnsupportedVersion`, and that the resident turns it
-  into `LoadFailed`.
+`engine/tests/resident_fixture_publisher.cpp` is rewritten to the seat
+path: train a 2-seat flop-rooted game (the resident already accepts a
+flop-rooted 2-seat v2 source at `:669-678`), assemble rows through
+`SeatPolicyAssembler`, and publish with `SeatCheckpointProvenance` and
+the seat `create_checkpoint`/`publish_policy`. The program's JSON
+summary contract (path, sha256, root envelope with flop/stacks/
+contributions/pot/bigBlind/button) is preserved field-for-field so
+`platforms/river-club/tests/w1-resident-wiring.test.ts` needs no
+contract change; `bs_resident_fixture` stays a `proto/CMakeLists.txt`
+target copied to `bin/bs-resident-fixture`, and the two real-binary
+blueprint serving TS cases must stay green. If any asserted numeric
+fixture behavior (zero-probability miss, exact root) cannot be
+expressed, the migration stops and the scenario is analyzed rather than
+weakening the TS assertion.
+
+### Test migration
+
+- `engine/tests/test_resident_policy.cpp`: the three v1 fixture helpers
+  (`publish_game`, `publish_root_only`, `publish_synthetic_policy`) and
+  the four direct heads-up `create_checkpoint` calls become 2-seat
+  flop-rooted v2 equivalents using `train_nseat` and
+  `SeatPolicyAssembler`. Every one of the ~20 scenarios is migrated,
+  not deleted. Two shapes need explicit treatment and are feasible
+  because `validate_content_v2` (`strategy_artifact.cpp:1246-1290`)
+  validates rows individually and never enforces range completeness:
+  (a) the root-only partial export (`publish_root_only`) is reproduced
+  by publishing a seat artifact and suppressing the class section;
+  (b) the synthetic single-row and forced zero-probability rows are
+  assembled directly through `SeatPolicyAssembler`. Scenario roots
+  (golden margin, free-turn, hook/matrix, streets, orphan, shared/zero
+  combos, probe byte accounting, miss coverage, continuation,
+  fully-blocked, root-only) are mapped one-to-one in the implementation
+  plan; a scenario that cannot be expressed on the seat path is a
+  stop condition, not a deletion.
+- `engine/tests/test_artifacts.cpp`: delete `test_roundtrip` (v1) and
+  the v1-only split/resume/crash/corruption/immutable/adversarial cases
+  and the six `commit_checkpoint` call sites; remove the revision-1
+  identity case from `test_nseat_algorithm_identity`; delete
+  `test_canonical_keys`'s revision-1 assertions while retaining full
+  revision-2 round-trip coverage. The five v2/v3/preflop arm-empty
+  assertions (`:1270, 1317-1318, 1326, 1423, 1541-1542`) are rewritten
+  to the nseat arm. Where a deleted v1 case protects a
+  format-agnostic invariant not already asserted by a v2/v3 case
+  (physical corruption rejection, immutable open, adversarial
+  probabilities), that assertion is added to the matching seat fixture
+  instead of being dropped.
+- Add a focused rejection test: present a minimal SQLite file with
+  `PRAGMA user_version = 1` and assert `load_artifact` and
+  `probe_artifact` both throw `ArtifactErrorKind::UnsupportedVersion`,
+  and that the resident turns it into `LoadFailed`.
 - `solver::to_unified_game` keeps its existing in-memory callers
-  (resolver benchmarks and tests that build a `HeadsUpGame` directly);
-  it is not removed.
+  (`test_resolver.cpp`, `resolver_benchmark.cpp`, and in-memory resident
+  test setup that builds a `HeadsUpGame` directly); it is not removed.
+
+### Benchmark migration (required, not deleted)
+
+`engine/benchmarks/resident_lookup_benchmark.cpp` is migrated, not
+removed: it is the only cold/warm resident latency and zero-allocation
+regression runner documented in `docs/development/benchmarking.md`. Both
+publishers are rewritten to train and publish 2-seat flop-rooted v2
+artifacts through the seat API, and the three measured sections
+(SPR-10 sizing scan, six-root SPR-4 cold/warm and zero-allocation
+probe, zero-probability miss) issue the same resident queries through
+the v2 game view. Historical v1 numbers are explicitly not comparable to
+the migrated run; the benchmark output and `benchmarking.md` mark the
+first post-migration run as a new baseline with its root shape named.
+The `encode_public_key(..., 1)` call at `:296` follows the codec change.
 
 ### Documentation
 
 - `docs/design/gto-engine.md`: the artifact section describes v2/v3 only;
   schema v1 gets one Historical sentence.
-- RFCs 0004, 0005, 0009, 0016, and 0017 keep their records but their
-  schema-v1 descriptions are annotated as Historical/superseded by this
-  RFC; status fields are not rewritten.
-- `docs/development/build-and-test.md` and any operational reference to
-  a v1 artifact path are updated in the same change.
+- `docs/development/benchmarking.md`: the resident-lookup benchmark
+  description gains the v2 2-seat methodology and the new-baseline
+  note.
+- RFCs 0004, 0005, 0007 (`:406` coexistence/error text), 0009, 0016,
+  0017, and 0034 (the fixture publisher description) keep their records
+  but their schema-v1 descriptions are annotated as Historical/
+  superseded by this RFC; status fields are not rewritten.
+- Any operational reference to a v1 artifact path is updated in the same
+  change.
 
 ## Dependency Rules
 
@@ -264,10 +393,19 @@ are untouched.
   backups deleted 2026-10-26). v2/v3 artifacts are byte-identical and
   keep their digests.
 - **C++ API:** callers compiling against the deleted heads-up
-  `create_checkpoint`/`publish_policy` overloads or the
+  `create_checkpoint`/`commit_checkpoint`/`publish_policy` overloads,
+  `CheckpointProvenance`, the heads-up `PolicyAssembler`, or the
   `LoadedArtifact::result`/`ArtifactProbe::game` fields get a compile
-  error and must use the seat API; the only such callers are the
-  benchmark and tests in this change.
+  error and must use the seat API; the such callers are exactly the
+  fixture publisher, the lookup benchmark, and tests covered by this
+  RFC. The `encode_public_key`/`decode_public_key` signatures lose
+  their revision parameter; every surviving call passes revision 2
+  today.
+- **Test/benchmark artifacts:** the regenerated
+  `resident-fixture-policy.db` and the benchmark's scratch artifacts
+  become schema v2; the fixture's JSON summary is unchanged and the
+  benchmark's historical numbers are superseded by a declared new
+  baseline.
 - **Runtime:** an operator-configured v1 root transitions from
   loadable (heads-up projection) to `LoadFailed` with a typed message;
   the resolver ladder and operational fallback already own that outcome.
@@ -294,6 +432,12 @@ RFC 0038 if a stale v1 path is configured.
 2. **Ship a v1-to-v2 converter.** Rejected: there is no input to convert
    — no shipped v1 artifact and no backup. Building and testing one
    would be speculative generality.
+3. **Delete the resident-lookup benchmark together with the v1
+   publisher.** Rejected: it is the documented cold/warm latency and
+   zero-allocation regression runner for the resident layer, and the
+   resident query machinery it measures is format-agnostic; migration to
+   a 2-seat v2 publisher preserves the measurement with a declared new
+   baseline, which costs one fixture rewrite and removes no coverage.
 3. **Hide v1 behind a build flag.** Rejected by the no-flag rule in
    CLAUDE.md ("Do not introduce feature flags to select between old and
    new implementations").
@@ -305,11 +449,27 @@ RFC 0038 if a stale v1 path is configured.
 ## Risks
 
 - **A forgotten v1 consumer fails to compile.** Mitigation: the full
-  Engine Build Contract builds every benchmark and app; the API removals
-  are compile errors, not silent behavior changes.
+  Engine Build Contract builds every benchmark and app, including the
+  `bs_resident_fixture` proto target; the API removals are compile
+  errors, not silent behavior changes.
 - **A local resident entry points at a v1 file.** Mitigation: typed
   `LoadFailed` plus the existing ladder; documented above; no shipped
   configuration does this.
+- **Fixture semantic loss.** A migrated 2-seat v2 fixture may not
+  reproduce every heads-up fixture behavior (fixed-runoff enumeration,
+  the root-only partial export, forced single/zero-probability rows).
+  Mitigation: the v2 row validator accepts individual rows without
+  enforcing completeness (verified at
+  `strategy_artifact.cpp:1246-1290`), each of the ~20 scenarios is
+  mapped one-to-one in the plan, and the real-binary w1 TS assertions
+  are the final guard; an unexpressible scenario is a stop condition
+  requiring RFC amendment, never a deleted test.
+- **Benchmark continuity.** The migrated resident-lookup benchmark
+  produces a new, non-comparable baseline; mitigating factors are that
+  the resident query machinery under measurement is format-agnostic and
+  the three measured sections keep identical shapes, and the new
+  baseline is explicitly labeled rather than silently replacing the old
+  numbers.
 - **A format-agnostic test invariant is lost when v1 cases are
   deleted.** Mitigation: each deleted case is mapped to a v2/v3
   assertion in the same change; the rejection test pins the new
@@ -325,24 +485,45 @@ RFC 0038 if a stale v1 path is configured.
 - ASan on the artifacts/resident surfaces
   (`--preset asan` focused tests).
 - A source grep audit (committed as a documented command, not a new tool
-  unless one is warranted): no matches for `kSchemaV1`, `kSchemaDdlV1`,
+  unless one is warranted): no matches under `engine/` (excluding
+  third-party) for `kSchemaV1`, `kSchemaDdlV1`, `kAllowedTablesV1`,
   `kNumericProfileV1`, `kRulesIdentifierV1`, `kDefaultAlgorithmRevision`,
-  `kLegacyAlgorithmRevisionV2`, `legacy_domain`, or
-  `bundle.result` under `engine/`.
+  `kLegacyAlgorithmRevisionV2`, `kArtifactSchemaVersion` (the bare rev1
+  constant), `CheckpointProvenance`, `legacy_domain`, `bundle.result`,
+  `probe.game`, `PolicyAssembler` (the heads-up class name;
+  `SeatPolicyAssembler` remains), or a `revision == 1` key-grammar
+  branch; `encode_public_key`/`decode_public_key` have no revision
+  parameter.
 - The v1 rejection test and the migrated seat-fixture invariants pass.
+- The w1 real-binary TS tests run the regenerated
+  `bin/bs-resident-fixture` and pass (`npm run check`, which includes
+  `w1-resident-wiring.test.ts`).
+- The migrated resident-lookup benchmark builds and runs its three
+  sections; its first post-migration run is recorded in
+  `docs/development/benchmarking.md` as the new baseline.
 - `node bin/check-rfcs.mjs` and `node bin/check-docs.mjs` green.
 
 ## Rollout Plan
 
-1. Artifacts module removal (DDL, readers, writers, identities, public
+1. Artifacts module removal: the authoritative deletion set above
+   (dialect, readers, writers, identities, codec, structs, public
    fields).
-2. Resident single-arm conversion and the v1 rejection test.
-3. Benchmark/test deletion and migration; grep audit.
-4. Documentation updates; gates green.
+2. Shared v2 fixture layer: migrate `resident_fixture_publisher.cpp`
+   (JSON contract preserved) and the three `test_resident_policy.cpp`
+   helpers, mapping the ~20 scenarios one-to-one.
+3. Resident single-arm conversion and the v1 rejection test; w1 TS
+   real-binary tests green.
+4. test_artifacts migration (v1 case deletion, v2/v3 arm edits,
+   invariant relocation) and the benchmark migration with the new
+   baseline record; grep audit.
+5. Documentation updates; full gates green.
 
-Stop condition: any production (non-test, non-benchmark) caller still
-requires a deleted symbol, or any v2/v3 artifact stops validating —
-stop and reassess rather than reintroduce a compatibility path.
+Stop conditions: any production (non-test, non-benchmark) caller still
+requires a deleted symbol; any w1 fixture behavior that cannot be
+expressed on the 2-seat v2 path; any resident semantic scenario without
+a one-to-one v2 mapping; or any v2/v3 artifact stops validating — stop
+and amend the RFC rather than reintroducing a compatibility path or
+deleting an assertion.
 
 ## Rollback Plan
 
@@ -356,14 +537,18 @@ None.
 
 ## Acceptance Criteria
 
-- **AC1**: No symbol or string for the v1 dialect remains in `engine/`:
-  `kSchemaDdlV1`, `kAllowedTablesV1`, `kSchemaV1`, `kNumericProfileV1`,
-  `kRulesIdentifierV1`, `kDefaultAlgorithmRevision`,
-  `kLegacyAlgorithmRevisionV2`, the heads-up `create_checkpoint`/
-  `publish_policy` overloads, `LoadedArtifact.result`,
-  `ArtifactProbe.game`, `legacy_domain`, and the revision-1 branches of
-  `decode_nseat_algorithm`/`nseat_write_identity` are all gone. A grep
-  audit over `engine/` returns no match (excluding third-party).
+- **AC1**: The authoritative deletion set is gone from `engine/`
+  (excluding third-party): `kSchemaDdlV1`, `kAllowedTablesV1`,
+  `kSchemaV1`, `kNumericProfileV1`, `kRulesIdentifierV1`,
+  `kDefaultAlgorithmRevision`, `kLegacyAlgorithmRevisionV2`, the bare
+  `kArtifactSchemaVersion` rev1 constant, `CheckpointProvenance`,
+  `legacy_domain`, the heads-up `PolicyAssembler`, the heads-up
+  `create_checkpoint`/`commit_checkpoint`/`publish_policy` overloads,
+  `LoadedArtifact.result`, `ArtifactProbe::game`, the revision-1
+  branches of `decode_nseat_algorithm`/`nseat_write_identity` and
+  `grammar_for_revision`, and the `encode/decode_public_key` revision
+  parameter. A grep audit over `engine/` returns no match; the codec
+  speaks only the revision-2 grammar.
 - **AC2**: A SQLite file carrying `PRAGMA user_version = 1` makes both
   `load_artifact` and `probe_artifact` throw
   `ArtifactErrorKind::UnsupportedVersion`, and a pinned resident test
@@ -373,19 +558,36 @@ None.
   the seat path; the only production publisher
   (`preflop_profile_builder`) is unchanged in behavior, and the five
   shipped v2 profiles plus the BSFLIB03 library still validate, load,
-  and match their digest pins.
+  and match their digest pins (including flop-library pack and
+  verify-pack and the preflop NashConv tool, which all require the
+  nseat arm).
 - **AC4**: The resident policy has one artifact-to-game path
   (`game_def`/`build_v2_game`); no `to_unified_game(probe.game)` call
-  remains outside in-memory solver/benchmark construction.
-- **AC5**: Deleted v1 test cases are accounted for: every
-  format-agnostic invariant (physical corruption rejection, immutable
-  open, adversarial probability rejection, split-run/resume) has a
-  passing v2/v3 counterpart; ctest passes with no skipped placeholder.
-- **AC6**: The full Engine Build Contract release chain passes
+  remains in the artifact/resident production code outside in-memory
+  solver/benchmark/test construction.
+- **AC5**: The `bs_resident_fixture` publisher builds as the same CMake
+  target copied to `bin/bs-resident-fixture`, emits its existing JSON
+  summary fields from a 2-seat flop-rooted v2 artifact, and both
+  real-binary blueprint serving cases in
+  `platforms/river-club/tests/w1-resident-wiring.test.ts` pass without a
+  contract change.
+- **AC6**: Every one of the ~20 `test_resident_policy.cpp` v1 scenarios
+  has a named 2-seat v2 counterpart in the implementation plan,
+  including root-only partial exports and synthetic single-row / forced
+  zero-probability fixtures; every deleted v1 `test_artifacts.cpp`
+  invariant (physical corruption rejection, immutable open, adversarial
+  probability rejection, split-run/resume) has a passing v2/v3
+  counterpart; the five arm-empty assertion sites are rewritten to the
+  nseat arm; ctest passes with no skipped placeholder.
+- **AC7**: The resident-lookup benchmark builds and runs all three
+  measured sections against 2-seat flop-rooted v2 artifacts; its
+  methodology and the labeled new baseline are recorded in
+  `docs/development/benchmarking.md`.
+- **AC8**: The full Engine Build Contract release chain passes
   (format, build, ctest, benchmark-multistreet, npm check, proto:check,
   replay), the artifacts/resident tests pass under ASan, and
-  `check-rfcs`/`check-docs` pass with the gto-engine, RFC 0004/0005/
-  0009/0016/0017, and operational doc updates.
+  `check-rfcs`/`check-docs` pass with the gto-engine, benchmarking, and
+  RFC 0004/0005/0007/0009/0016/0017/0034 documentation updates.
 
 ## Decision
 
