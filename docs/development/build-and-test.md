@@ -411,6 +411,36 @@ cmake --build --preset debug --target rfc-check
 Replay is read-only, but it uses the currently published
 `bin/bigshark-engine`, so run a release build first.
 
+## Resident Coverage
+
+`node bin/coverage.mjs [results-log]` tallies the decision coverage
+distribution from `.runtime/results.log` (one JSON line per executed action
+written by the River runner): actionable versus failed counts, the split into
+`resident` (a policy row served, carrying an artifact digest), `resolved`
+(on-demand approximate receipt), and `fallback` (labeled operational path),
+guarantee levels, per-street counts, distinct serving artifacts, and a
+fallback reason-prefix histogram. It is read-only and works with no room
+open. With no live results yet it prints zeroes; the buckets are the seam
+RFC 0035's exact-ledger measurement consumes.
+
+## Root Demand Histogram (RFC 0035 stage 4)
+
+`node bin/root-histogram.mjs [sessions-file-or-dir ...] [--json]` reads the
+`sessions/*.jsonl` CLI journals, keeps one flop street-start snapshot per
+hand, and builds the EXACT root ledger tuple the resident's `same_root`
+matches through the production mapper (`toDecisionRequest`): player count,
+big blind, pot, and an SB-first per-position net contribution / stack-behind
+/ folded mask. It tallies the preflop family (limped / SRP / 3-bet / 4-bet+),
+the `(live, SB-live, BB-live)` rollup groups, distinct exact tuples and
+their shares, starting/behind stack dispersion in BB, and preflop open
+sizes in BB. A snapshot whose chip history is incomplete (the mapper throws
+`HISTORY_INCOMPLETE` on text-only events) is counted in `ledgerIncomplete`
+with its reason, never given a fabricated key. It is read-only and, with no
+real observations, reports zero mappable rows and states that the stage-4/5
+coverage gate is unmet; `--json` emits the full histogram for the
+pre-declared threshold decision. This instrument neither trains nor
+recommends a second BSFLIB03 root — that decision follows the histogram.
+
 ## Mutation Verification
 
 A test that cannot fail is worse than no test, and reading a test cannot tell

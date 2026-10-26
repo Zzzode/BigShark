@@ -637,6 +637,17 @@ if(OpenMP_CXX_FOUND)
   target_link_libraries(bigshark-subgame-nash-conv PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
+# calibration for the bounded cap-1 river (G1) and street-start turn (G2)
+# production shapes, with identity menus and full-range uniform priors.
+# Manual target, NOT a CTest.
+add_executable(bigshark-rfc0036-calibration
+  benchmarks/rfc0036_calibration.cpp
+)
+target_link_libraries(bigshark-rfc0036-calibration PRIVATE
+  bigshark_solver
+)
+
 # RFC 0005 Stage 9 bounded-resolve microbenchmark. Tiny fixed-runout terminal
 # game; reports solve+cert wall time, worst bound slack, and iterations. Manual
 # target, NOT a registered CTest.
@@ -861,6 +872,13 @@ if(BUILD_TESTING)
   target_link_libraries(test_stage6_measured_policy PRIVATE bigshark_stage6_measured)
   add_test(NAME stage6_measured_policy COMMAND test_stage6_measured_policy)
   set_tests_properties(stage6_measured_policy PROPERTIES TIMEOUT 900)
+  # The exhaustive node enumeration runs ~150 s in release; the sanitizer
+  # instrumentation pushes the long stage-6 walks past the 6x allowance (the
+  # run was killed at 900 s with the process still at full CPU), so mirror the
+  # postflop_templates scaling with headroom for the observed ~30-40x ratio.
+  if(BIGSHARK_ENABLE_SANITIZERS)
+    set_tests_properties(stage6_measured_policy PROPERTIES TIMEOUT 5400)
+  endif()
 
   add_executable(test_stage6_geometry tests/test_stage6_geometry.cpp)
   target_link_libraries(test_stage6_geometry PRIVATE bigshark_stage6_eval)

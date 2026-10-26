@@ -53,6 +53,7 @@ integration, and development documentation.
 | RFC | [RFC 0032: Preserve the full board through the decision pipeline](rfcs/0032-turn-river-board-addressing.md) | Implementing | Stop re-rooting every postflop decision to three cards; repair the subgame digest contract; pin the current truncation with a baseline test |
 | RFC | [RFC 0033: Flop library root reachability](rfcs/0033-flop-library-root-reachability.md) | Implemented | Correct the stored root ledger so the shipped six-way library can answer a real limped flop, and record the one-root-per-class scope limit |
 | RFC | [RFC 0035: Multi-root flop library](rfcs/0035-multi-root-flop-library.md) | Implemented | BSFLIB03 root directory so one class answers several exact preflop-line ledgers; full RFC 0030 action identity in the header; ClassNotTrainedForRoot miss |
+| RFC | [RFC 0036: Six-way turn/river](rfcs/0036-six-way-turn-river.md) | Accepted | Bounded cap-1 on-demand river (seats 5/6) and street-start turn (seats 4-6) resolves with measured serve/decline gates |
 | RFC | [RFC 0034: Unversioned engine protocol](rfcs/0034-unversioned-engine-protocol.md) | Implemented | One unversioned proto package, regenerated baseline, restored protocol fuzz target, and removal of internal generation naming |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |

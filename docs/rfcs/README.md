@@ -48,6 +48,7 @@ their own RFC.
 | [0032](0032-turn-river-board-addressing.md) | Preserve the Full Board Through the Decision Pipeline | Implementing | Engine resident, River adapter, engine protocol |
 | [0033](0033-flop-library-root-reachability.md) | Make the Flop Library's Root Identity Reachable from a Real Hand | Implemented | Engine flop library, engine resident, engine benchmarks, engine tests |
 | [0035](0035-multi-root-flop-library.md) | Multi-Root Six-Way Flop Library | Implemented | Engine flop library, engine resident, engine host |
+| [0036](0036-six-way-turn-river.md) | Six-Way Turn and River On-Demand Strategy | Accepted | Engine resolver, engine solver, engine tree |
 | [0034](0034-unversioned-engine-protocol.md) | Unversioned Single-Form Engine Protocol | Implemented | Proto, engine protocol, engine host, node client, river adapter, engine tests, docs |
 
 `0000-template.md` is the authoring template and does not consume an RFC

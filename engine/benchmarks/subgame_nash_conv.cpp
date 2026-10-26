@@ -1068,7 +1068,514 @@ int run_fixture(const std::string& label, const GameDef& def,
   return 0;
 }
 
+// RFC 0036 M1 six-seat enumerable sub-range. The ten-hand T3 range has only
+// one six-seat disjoint assignment on the turn board and none on the river
+// board (the river card 9c blocks both nine-containing hands, leaving five
+// non-colliding pairs). This twelve-hand range keeps the same pair-heavy
+// structure but drops the nine dependence through ranks 4/5/6/8, so six
+// pairwise disjoint holdings exist on the river too. It stays small enough
+// for exact joint-deal enumeration; the full-range six-seat case uses the
+// sampled estimator separately (RFC 0036 stage 0).
+std::vector<std::array<int, 2>> make_rfc0036_six_range() {
+  std::vector<std::array<int, 2>> range;
+  range.push_back(hand("Ac", "Ad"));  // AA
+  range.push_back(hand("Kc", "Kd"));  // KK
+  range.push_back(hand("Qc", "Qd"));  // QQ
+  range.push_back(hand("Jc", "Jd"));  // JJ
+  range.push_back(hand("Tc", "Td"));  // TT
+  range.push_back(hand("8c", "8d"));  // 88
+  range.push_back(hand("Ac", "Kc"));  // AKs
+  range.push_back(hand("Ac", "Qc"));  // AQs
+  range.push_back(hand("Ac", "Kd"));  // AKo
+  range.push_back(hand("8c", "6c"));  // 86s
+  range.push_back(hand("5h", "4h"));  // 54s
+  range.push_back(hand("6h", "5h"));  // 65s
+  return range;
+}
+
+// RFC 0036 M1: production limped root. 100 BB buy-in (200 chips at big blind
+// 2), every seat limps for 2 chips, so the root pot holds 2 chips per seat
+// and every stack behind is 198. Same convention as the deployed six-way
+// flop library root (RFC 0033). Board 2c 3d 7h Js [9c].
+GameDef make_rfc0036_production_root(std::size_t seat_count, bool river_rooted) {
+  GameDef def{};
+  def.player_count = seat_count;
+  def.button = static_cast<int>(seat_count - 1);
+  def.big_blind = 2;
+  def.ante = 0;
+  for (std::size_t i = 0; i < seat_count; ++i) {
+    def.stacks[i] = 198;
+    def.contributions[i] = 2;
+  }
+  def.pot = static_cast<Chips>(2 * seat_count);
+  def.board = {card("2c"), card("3d"), card("7h"), card("Js"), river_rooted ? card("9c") : 0};
+  def.board_size = river_rooted ? 5 : 4;
+  def.preflop = false;
+  def.terminal = TerminalDepth::River;
+  return def;
+}
+
+struct M1Sample {
+  bool declined = false;
+  std::string reason;
+  std::uint64_t completed_iterations = 0;
+  std::size_t information_sets = 0;
+  std::size_t joint_deals = 0;
+  double max_gap_bb = 0.0;  // largest single live-seat BR gap, in BB
+  double sum_gap_bb = 0.0;  // sum of live-seat gaps (= NashConv), in BB
+};
+
+// RFC 0036 M1: train one production shape and compute its in-model NashConv
+// with the information-set-consistent pooled walker on an enumerable
+// sub-range (the representative range, shared with the T3 campaign).
+// `depth` is none() for the bounded river tree and streets(1) for the
+// street-start turn tree. A build past the 1 GiB builder cap is a decline.
+M1Sample measure_rfc0036_m1(const GameDef& def, const ActionAbstraction& action, DepthLimit depth,
+                            const std::vector<std::array<int, 2>>& range, std::uint64_t iterations,
+                            std::uint64_t seed, const FrontierEvaluator* frontier,
+                            int solve_wall_seconds) {
+  M1Sample sample;
+  std::unique_ptr<AbstractTree> tree_ptr;
+  try {
+    TreeLimits tree_limits;
+    tree_ptr = std::make_unique<AbstractTree>(def, action, tree_limits, depth);
+  } catch (const std::exception& e) {
+    sample.declined = true;
+    sample.reason = std::string("build: ") + e.what();
+    return sample;
+  }
+  const AbstractTree& tree = *tree_ptr;
+
+  std::vector<std::vector<WeightedHand>> ranges(def.player_count);
+  for (std::size_t p = 0; p < def.player_count; ++p) {
+    for (const auto& h : range) {
+      if (blocks_board(h, def.board, def.board_size))
+        continue;
+      ranges[p].push_back({h, 1.0});
+    }
+  }
+
+  NSeatTrainerLimits trainer_limits;
+  trainer_limits.wall = std::chrono::seconds(solve_wall_seconds);
+  NSeatTrainingResult trained;
+  try {
+    trained = train_nseat(tree, ranges, iterations, seed, trainer_limits, frontier, nullptr);
+  } catch (const std::exception& e) {
+    sample.declined = true;
+    sample.reason = std::string("train: ") + e.what();
+    return sample;
+  }
+  sample.completed_iterations = trained.completed_iterations;
+  sample.information_sets = trained.information_sets;
+
+  const NashConvResult nc = compute_nash_conv(tree, &trained.policy, range, def, frontier);
+  sample.joint_deals = nc.joint_deals;
+  for (std::size_t p = 0; p < def.player_count; ++p) {
+    if (def.folded[p])
+      continue;
+    const double gap_bb =
+        (nc.br_value[p] - nc.strategy_value[p]) / static_cast<double>(def.big_blind);
+    sample.max_gap_bb = std::max(sample.max_gap_bb, gap_bb);
+    sample.sum_gap_bb += gap_bb;
+  }
+  return sample;
+}
+
+// RFC 0036 M1 sweep: bounded river (G1) and street-start turn (G2) production
+// shapes, seats 2..6, at increasing iteration budgets, three seeds each. The
+// gate (RFC 0036) is per-seat gap < 0.05 BB and sum < 0.15 BB; the calibration
+// table then asks whether the smallest passing iteration count fits the
+// envelope. Prints CSV; this is evidence for the stage-0 go/no-go, not a
+// ctest.
+int run_rfc0036_m1_sweep(std::uint64_t max_iterations, std::uint64_t base_seed) {
+  const ActionAbstraction capped = ActionAbstraction::identity(/*max_raises=*/1);
+  const EquityFrontierEvaluator frontier;
+  const std::vector<std::uint64_t> iteration_levels = {100, 300, 1000, 3000, 10000};
+  const std::array<std::uint64_t, 3> seed_offsets{0, 1, 2};
+
+  std::printf(
+      "shape,seats,iterations,seed,completed,infosets,joint_deals,max_gap_bb,sum_gap_bb,note\n");
+  const auto ten_hand_range = make_representative_range();
+  const auto six_seat_range = make_rfc0036_six_range();
+  for (std::size_t seats = 2; seats <= 6; ++seats) {
+    const std::vector<std::array<int, 2>>& range = seats == 6 ? six_seat_range : ten_hand_range;
+    // G1: chance-free bounded river tree, exact showdown leaves.
+    const GameDef river = make_rfc0036_production_root(seats, /*river_rooted=*/true);
+    for (std::uint64_t iters : iteration_levels) {
+      if (iters > max_iterations)
+        continue;
+      for (std::uint64_t off : seed_offsets) {
+        const M1Sample s = measure_rfc0036_m1(river, capped, DepthLimit::none(), range, iters,
+                                              base_seed + off, nullptr, 120);
+        if (s.declined)
+          std::printf("river-cap1,%zu,%llu,%llu,DECLINED,,,,,%s\n", seats,
+                      static_cast<unsigned long long>(iters),
+                      static_cast<unsigned long long>(base_seed + off), s.reason.c_str());
+        else
+          std::printf("river-cap1,%zu,%llu,%llu,%llu,%zu,%zu,%.6f,%.6f,\n", seats,
+                      static_cast<unsigned long long>(iters),
+                      static_cast<unsigned long long>(base_seed + off),
+                      static_cast<unsigned long long>(s.completed_iterations), s.information_sets,
+                      s.joint_deals, s.max_gap_bb, s.sum_gap_bb);
+        std::fflush(stdout);
+      }
+    }
+    // G2: street-start turn tree, streets(1), equity frontier at the cut.
+    const GameDef turn = make_rfc0036_production_root(seats, /*river_rooted=*/false);
+    for (std::uint64_t iters : iteration_levels) {
+      if (iters > max_iterations)
+        continue;
+      for (std::uint64_t off : seed_offsets) {
+        const M1Sample s = measure_rfc0036_m1(turn, capped, DepthLimit::streets(1), range, iters,
+                                              base_seed + off, &frontier, 120);
+        if (s.declined)
+          std::printf("turn-cap1-s1,%zu,%llu,%llu,DECLINED,,,,,%s\n", seats,
+                      static_cast<unsigned long long>(iters),
+                      static_cast<unsigned long long>(base_seed + off), s.reason.c_str());
+        else
+          std::printf("turn-cap1-s1,%zu,%llu,%llu,%llu,%zu,%zu,%.6f,%.6f,\n", seats,
+                      static_cast<unsigned long long>(iters),
+                      static_cast<unsigned long long>(base_seed + off),
+                      static_cast<unsigned long long>(s.completed_iterations), s.information_sets,
+                      s.joint_deals, s.max_gap_bb, s.sum_gap_bb);
+        std::fflush(stdout);
+      }
+    }
+  }
+  return 0;
+}
+
+int run_rfc0036_m1_envelope(std::uint64_t base_seed) {
+  // The exact affordable iteration counts at the 1,600 ms p95 envelope from
+  // the calibration table (iterations = (1600 - build_ms) / ms_per_iteration):
+  //   river 5 seats 3,740 | river 6 seats 1,510
+  //   turn  5 seats 2,690 | turn  6 seats   970
+  // These are the BEST in-model quality the bounded paths can reach; if M1
+  // fails the 0.05 BB/seat and 0.15 BB sum gates here, no routing occurs.
+  struct Point {
+    std::size_t seats;
+    bool river;
+    std::uint64_t iters;
+  };
+  const std::vector<Point> points = {
+      {5, true, 3740},
+      {6, true, 1510},
+      {5, false, 2690},
+      {6, false, 970},
+  };
+  const auto ten_hand_range = make_representative_range();
+  const auto six_seat_range = make_rfc0036_six_range();
+  const ActionAbstraction capped = ActionAbstraction::identity(/*max_raises=*/1);
+  const EquityFrontierEvaluator frontier;
+  const std::array<std::uint64_t, 3> seed_offsets{0, 1, 2};
+
+  std::printf(
+      "shape,seats,iterations,seed,completed,infosets,joint_deals,max_gap_bb,sum_gap_bb,note\n");
+  for (const Point& p : points) {
+    const GameDef def = make_rfc0036_production_root(p.seats, p.river);
+    const std::vector<std::array<int, 2>>& range = p.seats == 6 ? six_seat_range : ten_hand_range;
+    for (std::uint64_t off : seed_offsets) {
+      const M1Sample s =
+          measure_rfc0036_m1(def, capped, p.river ? DepthLimit::none() : DepthLimit::streets(1),
+                             range, p.iters, base_seed + off, p.river ? nullptr : &frontier, 1800);
+      const char* shape = p.river ? "river-cap1" : "turn-cap1-s1";
+      if (s.declined)
+        std::printf("%s,%zu,%llu,%llu,DECLINED,,,,,%s\n", shape, p.seats,
+                    static_cast<unsigned long long>(p.iters),
+                    static_cast<unsigned long long>(base_seed + off), s.reason.c_str());
+      else
+        std::printf("%s,%zu,%llu,%llu,%llu,%zu,%zu,%.6f,%.6f,\n", shape, p.seats,
+                    static_cast<unsigned long long>(p.iters),
+                    static_cast<unsigned long long>(base_seed + off),
+                    static_cast<unsigned long long>(s.completed_iterations), s.information_sets,
+                    s.joint_deals, s.max_gap_bb, s.sum_gap_bb);
+      std::fflush(stdout);
+    }
+  }
+  return 0;
+}
+
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// RFC 0037 action-abstraction ablation
+// ---------------------------------------------------------------------------
+//
+// Trains a candidate at cap c and evaluates it by an information-set-
+// consistent pooled best response WALKING A RICHER cap-r REFERENCE TREE (the
+// same GameDef and streets(1) geometry; r >= c). Candidate policy rows are
+// re-keyed onto reference nodes by exact action-path correspondence (cap
+// suppression only removes deeper aggressive edges, so every candidate node
+// has one matching reference node); reference-only (beyond-cap) action nodes
+// receive a pinned fill:
+//   * passive arm: uniform over legal check/call, else fold (the candidate
+//     never invents aggression past its cap);
+//   * uniform arm: uniform over the whole legal menu (sensitivity bound).
+// E_r(c) = reference-tree NashConv of the projected policy. The identity
+// control c == r must reproduce the in-model NashConv I(c) within tolerance;
+// a mismatch invalidates the cell.
+
+// Pair every candidate-tree node with the reference node reached by the same
+// concrete action/chance path from the root. Returns -1 for unpaired nodes;
+// the inverse marks reference nodes the candidate cap can reach.
+void pair_nodes_by_path(const AbstractTree& cand, const AbstractTree& ref, std::size_t ci,
+                        std::size_t ri, std::vector<long long>& cand_to_ref) {
+  cand_to_ref[ci] = static_cast<long long>(ri);
+  const TreeNode& cn = cand.nodes()[ci];
+  const TreeNode& rn = ref.nodes()[ri];
+  if (cn.is_action()) {
+    for (std::size_t k = 0; k < cn.children.size(); ++k) {
+      const bs::poker::Action wanted = cn.actions[k];
+      for (std::size_t j = 0; j < rn.children.size(); ++j) {
+        if (ref.nodes()[rn.children[j]].incoming_action == wanted) {
+          pair_nodes_by_path(cand, ref, cn.children[k], rn.children[j], cand_to_ref);
+          break;
+        }
+      }
+    }
+  } else if (cn.is_chance() || cn.is_flop_deal()) {
+    for (const std::size_t cc : cn.children) {
+      const int wanted_card = cand.nodes()[cc].incoming_card;
+      for (const std::size_t rc : rn.children) {
+        if (ref.nodes()[rc].incoming_card == wanted_card) {
+          pair_nodes_by_path(cand, ref, cc, rc, cand_to_ref);
+          break;
+        }
+      }
+    }
+  }
+}
+
+// Fill probabilities for a beyond-cap reference node. Passive arm: uniform
+// over check/call, else fold; every aggressive entry zero. Uniform arm:
+// equal over the full menu.
+NSeatPolicyRow fill_row(const std::vector<bs::poker::Action>& menu, bool passive_only) {
+  NSeatPolicyRow row;
+  row.actions = menu;
+  row.probabilities.assign(menu.size(), 0.0);
+  if (!passive_only) {
+    const double p = 1.0 / static_cast<double>(menu.size());
+    for (double& q : row.probabilities)
+      q = p;
+    return row;
+  }
+  std::vector<std::size_t> passive;
+  for (std::size_t i = 0; i < menu.size(); ++i)
+    if (menu[i].type == bs::poker::ActionType::Check || menu[i].type == bs::poker::ActionType::Call)
+      passive.push_back(i);
+  if (passive.empty())
+    for (std::size_t i = 0; i < menu.size(); ++i)
+      if (menu[i].type == bs::poker::ActionType::Fold)
+        passive.push_back(i);
+  if (!passive.empty()) {
+    const double p = 1.0 / static_cast<double>(passive.size());
+    for (const std::size_t i : passive)
+      row.probabilities[i] = p;
+  }
+  return row;
+}
+
+// Project the trained candidate policy onto the reference tree. Beyond-cap
+// action nodes receive the pinned fill for every postflop tier bucket (the
+// pooled walker prunes an unrowed opponent node, so the fill must be present
+// per bucket).
+NSeatPolicy project_policy(const AbstractTree& cand, const AbstractTree& ref,
+                           const NSeatPolicy& trained, const std::vector<long long>& cand_to_ref,
+                           bool passive_fill) {
+  std::map<NSeatInformationKey, NSeatPolicyRow> rows;
+  // Re-key reachable candidate rows onto the matching reference node.
+  for (const auto& [key, candidate_row] : trained.rows()) {
+    if (key.node_index >= cand_to_ref.size() || cand_to_ref[key.node_index] < 0)
+      continue;
+    const auto ref_index = static_cast<std::size_t>(cand_to_ref[key.node_index]);
+    const auto& menu = ref.nodes()[ref_index].actions;
+    NSeatPolicyRow projected;
+    projected.actions = menu;
+    projected.probabilities.assign(menu.size(), 0.0);  // suppressed edges keep zero
+    projected.visits = candidate_row.visits;
+    for (std::size_t a = 0; a < candidate_row.actions.size(); ++a) {
+      for (std::size_t j = 0; j < menu.size(); ++j) {
+        if (menu[j] == candidate_row.actions[a]) {
+          projected.probabilities[j] = candidate_row.probabilities[a];
+          break;
+        }
+      }
+    }
+    rows.emplace(NSeatInformationKey{key.own_card_bucket, ref_index}, std::move(projected));
+  }
+  // Fill every unpaired reference action node (the beyond-cap region).
+  std::vector<bool> ref_paired(ref.size(), false);
+  for (const long long mapped : cand_to_ref)
+    if (mapped >= 0)
+      ref_paired[static_cast<std::size_t>(mapped)] = true;
+  for (std::size_t i = 0; i < ref.size(); ++i) {
+    if (ref_paired[i] || !ref.nodes()[i].is_action())
+      continue;
+    NSeatPolicyRow row = fill_row(ref.nodes()[i].actions, passive_fill);
+    for (std::uint32_t bucket = 1; bucket <= 9; ++bucket)
+      rows.emplace(NSeatInformationKey{bucket, static_cast<std::uint64_t>(i)}, row);
+  }
+  return NSeatPolicy::from_parts(ref.def(), ref.action_id(), std::move(rows));
+}
+
+struct M2Sample {
+  bool declined = false;
+  std::string reason;
+  double reference_nashconv_bb = 0.0;
+  double reference_fill_gap_bb = 0.0;
+  double uniform_fill_gap_bb = 0.0;
+};
+
+M2Sample measure_rfc0036_m2(std::size_t seats, int stack_bb,
+                            const std::vector<std::array<int, 2>>& range, std::uint64_t iterations,
+                            std::uint64_t seed) {
+  M2Sample sample;
+  GameDef def = make_subgame_def_np(seats, stack_bb, /*river_rooted=*/false);
+
+  std::unique_ptr<AbstractTree> ref_tree;
+  std::unique_ptr<AbstractTree> dl_tree;
+  try {
+    // Full turn->river reference AND the depth-limited candidate use the
+    // SAME production cap-1 menu. M2 isolates the error of replacing the
+    // river betting street with the equity frontier, orthogonal to the raise
+    // cap (the uncapped production full tree exceeds 1 GiB at every seat
+    // count, so no non-proxy cap-0 reference exists; cap 1 is the RFC 0036
+    // production shape either way).
+    const std::uint8_t ref_cap = 1;
+    ref_tree = std::make_unique<AbstractTree>(def, ActionAbstraction::identity(ref_cap),
+                                              TreeLimits{}, DepthLimit::none());
+    // The bounded production candidate: cap-1 streets(1) with the equity frontier.
+    dl_tree = std::make_unique<AbstractTree>(def, ActionAbstraction::identity(/*cap=*/1),
+                                             TreeLimits{}, DepthLimit::streets(1));
+  } catch (const std::exception& e) {
+    sample.declined = true;
+    sample.reason = std::string("build: ") + e.what();
+    return sample;
+  }
+
+  std::vector<std::vector<WeightedHand>> ranges(def.player_count);
+  for (std::size_t p = 0; p < def.player_count; ++p)
+    for (const auto& h : range)
+      if (!blocks_board(h, def.board, def.board_size))
+        ranges[p].push_back({h, 1.0});
+
+  NSeatTrainerLimits ref_limits;
+  ref_limits.wall = std::chrono::seconds(900);
+  NSeatTrainerLimits dl_limits;
+  dl_limits.wall = std::chrono::seconds(900);
+  const EquityFrontierEvaluator frontier;
+  NSeatTrainingResult ref_trained;
+  NSeatTrainingResult dl_trained;
+  try {
+    ref_trained = train_nseat(*ref_tree, ranges, iterations, seed, ref_limits, nullptr, nullptr);
+    dl_trained = train_nseat(*dl_tree, ranges, iterations, seed, dl_limits, &frontier, nullptr);
+  } catch (const std::exception& e) {
+    sample.declined = true;
+    sample.reason = std::string("train: ") + e.what();
+    return sample;
+  }
+
+  // Pair depth-limited candidate nodes onto full-tree nodes by action path.
+  // Only TURN action nodes above the streets(1) frontier pair; the
+  // candidate's frontier leaves stop recursion (they become the reference's
+  // river chance + betting subtree, which is filled separately).
+  std::vector<long long> dl_to_ref(dl_tree->size(), -1);
+  pair_nodes_by_path(*dl_tree, *ref_tree, 0, 0, dl_to_ref);
+
+  const double bb = static_cast<double>(def.big_blind);
+  const NashConvResult ref_nc =
+      compute_nash_conv(*ref_tree, &ref_trained.policy, range, def, nullptr);
+  sample.reference_nashconv_bb = ref_nc.nash_conv / bb;
+
+  // Build each composed policy on the reference tree's node indices.
+  auto compose = [&](bool reference_river_fill) {
+    std::map<NSeatInformationKey, NSeatPolicyRow> rows;
+    std::vector<bool> turn_paired(ref_tree->size(), false);
+    for (const long long mapped : dl_to_ref)
+      if (mapped >= 0)
+        turn_paired[static_cast<std::size_t>(mapped)] = true;
+
+    for (std::size_t i = 0; i < ref_tree->size(); ++i) {
+      const TreeNode& node = ref_tree->nodes()[i];
+      if (!node.is_action())
+        continue;
+      for (std::uint32_t bucket = 1; bucket <= 9; ++bucket) {
+        const NSeatInformationKey key{bucket, static_cast<std::uint64_t>(i)};
+        NSeatPolicyRow row;
+        row.actions = node.actions;
+
+        if (node.street == Street::Turn) {
+          if (turn_paired[i]) {
+            // Project the candidate's frozen turn row onto this reference node.
+            bool found = false;
+            for (const auto& [ck, crow] : dl_trained.policy.rows()) {
+              if (ck.own_card_bucket != bucket || ck.node_index >= dl_to_ref.size() ||
+                  dl_to_ref[ck.node_index] != static_cast<long long>(i))
+                continue;
+              row.probabilities.assign(node.actions.size(), 0.0);
+              for (std::size_t a = 0; a < crow.actions.size(); ++a)
+                for (std::size_t j = 0; j < node.actions.size(); ++j)
+                  if (node.actions[j] == crow.actions[a])
+                    row.probabilities[j] = crow.probabilities[a];
+              found = true;
+              break;
+            }
+            if (!found)
+              row = fill_row(node.actions, /*passive=*/true);  // beyond-cap turn node
+          } else {
+            row = fill_row(node.actions, /*passive=*/true);  // beyond-cap turn node
+          }
+        } else {
+          // River node: reference equilibrium fill or the uniform sensitivity arm.
+          if (reference_river_fill) {
+            const auto it = ref_trained.policy.rows().find(key);
+            if (it != ref_trained.policy.rows().end() && it->second.actions == node.actions) {
+              row.probabilities = it->second.probabilities;
+            } else {
+              row = fill_row(node.actions, /*passive=*/false);  // uniform fallback
+            }
+          } else {
+            row = fill_row(node.actions, /*passive=*/false);  // uniform river
+          }
+        }
+        rows.emplace(key, std::move(row));
+      }
+    }
+    return NSeatPolicy::from_parts(ref_tree->def(), ref_tree->action_id(), std::move(rows));
+  };
+
+  for (const bool ref_fill : {true, false}) {
+    NSeatPolicy composed = compose(ref_fill);
+    const NashConvResult nc = compute_nash_conv(*ref_tree, &composed, range, def, nullptr);
+    const double gap = nc.nash_conv / bb;
+    if (ref_fill)
+      sample.reference_fill_gap_bb = gap;
+    else
+      sample.uniform_fill_gap_bb = gap;
+  }
+  return sample;
+}
+
+int run_rfc0036_m2(int argc, char** argv) {
+  if (argc < 4) {
+    std::fprintf(stderr, "usage: %s --rfc0036-m2 <seats> <iterations> <seed>\n", argv[0]);
+    return 2;
+  }
+  const std::size_t seats = static_cast<std::size_t>(std::atoll(argv[2]));
+  const std::uint64_t iterations = std::stoull(argv[3]);
+  const std::uint64_t seed = std::stoull(argv[4]);
+  const auto range = seats >= 6 ? make_rfc0036_six_range() : make_representative_range();
+  const M2Sample s = measure_rfc0036_m2(seats, 100, range, iterations, seed);
+  std::printf("rfc0036-m2,%zu,100,%llu,%llu,", seats, static_cast<unsigned long long>(iterations),
+              static_cast<unsigned long long>(seed));
+  if (s.declined)
+    std::printf("INFEASIBLE,,,,%s\n", s.reason.c_str());
+  else
+    std::printf("FITS,%.8f,%.8f,%.8f,\n", s.reference_nashconv_bb, s.reference_fill_gap_bb,
+                s.uniform_fill_gap_bb);
+  std::fflush(stdout);
+  return 0;
+}
 
 int main(int argc, char** argv) {
   // T3 feasibility scan: --t3 [iterations] [seed]
@@ -1087,7 +1594,12 @@ int main(int argc, char** argv) {
   bool t3_dl_scan = false;
   bool t3_dl_cap_scan = false;
   bool t3_dl_cap_nc_scan = false;
+  bool rfc0036_m1 = false;
+  bool rfc0036_m1_envelope = false;
   int arg_index = 1;
+  bool rfc0036_m2 = argc > 1 && std::string(argv[1]) == "--rfc0036-m2";
+  if (rfc0036_m2)
+    return run_rfc0036_m2(argc, argv);
   if (argc > 1 && std::string(argv[1]) == "--t3") {
     t3_scan = true;
     arg_index = 2;
@@ -1100,10 +1612,22 @@ int main(int argc, char** argv) {
   } else if (argc > 1 && std::string(argv[1]) == "--t3-dl-cap-nc") {
     t3_dl_cap_nc_scan = true;
     arg_index = 2;
+  } else if (argc > 1 && std::string(argv[1]) == "--rfc0036-m1") {
+    rfc0036_m1 = true;
+    arg_index = 2;
+  } else if (argc > 1 && std::string(argv[1]) == "--rfc0036-m1-envelope") {
+    rfc0036_m1_envelope = true;
+    arg_index = 2;
   }
-  const std::uint64_t iterations =
-      argc > arg_index ? std::stoull(argv[arg_index]) : (t3_scan ? 100000 : 1000);
+  const std::uint64_t iterations = argc > arg_index
+                                       ? std::stoull(argv[arg_index])
+                                       : (t3_scan ? 100000 : (rfc0036_m1 ? 10000 : 1000));
   const std::uint64_t seed = argc > arg_index + 1 ? std::stoull(argv[arg_index + 1]) : 42;
+
+  if (rfc0036_m1_envelope)
+    return run_rfc0036_m1_envelope(seed);
+  if (rfc0036_m1)
+    return run_rfc0036_m1_sweep(iterations, seed);
 
   const auto range = make_representative_range();
   const auto schedule = make_coarse_schedule();
@@ -1162,8 +1686,8 @@ int main(int argc, char** argv) {
     const EquityFrontierEvaluator frontier;
     auto capped_schedule = schedule;
     ActionAbstraction action =
-        ActionAbstraction::declared(capped_schedule, CoverSeeds::DeclaredOnly);
-    action.set_max_raises_per_street(1);
+        ActionAbstraction::declared(capped_schedule, CoverSeeds::DeclaredOnly,
+                                    /*max_raises_per_street=*/1);
     int failures = 0;
     for (int stack_bb : {10, 25, 100}) {
       for (std::size_t seats = 2; seats <= 6; ++seats) {
@@ -1191,8 +1715,8 @@ int main(int argc, char** argv) {
     const EquityFrontierEvaluator frontier;
     auto capped_schedule = schedule;
     ActionAbstraction action =
-        ActionAbstraction::declared(capped_schedule, CoverSeeds::DeclaredOnly);
-    action.set_max_raises_per_street(1);
+        ActionAbstraction::declared(capped_schedule, CoverSeeds::DeclaredOnly,
+                                    /*max_raises_per_street=*/1);
     int failures = 0;
     for (int stack_bb : {10, 25, 100}) {
       for (std::size_t seats = 2; seats <= 6; ++seats) {
