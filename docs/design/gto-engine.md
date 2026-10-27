@@ -788,7 +788,12 @@ Accepted roots are still fully loaded and their exact post-build
 advertise a root the exact measurement would refuse. Roots whose declared
 ranges leave no positive card-compatible joint deal (zero or fully
 cross-blocked ranges, which the loader itself accepts) are refused with
-`InvalidRange`; the same canonical root listed twice is `DuplicateRoot`; a
+`InvalidRange`. The feasibility decision is exact and bounded: it searches
+for one pairwise card-disjoint combo per seat, branching on the
+most-constrained seat first and pruning card-starved seat subsets with a
+generalized Hall (two-card b-matching) condition, so full 1326-combo ranges
+at 4..6-seat preflop roots answer immediately instead of enumerating joint
+deals; the same canonical root listed twice is `DuplicateRoot`; a
 bad artifact is `LoadFailed` and never disables the other roots. A capacity
 failure in one root is isolated to that root; other roots and the non-resident
 decision path are unaffected.

@@ -2844,11 +2844,12 @@ static bool test_codebook_layouts(const fs::path&) {
 // RFC 0032: the board-identity helpers cover the WHOLE board, not a three-card
 // prefix. Three properties, each with the site it pins:
 //
-//  1. `root_joint_mass` (public_reach.cpp:140) blocks every identity board card.
-//     This is the only file-local clamp that is decisive on its own:
+//  1. `root_joint_deal_exists` (public_reach.cpp) blocks every identity board
+//     card. This is the only file-local clamp that is decisive on its own:
 //     `ReachModel::initialize`'s identical clamp is masked in `public_belief`,
-//     because `replay_public_path` calls `observe_card` for each turn/river card
-//     and removes those combos anyway. `root_joint_mass` has no such backstop.
+//     because `replay_public_path` calls `observe_card` for each turn/river
+//     card and removes those combos anyway. `root_joint_deal_exists` has no
+//     such backstop.
 //  2. `same_root` compares `board_size` before the cards, so a flop-shaped query
 //     is a different root from a five-card record.
 //  3. Two identities differing only in `board[3]` are different roots.
@@ -2903,16 +2904,16 @@ static bool test_wide_board_root_identity() {
     // Measured against both controls: the same fixture WITHOUT the turn
     // collision is positive, so the zero is caused by the turn card and not by
     // the fixture being empty.
-    CHECK(!(bs::resident::root_joint_mass(game) > 0.0));
-    CHECK(bs::resident::root_joint_mass(
-              synthetic_wide_board_game(seats, /*turn_collision=*/false)) > 0.0);
+    CHECK(!bs::resident::root_joint_deal_exists(game));
+    CHECK(bs::resident::root_joint_deal_exists(
+        synthetic_wide_board_game(seats, /*turn_collision=*/false)));
     // A three-card view of the colliding game is positive -- exactly the value
     // the old `i < 3` clamp returned for the five-card root.
     bs::solver::UnifiedGame flop_view = game;
     flop_view.def.board_size = 3;
     flop_view.def.board[3] = 0;
     flop_view.def.board[4] = 0;
-    CHECK(bs::resident::root_joint_mass(flop_view) > 0.0);
+    CHECK(bs::resident::root_joint_deal_exists(flop_view));
 
     // (2) and (3): root admission through a placed record.
     bs::resident::ResidentPolicySet set;
@@ -2944,7 +2945,95 @@ static bool test_wide_board_root_identity() {
   return true;
 }
 
-// ---------------------------------------------------------------------------
+// The root admission gate must answer on full 1326-combo ranges for every
+// supported seat count. The pre-fix implementation enumerated joint deals
+// naively (~1326^n assignments) and hung for hours on a shipped 4/5/6-way
+// preflop profile; the MRV search with the generalized-Hall prune answers
+// both feasible and infeasible roots in milliseconds.
+static bs::solver::UnifiedGame full_range_game(std::size_t seats) {
+  bs::solver::UnifiedGame game;
+  game.def.player_count = seats;
+  game.def.button = 0;
+  game.def.big_blind = 2;
+  game.def.preflop = true;
+  game.def.terminal = bs::poker::TerminalDepth::Flop;
+  game.def.board_size = 0;
+  for (std::size_t seat = 0; seat < seats; ++seat) {
+    game.def.stacks[seat] = 100;
+    game.def.contributions[seat] = 0;
+    for (int combo = 0; combo < bs::N_COMBOS; ++combo) {
+      const auto cards = bs::comboCards(combo);
+      game.ranges[seat].push_back(WeightedHand{cards, 1.0});
+    }
+  }
+  game.def.pot = 0;
+  return game;
+}
+
+static bool test_root_joint_deal_feasibility() {
+  using Clock = std::chrono::steady_clock;
+  // Every full-range 2..6-seat root admits a joint deal, and the answer must
+  // be immediate even at six seats (the old recursion never finished).
+  for (const std::size_t seats : {2, 3, 4, 5, 6}) {
+    bs::solver::UnifiedGame game = full_range_game(seats);
+    const auto start = Clock::now();
+    CHECK(bs::resident::root_joint_deal_exists(game));
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+    CHECK(ms < 100);
+    // A five-card board still leaves 47 cards, enough for six hands.
+    game.def.preflop = false;
+    game.def.board_size = 5;
+    const std::array<int, 5> board{48, 47, 46, 45, 44};
+    for (std::size_t i = 0; i < 5; ++i)
+      game.def.board[i] = board[i];
+    for (std::vector<bs::solver::WeightedHand>& range : game.ranges) {
+      range.clear();
+      for (int combo = 0; combo < bs::N_COMBOS; ++combo) {
+        const auto cards = bs::comboCards(combo);
+        if (cards[0] >= 44 || cards[1] >= 44)
+          continue;
+        range.push_back(WeightedHand{cards, 1.0});
+      }
+    }
+    CHECK(bs::resident::root_joint_deal_exists(game));
+  }
+  // Six seats whose combos use only eleven distinct cards cannot all be dealt
+  // a disjoint pair (the Hall subset of all seats fails); the prune must prove
+  // infeasibility without enumerating assignments.
+  {
+    bs::solver::UnifiedGame game = full_range_game(6);
+    for (std::size_t seat = 0; seat < 6; ++seat) {
+      game.ranges[seat].clear();
+      for (int c0 = 0; c0 < 11; ++c0)
+        for (int c1 = c0 + 1; c1 < 11; ++c1)
+          game.ranges[seat].push_back(WeightedHand{std::array<int, 2>{c0, c1}, 1.0});
+    }
+    const auto start = Clock::now();
+    CHECK(!bs::resident::root_joint_deal_exists(game));
+    const auto ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - start).count();
+    CHECK(ms < 100);
+  }
+  // Twelve shared cards are exactly enough for six disjoint pairs.
+  {
+    bs::solver::UnifiedGame game = full_range_game(6);
+    for (std::size_t seat = 0; seat < 6; ++seat) {
+      game.ranges[seat].clear();
+      for (int c0 = 0; c0 < 12; ++c0)
+        for (int c1 = c0 + 1; c1 < 12; ++c1)
+          game.ranges[seat].push_back(WeightedHand{std::array<int, 2>{c0, c1}, 1.0});
+    }
+    CHECK(bs::resident::root_joint_deal_exists(game));
+  }
+  // A single zero-width seat makes the root infeasible.
+  {
+    bs::solver::UnifiedGame game = full_range_game(4);
+    game.ranges[2].clear();
+    CHECK(!bs::resident::root_joint_deal_exists(game));
+  }
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 
@@ -3240,6 +3329,8 @@ int main() {
       {"index and continuity", test_index_and_continuity},
       {"codebook layouts", test_codebook_layouts},
       {"wide board root identity", [](const fs::path&) { return test_wide_board_root_identity(); }},
+      {"root joint deal feasibility",
+       [](const fs::path&) { return test_root_joint_deal_feasibility(); }},
       {"multi-root mmap resident", test_multi_root_mmap_resident},
       {"blueprint only", [](const fs::path&) { return test_blueprint_only(); }},
       {"schema-v1 load failed", test_v1_resident_load_failed},

@@ -692,7 +692,7 @@ ResidentPolicySet ResidentPolicySet::build(std::vector<SupportedRootSpec> specs,
       if (duplicate) {
         record.result.status = RootStatus::DuplicateRoot;
         record.result.detail = "supported root duplicates an already loaded root identity";
-      } else if (!(root_joint_mass(record.game) > 0.0)) {
+      } else if (!root_joint_deal_exists(record.game)) {
         record.result.status = RootStatus::InvalidRange;
         record.result.detail =
             "declared ranges leave no positive card-compatible joint deal at the root";

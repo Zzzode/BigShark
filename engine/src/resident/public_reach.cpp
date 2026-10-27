@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace bs::resident {
@@ -19,34 +20,74 @@ ReachModel::ReachModel(ResidentScratch& scratch) : scratch_(scratch) {}
 
 namespace {
 
-// Exact recursive joint mass over one combination per seat, all pairwise
-// card-disjoint and none sharing a root board card. Seats are visited most
-// constrained first (smallest declared range) so the used-card prune cuts
-// earliest. `product` is the weight product of the assignment so far.
-double joint_mass_recurse(const solver::UnifiedGame& game,
-                          const std::array<bool, 52>& board_blocked,
-                          const std::vector<std::size_t>& order, std::size_t depth,
-                          std::array<bool, 52>& used, double product) {
-  if (depth == order.size())
-    return product;
-  const std::size_t seat = order[depth];
-  double total = 0.0;
-  for (const solver::WeightedHand& hand : game.ranges[seat]) {
-    if (hand.weight <= 0)
-      continue;
-    if (board_blocked[static_cast<std::size_t>(hand.cards[0])] ||
-        board_blocked[static_cast<std::size_t>(hand.cards[1])])
-      continue;
-    if (used[static_cast<std::size_t>(hand.cards[0])] ||
-        used[static_cast<std::size_t>(hand.cards[1])])
-      continue;
-    used[static_cast<std::size_t>(hand.cards[0])] = true;
-    used[static_cast<std::size_t>(hand.cards[1])] = true;
-    total += joint_mass_recurse(game, board_blocked, order, depth + 1, used, product * hand.weight);
-    used[static_cast<std::size_t>(hand.cards[0])] = false;
-    used[static_cast<std::size_t>(hand.cards[1])] = false;
+// One board-free, positive-weight combination available to a seat.
+struct SeatEdge {
+  int card0;
+  int card1;
+};
+
+// Generalized Hall condition for the card-level relaxation: every seat must
+// receive two distinct cards (each card dealt at most once), ignoring the
+// constraint that a seat's two cards form one of its declared combos. Such an
+// assignment exists iff the union of live cards over every nonempty subset S
+// of seats has at least 2|S| cards. At most kMaxUnifiedSeats seats remain, so
+// all 2^k subsets are enumerated. A violation proves no combo-feasible deal.
+bool card_assignment_possible(const std::vector<std::uint64_t>& card_masks) {
+  const std::size_t seats = card_masks.size();
+  for (std::uint32_t subset = 1; subset < (1u << seats); ++subset) {
+    std::uint64_t united = 0;
+    std::size_t chosen = 0;
+    for (std::size_t seat = 0; seat < seats; ++seat) {
+      if (subset & (1u << seat)) {
+        united |= card_masks[seat];
+        ++chosen;
+      }
+    }
+    if (static_cast<std::size_t>(__builtin_popcountll(united)) < 2 * chosen)
+      return false;
   }
-  return total;
+  return true;
+}
+
+// Depth-first search for one pairwise-disjoint combo per remaining seat.
+// `used` is the card mask already dealt. At every level each seat's live
+// combos are recomputed, the most-constrained seat branches first (MRV), and
+// the card-level Hall prune rejects card-starved subsets before branching.
+bool joint_deal_search(const std::vector<std::vector<SeatEdge>>& seat_edges,
+                       const std::vector<std::size_t>& remaining, std::uint64_t used) {
+  if (remaining.empty())
+    return true;
+  std::vector<std::vector<SeatEdge>> live(remaining.size());
+  std::vector<std::uint64_t> card_masks(remaining.size(), 0);
+  std::size_t pick = 0;
+  for (std::size_t i = 0; i < remaining.size(); ++i) {
+    for (const SeatEdge& edge : seat_edges[remaining[i]]) {
+      const std::uint64_t edge_mask =
+          (std::uint64_t{1} << edge.card0) | (std::uint64_t{1} << edge.card1);
+      if (edge_mask & used)
+        continue;
+      live[i].push_back(edge);
+      card_masks[i] |= edge_mask;
+    }
+    if (live[i].empty())
+      return false;
+    if (live[i].size() < live[pick].size())
+      pick = i;
+  }
+  if (!card_assignment_possible(card_masks))
+    return false;
+  std::vector<std::size_t> next;
+  next.reserve(remaining.size() - 1);
+  for (std::size_t i = 0; i < remaining.size(); ++i)
+    if (i != pick)
+      next.push_back(remaining[i]);
+  for (const SeatEdge& edge : live[pick]) {
+    const std::uint64_t edge_mask =
+        (std::uint64_t{1} << edge.card0) | (std::uint64_t{1} << edge.card1);
+    if (joint_deal_search(seat_edges, next, used | edge_mask))
+      return true;
+  }
+  return false;
 }
 
 }  // namespace
@@ -121,29 +162,35 @@ std::vector<std::size_t> build_nseat_order(
   return order;
 }
 
-double root_joint_mass(const solver::UnifiedGame& game) {
+bool root_joint_deal_exists(const solver::UnifiedGame& game) {
   const std::size_t seats = game.def.player_count;
   if (seats < bs::poker::kMinUnifiedSeats || seats > bs::poker::kMaxUnifiedSeats)
-    return 0.0;
-  // A seat with an empty declared range contributes no joint deal.
-  for (std::size_t seat = 0; seat < seats; ++seat)
-    if (game.ranges[seat].empty())
-      return 0.0;
-  std::vector<std::size_t> order;
-  order.reserve(seats);
-  for (std::size_t seat = 0; seat < seats; ++seat)
-    order.push_back(seat);
-  std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
-    return game.ranges[a].size() < game.ranges[b].size();
-  });
-  std::array<bool, 52> board_blocked{};
+    return false;
+  std::uint64_t board_mask = 0;
   // RFC 0032: block every identity board card. The former `&& i < 3` clamp
   // silently treated a turn or river root as a flop and left its last cards
-  // unblocked, so joint-deal mass could use a card already on the board.
+  // unblocked, so a joint deal could use a card already on the board.
   for (std::size_t i = 0; i < game.def.board_size; ++i)
-    board_blocked[static_cast<std::size_t>(game.def.board[i])] = true;
-  std::array<bool, 52> used{};
-  return joint_mass_recurse(game, board_blocked, order, 0, used, 1.0);
+    board_mask |= std::uint64_t{1} << game.def.board[i];
+  std::vector<std::vector<SeatEdge>> seat_edges(seats);
+  std::vector<std::size_t> remaining;
+  remaining.reserve(seats);
+  for (std::size_t seat = 0; seat < seats; ++seat) {
+    for (const solver::WeightedHand& hand : game.ranges[seat]) {
+      if (hand.weight <= 0.0)
+        continue;
+      const std::uint64_t edge_mask =
+          (std::uint64_t{1} << hand.cards[0]) | (std::uint64_t{1} << hand.cards[1]);
+      if (edge_mask & board_mask)
+        continue;
+      seat_edges[seat].push_back(SeatEdge{hand.cards[0], hand.cards[1]});
+    }
+    // A seat with no board-free positive combo cannot take part in any deal.
+    if (seat_edges[seat].empty())
+      return false;
+    remaining.push_back(seat);
+  }
+  return joint_deal_search(seat_edges, remaining, 0);
 }
 
 bool ReachModel::initialize(const solver::UnifiedGame& game) {

@@ -92,11 +92,13 @@ class ReachModel {
   std::array<double, poker::kMaxUnifiedSeats> total_{};
 };
 
-// Exact root joint mass: the sum of declared range weights over assignments of
-// one combination per seat that share no card with each other or the ordered
-// root flop. Exact for every seat count by backtracking (most-constrained seat
-// first); per-player max normalization is deliberately not applied because the
-// only property tested here, positivity, is invariant under positive rescaling.
-double root_joint_mass(const solver::UnifiedGame& game);
+// Whether the declared ranges admit at least one card-compatible joint deal:
+// one positive-weight combination per seat, pairwise card-disjoint and holding
+// no root board card. Exact for every seat count via most-constrained-first
+// backtracking with a generalized-Hall (card b-matching) prune; full 1326-combo
+// ranges at a 4..6-seat preflop root answer immediately. The admission gate
+// only needs the boolean; the exact weighted mass is the ReachModel's job on
+// narrowed postflop ranges.
+bool root_joint_deal_exists(const solver::UnifiedGame& game);
 
 }  // namespace bs::resident
