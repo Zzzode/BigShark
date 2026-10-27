@@ -9,7 +9,7 @@
 //
 // Strictly offline: it links bigshark_practice -> bigshark_stage6_eval for the
 // bot policies, never bigshark_service / the engine host / a protocol, and
-// never reads ~/.river-club config or makes a network call. It is a LOCAL
+// never reads home-directory configuration or makes a network call. It is a LOCAL
 // training tool, not a money game: stacks reset/rebuy are the caller's choice,
 // and the bot policy is labelled for what it is (chart + heuristic), never
 // "GTO".

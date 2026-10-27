@@ -2,6 +2,9 @@
 
 Status: Current
 
+> **Provider-retirement note (2026-10-27, [RFC 0040](../rfcs/0040-retire-river-club-agent-api.md)).** Every reference in this plan to the River Club platform or Agent API v2.1, `apps/river-club-agent`, `platforms/river-club`, River bin launchers, `sessions/` journal replay, and provider token configuration is **Historical**: that integration was retired and deleted. Such references are retained only as dated evidence and must not be executed as current instructions. Engine-side scope, gates, and evidence remain Current.
+
+
 Execution state: RFCs 0004, 0006, and 0008 Implementing (0008 from
 stage 1, committed d60ce13); Stages 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, and
 the isolated Stage 12 ICM are complete with recorded
@@ -1613,7 +1616,6 @@ ctest --preset release
 cmake --build --preset release --target benchmark-multistreet
 npm run check
 npm run proto:check
-node bin/replay.mjs
 ```
 
 Memory, arithmetic bounds, traversal lifetime, persistence, and framing

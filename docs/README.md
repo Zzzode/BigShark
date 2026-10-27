@@ -2,8 +2,8 @@
 
 Status: Current
 
-This directory is the entry point for BigShark architecture, design, protocol,
-integration, and development documentation.
+This directory is the entry point for BigShark architecture, design,
+protocol, and development documentation.
 
 ## Documentation Map
 
@@ -13,8 +13,6 @@ integration, and development documentation.
 | Design | [GTO engine](design/gto-engine.md) | Current | Implemented decision logic, solvers, range tracking, RFC 0005 strategy artifacts, and limitations |
 | Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | IDL, pinned generation, compatibility baseline, and conformance vectors |
 | Reference | [Exploitability and NashConv](reference/exploitability.md) | Current | The three normalisations, which harness computes what, and the resident fixture conventions |
-| Integration | [River Club](integrations/river-club.md) | Current | River Club adapter, state machine, and operational mapping |
-| Integration | [Provider public-field audit](integrations/provider-public-field-audit.md) | Current | Authoritative vs undocumented provider fields and the T1b/T2 side-pot gate |
 | Development | [Build and test](development/build-and-test.md) | Current | CMake presets, formatting, tests, sanitizers, and release publishing |
 | Development | [Benchmarking](development/benchmarking.md) | Current | Reproducible solver-quality fixtures, metrics, and thresholds |
 | Development | [Offline practice table](development/practice-table.md) | Current | Local human-vs-bot practice for 2..10 seats, bot difficulty labels, and the offline boundary |
@@ -40,7 +38,7 @@ integration, and development documentation.
 | RFC | [RFC 0019: N-seat preflop reconstruction](rfcs/0019-nseat-preflop-reconstruction.md) | Implemented | Exact multiway replay on the negotiated wire contract; an internal prerequisite, not six-max GTO completion |
 | RFC | [RFC 0020: Folded-root policy identity](rfcs/0020-folded-root-policy-identity.md) | Implemented | Reject a different root live set before resident or direct resolver lookup |
 | RFC | [RFC 0021: N-seat cross-street reconstruction](rfcs/0021-nseat-cross-street-reconstruction.md) | Implemented | Replay supplied hand history into the true flop root; public provenance and complete six-max remain open |
-| RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Implementing | Coherent full-state ledger, public observations and rule identity; provider gates remain open |
+| RFC | [RFC 0022: Complete cash-hand protocol](rfcs/0022-complete-cash-hand-protocol.md) | Superseded by RFC 0040 | Coherent full-state ledger, public observations and rule identity; provider gates closed when the provider retired agent support |
 | RFC | [RFC 0023: Artifact startup and decision deadlines](rfcs/0023-artifact-startup-and-decision-deadlines.md) | Implemented | Root-aware startup allowance and bounded active waits; no six-max quality claim |
 | RFC | [RFC 0024: Depth-limited resolving](rfcs/0024-depth-limited-resolving.md) | Implemented | Street-boundary value estimation for scalable subgame solving; enabling architecture for six-max |
 | RFC | [RFC 0025: Off-tree decision handling](rfcs/0025-off-tree-decision-handling.md) | Implemented | Flop-rooted depth-limited resolving and off-tree action-line tolerance |
@@ -58,12 +56,13 @@ integration, and development documentation.
 | RFC | [RFC 0037: Shape-keyed abstraction policy](rfcs/0037-shape-keyed-abstraction-policy.md) | Implemented | Frozen shape->raise-cap table (no cell promoted; heads-up cap 0, every 3+ seat shape cap 1 at both layers and bands; legacy 3-seat 10 BB cap-0 profile retired 2026-10-26) from a pre-registered ablation plus a legacy-retirement amendment; preflop profiles and rootless flop resolving within the BSFLIB03 single-cap constraint; complete 2..6 dealt-count 100 BB preflop profile set shipped |
 | RFC | [RFC 0038: Retire schema-v1 artifacts](rfcs/0038-retire-schema-v1-artifacts.md) | Implemented | Deleted the two-seat schema-v1 SQLite dialect and algorithm-revision-1 read/write support; only schema v2/v3 rev2 artifacts remain, and a v1 file fails closed as UnsupportedVersion. Fixed-runout test/benchmark policies rekey into flop-rooted river-terminal v2 artifacts carrying their conditional runout |
 | RFC | [RFC 0039: Nested river continuation values](rfcs/0039-nested-river-continuation-values.md) | Accepted | Range-conditioned nested river subgame solve with cached RFC 0012 warm state replacing the measured-rejected equity leaf at the depth-limit river boundary; absolute inner BR-gap gate; RFC 0036 bounded-turn host entry built default-deny; frozen M1/M2 gates decide routing |
+| RFC | [RFC 0040: Retire the River Club Agent API v2.1 integration](rfcs/0040-retire-river-club-agent-api.md) | Implemented | Remove the discontinued provider's runner, platform adapter, bin launchers, journal replay tool, and imported upstream docs; repository becomes the platform-neutral engine, host, generic Node client, and offline practice table; supersedes RFC 0022 |
 | Plan | [RFC 0001 and 0002 implementation](plans/0001-0002-implementation.md) | Current | Ordered stages, gates, rollback points, and verification |
 | Plan | [RFC 0004-0006 implementation](plans/0004-0006-implementation.md) | Current | Task ownership, execution status, acceptance evidence, and rollback |
 | Plan | [RFC 0009 implementation](plans/0009-implementation.md) | Current | Unified engine delivery stages W1-W5, status, and evidence |
 | Plan | [RFC 0009 W2c-ii state layer](plans/0009-w2c-ii-state-layer.md) | Current | N-seat belief state layer design, generalization, and certification |
 | Plan | [RFC 0029 implementation](plans/0029-implementation.md) | Current | Frontier walks, oracle API migration, resident measurement driver, and the deferred measurement gate |
-| Plan | [RFC 0032 implementation](plans/0032-implementation.md) | Current | Digest repair first, then board preservation with the two-view state, labelling, and the deferred replay gate |
+| Plan | [RFC 0032 implementation](plans/0032-implementation.md) | Current | Digest repair first, then board preservation with the two-view state and labelling; the journal-replay gate was removed by RFC 0040 |
 | Plan | [RFC 0039 implementation](plans/0039-implementation.md) | Current | Nested river continuation values: seam, nested model, M2/M1 gates, default-deny host entry |
 | Plan | [GTO delivery roadmap](plans/gto-delivery-roadmap.md) | Proposed | Complete follow-up scope, dependencies, acceptance evidence, and outstanding decisions |
 | Plan | [Complete six-max GTO delivery](plans/sixmax-gto-delivery.md) | Current | Whole-feature In Progress status, audited blockers, task dependencies, and no partial-completion claims |
@@ -71,17 +70,12 @@ integration, and development documentation.
 | Plan | [T3 six-seat feasibility](plans/t3-six-seat-feasibility.md) | Current | Six-seat tree/solve resource measurement; current abstraction infeasible for 5+ seats, coarser schedule required |
 | Strategy | [Poker playbook](../strategy/PLAYBOOK.md) | Current | Baseline poker decisions and bankroll discipline |
 | Strategy | [Style selector](../.codex/skills/INDEX.md) | Current | Exploitative style selection and overrides |
-| Upstream | [River Club skill](SKILL.md) | Upstream | Official operating contract |
-| Upstream | [River Club strategy](upstream-STRATEGY.md) | Upstream | Official decision guidance |
-| Upstream | [River Club OpenAPI](openapi.json) | Upstream | Official HTTP protocol definition |
 
 ## Document Status
 
 - **Current** describes behavior implemented in the repository.
 - **Proposed** describes a design that has not been fully implemented.
 - **Historical** records obsolete behavior for debugging or migration context.
-- **Upstream** is an imported external source and must track its authoritative
-  origin.
 
 Every design document and RFC must declare its status near the title. Proposed
 behavior must not be described as if it already exists.

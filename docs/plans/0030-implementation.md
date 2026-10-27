@@ -1,6 +1,8 @@
 # RFC 0030 Implementation Plan
 
-Status: Current
+Status: Historical
+
+Retired as an operational document on 2026-10-27 by [RFC 0040](../rfcs/0040-retire-river-club-agent-api.md): its references to River bin launchers (e.g. journal replay) describe deleted commands. The RFC 0030 implementation evidence below is retained verbatim as a dated record.
 
 Execution state: RFC 0030 is Accepted (independent approval record in the RFC's
 Decision section, `rfc0030-approval-1`, 2026-10-24, approved on round 2 with

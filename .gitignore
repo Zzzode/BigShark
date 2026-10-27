@@ -4,7 +4,6 @@ sessions/
 .env
 .env.*
 config.json
-.river-club/
 .runtime/
 /dist/
 /node_modules/

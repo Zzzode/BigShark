@@ -83,7 +83,6 @@ cmake --build --preset release --target format
 cmake --build --preset release
 cmake --build --preset release --target format-check
 ctest --preset release
-node bin/replay.mjs
 ```
 
 The `release` build publishes
@@ -256,8 +255,8 @@ npm run check
 sources cannot survive as stale runtime artifacts.
 
 `npm run check` runs strict type checking, a clean reproducible build, the source
-policy gate, documentation and RFC checks, process-client tests, launcher
-compatibility tests, and River golden decisions.
+policy gate, documentation and RFC checks, and the process-client and RFC
+tooling tests.
 
 CMake exposes matching `typescript-build`, `typescript-check`, and
 `node-check` targets. The source policy rejects handwritten `.js` or `.mjs`
@@ -319,12 +318,12 @@ Node tests, one RFC check, and one documentation check when npm is available:
 | `multistreet_ref` | Independent fixed-run best-response reference |
 | `benchmark_multistreet` | Deterministic multi-street convergence, exploitability thresholds, and timing measurements |
 | `benchmark_heads_up_blueprint` | RFC 0004 version-2 heads-up full and external-sampling fixed/sampled-chance quality gates (Release only) |
-| `conformance` | RFC 0022 conformance vectors, envelope dispatch, and capabilities |
+| `conformance` | Cash-hand-ledger conformance vectors, envelope dispatch, and capabilities |
 | `protobuf_lint` | Buf STANDARD lint rules |
 | `protobuf_format` | Canonical Protobuf formatting |
 | `protobuf_breaking` | FILE compatibility against the accepted descriptor baseline |
 | `typescript` | Strict TypeScript compiler diagnostics |
-| `node` | Process client, launchers, River mapper, and engine integration tests |
+| `node` | Generic engine process client and RFC tooling tests |
 | `rfc` | RFC metadata, lifecycle, sections, decisions, and index membership |
 | `docs` | English-only first-party text and valid local Markdown links |
 
@@ -398,48 +397,6 @@ Run the RFC check directly with:
 npm run check:rfc
 cmake --build --preset debug --target rfc-check
 ```
-
-## Replay
-
-`node bin/replay.mjs` replays unique actionable snapshots from
-`sessions/*.jsonl`. Completion requires:
-
-- zero illegal actions;
-- zero unexpected operational fallbacks;
-- every bet and raise inside the recorded legal interval.
-
-Replay is read-only, but it uses the currently published
-`bin/bigshark-engine`, so run a release build first.
-
-## Resident Coverage
-
-`node bin/coverage.mjs [results-log]` tallies the decision coverage
-distribution from `.runtime/results.log` (one JSON line per executed action
-written by the River runner): actionable versus failed counts, the split into
-`resident` (a policy row served, carrying an artifact digest), `resolved`
-(on-demand approximate receipt), and `fallback` (labeled operational path),
-guarantee levels, per-street counts, distinct serving artifacts, and a
-fallback reason-prefix histogram. It is read-only and works with no room
-open. With no live results yet it prints zeroes; the buckets are the seam
-RFC 0035's exact-ledger measurement consumes.
-
-## Root Demand Histogram (RFC 0035 stage 4)
-
-`node bin/root-histogram.mjs [sessions-file-or-dir ...] [--json]` reads the
-`sessions/*.jsonl` CLI journals, keeps one flop street-start snapshot per
-hand, and builds the EXACT root ledger tuple the resident's `same_root`
-matches through the production mapper (`toDecisionRequest`): player count,
-big blind, pot, and an SB-first per-position net contribution / stack-behind
-/ folded mask. It tallies the preflop family (limped / SRP / 3-bet / 4-bet+),
-the `(live, SB-live, BB-live)` rollup groups, distinct exact tuples and
-their shares, starting/behind stack dispersion in BB, and preflop open
-sizes in BB. A snapshot whose chip history is incomplete (the mapper throws
-`HISTORY_INCOMPLETE` on text-only events) is counted in `ledgerIncomplete`
-with its reason, never given a fabricated key. It is read-only and, with no
-real observations, reports zero mappable rows and states that the stage-4/5
-coverage gate is unmet; `--json` emits the full histogram for the
-pre-declared threshold decision. This instrument neither trains nor
-recommends a second BSFLIB03 root — that decision follows the histogram.
 
 ## Mutation Verification
 

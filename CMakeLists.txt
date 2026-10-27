@@ -13,7 +13,6 @@ add_subdirectory(proto)
 add_subdirectory(apps/engine-host)
 add_subdirectory(tools/typescript)
 add_subdirectory(clients/node)
-add_subdirectory(platforms/river-club)
 add_subdirectory(docs)
 
 # RFC 0008 stage 6 offline boundary: included LAST so every protected target

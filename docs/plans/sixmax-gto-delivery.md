@@ -7,11 +7,14 @@ qualified. This register records verified gaps and internal work, not a release
 claim. The user requires the complete feature; successful internal milestones
 must never be presented as a partially completed user feature.
 
+> **Provider-retirement note (2026-10-27, [RFC 0040](../rfcs/0040-retire-river-club-agent-api.md)).** Every reference to the River Club interface, Agent API v2.1, `apps/river-club-agent`, `platforms/river-club`, River bin launchers, `sessions/` journal replay, and provider token configuration in entries dated 2026-10-25 and earlier is **Historical**: that integration was retired and deleted. The engine-side six-max work (artifacts, resolvers, RFC 0039, measurements) remains Current and is fully offline.
+
+
 ## Intended Outcome
 
-Operate through the official River Club interface at a six-player no-limit
-Hold'em table, preserving all six dealt-player positions and public history
-through every street. Cover the ordinary 2..6-live-player pots, unequal current
+Deliver six-player no-limit Hold'em engine decisions that preserve all six
+dealt-player positions and public history through every street. Cover the
+ordinary 2..6-live-player pots, unequal current
 stacks, all-ins, side pots, raise reopening, and legal nonstandard bet sizes.
 Strategy provenance, quality, coverage, and complete decision latency must be
 independently qualified. A legal operational fallback is not GTO support.
@@ -92,6 +95,17 @@ budgets still need independent approval before a passing claim is possible.
 
 ### 2026-10-27 status entry
 
+- **River Club Agent API v2.1 integration retired (RFC 0040 Accepted and
+  implemented 2026-10-27).** The provider discontinued agent support; at
+  the owner's direction the runner, platform adapter, eleven River bin
+  launchers, journal replay tool, imported upstream docs, and all live-play
+  operating instructions were deleted. The repository is now the
+  platform-neutral engine, engine host, generic Node client, and offline
+  practice table. RFC 0022 is Superseded; RFCs 0009/0032/0039 carry dated
+  errata. Earlier entries in this register that describe the runner,
+  adapter, coverage/histogram tooling, provider tokens, `sessions/`
+  replay, and live-corpus gates are Historical. The RFC 0039 offline
+  2..6-seat campaign is unaffected; no live scope attaches to any task.
 - **RFC 0039 drafted (nested river continuation values).** RFC 0036's
   triggered Phase C is now a concrete proposal: a range-conditioned nested
   river subgame solved by `NSeatTrainer` replaces the measured-rejected
@@ -116,13 +130,14 @@ budgets still need independent approval before a passing claim is possible.
 
 ### 2026-10-25 status entry
 
-- **Authorization gates checked**: no River Club token exists
-  (`~/.config/river-club-agent/config.json` absent, `RIVER_CLUB_TOKEN`
-  unset) and the user has not authorized a live data-collection session;
-  the bankroll gate therefore cannot be evaluated. Tasks 1 and 4 of the
-  25-item work list are open user gates. Every live-corpus task (RFC 0035
-  stage 4-5, T-09/T-10/T-11, coverage measurement) stays blocked; the
-  single `sessions/2026-10-25.jsonl` row is the token-missing failure.
+- **Authorization gates checked**: no provider token exists
+  (the provider agent config file is absent and the token environment
+  variable is unset) and the user has not authorized a live
+  data-collection session; the bankroll gate therefore cannot be
+  evaluated. Tasks 1 and 4 of the 25-item work list are open user gates.
+  Every live-corpus task (RFC 0035 stage 4-5, T-09/T-10/T-11, coverage
+  measurement) stays blocked; the single `sessions/2026-10-25.jsonl` row
+  is the token-missing failure.
 - **RFC 0037 (shape-keyed action-abstraction selection policy) Implemented
   2026-10-26**: the frozen cap table equals the provisional table (no
   cell promoted); the 72-row pre-registered matrix and the committed

@@ -1,6 +1,6 @@
 {
   "name": "bigshark",
-  "description": "A platform-neutral C++23 Texas Hold'em decision and GTO engine with typed adapters.",
+  "description": "A platform-neutral C++23 Texas Hold'em decision and GTO engine.",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -35,7 +35,7 @@
     "proto:toolchain": "cmake -DBIGSHARK_PROJECT_ROOT=. -DBIGSHARK_PROTO_TOOLCHAIN_DIR=build/generated/proto-toolchain -P tools/cmake/ensure-protobuf-toolchain.cmake",
     "proto:typecheck": "tsc -p proto/tsconfig.json --noEmit",
     "test:node": "npm run proto:generate --silent && npm run build:ts && npm run check:source-policy:compiled && npm run test:node:compiled",
-    "test:node:compiled": "node --test dist/apps/river-club-agent/*.test.js dist/clients/node/tests/*.test.js dist/platforms/river-club/tests/*.test.js dist/tools/rfc/*.test.js dist/tools/replay/*.test.js",
+    "test:node:compiled": "node --test dist/clients/node/tests/*.test.js dist/tools/rfc/*.test.js",
     "typecheck": "npm run proto:generate --silent && tsc -p tsconfig.json --noEmit"
   },
   "devDependencies": {

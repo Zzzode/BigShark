@@ -16,7 +16,7 @@ default-deny and is enabled only per shape once M2/M1/latency gates pass.
 | --- | --- | --- |
 | AC1 | `engine/include/bs/continuation_value.hpp` (new) + resolver | New seam + unit tests |
 | AC2 | `NestedRiverValueModel` + `train_nseat` + M2 nested arm in `subgame_nash_conv.cpp` | M2 CSV, CI rows |
-| AC3 | M1 rerun `--rfc0036-m1-envelope` + host replay latency | CSV row per shape |
+| AC3 | M1 rerun `--rfc0036-m1-envelope` + C++ host timing-harness latency | CSV row per shape |
 | AC4 | warm validation, key-sensitivity, digest/abstraction/side-pot tests | native + ASan tests |
 | AC5 | gate constants + default-deny host entry | host path + receipts unchanged |
 | AC6 | raw rows under `docs/plans/ablation/rfc0039-*.csv` | check-rfcs + check-docs |
@@ -66,11 +66,12 @@ inner iterations.
    resolver entry and host gate table in `apps/engine-host/main.cpp` and
    `engine/src/protocol/envelope.cpp`, declining every 3+ live turn request
    initially (preserving `turn_root_unserved` labels and receipts). The
-   bounded entry exercises the nested path from benchmark/host replay only.
+   bounded entry exercises the nested path from the benchmark and C++ host
+   timing harness only (the journal replay tool was removed by RFC 0040).
 2. **M1 envelope rerun.** `--rfc0036-m1-envelope` nested-backed trees at
    4/5/6 seats on the envelope-affordable iteration counts; record per-shape
    inner solve counts, warm hit/miss/refine, inner iterations, wall time.
-3. **Latency gate.** Offline host replay through the existing
+3. **Latency gate.** Offline C++ host timing harness through the existing
    envelope `solve_time_us` timing; receipt-to-action distribution on the
    1,600 ms envelope, nested solve wall time inclusive.
 4. **Enablement.** Per-shape gate-table constant edits, each shipped with
@@ -96,7 +97,6 @@ declined (the expected 5/6-seat outcome per the Stage-0 arithmetic).
 - `npm run check`, `npm run proto:check`, `node bin/check-rfcs.mjs`,
   `node bin/check-docs.mjs`
 - `cmake --build --preset release --target benchmark-multistreet`
-- `node bin/replay.mjs` (offline host replay rows only; no live traffic)
 - Raw rows commit under `docs/plans/ablation/`; one CSV header version,
   seeds/menus/caps/CI declared in the file.
 

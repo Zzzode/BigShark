@@ -20,11 +20,6 @@ BIGSHARK_ENGINE_BINARY="$PWD/build/linux-release/apps/engine-host/bigshark-engin
 ctest --preset linux-release --parallel "$(nproc)" -LE benchmark
 ctest --preset linux-release --verbose -L benchmark
 
-if [[ -d sessions ]]; then
-  BIGSHARK_ENGINE_BINARY="$PWD/build/linux-release/apps/engine-host/bigshark-engine" \
-    node bin/replay.mjs
-fi
-
 ctest --test-dir build/linux-release --verbose -R '^gto$' \
   | tee build/linux-release/gto-backend.log
 grep -F '(exact LP unavailable, bounded CFR only)' \

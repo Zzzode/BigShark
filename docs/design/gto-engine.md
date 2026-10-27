@@ -1175,14 +1175,12 @@ The C++ engine client gains `resident_budget_mib` and `startup_timeout_ms`
 fields; the practice simulator auto-bumps the startup timeout to 300 s when
 `--flop-library` is passed.
 
-The River runner finishes preflight before joining when initially off-table;
-an already-seated runner enters its normal state machine without an
-unconditional long startup wait. The framed client and River adapter include
-readiness and response waiting in their existing caller timeout. An expired
-not-yet-enqueued request cannot dispatch after shared startup completes, and
-late output is refused. This preserves startup reuse without weakening policy
-checks or claiming that native construction/cancellation and complete six-max
-receipt-to-action costs are qualified.
+The framed client includes readiness and response waiting in its existing
+caller timeout. An expired not-yet-enqueued request cannot dispatch after
+shared startup completes, and late output is refused. This preserves startup
+reuse without weakening policy checks or claiming that native
+construction/cancellation and complete six-max receipt-to-action costs are
+qualified.
 
 **Bucket-deduplicated binary format (RFC 0026, supersedes the RFC 0012
 Phase 2 layout; RFC 0027 makes it the training output; RFC 0035 promotes it to

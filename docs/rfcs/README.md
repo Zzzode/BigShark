@@ -35,7 +35,7 @@ their own RFC.
 | [0019](0019-nseat-preflop-reconstruction.md) | N-Seat Preflop Reconstruction | Implemented | Protocol, tests |
 | [0020](0020-folded-root-policy-identity.md) | Folded-Root Policy Identity | Implemented | Resident, resolver, tests |
 | [0021](0021-nseat-cross-street-reconstruction.md) | N-Seat Cross-Street Reconstruction | Implemented | Protocol, tests |
-| [0022](0022-complete-cash-hand-protocol.md) | Complete Cash-Hand Protocol | Accepted | Protocol, host, clients, River adapter/runner, poker, service |
+| [0022](0022-complete-cash-hand-protocol.md) | Complete Cash-Hand Protocol | Superseded by [0040](0040-retire-river-club-agent-api.md) | Protocol, host, clients, River adapter/runner, poker, service |
 | [0023](0023-artifact-startup-and-decision-deadlines.md) | Artifact Startup and Decision Deadlines | Implemented | Node framed client, River adapter, River runner, integration tests |
 | [0024](0024-depth-limited-resolving.md) | Depth-Limited Resolving with Value Estimation | Implemented | Engine resolver, engine tree, engine solver, engine benchmarks |
 | [0025](0025-off-tree-decision-handling.md) | Off-Tree Decision Handling | Implemented | Engine resolver, engine solver, engine protocol |
@@ -53,6 +53,7 @@ their own RFC.
 | [0037](0037-shape-keyed-abstraction-policy.md) | Shape-Keyed Action-Abstraction Selection Policy | Implemented | Engine abstraction, engine resolver, engine flop library, engine benchmarks |
 | [0038](0038-retire-schema-v1-artifacts.md) | Retire the Schema-v1 Heads-up Artifact Format and Algorithm Revision 1 | Implemented | Engine artifacts, engine resident |
 | [0039](0039-nested-river-continuation-values.md) | Nested River Continuation Values for Multiway Turn Strategy | Accepted | Engine resolver, engine tree, engine solver, engine host, engine benchmarks |
+| [0040](0040-retire-river-club-agent-api.md) | Retire the River Club Agent API v2.1 integration | Implemented | Applications, platform integrations, tooling, documentation, developer experience |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.

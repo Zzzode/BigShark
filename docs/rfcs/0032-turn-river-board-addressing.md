@@ -12,6 +12,8 @@ superseded-by: ""
 
 # RFC 0032: Preserve the Full Board Through the Decision Pipeline
 
+> **Errata (2026-10-27, [RFC 0040](0040-retire-river-club-agent-api.md)).** The `River adapter` owner, the platform test evidence in the deleted `platforms/river-club/tests/w1-resident-wiring.test.ts`, and the journal-replay verification gate are voided by the retirement of the River Club Agent API v2.1 integration. The engine-resident board-preservation deliverables and this RFC's status are unchanged.
+
 ## Summary
 
 Every postflop decision in the live pipeline is re-rooted to a three-card flop

@@ -2,6 +2,9 @@
 
 Status: Current
 
+> **Provider-retirement note (2026-10-27, [RFC 0040](../rfcs/0040-retire-river-club-agent-api.md)).** Every reference in this plan to the River Club platform or Agent API v2.1, `apps/river-club-agent`, `platforms/river-club`, River bin launchers, `sessions/` journal replay, and provider token configuration is **Historical**: that integration was retired and deleted. Such references are retained only as dated evidence and must not be executed as current instructions. Engine-side scope, gates, and evidence remain Current.
+
+
 Execution state: Stages 0-4 complete; Stage 5 ready
 
 Approved RFCs:
@@ -413,7 +416,6 @@ cmake --preset release
 cmake --build --preset release --target format
 cmake --build --preset release
 ctest --preset release
-node bin/replay.mjs
 ```
 
 Stages that modify native memory, framing, generated native code, or solver

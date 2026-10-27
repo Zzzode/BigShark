@@ -262,22 +262,25 @@ cannot produce a decision. The acceptance rule is:
 
 ### Deadline acceptance
 
-The engine must produce a decision within the platform's deadline. The
-acceptance rule is:
+The engine must produce a decision within the target platform's action
+deadline. The acceptance rule is:
 
-- **99th percentile decision time ≤ 50% of `timeLeftMs`** on the target
-  table clock, for the complete receipt-to-action pipeline (validation,
-  reconstruction, range propagation, tree construction, loading/lookup,
-  solve, extraction, response, adapter legality check).
-- **100th percentile decision time ≤ `timeLeftMs - safetyMs`** where
-  `safetyMs` is the runner's configured safety margin.
+- **99th percentile decision time ≤ 50% of the action deadline** on the
+  target platform's table clock, for the complete receipt-to-action pipeline
+  (validation, reconstruction, range propagation, tree construction,
+  loading/lookup, solve, extraction, response, and embedding-side legality
+  check).
+- **100th percentile decision time ≤ the action deadline minus the safety
+  margin**, where the safety margin is the embedding application's
+  configured value.
 - Decisions that exceed the deadline are counted as fallback decisions and
   are subject to the ordinary-state fallback rule.
 
-The River Club platform's deadline is `room.timeLeftMs`, which varies by
-table. The CLAUDE.md documents clocks of 1.2-25+ seconds. The 50% threshold
-ensures the engine has sufficient margin for network latency and adapter
-overhead.
+The action deadline is the remaining-time field exposed by a target
+platform's table state; it varies by table. Decision clocks observed in
+the legacy integration ranged from 1.2 to 25+ seconds. The 50% threshold
+ensures the engine has sufficient margin for transport latency and
+embedding-application overhead.
 
 ## Guarantee-to-Evidence Relation
 

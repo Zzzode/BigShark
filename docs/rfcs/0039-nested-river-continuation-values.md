@@ -607,3 +607,10 @@ three seats, where Stage 1 returns to review rather than loosening the
 0.01 BB band. The full Engine Build Contract (release and asan presets,
 ctest, benchmark-multistreet, npm checks, proto check, replay) is required
 before this RFC may become Implemented.
+
+**Factual errata (2026-10-27, [RFC 0040](0040-retire-river-club-agent-api.md)):**
+the `replay` step named both in this RFC's Verification Plan and in the
+approved build contract was removed by RFC 0040's retirement of the River
+Club Agent API v2.1 integration and the journal replay tool. Stage-2
+latency evidence is the C++ envelope `solve_time_us` timing harness; the
+remaining build-contract gates are unchanged.

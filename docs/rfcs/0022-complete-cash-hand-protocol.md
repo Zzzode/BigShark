@@ -1,13 +1,13 @@
 ---
 rfc: "0022"
 subject: "Complete Cash-Hand Protocol"
-status: "Implementing"
+status: "Superseded"
 authors: "Codex /root"
 created: "2026-10-14"
-updated: "2026-10-16"
+updated: "2026-10-27"
 owners: "protocol, engine host, engine clients, River adapter, River runner, poker, service"
 supersedes: ""
-superseded-by: ""
+superseded-by: "0040"
 ---
 
 # RFC 0022: Complete Cash-Hand Protocol
@@ -849,8 +849,10 @@ rollback specification before it is written.
   the initial capability tuples are `hu-r1` and `sixmax-r1`.
 - ~~Establish which official public fields/transitions can prove full-history
   completeness and which cases require additional authoritative public data.~~
-  **Static audit completed 2026-10-24:** see
-  [Provider public-field audit](../integrations/provider-public-field-audit.md).
+  **Static audit completed 2026-10-24** (the provider public-field audit
+  document was deleted with the integration by
+  [RFC 0040](0040-retire-river-club-agent-api.md); this bullet stays as
+  dated evidence).
   The revision spine, decision legality, current-state fields, and the
   old-events-are-omitted guarantee are settled; `room.pots`, `winners`, the
   event-kind catalog, rake/ante/refund/runout rules, and event-window

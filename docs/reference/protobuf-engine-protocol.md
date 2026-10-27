@@ -117,7 +117,7 @@ The published `bin/bigshark-engine` binary supports framed invocation:
 
 | Invocation | Transport |
 | --- | --- |
-| `bigshark-engine --serve-proto` | persistent framed coprocess, one frame per decision (default for the River Club runner) |
+| `bigshark-engine --serve-proto` | persistent framed coprocess, one frame per decision (the default serving mode, used by the generic Node client and the practice simulator) |
 
 The framed host is sequential. Each frame is a canonical ULEB128 length
 prefix followed by a serialized `Envelope`. Standard output carries frames
@@ -299,24 +299,27 @@ implements the framed engine process lifecycle:
 - Request/response correlation by `requestId`;
 - Process spawn, warmup, restart, and stop.
 
-The River adapter mapper (`platforms/river-club/src/mapper.ts`) converts a
-`RiverRoom` snapshot into a `DecisionRequest`:
+The embedding application converts its game snapshot into a
+`DecisionRequest`:
 
 - **G/F ledger**: seeded with blind amounts, then replayed through structured
   actions. Refunds are detected at closed-street boundaries by comparing
   per-street commitments; the current (open) street's refund is applied by
   the engine at close. The invariant `startingStack = stack + G - F` is
   validated before sending.
-- **Pot layers**: built from `room.pots` when present, otherwise from net
-  contributions (`G - F`). All layers are `PENDING` during the action phase.
+- **Pot layers**: built from explicit pot layers when present, otherwise from
+  net contributions (`G - F`). All layers are `PENDING` during the action
+  phase.
 - **TransitionEvent path**: `ActionEvent` and `BoardDeal` events with
   `potBefore` and `stackAfter` tracked incrementally from blinds.
-- **Response mapping**: `executeFromStrategy` and `validateEngineDecision`
-  process the `Strategy`/`ExpandedStrategy` response.
+- **Response handling**: the caller reads the `Strategy`/`ExpandedStrategy`
+  response and validates the returned action against its own legal action
+  set before executing it.
 
 ### Conformance vectors
 
-Three executable test vectors (from RFC 0022) are pinned in
+Three executable test vectors (introduced with the cash-hand ledger work of
+the now-superseded RFC 0022) are pinned in
 `engine/tests/test_conformance.cpp`:
 
 1. **Ordinary open bet** — 6-max, flop decision, hero seat 2, to_call=8.

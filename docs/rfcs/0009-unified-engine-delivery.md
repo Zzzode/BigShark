@@ -14,6 +14,8 @@ superseded-by: ""
 
 > **Historical note.** The schema-v1 dual-arm reader/writer, `to_unified_game(probe.game)`, and the `rfc0009-nseat-rev1-sampled-splitmix64` seat identity are **Historical**: retired by [RFC 0038](0038-retire-schema-v1-artifacts.md) on 2026-10-26. Schema-v2/v3, the seat-generic key grammar, the resident projection, and revision-two batched identities remain Current.
 
+> **Errata (2026-10-27, [RFC 0040](0040-retire-river-club-agent-api.md)).** The "live promotion" scope, the `River adapter` owner, and the `node bin/replay.mjs` verification clause are voided by the retirement of the River Club Agent API v2.1 integration. The engine delivery, artifact-boundary, resident, and protocol deliverables and this RFC's status are unchanged.
+
 
 ## Summary
 

@@ -1,6 +1,8 @@
 # RFC 0035 Implementation Plan — Multi-Root Flop Library (BSFLIB03)
 
-Status: Stages 1–3 implemented (2026-10-25); stages 4–5 remain gated
+Status: Historical
+
+Retired as an operational document on 2026-10-27 by [RFC 0040](../rfcs/0040-retire-river-club-agent-api.md): its references to journal replay and the root-demand histogram describe deleted commands, and stages 4-5 were gated on a live provider corpus that no longer exists. The stages 1-3 implementation evidence below is retained verbatim as a dated record; the BSFLIB03 artifacts remain Current.
 Created: 2026-10-24
 Owner: Engine flop library, engine resident, engine host
 RFC: [0035](../rfcs/0035-multi-root-flop-library.md) (Accepted 2026-10-24)

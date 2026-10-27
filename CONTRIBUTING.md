@@ -33,7 +33,6 @@ cmake --build --preset release
 ctest --preset release
 npm run check
 npm run proto:check
-node bin/replay.mjs
 ```
 
 Use the `asan` preset for memory, lifetime, bounds, or undefined-behavior

@@ -5,7 +5,7 @@ import { dirname, extname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
-const sourceRoots = ['apps', 'clients', 'platforms', 'tools'];
+const sourceRoots = ['clients', 'tools'];
 const errors: string[] = [];
 
 function scan(path: string): void {

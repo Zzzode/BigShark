@@ -1,6 +1,8 @@
 # RFC 0034 Implementation Plan — Unversioned Engine Protocol
 
-Status: Current
+Status: Historical
+
+Retired as an operational document on 2026-10-27 by [RFC 0040](../rfcs/0040-retire-river-club-agent-api.md): its provider v2.1 references describe the deleted integration. The RFC 0034 unversioned-protocol implementation evidence below is retained verbatim as a dated record.
 Created: 2026-10-24
 Owner: Engine protocol
 

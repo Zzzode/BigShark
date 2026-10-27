@@ -16,12 +16,17 @@ Include the affected component, reproduction steps, impact, and any suggested
 mitigation. Remove tokens, private game data, and personal information from
 the report.
 
-## Credential Handling
+## Secrets
 
-River Club Agent Tokens must exist only in
-`~/.config/river-club-agent/config.json` with mode `0600`, or in the
-`RIVER_CLUB_TOKEN` environment variable. Never place credentials in source,
-fixtures, logs, issues, commits, or chat.
+BigShark is a local, platform-neutral engine and ships no game-platform
+client or credentials. Never place secrets in source, fixtures, logs,
+issues, commits, or chat. Any local configuration or integration that
+introduces credentials must keep them outside the repository with
+restrictive file permissions.
 
-If a token may have been exposed, revoke it through River Club before
-continuing.
+## Fairness
+
+The engine makes decisions from public cards and the hero's own hole
+cards only. It must never infer unrevealed cards, collude, or reveal
+private information. The stage-6 offline build guard and the absence of
+network clients in first-party code keep this boundary enforceable.
