@@ -90,6 +90,30 @@ defines the separate coverage, quality, and resource gates. It remains Proposed:
 guarantee-to-evidence justification, numerical thresholds and complete campaign
 budgets still need independent approval before a passing claim is possible.
 
+### 2026-10-27 status entry
+
+- **RFC 0039 drafted (nested river continuation values).** RFC 0036's
+  triggered Phase C is now a concrete proposal: a range-conditioned nested
+  river subgame solved by `NSeatTrainer` replaces the measured-rejected
+  equity leaf at the depth-limit river boundary, with solve-scoped RFC 0012
+  warm refinement, an absolute inner BR-gap acceptance gate (stall alone
+  never publishes), and the missing RFC 0036 bounded-turn host entry built
+  default-deny. Independent approval took three rounds; the approval agent
+  recorded Approved on 2026-10-27 (RFC decision section). Stage 3 (persisted/process CV reuse) and Stage
+  4 (learned estimator) each require a separate trigger-gated RFC. The user
+  authorized the full offline 2..6-seat measurement campaign on
+  2026-10-27; no live scope is attached.
+- **Resident admission hang fixed.** The 4+ seat full-range eager-load
+  hang (`root_joint_mass` naive joint-deal enumeration) is replaced by the
+  boolean `root_joint_deal_exists` (MRV backtracking plus a generalized
+  Hall two-card b-matching prune). All five shipped 2..6-seat preflop
+  profiles now eager-load to Advertised through the rebuilt published
+  `bin/bigshark-engine` (the 6-way profile needs `--resident-budget 4096`;
+  measured resident ~368 MiB). Latent and not on a production path:
+  `ReachModel::prepare_partner_mass_nseat` remains O(N_COMBOS^(n-1)) for
+  hypothetical wide-range 4+ seat `public_belief` queries, which have no
+  production caller.
+
 ### 2026-10-25 status entry
 
 - **Authorization gates checked**: no River Club token exists

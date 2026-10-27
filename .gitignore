@@ -92,3 +92,6 @@ artifacts/flop-library-25bb.bin.sha256
 # against stray files). Anchored to the repo root so engine/src/artifacts/
 # source files are not affected.
 /artifacts/
+
+# Local-only materials (internal references, never publish)
+/local/
