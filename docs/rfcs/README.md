@@ -54,6 +54,7 @@ their own RFC.
 | [0038](0038-retire-schema-v1-artifacts.md) | Retire the Schema-v1 Heads-up Artifact Format and Algorithm Revision 1 | Implemented | Engine artifacts, engine resident |
 | [0039](0039-nested-river-continuation-values.md) | Nested River Continuation Values for Multiway Turn Strategy | Accepted (amended 2026-10-28) | Engine resolver, engine tree, engine solver, engine host, engine benchmarks |
 | [0040](0040-retire-river-club-agent-api.md) | Retire the River Club Agent API v2.1 integration | Implemented | Applications, platform integrations, tooling, documentation, developer experience |
+| [0041](0041-learned-river-continuation-value-network.md) | Learned River Continuation-Value Network for Multiway Turn Strategy | Accepted | Engine resolver, engine solver, engine artifacts, engine benchmarks, tools (offline trainer), engine host |
 
 `0000-template.md` is the authoring template and does not consume an RFC
 number.
