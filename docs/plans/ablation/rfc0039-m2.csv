@@ -1,0 +1,69 @@
+# version: rfc0039-m2-v1
+# RFC 0039 Stage 1 nested block-PI M2 arm (nested turn rows + reference
+# equilibrium river fill, composed onto the full DepthLimit::none() tree).
+# Fixture: make_subgame_def_np, 2 seats, 100 BB, board 2c 3d 7h Js, cap-1
+# ActionAbstraction::identity(1) on both reference and depth-limited trees;
+# 10-hand representative range (unit weights).
+# Block exact policy iteration: outer=100000 iterations in 3 blocks,
+# inner=40000 iterations per leaf per refinement, exact conditioned leaf
+# ranges re-exported each block, RFC 0012 bitwise warm resume.
+# Columns: arm,seats,stack_bb,outer_iters,inner_iters,blocks,seed,status,
+# reference_nashconv_bb,nested_composed_nashconv_bb,worst_exact_inner_gap_bb,
+# max_per_combo_marginal_delta_bb,leaves_refined,leaves_solved,
+# leaves_gap_passed,marginal_leaves_compared
+# Gates: 0.03 BB composed M2 model-delta threshold (frozen RFC 0036 M2
+# band; abstraction floor cancels to first order) is the deployment
+# gate. The leaf serve predicate is the 0.01 BB ABSTRACT-GAME bucket BR
+# gap under addendum D1 (the M2 driver here still records the EXACT-hole
+# gap column leaves_gap_passed reflects — that driver predates D1 and no
+# leaf passes either measure at these inner counts; FORCE_SERVED bypasses
+# serving purely to measure the outer-training effect). The exact-hole
+# column is mandatory deployment evidence: it includes the card-
+# abstraction loss and floors at ~0.26 BB independent of iterations (see
+# rfc0039-inner-gap-series.csv and rfc0039-identity-control.csv). The
+# observed worst-leaf exact gaps of 37-46 BB show the real conditioned
+# leaves are far harder than the cheapest checked-through leaf of the
+# per-leaf convergence series, so the series' per-leaf economics are
+# optimistic bounds. The marginal-delta column compares nested marginals
+# against the direct full solve on the first 16 leaves at these
+# under-converged iteration counts and is convergence evidence, not the
+# AC2 oracle gate (that gate is the native ctest
+# test_nested_marginals_match_independent_full_solve).
+rfc0039-m2,2,100,100000,40000,3,101,GATE_FAIL,2.75110595,3.14217475,42.16913984,11.72447523,240,240,0,16
+rfc0039-m2,2,100,100000,40000,3,202,GATE_FAIL,2.70939328,3.20544599,37.16524696,13.88015490,240,240,0,16
+rfc0039-m2,2,100,100000,40000,3,303,GATE_FAIL,2.70997938,3.03034665,43.65596895,15.70734712,240,240,0,16
+#
+# Force-served composed M2 rows (BS_RFC0039_FORCE=1: every solved leaf
+# feeds the outer trainer regardless of the inner gap; measurement-only
+# benchmark escape hatch, production seam stays fail-closed).
+# Gate-honest equity-fill references (same settings) for delta context:
+#   seed 101 composed 3.14217475 (delta 0.39106880)
+#   seed 202 composed 3.20544599 (delta 0.49605271)
+#   seed 303 composed 3.03034665 (delta 0.32036727)
+# inner=40000, outer=100000, 3 blocks:
+rfc0039-m2,2,100,100000,40000,3,101,FORCE_SERVED,2.75110595,2.85428974,41.72631591,6.08911331,240,240,0,16
+rfc0039-m2,2,100,100000,40000,3,202,FORCE_SERVED,2.70939328,3.20462209,38.64152839,6.14905907,240,240,0,16
+rfc0039-m2,2,100,100000,40000,3,303,FORCE_SERVED,2.70997938,3.16009936,42.88177381,6.49393039,240,240,0,16
+# Force-served deltas vs equity fill by seed:
+#   101: 0.103 vs 0.391 (nested improves composed NC by 0.29 BB)
+#   202: 0.495 vs 0.496 (no change, -0.001 BB)
+#   303: 0.450 vs 0.320 (nested is WORSE by 0.13 BB)
+# At 40k inner iterations serving nested values is inside seed noise:
+# mean delta 0.349 vs 0.402 equity (0.05 BB mean improvement with
+# ~0.22 BB cross-seed spread). Higher-inner rows below.
+# inner=200000, outer=100000, 3 blocks, seed 101:
+rfc0039-m2,2,100,100000,200000,3,101,FORCE_SERVED,2.75110595,2.93923313,45.75619369,6.48576289,240,240,0,16
+# Cadence cell, seed 101, outer=100000, inner=40000, 6 blocks (more frequent
+# leaf-range refresh):
+rfc0039-m2,2,100,100000,40000,6,101,FORCE_SERVED,2.75110595,2.83949517,45.30621957,6.84777387,240,240,0,16
+# delta 0.088 vs 0.103 at 3 blocks: halving outer iterations per
+# refinement improves the composed NC by only 0.015 BB, so the residual
+# is dominated by inner matrix quality, not block-PI range staleness.
+#
+# Reproduction provenance (independent approval agent, 2026-10-28):
+# reviewer bit-for-bit reproduced the seed-101 inner=40k FORCE_SERVED row
+# (composed 2.85428974, process exit 1 under FORCE), and independently
+# reproduced rfc0039-identity-control.csv to 1M and the 2-seat
+# inner-gap-series rows through 300k against their CSVs. The seed-202/303
+# force rows, the inner-200k row, and the 6-block row were generated after
+# the review window and are author-measured only pending re-run.

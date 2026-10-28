@@ -5,6 +5,7 @@
 #include <bs/range.hpp>  // N_COMBOS
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -226,6 +227,174 @@ std::vector<PolicyReachRangePair> export_continuation_ranges(
     }
   }
   return result;
+}
+
+std::optional<LeafRanges> export_leaf_continuation_ranges(
+    const NSeatPolicy& policy, const tree::AbstractTree& turn_tree,
+    const std::vector<std::vector<WeightedHand>>& root_ranges, std::size_t frontier_node_index) {
+  const poker::GameDef& def = turn_tree.def();
+  if (def.player_count < 2 || def.player_count > 10)
+    throw std::invalid_argument("leaf continuation ranges require 2..10 seats");
+  if (def.board_size != 4 || def.preflop || def.terminal != poker::TerminalDepth::River)
+    throw std::invalid_argument(
+        "leaf continuation ranges require a turn-rooted River-terminal game");
+  if (!poker::same_game_def(policy.game(), def))
+    throw std::invalid_argument("policy and tree game definitions differ");
+  if (root_ranges.size() != def.player_count)
+    throw std::invalid_argument("leaf continuation ranges require one range per seat");
+  for (const auto& seat : root_ranges)
+    if (seat.empty())
+      throw std::invalid_argument("leaf continuation ranges require a non-empty range per seat");
+  const tree::TreeNode& target = turn_tree.node(frontier_node_index);
+  if (target.kind != tree::NodeKind::TerminalFrontier)
+    throw std::invalid_argument("leaf continuation target is not a TerminalFrontier node");
+
+  const std::size_t player_count = def.player_count;
+
+  // Deterministic root -> target path as (parent node, child index) pairs,
+  // ordered top-down.
+  struct Edge {
+    std::size_t parent;
+    std::size_t child_index;
+    int chance_card;
+  };
+  std::vector<Edge> reversed;
+  for (std::size_t cur = frontier_node_index; cur != turn_tree.root_index();) {
+    const tree::TreeNode& n = turn_tree.node(cur);
+    if (n.parent == tree::kNoNode)
+      throw std::invalid_argument("frontier node is not reachable from the root");
+    const tree::TreeNode& parent = turn_tree.node(n.parent);
+    std::size_t child_index = 0;
+    while (child_index < parent.children.size() && parent.children[child_index] != cur)
+      ++child_index;
+    if (child_index == parent.children.size())
+      throw std::invalid_argument("frontier node path is inconsistent");
+    reversed.push_back(
+        {n.parent, child_index, parent.kind == tree::NodeKind::Chance ? n.incoming_card : -1});
+    cur = n.parent;
+  }
+  std::vector<Edge> path(reversed.rbegin(), reversed.rend());
+
+  // Normalize priors and build per-seat combo metadata.
+  std::vector<double> seat_total(player_count, 0.0);
+  for (std::size_t seat = 0; seat < player_count; ++seat) {
+    for (const auto& wh : root_ranges[seat])
+      seat_total[seat] += wh.weight;
+    if (seat_total[seat] <= 0.0)
+      throw std::invalid_argument("range has non-positive total weight");
+  }
+  std::vector<std::vector<ComboInfo>> combos(player_count);
+  for (std::size_t seat = 0; seat < player_count; ++seat) {
+    for (const auto& wh : root_ranges[seat]) {
+      const std::uint32_t bucket = static_cast<std::uint32_t>(abstraction::card_bucket(
+          kNSeatCardKind, wh.cards, std::span<const int>(def.board.data(), def.board_size)));
+      combos[seat].push_back({wh.cards, wh.weight / seat_total[seat],
+                              bs::comboIndex(wh.cards[0], wh.cards[1]), bucket,
+                              (1ULL << wh.cards[0]) | (1ULL << wh.cards[1])});
+    }
+  }
+
+  const std::array<int, 5> board = [&] {
+    const tree::TerminalPayload& payload = turn_tree.terminal(target.terminal);
+    return payload.board;
+  }();
+
+  // Enumerate card-compatible joint deals and follow the deterministic path.
+  struct LeafDeal {
+    std::array<int, 10> combo_indices{};
+    double weight = 0.0;
+    std::uint64_t card_mask = 0;
+  };
+  std::vector<LeafDeal> accepted;
+
+  struct Frame {
+    const ComboInfo* combo;
+    std::uint32_t bucket;
+  };
+  std::vector<Frame> stack;
+  stack.reserve(player_count);
+
+  auto enumerate = [&](auto&& self, std::size_t seat, std::uint64_t used_mask,
+                       double joint_prior) -> void {
+    if (seat == player_count) {
+      double reach = 1.0;
+      for (const Edge& edge : path) {
+        const tree::TreeNode& node = turn_tree.node(edge.parent);
+        if (node.kind == tree::NodeKind::Action) {
+          const std::size_t actor = node.actor;
+          const NSeatInformationKey key{stack[actor].bucket,
+                                        static_cast<std::uint64_t>(edge.parent)};
+          double prob;
+          if (const auto it = policy.rows().find(key); it != policy.rows().end()) {
+            if (edge.child_index >= it->second.probabilities.size())
+              throw std::invalid_argument("policy row menu shorter than tree edge");
+            prob = it->second.probabilities[edge.child_index];
+          } else {
+            prob = 1.0 / static_cast<double>(node.actions.size());
+          }
+          reach *= prob;
+        } else if (node.kind == tree::NodeKind::Chance) {
+          // Conditioned on the observed river card: the deal is compatible
+          // only when no seat holds it; no chance-probability factor.
+          if (used_mask & (1ULL << edge.chance_card))
+            return;
+        } else {
+          return;  // fold/showdown cannot lie on a frontier path
+        }
+        if (reach <= 0.0)
+          return;
+      }
+      LeafDeal deal;
+      deal.weight = joint_prior * reach;
+      deal.card_mask = used_mask;
+      for (std::size_t s = 0; s < player_count; ++s)
+        deal.combo_indices[s] = stack[s].combo->combo_index;
+      accepted.push_back(std::move(deal));
+      return;
+    }
+    for (const ComboInfo& combo : combos[seat]) {
+      if (used_mask & combo.card_mask)
+        continue;
+      stack.push_back({&combo, combo.bucket});
+      self(self, seat + 1, used_mask | combo.card_mask, joint_prior * combo.prior);
+      stack.pop_back();
+    }
+  };
+  enumerate(enumerate, 0, 0, 1.0);
+
+  // Dense per-seat accumulators over the five-card leaf board.
+  constexpr int N_C = bs::N_COMBOS;
+  std::vector<double> accum(player_count * N_C, 0.0);
+  std::uint64_t board_mask = 0;
+  for (std::size_t i = 0; i < 5; ++i)
+    board_mask |= 1ULL << board[i];
+
+  for (const LeafDeal& deal : accepted) {
+    if (deal.card_mask & board_mask)
+      continue;  // a seat shares a leaf-board card: impossible joint deal
+    for (std::size_t s = 0; s < player_count; ++s) {
+      const int ci = deal.combo_indices[s];
+      accum[s * N_C + ci] += deal.weight;
+    }
+  }
+
+  LeafRanges out;
+  out.frontier_node = frontier_node_index;
+  out.board = board;
+  out.ranges.resize(player_count);
+  for (std::size_t s = 0; s < player_count; ++s) {
+    double total = 0.0;
+    for (int ci = 0; ci < N_C; ++ci)
+      total += accum[s * N_C + ci];
+    if (!(total > 0.0))
+      return std::nullopt;
+    for (int ci = 0; ci < N_C; ++ci) {
+      const double w = accum[s * N_C + ci];
+      if (w > 0.0)
+        out.ranges[s].push_back({bs::comboCards(ci), w / total});
+    }
+  }
+  return out;
 }
 
 }  // namespace bs::solver

@@ -21,8 +21,9 @@
 #include <stdexcept>
 #include <vector>
 namespace bs::gto {
-class FrontierEvaluator;  // RFC 0007: flop-terminal frontier evaluation
-}
+class FrontierEvaluator;       // RFC 0007: flop-terminal frontier evaluation
+class ContinuationValueModel;  // RFC 0039: range-conditioned river leaf model
+}  // namespace bs::gto
 
 namespace bs::solver {
 
@@ -272,7 +273,8 @@ NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,
                                 std::uint64_t iterations, std::uint64_t master_seed,
                                 const NSeatTrainerLimits& limits,
                                 const gto::FrontierEvaluator* frontier = nullptr,
-                                const NSeatInitialState* initial_state = nullptr);
+                                const NSeatInitialState* initial_state = nullptr,
+                                const gto::ContinuationValueModel* continuation = nullptr);
 
 // RFC 0016: synchronous parallel batches. Width is num_threads clamped to
 // [1, iterations]; every sample's seat sweeps and independent averaging read

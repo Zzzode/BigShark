@@ -1,0 +1,32 @@
+# version: rfc0039-identity-control-v1
+# RFC 0039 Stage 1 P0 causal control for the exact-hand gap floor.
+# Question: is the ~0.26 BB floor in rfc0039-inner-gap-series.csv caused by
+# the 9-category postflop card abstraction (many distinct holdings share
+# one policy row), rather than by the solver or the NashConv walker?
+# Control: a 2-seat river-rooted cap-1 game (100 BB, 1 chip/seat in, BB=2,
+# DepthLimit::none()) on board As Ks Qs Js 2d with a seven-combo range that
+# realizes seven DISTINCT production buckets: Ts9s straight flush, 8s3s
+# flush, Tc9d straight, AhAd trips, KdQd two pair, 9c9h pair, 8c7d ace
+# high. Fourteen pairwise-disjoint physical cards, unit weights, both
+# seats identical range. Each kNSeatCardKind bucket then contains exactly
+# one range combo, so the exact-hole BR grouping and the bucket-restricted
+# BR grouping are the SAME partition: any residual floor under one measure
+# must appear under the other, and the two NashConv values must be equal.
+# Columns: stack_bb,cumulative_iters,nodes,infosets,gap_exact_bb,
+# gap_bucket_bb,measure_delta_bb
+# Result: measure_delta is zero to machine epsilon at every level and the
+# gap converges monotonically with NO floor (2.59 -> 0.016 BB at 10M),
+# whereas the representative 10-hand fixture (nine of ten combos collapse
+# to one bucket on its paired board) floors at 0.259-0.287 BB after 300k.
+# This isolates the floor to within-bucket card discrimination, i.e. the
+# card-abstraction loss owned by RFC 0031.
+# Seed 101; bitwise RFC 0012 warm-resume trajectory; deterministic.
+100,1000,21,56,2.58789301,2.58789301,4.44e-16
+100,3000,21,56,1.41126434,1.41126434,0.00e+00
+100,10000,21,56,0.79184701,0.79184701,0.00e+00
+100,30000,21,56,0.46241336,0.46241336,0.00e+00
+100,100000,21,56,0.22884347,0.22884347,5.55e-17
+100,300000,21,56,0.11713472,0.11713472,4.16e-17
+100,1000000,21,56,0.05636113,0.05636113,1.39e-17
+100,3000000,21,56,0.03020013,0.03020013,2.78e-17
+100,10000000,21,56,0.01565277,0.01565277,3.47e-17

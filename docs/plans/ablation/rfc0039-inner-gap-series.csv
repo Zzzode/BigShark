@@ -1,0 +1,51 @@
+# version: rfc0039-inner-gap-series-v1
+# RFC 0039 Stage 1 single-leaf absolute inner BR-gap convergence series.
+# Fixture: cap-1 river subtree behind the first checked-through turn frontier
+# leaf; game def make_subgame_def_np (button=seats-1, big_blind=2 chips,
+# 1 chip/seat in, 100 BB stacks, board 2c 3d 7h Js + observed river card);
+# action menu ActionAbstraction::identity(1); 10-hand representative range
+# (make_representative_range; board-blocking combos removed, unit weights);
+# exact per-seat conditioned leaf ranges exported from a uniform sealed turn
+# policy; inner tree DepthLimit::none() street-start river (21 nodes/24
+# information sets at 2 seats; 88/117 at 3 seats).
+# Columns: seats,stack_bb,cumulative_inner_iters,nodes,infosets,gap_avg_bb,
+# gap_current_bb,gap_bucket_br_bb,passed_bucket,refine_and_gap_wall_ms
+# gap_avg: sealed average strategy vs exact-hole pooled information-set
+#   BR, weighted joint measure (standard full-game exploitability; includes
+#   card-abstraction loss)
+# gap_current: RM+ current strategy (positive-regret matching on raw
+#   regrets, uniform on nonpositive rows) vs the same exact-hole BR
+# gap_bucket_br: average strategy vs bucket-restricted BR (one action per
+#   kNSeatCardKind bucket at the 5-card root board; convergence WITHIN the
+#   abstract game, card-abstraction loss excluded)
+# Gate: 0.01 BB summed per leaf (kInnerGapToleranceBbForGate); passed_bucket
+#   is the bucket measure against that gate.
+# Determinism: seed 101 (inner series run_rfc0039_inner_series, trainer seed
+# 101 xor 0x15EE), bitwise RFC 0012 warm-resume trajectory; repeated runs
+# reproduce to all printed digits. No CI column: single deterministic
+# trajectory, not a sampled estimate. Multi-seed spread not yet collected.
+# Wall times from a 28-core release build, refine + three gap walks.
+2,100,1000,21,24,2.27360136,0.55658921,2.23042224,0,82
+2,100,3000,21,24,1.09213059,2.48917522,1.02222759,0,87
+2,100,10000,21,24,0.70670496,0.39724660,0.57429918,0,159
+2,100,30000,21,24,0.43178140,0.34164316,0.28799022,0,380
+2,100,100000,21,24,0.29467726,0.39304249,0.12710976,0,1052
+2,100,300000,21,24,0.25909138,0.28167830,0.05983018,0,2842
+2,100,1000000,21,24,0.26495228,0.34089691,0.02932877,0,10157
+2,100,3000000,21,24,0.27943005,0.30183306,0.01612984,0,28099
+2,100,10000000,21,24,0.28718809,0.53683406,0.00813947,1,95708
+3,100,1000,88,117,3.41590086,1.28451957,3.03163230,0,161
+3,100,3000,88,117,2.28928283,1.31148100,1.88728696,0,209
+3,100,10000,88,117,1.29602052,0.68457619,0.97393504,0,510
+3,100,30000,88,117,0.75909001,0.60174003,0.52244372,0,1278
+3,100,100000,88,117,0.45544875,0.46679041,0.23811541,0,4255
+3,100,300000,88,117,0.36580173,0.38103635,0.11453342,0,11612
+3,100,1000000,88,117,0.36058173,0.38865518,0.05564621,0,39300
+3,100,3000000,88,117,0.35600350,0.89349993,0.02867744,0,113671
+# Multi-seed spread (same fixture, seeds 202 and 303):
+# seed 202 bucket: 100k 0.12143894, 300k 0.06029133, 1M 0.02872853, 3M 0.01558058;
+#                 exact avg 3M 0.27766779, current 3M 0.33445118
+# seed 303 bucket: 100k 0.12643377, 300k 0.06287428, 1M 0.02939639, 3M 0.01581877;
+#                 exact avg 3M 0.28039876, current 3M 0.29658500
+# Spread across 101/202/303 at 3M: bucket 0.0156-0.0161 (~3% spread),
+# exact floor 0.278-0.280; single-trajectory conclusions are stable.

@@ -32,6 +32,7 @@
 #include <bs/nseat_trainer.hpp>    // NSeatPolicy
 #include <bs/range.hpp>            // comboIndex
 #include <map>
+#include <optional>
 #include <vector>
 
 namespace bs::solver {
@@ -76,5 +77,36 @@ struct PolicyReachRangePair {
 std::vector<PolicyReachRangePair> export_continuation_ranges(
     const NSeatPolicy& policy, const tree::AbstractTree& tree,
     const std::vector<std::vector<WeightedHand>>& ranges);
+
+// RFC 0039: exact conditioned combo ranges at ONE turn depth-limit river
+// boundary leaf.
+//
+// Given a sealed average policy on a TURN-ROOTED streets(1) tree, the
+// per-seat declared root ranges, and a TerminalFrontier node index, compute
+// the combo distribution conditioned on the public action line and river
+// card that identify the leaf. The walk multiplies EVERY acting seat's
+// average-policy probability along the deterministic action path to the
+// leaf (missing rows fall back to uniform, matching the trainer), requires
+// the leaf's river card to be card-disjoint from the joint deal, blocks
+// every five-card-board combo, and independently normalizes each seat's
+// marginal to sum to one (the same per-seat product-conditional input
+// semantics train_nseat's JointDealDealer consumes; never joint-normalized).
+//
+// Folded seats retain their action-conditioned folding range: the trainer
+// still needs the seat's combos for card blockage. The river chance
+// probability is NOT part of the conditioning weight (the public river
+// card is observed, so its probability cancels in the conditional).
+//
+// Returns std::nullopt when any seat has zero conditioned mass at the leaf
+// (the caller maps that to the nested-model INVALID status). Throws
+// std::invalid_argument on a malformed tree/policy/range combination.
+struct LeafRanges {
+  std::size_t frontier_node = 0;
+  std::array<int, 5> board{};
+  std::vector<std::vector<WeightedHand>> ranges;  // one normalized vector per seat
+};
+std::optional<LeafRanges> export_leaf_continuation_ranges(
+    const NSeatPolicy& policy, const tree::AbstractTree& turn_tree,
+    const std::vector<std::vector<WeightedHand>>& root_ranges, std::size_t frontier_node_index);
 
 }  // namespace bs::solver

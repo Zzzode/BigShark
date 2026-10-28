@@ -329,6 +329,8 @@ add_library(bigshark_solver STATIC
   src/gto/frontier_table_codec.cpp
   src/gto/nseat_policy_codec.cpp
   src/gto/continuation_range.cpp
+  src/gto/nested_river_value.cpp
+  src/gto/nested_river_model.cpp
   src/solver/seat_policy.cpp
   src/gto/river_game.cc
   src/gto/sf_lp.cc
@@ -1313,6 +1315,11 @@ if(BUILD_TESTING)
   add_executable(test_depth_limited tests/test_depth_limited.cpp)
   target_link_libraries(test_depth_limited PRIVATE bigshark_resolver)
   add_test(NAME depth_limited COMMAND test_depth_limited)
+
+  # RFC 0039 Stage 1: nested river boundary leaf and river-rooted game.
+  add_executable(test_nested_river_value tests/test_nested_river_value.cpp)
+  target_link_libraries(test_nested_river_value PRIVATE bigshark_resolver)
+  add_test(NAME nested_river_value COMMAND test_nested_river_value)
 
   # RFC 0024: depth-limited resolving integration tests.
   add_executable(test_depth_limited_integration tests/test_depth_limited_integration.cpp)

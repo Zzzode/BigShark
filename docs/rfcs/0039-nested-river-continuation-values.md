@@ -4,13 +4,19 @@ subject: "Nested River Continuation Values for Multiway Turn Strategy"
 status: "Accepted"
 authors: "Claude (zzzode agent session 2026-10-27)"
 created: "2026-10-27"
-updated: "2026-10-27"
+updated: "2026-10-28"
 owners: "Engine resolver, engine tree, engine solver, engine host, engine benchmarks"
 supersedes: ""
 superseded-by: ""
 ---
 
 # RFC 0039: Nested River Continuation Values for Multiway Turn Strategy
+
+> **Status note:** initially Accepted 2026-10-27; returned to Proposed on
+> the same day when Stage 1 hit its pre-declared design-level-failure stop
+> branch; the Stage 1 Review Addendum at the end of this document
+> redefines the gate semantics (D1-D5) and was independently re-approved
+> 2026-10-28 (see Decision).
 
 ## Summary
 
@@ -560,57 +566,261 @@ fallback path is never removed in this RFC.
 
 ## Decision
 
-Author agent: Claude (zzzode agent session 2026-10-27)
-Approved by: rfc0039-approval-1 (independent approval agent, auto_model/alwaysday1_max)
-Decision date: 2026-10-27
+### Stage 1 Review Addendum decision (2026-10-28): Approved
+
+Author agent: Claude (zzzode agent session, addendum author 2026-10-27/28)
+Approved by: rfc0039-approval-2 (independent approval agent, auto_model/alwaysday1_max; did not author the RFC, code, or measurements)
+Decision date: 2026-10-28
 Review outcome: Approved
-Reviewed scope: Full RFC 0039 text across three review rounds, verified against engine source (resolver.hpp/subgame_resolver.cpp, frontier.hpp, postflop_frontier.hpp, root_value_extractor.hpp, continuation_range.hpp, abstract_tree.hpp, nseat_trainer.hpp NSeatInitialState, abstraction.cpp cap selectors, envelope.cpp turn_root_unserved, main.cpp host wiring, subgame_nash_conv.cpp M1/M2 harnesses) and the frozen M1/M2 CSV evidence.
-Review summary: Three rounds. Round 1 Changes Requested (2 blockers, 5 major, 7 minor); round 2 Changes Requested (1 blocking gate-integrity finding); round 3 Approved after the absolute inner-BR-gap acceptance rule and all other findings were resolved.
+Amendment round: one prior Changes Requested round; both blocking findings (D3 supersession text and status indexes) resolved and re-verified before approval
+Review summary: Independent re-approval of the Stage 1 Review Addendum after Stage 1 hit its pre-declared design-level-failure stop branch. Across two review rounds the agent verified the measurement decomposition (bucket-restricted pooled BR converges where the exact-hand measure floors at ~0.26 BB card-abstraction loss; identity control reproduced bit-for-bit), the per-leaf economics (138.6 s cold-start to 10M at 2 seats, 87x envelope, days at 3 seats), the fail-closed model including a stale-matrix-after-failed-rerefine fix (ASan-clean), and zero production wiring. D1-D5 accepted: two mandatory quality numbers (bucket gap as serve predicate; exact gap + composed M2 delta retained as deployment evidence), AC2/AC3 gate amendments, withdrawal of direct-solve enablement with explicit supersession of G4/G5/§5/Rollout-Stage-2/AC3/AC5, and separate-RFC Stage 3/4 triggers. The strict 0.005 BB AC2 band is enforced in release (0.00467 BB reproduced) with a documented 0.05 BB sanity band under debug/ASan. E4 items gate Implemented, not this approval.
+Reviewed scope: the full original RFC and the Stage 1 Review Addendum (E1-E4, D1-D5), the implementation plan (header, AC map, rewritten Stage 2), all three evidence CSVs, the seam/model/trainer/benchmark code, and all nine ctests. The agent independently rebuilt and re-ran the release ctest (oracle 0.00467 BB under the strict 0.005 BB gate) and the ASan/UBSan build (exit 0, zero sanitizer errors, oracle 0.02430 BB inside the documented 0.05 BB debug/ASan sanity band), reproduced the identity-control CSV (to 1M), the 2-seat inner-series rows (to 300k), and the seed-101 force-served M2 row (2.85428974) bit-for-bit, and grep-confirmed zero production wiring.
 
-Round 1 returned Changes Requested (2 blockers, 5 major, 7 minor):
-fabricated default-deny gate/current-state claims (RFC 0036 is Accepted
-only; bounded entry, gate table, and resolve_*_uniform are absent; turn
-requests hit `turn_root_unserved` at `envelope.cpp:180`), false seam
-claims (production streets(1) use; M2 reference construction), omitted
-precedents (`OnTheFlyPostflopEvaluator`, `extract_root_value`,
-`continuation_range`), heads-up cap-0/cap-1 selector ambiguity,
-underspecified marginal/budget/convergence contracts, a speculative
-process/persisted cache, a self-amending Stage 3, and telemetry/wire
-tension. Round 2 returned Changes Requested for one blocking major: a
-stall-based inner-solve acceptance branch could publish 4/5/6 shapes with
-no absolute leaf-quality evidence because the M1 walker shares the leaf
-model by construction. Round 3 verified the resolutions: acceptance
-solely on an absolute inner BR gap (pooled walker; sampled BR estimator
-plus CI for full ranges; stall only early-stops refinement after a passed
-gap; never-passed means DECLINE, never PUBLISH), outer abstraction digest
-pinned at nested tree build, the V_p(c) range-conditioned marginal with
-its private-information argument, exact per-sweep trunk counterfactual
-reaches, a solve-scoped `NSeatInitialState` warm map with the drift
-caveat and cold-start validation, the default-deny bounded entry and host
-wiring scoped as new code with engine host in owners, Stages 3 and 4 each
-a separate RFC with pre-declared triggers, zero wire/persistence changes
-in Stages 1-2, chips/BB units pinned, and AC2-AC4 objective and
-evidence-backed. `check-rfcs` (39) and `check-docs` (436) were green at
-approval.
+Decisions D1-D5 accepted: D1 (two mandatory quality numbers — bucket-restricted pooled-BR gap as the leaf serve/decline convergence predicate, exact-hand gap plus composed M2 model delta retained as deployment evidence); D2 (AC2/AC3 wording amendments with the formal bucket-grouping definition and the sampled-estimator/CI rule for full ranges); D3 (Stage 2 direct-solve enablement withdrawn; instrumentation-only default-deny bounded entry; G4/G5, §5, Rollout Stage 2, AC3, AC5 expressly superseded or amended via the D3 table; 4/5/6 M1 measurement moved to the future Stage 3 RFC); D4 (Stage 3/4 triggers now measured, each still a separate RFC); D5 (fail-closed, default-deny, no wire/persistence change, offline-only, no feature flag — all code-verified).
 
-Approved scope: the separate `ContinuationValueModel` seam, the nested
-`NSeatTrainer` river model, solve-scoped warm refinement, the
-default-deny bounded-turn entry plus host wiring, and the nested M2/M1
-measurement arms (Stages 1-2). The approval does not cover persistence or
-protocol changes (Stage 3 needs its own RFC; Stage 4 a separate RFC after
-that), live play, credentials, or spending. Accepted residual risks:
-5/6-seat serving is expected to keep declining on the measured arithmetic
-(~35,760 frontier leaves versus ~970 outer iterations versus ~4,680-infoset
-inner trees) — continued decline is an acceptable Stage 2 outcome;
-empirical sampled-marginal error; multi-equilibrium value ambiguity at
-three seats, where Stage 1 returns to review rather than loosening the
-0.01 BB band. The full Engine Build Contract (release and asan presets,
-ctest, benchmark-multistreet, npm checks, proto check, replay) is required
-before this RFC may become Implemented.
+Conditions before this RFC may become Implemented (from the review): complete E4 in release configuration (inner-1M and seed/cadence replicate rows, a converged 100 BB per-combo oracle row under NDEBUG, RFC 0031 floor-budget cross-reference, full build contract including pinned-clang-format format, benchmark-multistreet, full serial release ctest 80/80, and ASan on touched surfaces); switch the offline driver's serve predicate to the D1 bucket gap while continuing to record the exact gap and composed M2 delta; ship only the optional instrumentation-only bounded entry (zero observable routing change); no gate-table, wire, or persistence change under this RFC — any enablement requires the Stage 3 or Stage 4 RFC with its own independent review. Residual risks accepted: nested-value benefit at feasible compute is seed-noise-dominated (one of three seeds worsens by 0.13 BB); the exact-hand ~0.26 BB river-leaf floor is RFC 0031 card-abstraction loss and stays on the deployment record; the 3-seat bucket crossing (~16-25M/leaf extrapolation) is unmeasured beyond 3M.
 
-**Factual errata (2026-10-27, [RFC 0040](0040-retire-river-club-agent-api.md)):**
-the `replay` step named both in this RFC's Verification Plan and in the
-approved build contract was removed by RFC 0040's retirement of the River
-Club Agent API v2.1 integration and the journal replay tool. Stage-2
-latency evidence is the C++ envelope `solve_time_us` timing harness; the
-remaining build-contract gates are unchanged.
+### Original 2026-10-27 approval (pre-addendum text; historical)
+
+> Author agent: Claude (zzzode agent session 2026-10-27)
+> Approved by: rfc0039-approval-1 (independent approval agent, auto_model/alwaysday1_max)
+> Decision date: 2026-10-27
+> Review outcome: Approved
+> Reviewed scope: Full RFC 0039 text across three review rounds, verified against engine source (resolver.hpp/subgame_resolver.cpp, frontier.hpp, postflop_frontier.hpp, root_value_extractor.hpp, continuation_range.hpp, abstract_tree.hpp, nseat_trainer.hpp NSeatInitialState, abstraction.cpp cap selectors, envelope.cpp turn_root_unserved, main.cpp host wiring, subgame_nash_conv.cpp M1/M2 harnesses) and the frozen M1/M2 CSV evidence.
+> Review summary: Three rounds. Round 1 Changes Requested (2 blockers, 5 major, 7 minor); round 2 Changes Requested (1 blocking gate-integrity finding); round 3 Approved after the absolute inner-BR-gap acceptance rule and all other findings were resolved.
+
+> Round 1 returned Changes Requested (2 blockers, 5 major, 7 minor):
+> fabricated default-deny gate/current-state claims (RFC 0036 is Accepted
+> only; bounded entry, gate table, and resolve_*_uniform are absent; turn
+> requests hit `turn_root_unserved` at `envelope.cpp:180`), false seam
+> claims (production streets(1) use; M2 reference construction), omitted
+> precedents (`OnTheFlyPostflopEvaluator`, `extract_root_value`,
+> `continuation_range`), heads-up cap-0/cap-1 selector ambiguity,
+> underspecified marginal/budget/convergence contracts, a speculative
+> process/persisted cache, a self-amending Stage 3, and telemetry/wire
+> tension. Round 2 returned Changes Requested for one blocking major: a
+> stall-based inner-solve acceptance branch could publish 4/5/6 shapes with
+> no absolute leaf-quality evidence because the M1 walker shares the leaf
+> model by construction. Round 3 verified the resolutions: acceptance
+> solely on an absolute inner BR gap (pooled walker; sampled BR estimator
+> plus CI for full ranges; stall only early-stops refinement after a passed
+> gap; never-passed means DECLINE, never PUBLISH), outer abstraction digest
+> pinned at nested tree build, the V_p(c) range-conditioned marginal with
+> its private-information argument, exact per-sweep trunk counterfactual
+> reaches, a solve-scoped `NSeatInitialState` warm map with the drift
+> caveat and cold-start validation, the default-deny bounded entry and host
+> wiring scoped as new code with engine host in owners, Stages 3 and 4 each
+> a separate RFC with pre-declared triggers, zero wire/persistence changes
+> in Stages 1-2, chips/BB units pinned, and AC2-AC4 objective and
+> evidence-backed. `check-rfcs` (39) and `check-docs` (436) were green at
+> approval.
+
+> Approved scope: the separate `ContinuationValueModel` seam, the nested
+> `NSeatTrainer` river model, solve-scoped warm refinement, the
+> default-deny bounded-turn entry plus host wiring, and the nested M2/M1
+> measurement arms (Stages 1-2). The approval does not cover persistence or
+> protocol changes (Stage 3 needs its own RFC; Stage 4 a separate RFC after
+> that), live play, credentials, or spending. Accepted residual risks:
+> 5/6-seat serving is expected to keep declining on the measured arithmetic
+> (~35,760 frontier leaves versus ~970 outer iterations versus ~4,680-infoset
+> inner trees) — continued decline is an acceptable Stage 2 outcome;
+> empirical sampled-marginal error; multi-equilibrium value ambiguity at
+> three seats, where Stage 1 returns to review rather than loosening the
+> 0.01 BB band. The full Engine Build Contract (release and asan presets,
+> ctest, benchmark-multistreet, npm checks, proto check, replay) is required
+> before this RFC may become Implemented.
+
+> **Factual errata (2026-10-27, [RFC 0040](0040-retire-river-club-agent-api.md)):**
+> the `replay` step named both in this RFC's Verification Plan and in the
+> approved build contract was removed by RFC 0040's retirement of the River
+> Club Agent API v2.1 integration and the journal replay tool. Stage-2
+> latency evidence is the C++ envelope `solve_time_us` timing harness; the
+> remaining build-contract gates are unchanged.
+
+> ---
+
+## Stage 1 Review Addendum (2026-10-27): RFC returned to review
+
+Status note: implementation of Stage 1 reached the stop condition in the
+Stage 1 plan ("M2 passes at 2/3 seats, **or** a documented design-level
+failure returns the RFC to review (the 0.01 BB band proves unreachable on
+the pinned fixtures)"). The implementation evidence is recorded in
+`docs/plans/0039-implementation.md` (Stage 1 stop-condition evidence and
+round-2 review sections) and three raw CSVs under
+`docs/plans/ablation/`. This addendum returns the RFC to **Proposed**;
+the amended decisions D1-D5 below are PENDING INDEPENDENT APPROVAL-AGENT
+REVIEW (an agent that did not author this addendum) and have no force
+until that review records an explicit decision. No Stage 2 enablement is
+approved by this addendum, and production remains `turn_root_unserved`.
+
+### E1. What was implemented and verified
+
+- The separate `ContinuationValueModel` seam, `NestedRiverValueModel`
+  (ledger reconstruction, exact conditioned leaf ranges, root-support
+  marginal matrix, solve-scoped warm with cold retry), the fail-closed
+  gate (`record_inner_gap`/`lookup_scalar`, invalidated on every refine
+  including failed re-refinements), and the trainer continuation hook
+  with equity-frontier fallback and exception enclosure.
+- Nine native ctests including an independent direct-solve marginal
+  oracle (three independent seeds per side, 2M iterations, shallow 2-BB
+  fixture, worst per-combo delta 0.00467 BB against 0.005 BB).
+- Benchmark arms: `--rfc0039-m2` (block policy iteration),
+  `--rfc0039-inner-series` (per-leaf convergence, average/current/bucket
+  gaps), `--rfc0039-identity-control` (causal control). No code outside
+  the benchmark, the new TUs, the header, and the ctest constructs the
+  model (grep-verified); no host or wire changes.
+
+### E2. Measured findings
+
+1. **The accepted exact-hand inner gap is structurally unreachable, and
+   the cause is the card abstraction, not the nested model.** On the
+   pinned 100 BB cap-1 2-seat checked-through leaf, the exact-hole
+   pooled-BR gap of the sealed average strategy floors at 0.259-0.295 BB
+   from 300k through 10M inner iterations; the RM+ current strategy sits
+   in the same band. A causal control (`rfc0039-identity-control.csv`)
+   removes within-bucket card discrimination by choosing a board/range
+   on which every range combo occupies a distinct production bucket: the
+   exact and bucket NashConv measures then coincide to machine epsilon
+   at every iteration and the gap converges with no floor (2.59 BB at
+   1k to 0.0157 BB at 10M). The floor is therefore the real-game
+   exploitability of an exact-card best response against the 9-category
+   postflop `kNSeatCardKind` policy — the RFC 0031 card-abstraction loss
+   family — and it is charged to the full-solve reference as well.
+2. **The accepted number came from the wrong measurement family.** The
+   0.01/0.03 BB band originates as the RFC 0036 M2 *model delta*
+   (composed-minus-reference under one shared bucketed abstraction,
+   where the abstraction floor cancels to first order). §3 of this RFC
+   imported it as an *absolute* inner gap against the exact pooled
+   walker, against which no bucketed strategy can pass. Independent
+   review (workflow wf_0d45b1b0, 2026-10-27) confirmed the accepted text
+   names the exact walker and that the bucket measure did not exist when
+   this RFC was approved.
+3. **Abstract-game convergence is reachable only with heavy offline
+   compute.** A bucket-restricted BR (one action per production bucket —
+   the game the trainer actually solves) converges at ~1/sqrt(N):
+   0.060 BB at 300k, 0.029 at 1M, 0.016 at 3M, 0.0081 at 10M inner
+   iterations per leaf (three-seed spread at 3M: 0.0156-0.0161).
+   Cumulative cold-start wall to 10M is ~138.6 s per leaf (the last
+   7M-iteration increment alone is ~96 s) — ~87x the 1,600 ms envelope
+   for one leaf. A turn solve has 240 (2 seats) / 1,344 (3 seats)
+   frontier leaves (empirical node counts: 357 / 1,864) and block
+   policy iteration re-refines every reachable leaf per block: ~9 hours
+   serial per 2-seat solve; the 3-seat bucket series extrapolates to a
+   16-25M crossing (~15-24 min/leaf, days per solve). These are
+   optimistic bounds (cheapest 1-BB-pot checked-through leaf, one board,
+   10-hand range); the M2 driver's real conditioned leaves show
+   worst-leaf exact gaps of 37-46 BB at only 40k inner iterations,
+   confirming that bet/raised lines are materially harder still.
+4. **Nested values improve the outer policy where served, but do not
+   reach the frozen composed-M2 band at feasible compute.** Gate-honest
+   runs never serve a leaf at these inner qualities, so their composed
+   policy is exactly the equity-frontier fill (seed-101 composed
+   3.142 BB, delta 0.391). A measurement-only force-serve control (every
+   solved leaf feeds the outer trainer; benchmark only) at outer 100k/3
+   blocks produces seed-dependent deltas against the frozen 0.03 BB
+   summed model-delta gate: at 40k inner iterations, 0.103 (seed 101),
+   0.495 (202), 0.450 (303) — versus the corresponding equity-fill
+   deltas 0.391/0.496/0.320 (one seed improves by 0.29 BB, one is
+   unchanged, one gets 0.13 BB WORSE; mean improvement ~0.05 BB inside a
+   ~0.22 BB spread). At 200k inner, seed 101 is 0.188 (worse than its
+   40k result), so serving under-converged leaf matrices at the
+   three-block cadence is noise-dominated, not a clean convergence
+   series. A cadence control (6 blocks, seed 101, inner 40k) gives delta
+   0.088 versus 0.103 at 3 blocks — only 0.015 BB better — so the
+   residual is dominated by inner matrix quality rather than block-PI
+   range staleness. Raw rows: `docs/plans/ablation/rfc0039-m2.csv`; the
+   inner-1M cell and 200k seed replicates are the remaining evidence in
+   E4.
+
+### E3. Proposed amended decisions (for independent approval)
+
+D1. **Two distinct quality numbers, both mandatory.**
+- *Inner convergence predicate*: the abstract-game bucket-restricted BR
+  gap. Formally: on the nested river-rooted tree (no later card deals),
+  compute NashConv with the pooled information-set-consistent walker, but
+  the responder groups joint deals by the production card bucket
+  `kNSeatCardKind` evaluated at the fixed five-card root board instead
+  of by exact hole cards, and commits to ONE action per (bucket, public
+  node) — the exact information partition of the bucketed policy being
+  evaluated. Opponent nodes still follow each view's bucketed policy
+  row. Joint deals carry the per-seat conditioned leaf weights (product
+  measure, total-mass normalization on both strategy and BR sides). This
+  measures convergence of precisely the object the trainer solves and is
+  the serve/decline gate for a leaf matrix. On fixtures where every
+  occupied bucket contains exactly one combo the two measures coincide
+  by construction (the identity control verifies this to machine
+  epsilon).
+- *Deployment quality*: the exact-hand pooled-BR gap (same walker,
+  responder grouped by exact hole cards — real-game exploitability
+  against an exact-card opponent) and the composed M2 model delta under
+  the frozen 0.01/0.03 BB band. These never disappear from the evidence
+  record; the exact-hand river-leaf floor is budgeted as card-abstraction
+  loss owned by RFC 0031, not hidden by the convergence gate. Reporting
+  only the bucket number would be quality laundering and is explicitly
+  rejected.
+
+D2. **AC2/AC3 wording amendments.** "Absolute inner BR gap (exact pooled
+walker)" is replaced, for the leaf serve predicate, by the bucket-
+restricted pooled walker defined in D1 on enumerable river-rooted
+fixtures. For full (non-enumerable) ranges the estimator is the same
+information-partition rule under Monte-Carlo joint-deal sampling: sample
+joint deals from the conditioned per-seat ranges, accumulate the pooled
+BR per (root bucket, public node) group, report the summed NashConv with
+an upper confidence bound (three+ seeds, t interval, project convention),
+and serve only when that upper bound is inside the tolerance. The
+exact-hand sampled gap and the composed M2 model delta remain mandatory
+deployment evidence. The AC2 per-combo oracle tolerance (0.005 BB)
+stands; the pinned-fixture requirement is extended to accept the
+documented shallow-fixture ctest plus benchmark-side 100 BB comparison
+columns, and a converged 100 BB oracle row is added to the Stage 1
+evidence backlog.
+
+D3. **Stage 2 direct-solve enablement is withdrawn.** No direct nested
+solve shape can pass the latency gate (87x per leaf at 2 seats; days at
+3 seats). The default-deny bounded host entry may still land for
+measurement instrumentation, but no gate-table enablement is planned
+under this RFC. This decision expressly supersedes the following
+preserved body text, and the addendum is the governing text wherever they
+conflict:
+
+| Body item | Original (Accepted) requirement | Status under D3 |
+| --- | --- | --- |
+| G4 | Build bounded-turn entry default-deny, then re-measure M2/M1 at 2..6 seats | **Amended:** the default-deny bounded entry may be built for instrumentation only; no re-measurement-for-enablement under this RFC. The 4/5/6-seat M1 rerun moves to the future Stage 3 RFC as evidence for persisted CVs. |
+| G5 | Enable routing for shapes whose quality/latency gates pass | **Superseded:** no shape is routed/enabled by this RFC; the gate table stays default-deny for all shapes. |
+| §5 (M1 rerun, 0.15 BB/latency bullets) | M1 evidence and latency rows are requirements for routing shapes | **Amended:** retained only as the measurement specification owned by the Stage 3 RFC; they are not acceptance work for this RFC. |
+| Rollout Stage 2 | M1 rerun, latency gate, then enable passing shapes | **Amended:** Stage 2 is instrumentation-only; the enablement step is deleted. |
+| AC3 | M1 at 4/5/6 rerun + passing-absolute-gap rows required to route shapes | **Amended (with D2):** the leaf serve predicate is the D1 bucket gap; the 4/5/6 M1 rerun and any enablement rows move to the Stage 3 RFC. |
+| AC5 | Routing-change rows shipped with per-shape CSV evidence | **Superseded:** this RFC ships no routing changes; AC5 is satisfied by the preserved `turn_root_unserved` behavior and the absence of new wire fields. |
+
+All other body sections (Goals G1-G3/G6, Non-goals, dependency rules,
+compatibility, security, AC1/AC2/AC4/AC6/AC7 as amended by D2) remain in
+force.
+
+D4. **Stage 3/4 triggers are now measured, not hypothetical.**
+- Stage 3 (persisted/process CV reuse, new RFC): trigger condition "leaf
+  quality passes offline while on-demand serving misses the envelope" is
+  satisfied by E3-E4; an RFC may propose an additive packed CV section
+  built by offline batch solves at the bucket-gate iteration counts.
+- Stage 4 (learned CV estimator, new RFC): trigger "an exact table is
+  measured infeasible at multiway leaf counts" is satisfied for 3+ seats
+  and live 2-seat serving; an RFC may propose an estimator with RFC
+  0031-style abstraction-loss measurement against the exact nested
+  oracle.
+
+D5. **Unchanged invariants.** Fail-closed semantics (never-passed leaf
+  is DECLINED; failed re-refine invalidates prior certification),
+  default-deny routing, no wire/persistence change in this RFC, chips/BB
+  units, no feature flag, no parallel strategy core, offline-only
+  evidence.
+
+### E4. Open items required before the amended RFC can become Implemented
+
+- High-inner force-served composed-M2 rows (inner 1M) and seed/cadence
+  replicates, appended to `rfc0039-m2.csv`, to bound the block-PI
+  residual and its noise.
+- A converged 100 BB per-combo oracle row (the ctest oracle uses a
+  shallow 2-BB fixture).
+- ASan build-contract run on the touched surfaces and the full Engine
+  Build Contract (release ctest currently passes 80/80; format,
+  benchmark-multistreet, npm checks, proto check green).
+- RFC 0031 cross-reference for the river-leaf exact-hand floor budget.

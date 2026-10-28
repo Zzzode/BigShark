@@ -52,7 +52,7 @@ their own RFC.
 | [0036](0036-six-way-turn-river.md) | Six-Way Turn and River On-Demand Strategy | Accepted | Engine resolver, engine solver, engine tree |
 | [0037](0037-shape-keyed-abstraction-policy.md) | Shape-Keyed Action-Abstraction Selection Policy | Implemented | Engine abstraction, engine resolver, engine flop library, engine benchmarks |
 | [0038](0038-retire-schema-v1-artifacts.md) | Retire the Schema-v1 Heads-up Artifact Format and Algorithm Revision 1 | Implemented | Engine artifacts, engine resident |
-| [0039](0039-nested-river-continuation-values.md) | Nested River Continuation Values for Multiway Turn Strategy | Accepted | Engine resolver, engine tree, engine solver, engine host, engine benchmarks |
+| [0039](0039-nested-river-continuation-values.md) | Nested River Continuation Values for Multiway Turn Strategy | Accepted (amended 2026-10-28) | Engine resolver, engine tree, engine solver, engine host, engine benchmarks |
 | [0040](0040-retire-river-club-agent-api.md) | Retire the River Club Agent API v2.1 integration | Implemented | Applications, platform integrations, tooling, documentation, developer experience |
 
 `0000-template.md` is the authoring template and does not consume an RFC

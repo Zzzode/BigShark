@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bs/continuation_value.hpp>
 #include <bs/frontier.hpp>
 #include <bs/multiway_sampler.hpp>
 #include <bs/nseat_trainer.hpp>
@@ -326,6 +327,7 @@ struct SweepContext {
   SplitMix64* action_rng = nullptr;
   SplitMix64* chance_rng = nullptr;
   const gto::FrontierEvaluator* frontier = nullptr;
+  const gto::ContinuationValueModel* continuation = nullptr;
   std::size_t depth = 0;
 };
 
@@ -399,11 +401,35 @@ double terminal_utility(SweepContext& ctx, const GameState& state, std::size_t n
   // must not condition on the acting player's own holding (the contract is
   // documented in bs/frontier.hpp).
   if (node.kind == NodeKind::TerminalFrontier) {
+    if (payload.folded)
+      throw std::runtime_error("nseat trainer frontier terminal does not match the tree leaf");
+    // RFC 0039: a range-conditioned nested river matrix, when present for
+    // this leaf, replaces the per-deal equity leaf for the traverser's own
+    // combo. Miss (no matrix yet) falls back to the frontier evaluator,
+    // which bootstraps the first outer block; Decline/Invalid also fall
+    // back so a leaf can never abort the outer sweep. The nested model is
+    // defined only at the turn->river boundary (five-card leaf); a
+    // three-card flop-terminal frontier must never reach its constructor.
+    // The continuation seam contract forbids exceptions escaping into an
+    // MCCFR sweep: make_river_boundary_leaf validates the leaf and may throw
+    // on a malformed node/payload, and a model implementation may misbehave.
+    // Any such failure is treated as a Miss and takes the equity fallback.
+    if (ctx.continuation != nullptr && state.board().size() == 5) {
+      try {
+        const gto::RiverBoundaryLeaf boundary =
+            gto::make_river_boundary_leaf(*ctx.tree, node_index);
+        double nested_value = 0.0;
+        const gto::ContinuationStatus st = ctx.continuation->lookup_scalar(
+            boundary, ctx.traverser, ctx.holes[ctx.traverser], nested_value);
+        if (st == gto::ContinuationStatus::Solved)
+          return nested_value;
+      } catch (const std::exception&) {
+        // Fall through to the declared frontier evaluator.
+      }
+    }
     if (ctx.frontier == nullptr)
       throw std::runtime_error(
           "nseat trainer reached a frontier leaf without a frontier evaluator");
-    if (payload.folded)
-      throw std::runtime_error("nseat trainer frontier terminal does not match the tree leaf");
     // evaluate() accepts spans; pass the board and holes directly.
     const std::vector<double> values = ctx.frontier->evaluate(state.board(), ctx.holes, payload);
     if (values.size() != state.player_count())
@@ -617,7 +643,8 @@ double walk(SweepContext& ctx, const GameState& state, std::size_t node_index, d
 void run_sweep(const AbstractTree& tree, const JointDealDealer& dealer, std::size_t seat_count,
                std::size_t traverser, NSeatTraversalStreams& streams, const RawTable& profile,
                DeltaStorage& storage, std::atomic<std::size_t>& visits,
-               const NSeatTrainerLimits& limits, const gto::FrontierEvaluator* frontier) {
+               const NSeatTrainerLimits& limits, const gto::FrontierEvaluator* frontier,
+               const gto::ContinuationValueModel* continuation = nullptr) {
   const MultiwayDeal deal = dealer.sample(streams.joint_deal);
   if (deal.hands.size() != seat_count)
     throw std::runtime_error("nseat trainer joint deal has the wrong seat count");
@@ -638,6 +665,7 @@ void run_sweep(const AbstractTree& tree, const JointDealDealer& dealer, std::siz
   ctx.action_rng = &streams.opponent_action;
   ctx.chance_rng = &streams.chance_card;
   ctx.frontier = frontier;
+  ctx.continuation = continuation;
   ctx.depth = 0;
   // The same deterministic root construction the L3 builder used for node 0.
   const GameState root(tree.def());
@@ -927,7 +955,8 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
                                std::uint64_t iterations, std::uint64_t seed,
                                const NSeatTrainerLimits& limits,
                                const gto::FrontierEvaluator* frontier, std::size_t workers,
-                               const NSeatInitialState* initial) {
+                               const NSeatInitialState* initial,
+                               const gto::ContinuationValueModel* continuation = nullptr) {
   validate_request(tree, ranges);
   validate_initial(tree, initial);
   if (iterations == 0 || limits.max_nodes == 0 || limits.max_information_sets == 0 ||
@@ -941,10 +970,10 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
   // has_frontier_leaves condition covers depth-limited trees with
   // TerminalFrontier leaves at Phase::Action street boundaries.
   if ((tree.def().terminal == poker::TerminalDepth::Flop || tree.has_frontier_leaves()) &&
-      !frontier)
+      !frontier && !continuation)
     throw std::invalid_argument(
         "nseat trainer: a flop-terminal game or a tree with frontier leaves requires a frontier "
-        "evaluator");
+        "evaluator or continuation model");
   if (tree.size() > limits.max_nodes || tree.depth() > limits.max_depth ||
       tree.accounted_bytes() > limits.max_bytes)
     throw nseat_training_exhausted("nseat trainer tree exceeds structural resource limits");
@@ -1026,7 +1055,8 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
           derive_nseat_stream(seed, NSeatStreamPurpose::JointDeal, sample, seat),
           derive_nseat_stream(seed, NSeatStreamPurpose::OpponentAction, sample, seat),
           derive_nseat_stream(seed, NSeatStreamPurpose::ChanceCard, sample, seat)};
-      run_sweep(tree, dealer, seats, seat, streams, table, *stores[slot], visits, limits, frontier);
+      run_sweep(tree, dealer, seats, seat, streams, table, *stores[slot], visits, limits, frontier,
+                workers == 1 ? continuation : nullptr);
     }
     run_average(tree, dealer, seats, table, *stores[slot], seed, sample, visits, limits);
   };
@@ -1098,8 +1128,9 @@ NSeatTrainingResult train_nseat(const AbstractTree& tree,
                                 std::uint64_t iterations, std::uint64_t seed,
                                 const NSeatTrainerLimits& limits,
                                 const gto::FrontierEvaluator* frontier,
-                                const NSeatInitialState* initial) {
-  return train_impl(tree, ranges, iterations, seed, limits, frontier, 1, initial);
+                                const NSeatInitialState* initial,
+                                const gto::ContinuationValueModel* continuation) {
+  return train_impl(tree, ranges, iterations, seed, limits, frontier, 1, initial, continuation);
 }
 
 NSeatTrainingResult train_nseat_parallel(const AbstractTree& tree,
