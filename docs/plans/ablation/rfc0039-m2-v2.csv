@@ -1,0 +1,25 @@
+# version: rfc0039-m2-v2
+# RFC 0039 amended-D1 nested block-PI M2 arm (driver switched to the
+# bucket-restricted BR serve predicate on 2026-10-28; the pre-D1 v1 file
+# keeps historical exact-only rows). Same fixture and block-PI cadence as
+# v1: make_subgame_def_np, 2 seats, 100 BB, board 2c 3d 7h Js, cap-1
+# ActionAbstraction::identity(1), 10-hand representative range,
+# outer=100000 / 3 blocks, inner=40000 per leaf per refinement.
+# Columns: arm,seats,stack_bb,outer_iters,inner_iters,blocks,seed,status,
+# reference_nashconv_bb,nested_composed_nashconv_bb,worst_exact_inner_gap_bb,
+# worst_bucket_inner_gap_bb,max_per_combo_marginal_delta_bb,
+# leaves_refined,leaves_solved,leaves_bucket_gap_passed,leaves_compared
+# Gates: leaves_bucket_gap_passed uses the D1 bucket-BR <=0.01 BB serve
+# predicate (status token GATE_FAIL reflects it); worst_exact_inner_gap_bb
+# is mandatory D1 deployment evidence (card-abstraction loss, RFC 0031).
+# Note: the worst bucket gap here (1.29-1.52 BB) is over the REAL
+# non-uniform conditioned leaves inside block-PI, ~10x larger than the
+# single cheapest check-through uniform leaf in
+# rfc0039-inner-gap-series.csv (0.13 BB at 100k), so that series is an
+# optimistic lower bound on the representative-turn inner cost. At
+# 40k inner iterations 0/240 leaves pass either measure, so the
+# composed column still equals the equity-frontier fill (no force-serve
+# used for these rows). Seed 101/202/303; deterministic release build.
+rfc0039-m2,2,100,100000,40000,3,101,GATE_FAIL,2.75110595,3.14217475,42.16913984,1.29889506,11.72447523,240,240,0,16
+rfc0039-m2,2,100,100000,40000,3,202,GATE_FAIL,2.70939328,3.20544599,37.16524696,1.29259609,13.88015490,240,240,0,16
+rfc0039-m2,2,100,100000,40000,3,303,GATE_FAIL,2.70997938,3.03034665,43.65596895,1.51520277,15.70734712,240,240,0,16

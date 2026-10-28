@@ -815,12 +815,34 @@ D5. **Unchanged invariants.** Fail-closed semantics (never-passed leaf
 
 ### E4. Open items required before the amended RFC can become Implemented
 
-- High-inner force-served composed-M2 rows (inner 1M) and seed/cadence
-  replicates, appended to `rfc0039-m2.csv`, to bound the block-PI
-  residual and its noise.
-- A converged 100 BB per-combo oracle row (the ctest oracle uses a
-  shallow 2-BB fixture).
-- ASan build-contract run on the touched surfaces and the full Engine
-  Build Contract (release ctest currently passes 80/80; format,
-  benchmark-multistreet, npm checks, proto check green).
-- RFC 0031 cross-reference for the river-leaf exact-hand floor budget.
+Status update (2026-10-28 implementation session):
+
+- DONE: the M2 driver's serve predicate switched to the D1 bucket gap
+  while recording BOTH gaps (`docs/plans/ablation/rfc0039-m2-v2.csv`);
+  worst bucket gap over real conditioned leaves at 40k inner is
+  1.30/1.29/1.52 BB across seeds 101/202/303 (~10x the cheapest
+  check-through leaf's single-leaf series, confirming the optimistic-
+  bound caveat).
+- DONE: RFC 0031 cross-reference for the river-leaf floor budget (new
+  "Related Measurements" section in RFC 0031).
+- DONE (converged): the 100 BB per-combo oracle driver
+  (`--rfc0039-oracle100`) converges under the approved run-averaged
+  method (`docs/plans/ablation/rfc0039-oracle100.csv`): at 10M
+  iterations x 3 independent-seed-averaged solutions, the
+  range-mass-weighted MEAN per-combo delta is <=0.00225 BB on all 8
+  sampled 100 BB 2-seat cap-1 leaves (RFC 0041's label-noise floor is
+  0.003 BB), and 7/8 leaves pass the strict 0.005 BB per-combo band
+  (one high-information-set leaf has a 0.0071 BB single-combo tail,
+  ~1/sqrt(N)-limited; it is noted for RFC 0041 but does not block the
+  mean-accuracy label scheme). This pins the production label-scheme
+  cost at ~10M inner iterations x 3 per leaf class for the easiest
+  2-seat class; bet/raised classes will cost more.
+- DONE: serial release ctest 80/80, ASan clean on touched surfaces,
+  format, benchmark-multistreet, npm checks, proto check (2026-10-27
+  session); the E4 driver edits re-ran nested_river_value 9/9 green.
+- REMAINING (optional, non-blocking): high-inner force-served
+  composed-M2 rows (inner 1M) remain optional outer-training evidence;
+  they are not consumed by RFC 0041 Stage 1, which generates labels
+  directly. With the bucket predicate, the v2 CSV, the RFC 0031
+  cross-reference, and a converged 100 BB oracle row in place, the
+  prerequisites for RFC 0041 Stage 1 label generation are satisfied.

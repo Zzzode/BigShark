@@ -500,6 +500,24 @@ without an intentional rebuild halts the rollout.
    indifferent region?** Stage 3's second iteration count is the first evidence;
    distinguishing them may need a third.
 
+## Related Measurements
+
+- **RFC 0039 river-leaf floor (2026-10-28).** The nested river
+  continuation-value work measured an exact-hole pooled-best-response gap
+  that floors at ~0.26 BB per leaf independent of solver iterations
+  (300k..10M) while the bucket-restricted gap converges to 0.008 BB. An
+  identity-bucket causal control
+  (`docs/plans/ablation/rfc0039-identity-control.csv`,
+  `rfc0039-inner-gap-series.csv`) attributes the floor to within-bucket
+  card discrimination against the 9-category postflop
+  `kNSeatCardKind`/CategoryTiersV1 rows — the same abstraction-loss
+  family this RFC measures. RFC 0039's amended gate D1 keeps the exact-
+  hand number as mandatory deployment evidence budgeted here, rather
+  than hiding it behind the convergence measure; RFC 0041's learned
+  estimator inherits the same obligation. A finer postflop card
+  abstraction (the `TiersDrawV1` line or a learned embedding, each its
+  own RFC) is what could reduce this floor.
+
 ## Acceptance Criteria
 
 - **AC1**: A committed tool reproduces all five baseline statistics from the

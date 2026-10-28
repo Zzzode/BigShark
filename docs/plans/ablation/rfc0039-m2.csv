@@ -1,3 +1,10 @@
+# version: rfc0039-m2-v1 (SUPERSEDED SCHEMA for new gate runs; pre-D1 driver)
+# HISTORICAL: rows below were produced before the 2026-10-28 addendum D1
+# switched the serve predicate to the bucket-restricted BR gap. Here
+# leaves_gap_passed/GATE_FAIL reflect the EXACT-hole measure and there is
+# one gap column. The FORCE_SERVED rows remain valid as outer-training
+# effect measurements. New D1-predicate rows (exact + bucket columns) go
+# in rfc0039-m2-v2.csv.
 # version: rfc0039-m2-v1
 # RFC 0039 Stage 1 nested block-PI M2 arm (nested turn rows + reference
 # equilibrium river fill, composed onto the full DepthLimit::none() tree).

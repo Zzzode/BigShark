@@ -75,6 +75,7 @@ using bs::gto::ContinuationStatus;
 using bs::gto::EquityFrontierEvaluator;
 using bs::gto::FrontierEvaluator;
 using bs::gto::make_river_boundary_leaf;
+using bs::gto::nested_river_game;
 using bs::gto::NestedRiverValueModel;
 
 namespace {
@@ -1733,11 +1734,14 @@ struct NestedM2Sample {
   std::string reason;
   double reference_nashconv_bb = 0.0;
   double nested_fill_gap_bb = 0.0;
-  double worst_inner_gap_bb = 0.0;     // RFC 0039 absolute inner BR-gap gate (summed)
+  // RFC 0039 amended D1: the serve predicate is the bucket-restricted BR
+  // gap; the exact-hole gap stays mandatory deployment evidence.
+  double worst_exact_inner_gap_bb = 0.0;
+  double worst_bucket_inner_gap_bb = 0.0;
   double max_marginal_delta_bb = 0.0;  // AC2: nested vs direct full-solve per-combo
   std::size_t leaves_refined = 0;
   std::size_t leaves_solved = 0;
-  std::size_t leaves_gap_passed = 0;
+  std::size_t leaves_gap_passed = 0;  // bucket-gate pass count
   std::size_t marginal_leaves_compared = 0;
 };
 
@@ -1817,14 +1821,15 @@ NestedM2Sample measure_nested_m2(std::size_t seats, int stack_bb,
     return NSeatPolicy::from_parts(dl_tree->def(), dl_tree->action_id(), std::move(urows));
   };
 
-  // RFC 0039 Stage 1 absolute inner BR-gap tolerance: 0.01 BB summed on the
-  // enumerable M2 fixtures. Only leaves with a passing absolute gap are
-  // allowed to contribute a nested-backed candidate.
+  // RFC 0039 amended D1: the leaf serve predicate is the 0.01 BB
+  // bucket-restricted BR gap (convergence within the abstract game the
+  // trainer solves); the exact-hole gap is recorded alongside as
+  // deployment evidence and never gates serving by itself.
   constexpr double kInnerGapToleranceBb = 0.01;
 
   auto refine_leaves = [&](const NSeatPolicy& outer_policy) {
     std::size_t refined = 0, solved = 0, gap_passed = 0;
-    double worst = 0.0;
+    double worst_exact = 0.0, worst_bucket = 0.0;
     for (std::size_t i = 0; i < dl_tree->size(); ++i) {
       if (dl_tree->node(i).kind != NodeKind::TerminalFrontier)
         continue;
@@ -1840,34 +1845,34 @@ NestedM2Sample measure_nested_m2(std::size_t seats, int stack_bb,
         continue;
       ++solved;
 
-      // Absolute inner best-response gap on the solved one-street river tree,
-      // via the pooled information-set-consistent walker under the EXACT
-      // per-seat conditioned leaf ranges the inner subgame was trained on
-      // (each seat marginal independently normalized; joint weight is the
-      // product). This weighted measure is exact for asymmetric leaves and
-      // for later outer blocks where trunk reach is non-uniform; it reduces
-      // to the uniform product measure on the symmetric block-0 fixture.
+      // Inner best-response gaps under the exact per-seat conditioned leaf
+      // ranges (product-weighted joint measure): exact-hole (deployment
+      // evidence, includes card-abstraction loss) and bucket-restricted
+      // (the D1 serve predicate).
       const AbstractTree* inner = model.inner_tree(leaf);
       const NSeatPolicy* inner_policy = model.inner_policy(leaf);
       const auto* inner_ranges_ptr = model.inner_ranges(leaf);
       if (inner != nullptr && inner_policy != nullptr && inner_ranges_ptr != nullptr) {
-        const NashConvResult ng = compute_nash_conv_weighted(
-            *inner, inner_policy, *inner_ranges_ptr, inner->def(), nullptr);
-        const double gap_bb = ng.nash_conv / static_cast<double>(inner->def().big_blind);
+        const NashConvResult exact = compute_nash_conv_weighted(
+            *inner, inner_policy, *inner_ranges_ptr, inner->def(), nullptr,
+            /*bucket_br=*/false);
+        const NashConvResult bucketed = compute_nash_conv_weighted(
+            *inner, inner_policy, *inner_ranges_ptr, inner->def(), nullptr,
+            /*bucket_br=*/true);
+        const double exact_bb = exact.nash_conv / static_cast<double>(inner->def().big_blind);
+        const double bucket_bb = bucketed.nash_conv / static_cast<double>(inner->def().big_blind);
         // Measurement-only escape hatch (BS_RFC0039_FORCE=1): serve every
         // solved leaf regardless of its gap, so the driver can quantify the
         // outer-training effect of nested values at feasible iteration
         // counts. The production seam stays fail-closed (the flag exists
         // only in this benchmark) and the GATE_FAIL token still reflects
-        // the real gap decision.
+        // the real bucket-gate decision.
         const bool force_serve = std::getenv("BS_RFC0039_FORCE") != nullptr;
-        const bool real_passed = gap_bb <= kInnerGapToleranceBb;
+        const bool real_passed = bucket_bb <= kInnerGapToleranceBb;
         const bool serve = force_serve || real_passed;
-        // Record the measured gap and the SERVE decision; under force-serve
-        // every solved leaf feeds the outer trainer even though the gap
-        // counter below keeps reflecting the real gate decision.
-        model.record_inner_gap(leaf, ng.nash_conv, serve);
-        worst = std::max(worst, gap_bb);
+        model.record_inner_gap(leaf, bucketed.nash_conv, serve);
+        worst_exact = std::max(worst_exact, exact_bb);
+        worst_bucket = std::max(worst_bucket, bucket_bb);
         if (real_passed)
           ++gap_passed;
       }
@@ -1875,7 +1880,8 @@ NestedM2Sample measure_nested_m2(std::size_t seats, int stack_bb,
     sample.leaves_refined = refined;
     sample.leaves_solved = solved;
     sample.leaves_gap_passed = gap_passed;
-    sample.worst_inner_gap_bb = worst;
+    sample.worst_exact_inner_gap_bb = worst_exact;
+    sample.worst_bucket_inner_gap_bb = worst_bucket;
   };
 
   const std::uint64_t per_block = outer_iterations / std::max<std::uint64_t>(blocks, 1);
@@ -2069,6 +2075,172 @@ NestedM2Sample measure_nested_m2(std::size_t seats, int stack_bb,
   return sample;
 }
 
+// RFC 0039 E4: converged 100 BB per-combo oracle row.
+//
+// Unlike the shallow 2-BB ctest (which runs in the native suite), this
+// driver measures the production 100 BB cap-1 fixture. For each of the
+// first K frontier leaves it compares the NestedRiverValueModel's
+// marginal matrix against an INDEPENDENT direct DepthLimit::none() river
+// solve, with both sides averaged over R independent seed pairs (single
+// MCCFR runs are dominated by fixed-seed worst-combo tail noise). Leaf
+// ranges come from the deterministic uniform sealed turn policy (the
+// block-0 condition), so no outer block-PI training is needed.
+//
+// Usage: --rfc0039-oracle100 <iters_per_run> <runs> <leaves> <seed>
+int run_rfc0039_oracle100(int argc, char** argv) {
+  if (argc < 6) {
+    std::fprintf(stderr, "usage: %s --rfc0039-oracle100 <iters_per_run> <runs> <leaves> <seed>\n",
+                 argv[0]);
+    return 2;
+  }
+  const std::uint64_t iters = std::stoull(argv[2]);
+  const std::uint64_t runs = std::stoull(argv[3]);
+  const std::size_t max_leaves = std::stoull(argv[4]);
+  const std::uint64_t base_seed = std::stoull(argv[5]);
+
+  GameDef turn_def = make_subgame_def_np(2, 100, /*river_rooted=*/false);
+  AbstractTree turn_tree(turn_def, ActionAbstraction::identity(1), TreeLimits{},
+                         DepthLimit::streets(1));
+  const auto range = make_representative_range();
+  const std::vector<std::vector<WeightedHand>> ranges = blocked_ranges(range, turn_def);
+  const double bb = static_cast<double>(turn_def.big_blind);
+
+  std::map<NSeatInformationKey, NSeatPolicyRow> urows;
+  for (std::size_t i = 0; i < turn_tree.size(); ++i)
+    for (std::uint32_t b = 1; b <= 9; ++b)
+      urows.emplace(NSeatInformationKey{b, static_cast<std::uint64_t>(i)},
+                    fill_row(turn_tree.node(i).actions, false));
+  const NSeatPolicy uniform =
+      NSeatPolicy::from_parts(turn_tree.def(), turn_tree.action_id(), std::move(urows));
+
+  std::printf(
+      "rfc0039-oracle100,iters,runs,leaf,seat_combos,worst_delta_bb,mean_delta_bb,status\n");
+
+  std::size_t leaves_done = 0;
+  double global_worst = 0.0, global_mean = 0.0;
+  for (std::size_t node = 0; node < turn_tree.size() && leaves_done < max_leaves; ++node) {
+    if (turn_tree.node(node).kind != NodeKind::TerminalFrontier)
+      continue;
+    const auto leaf = make_river_boundary_leaf(turn_tree, node);
+    auto exported = export_leaf_continuation_ranges(uniform, turn_tree, ranges, node);
+    if (!exported)
+      continue;
+
+    const GameDef river_def = nested_river_game(leaf);
+    std::vector<std::vector<WeightedHand>> sorted = exported->ranges;
+    for (auto& seat : sorted)
+      for (auto& wh : seat)
+        if (wh.cards[0] > wh.cards[1])
+          std::swap(wh.cards[0], wh.cards[1]);
+    std::uint64_t board_mask = 0;
+    for (int k = 0; k < 5; ++k)
+      board_mask |= 1ULL << river_def.board[k];
+
+    // Accumulate nested and oracle marginals ACROSS independent runs, then
+    // compare the run-averaged values (same noise-cancellation design as the
+    // approved 2-BB ctest: comparing two independent single runs pools their
+    // noise instead of averaging it out).
+    std::array<std::map<int, double>, 2> nested_sum{}, oracle_sum{};
+    for (std::uint64_t run = 0; run < runs; ++run) {
+      // Nested model side.
+      NestedRiverValueModel model(turn_tree, base_seed + run * 1009 + node);
+      ContinuationBudget cb;
+      cb.added_iterations = iters;
+      cb.wall = std::chrono::seconds(3600);
+      if (model.refine(leaf, exported->ranges, ranges, cb) != ContinuationStatus::Solved) {
+        std::printf("rfc0039-oracle100,%llu,%llu,%zu,,DECLINED_MODEL\n",
+                    static_cast<unsigned long long>(iters), static_cast<unsigned long long>(runs),
+                    leaves_done);
+        return 1;
+      }
+      const bs::gto::ContinuationValues* nested_cv = model.values(leaf);
+      for (std::size_t p = 0; p < 2; ++p)
+        for (const auto& [ci, v] : nested_cv->marginals[p])
+          nested_sum[p][ci] += v;
+
+      // Independent oracle side: direct solve, different seed.
+      AbstractTree oracle(river_def, ActionAbstraction::identity(1), TreeLimits{},
+                          DepthLimit::none());
+      NSeatTrainerLimits limits;
+      limits.wall = std::chrono::seconds(3600);
+      const NSeatTrainingResult trained = train_nseat(
+          oracle, sorted, iters, base_seed + run * 2003 + node + 777, limits, nullptr, nullptr);
+      const NSeatPolicy& oracle_policy = trained.policy;
+      const GameState oracle_state(river_def);
+
+      for (std::size_t p = 0; p < 2; ++p) {
+        for (const WeightedHand& own : sorted[p]) {
+          if (board_mask & ((1ULL << own.cards[0]) | (1ULL << own.cards[1])))
+            continue;
+          double ref_v = 0.0, wsum = 0.0;
+          // Enumerate conditioned opponent deals (2 seats); average the
+          // oracle policy-following root value for this own combo.
+          std::function<void(std::size_t, std::vector<std::array<int, 2>>, std::uint64_t, double)>
+              walk = [&](std::size_t seat, std::vector<std::array<int, 2>> deal, std::uint64_t used,
+                         double w) {
+                if (seat == 2) {
+                  const auto u =
+                      bs::gto::extract_root_value(oracle_policy, oracle, oracle_state, deal);
+                  ref_v += w * u[p];
+                  wsum += w;
+                  return;
+                }
+                if (seat == p) {
+                  const std::uint64_t m = (1ULL << own.cards[0]) | (1ULL << own.cards[1]);
+                  if (used & m)
+                    return;
+                  deal.push_back(own.cards);
+                  walk(seat + 1, deal, used | m, w);
+                  return;
+                }
+                for (const WeightedHand& opp : sorted[seat]) {
+                  const std::uint64_t m = (1ULL << opp.cards[0]) | (1ULL << opp.cards[1]);
+                  if (used & m || (board_mask & m))
+                    continue;
+                  deal.push_back(opp.cards);
+                  walk(seat + 1, deal, used | m, w * opp.weight);
+                  deal.pop_back();
+                }
+              };
+          walk(0, {}, 0, 1.0);
+          if (wsum > 0.0)
+            oracle_sum[p][bs::comboIndex(own.cards[0], own.cards[1])] += ref_v / wsum;
+        }
+      }
+    }
+    // Compare run-averaged marginals: worst and range-mass-weighted mean.
+    double worst = 0.0, abs_sum = 0.0, mass_sum = 0.0;
+    std::size_t seat_combos = 0;
+    for (std::size_t p = 0; p < 2; ++p) {
+      for (const WeightedHand& own : sorted[p]) {
+        if (board_mask & ((1ULL << own.cards[0]) | (1ULL << own.cards[1])))
+          continue;
+        const int ci = bs::comboIndex(own.cards[0], own.cards[1]);
+        auto nit = nested_sum[p].find(ci);
+        auto oit = oracle_sum[p].find(ci);
+        if (nit == nested_sum[p].end() || oit == oracle_sum[p].end())
+          continue;
+        const double delta = std::fabs(nit->second - oit->second) / bb / static_cast<double>(runs);
+        worst = std::max(worst, delta);
+        abs_sum += own.weight * delta;
+        mass_sum += own.weight;
+        ++seat_combos;
+      }
+    }
+    const double mean = mass_sum > 0.0 ? abs_sum / mass_sum : 0.0;
+    global_worst = std::max(global_worst, worst);
+    global_mean = std::max(global_mean, mean);
+    std::printf("rfc0039-oracle100,%llu,%llu,%zu,%zu,%.8f,%.8f,ROW\n",
+                static_cast<unsigned long long>(iters), static_cast<unsigned long long>(runs),
+                leaves_done, seat_combos, worst, mean);
+    ++leaves_done;
+  }
+  std::printf("rfc0039-oracle100,%llu,%llu,%zu-leaves,,%.8f,%.8f,%s\n",
+              static_cast<unsigned long long>(iters), static_cast<unsigned long long>(runs),
+              leaves_done, global_worst, global_mean, global_worst <= 0.005 ? "PASS" : "FAIL");
+  return global_worst <= 0.005 ? 0 : 1;
+}
+
 int run_nested_m2(int argc, char** argv) {
   if (argc < 6) {
     std::fprintf(stderr,
@@ -2089,21 +2261,23 @@ int run_nested_m2(int argc, char** argv) {
               blocks, static_cast<unsigned long long>(seed));
   bool gate_failed = false;
   if (s.declined)
-    std::printf("INFEASIBLE,,,,,,%s\n", s.reason.c_str());
+    std::printf("INFEASIBLE,,,,,,,%s\n", s.reason.c_str());
   else {
-    // RFC 0039 §3 absolute-gap gate: EVERY refined leaf must pass the 0.01 BB
-    // summed inner tolerance. A run with any ungated leaf reports GATE_FAIL
-    // and exits nonzero; raw rows are still emitted for the evidence record.
+    // RFC 0039 amended D1: EVERY refined leaf must pass the 0.01 BB
+    // bucket-restricted inner gap (abstract-game convergence predicate).
+    // The exact-hole column is deployment evidence, not the gate.
     gate_failed = s.leaves_gap_passed != s.leaves_refined || s.leaves_refined == 0 ||
-                  s.worst_inner_gap_bb > kInnerGapToleranceBbForGate;
+                  s.worst_bucket_inner_gap_bb > kInnerGapToleranceBbForGate;
     const bool force_mode = std::getenv("BS_RFC0039_FORCE") != nullptr;
     const char* token = force_mode ? "FORCE_SERVED" : (gate_failed ? "GATE_FAIL" : "FITS");
-    // Columns: status, ref NC, nested composed NC, worst inner gap,
-    // max per-combo marginal delta vs direct full solve (AC2), leaves
-    // refined/solved/gap-passed, marginal leaves compared.
-    std::printf("%s,%.8f,%.8f,%.8f,%.8f,%zu,%zu,%zu,%zu,\n", token, s.reference_nashconv_bb,
-                s.nested_fill_gap_bb, s.worst_inner_gap_bb, s.max_marginal_delta_bb,
-                s.leaves_refined, s.leaves_solved, s.leaves_gap_passed, s.marginal_leaves_compared);
+    // v2 columns: status, ref NC, nested composed NC, worst exact-hole inner
+    // gap (D1 deployment evidence), worst bucket inner gap (D1 serve gate),
+    // max per-combo marginal delta (AC2), leaves refined/solved/gap-passed,
+    // marginal leaves compared.
+    std::printf("%s,%.8f,%.8f,%.8f,%.8f,%.8f,%zu,%zu,%zu,%zu,\n", token, s.reference_nashconv_bb,
+                s.nested_fill_gap_bb, s.worst_exact_inner_gap_bb, s.worst_bucket_inner_gap_bb,
+                s.max_marginal_delta_bb, s.leaves_refined, s.leaves_solved, s.leaves_gap_passed,
+                s.marginal_leaves_compared);
   }
   std::fflush(stdout);
   return (s.declined || gate_failed) ? 1 : 0;
@@ -2527,6 +2701,8 @@ int main(int argc, char** argv) {
     return run_rfc0039_inner_series(argc, argv);
   if (argc > 1 && std::string(argv[1]) == "--rfc0039-identity-control")
     return run_rfc0039_identity_control(argc, argv);
+  if (argc > 1 && std::string(argv[1]) == "--rfc0039-oracle100")
+    return run_rfc0039_oracle100(argc, argv);
   if (argc > 1 && std::string(argv[1]) == "--t3") {
     t3_scan = true;
     arg_index = 2;
