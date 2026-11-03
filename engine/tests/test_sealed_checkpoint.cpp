@@ -493,6 +493,49 @@ bool round_trip_tiers_draw_kind() {
   return true;
 }
 
+// A file whose kind byte is a permanently retired ordinal (4: deleted RFC
+// 0044; 5: deleted RFC 0045 measurement grid) or any other foreign value
+// fails closed instead of mapping onto a valid kind. The file is first
+// written under the production Preflop169 kind, then only the single kind
+// byte at kOffKeyKind is overwritten, so the refusal comes from the codec's
+// unknown-byte path rather than a broader parse failure.
+bool rejects_retired_or_unknown_kind() {
+  const fs::path dir = scratch("reject-kind");
+  const fs::path path = dir / "class-0000-checkpoint.bswarm";
+  SealedCheckpointState state;
+  state.algorithm_revision_id = bs::solver::kNSeatAlgorithmRevision;
+  state.algorithm_revision =
+      bs::artifacts::sealed_revision_string(bs::solver::kNSeatAlgorithmRevision);
+  state.node_cap = 4096;
+  state.bucket_cap = 169;
+  state.key_kind = CardBucketKind::Preflop169;
+  state.tree_shape_digest = 0x0123456789abcdefULL;
+  state.rows[{168, 1}] = make_row(1, 0.0, 1);
+  save_sealed_checkpoint(path, state);
+
+  for (const std::uint8_t foreign :
+       {std::uint8_t{4}, std::uint8_t{5}, std::uint8_t{6}, std::uint8_t{255}}) {
+    std::ifstream in(path, std::ios::binary);
+    std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                    std::istreambuf_iterator<char>());
+    CHECK(bytes.size() > 16);
+    bytes[16] = foreign;  // kOffKeyKind
+    const fs::path tampered = dir / ("tampered-" + std::to_string(foreign) + ".bswarm");
+    std::ofstream out(tampered, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    out.close();
+    bool threw = false;
+    try {
+      (void)load_sealed_checkpoint(tampered);
+    } catch (const SealedCheckpointError&) {
+      threw = true;
+    }
+    CHECK(threw);
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -509,6 +552,7 @@ int main() {
       {"atomic_overwrite", atomic_overwrite},
       {"size_is_key_proportional", size_is_key_proportional},
       {"round_trip_tiers_draw_kind", round_trip_tiers_draw_kind},
+      {"rejects_retired_or_unknown_kind", rejects_retired_or_unknown_kind},
   };
   for (const Case& c : cases) {
     if (!c.fn()) {

@@ -12,6 +12,7 @@
 // error that leaves the files untouched; (c) the atomic-overwrite behavior
 // moved to save_sealed_checkpoint. The SQLite-specific assertions went with the
 // functions they exercised (see RFC 0028, "Builder changes").
+#include <algorithm>
 #include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
@@ -700,6 +701,89 @@ bool test_checkpoint_messages_pinned(const fs::path& dir) {
   return true;
 }
 
+// RFC 0045 Stage-4 regression: a checkpoint-resume loop driven through the
+// public train_nseat contract must land on EXACTLY the target iteration
+// count and reproduce the uninterrupted run. The result field is a
+// cumulative absolute count even when the `iterations` argument was the
+// number of ADDITIONAL samples; a caller that accumulates it with +=
+// overshoots the target and jumps the resumed PRNG streams across untrained
+// sample windows (the defect that invalidated the first G2 campaign).
+bool test_segmented_resume_lands_on_target() {
+  Fixture fx;
+  // Reference runs must reach the full target: the fixture's 5 min wall is
+  // too short for 20k iterations under a sanitizer build, so every
+  // uninterrupted reference below uses an effectively unbounded wall. Only
+  // the deliberately-interrupted segments get the short wall.
+  auto ref_limits = fx.limits;
+  ref_limits.wall = std::chrono::hours(1);
+
+  // Part A: explicit chunk boundaries (no wall involvement).
+  constexpr std::uint64_t kChunkedTarget = 1000;
+  bs::solver::NSeatInitialState chunk_warm;
+  bool chunk_has_warm = false;
+  std::uint64_t chunk_done = 0;
+  for (std::uint64_t chunk : {300ULL, 300ULL, 400ULL}) {
+    const bs::solver::NSeatTrainingResult r =
+        chunk_has_warm
+            ? bs::solver::train_nseat(fx.tree, fx.ranges, chunk, fx.seed, fx.limits, &fx.frontier,
+                                      &chunk_warm)
+            : bs::solver::train_nseat(fx.tree, fx.ranges, chunk, fx.seed, fx.limits, &fx.frontier);
+    CHECK(r.termination == bs::solver::NSeatTerminationPhase::Complete);
+    CHECK(r.completed_iterations == chunk_done + chunk);
+    chunk_done = r.completed_iterations;  // assign: the result is cumulative
+    chunk_warm.rows = r.raw_rows;
+    chunk_warm.completed_iterations = r.completed_iterations;
+    chunk_warm.algorithm_revision = r.algorithm_revision;
+    chunk_warm.batch_size = r.batch_size;
+    chunk_has_warm = true;
+  }
+  CHECK(chunk_done == kChunkedTarget);
+
+  // The chunked walk covered exactly the contiguous sample prefix [0,N).
+  const bs::solver::NSeatTrainingResult chunk_scratch = bs::solver::train_nseat(
+      fx.tree, fx.ranges, kChunkedTarget, fx.seed, ref_limits, &fx.frontier);
+  CHECK(chunk_scratch.termination == bs::solver::NSeatTerminationPhase::Complete);
+  CHECK(chunk_scratch.completed_iterations == kChunkedTarget);
+  CHECK(same_raw_rows(chunk_warm.rows, chunk_scratch.raw_rows));
+
+  // Part B: the G2 driver's wall-bounded loop. A short wall forces many
+  // segments; the end property (exact target, bitwise-identical table) is
+  // independent of where the splits land. A += accumulator would overshoot
+  // the target and fail the table comparison through the skipped PRNG-index
+  // windows. The target is small enough that the uninterrupted reference
+  // reaches it even under a sanitizer build.
+  constexpr std::uint64_t kWallTarget = 20'000;
+  auto wall_limits = fx.limits;
+  wall_limits.wall = std::chrono::milliseconds(20);
+  bs::solver::NSeatInitialState wall_warm;
+  bool wall_has_warm = false;
+  std::uint64_t wall_done = 0;
+  int wall_segments = 0;
+  while (wall_done < kWallTarget) {
+    const bs::solver::NSeatTrainingResult r =
+        wall_has_warm ? bs::solver::train_nseat(fx.tree, fx.ranges, kWallTarget - wall_done,
+                                                fx.seed, wall_limits, &fx.frontier, &wall_warm)
+                      : bs::solver::train_nseat(fx.tree, fx.ranges, kWallTarget, fx.seed,
+                                                wall_limits, &fx.frontier);
+    CHECK(r.completed_iterations > wall_done);
+    wall_done = r.completed_iterations;
+    wall_warm.rows = r.raw_rows;
+    wall_warm.completed_iterations = wall_done;
+    wall_warm.algorithm_revision = r.algorithm_revision;
+    wall_warm.batch_size = r.batch_size;
+    wall_has_warm = true;
+    ++wall_segments;
+  }
+  CHECK(wall_done == kWallTarget);
+  CHECK(wall_segments >= 2);  // the short wall genuinely interrupted training
+  const bs::solver::NSeatTrainingResult wall_scratch =
+      bs::solver::train_nseat(fx.tree, fx.ranges, kWallTarget, fx.seed, ref_limits, &fx.frontier);
+  CHECK(wall_scratch.termination == bs::solver::NSeatTerminationPhase::Complete);
+  CHECK(wall_scratch.completed_iterations == kWallTarget);
+  CHECK(same_raw_rows(wall_warm.rows, wall_scratch.raw_rows));
+  return true;
+}
+
 int main() {
   const fs::path dir = fs::temp_directory_path() / "bs-warm-start-test";
   std::error_code ec;
@@ -708,6 +792,7 @@ int main() {
 
   bool ok = true;
   ok = test_warm_start_matches_scratch(dir) && ok;
+  ok = test_segmented_resume_lands_on_target() && ok;
   ok = test_checkpoint_overwrite(dir) && ok;
   ok = test_incompatible_resume_preserves_files(dir) && ok;
   ok = test_stale_but_complete(dir) && ok;

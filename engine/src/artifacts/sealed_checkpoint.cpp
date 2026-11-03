@@ -364,7 +364,8 @@ Header decode_header(std::span<const std::uint8_t> bytes, const std::filesystem:
   const std::uint8_t kind = get_u8(bytes, kOffKeyKind);
   // CardBucketKind ordinals are pinned (RFC 0031); reject anything outside
   // the four-valued enum rather than silently mapping a foreign value onto a
-  // valid kind.
+  // valid kind. Retired ordinals 4 (deleted RFC 0044) and 5 (deleted RFC
+  // 0045 measurement grid) fall through to the generic refusal below.
   switch (kind) {
     case 0:
       h.key_kind = abstraction::CardBucketKind::Identity;

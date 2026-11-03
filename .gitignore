@@ -94,3 +94,9 @@ artifacts/flop-library-25bb.bin.sha256
 
 # Local-only materials (internal references, never publish)
 /local/
+
+# RFC 0045 G2 campaign working state (BSWARM03 checkpoints and per-shard
+# CSVs are scratch; the aggregated evidence of record is copied to
+# docs/plans/ablation/rfc0045-g2-campaign.csv).
+/rfc45-ckpt/
+/rfc45-run2/

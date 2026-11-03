@@ -175,6 +175,10 @@ enum class CardBucketKind {
   CategoryTiersV1 = 1,
   Preflop169 = 2,
   TiersDrawV1 = 3,
+  // Ordinals 4 (the deleted RFC 0044 equity-strength kind) and 5 (the
+  // deleted RFC 0045 measurement-only EHS grid) are permanently retired and
+  // never reused; the sealed-checkpoint codec rejects raw bytes 4 and 5 as
+  // unknown card kinds.
 };
 
 AbstractionId card_abstraction_id(CardBucketKind kind);

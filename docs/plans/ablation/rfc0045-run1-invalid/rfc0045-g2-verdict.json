@@ -1,0 +1,190 @@
+cells done=368/368 final_rows=368 -> docs/plans/ablation/rfc0045-g2-campaign.csv
+{
+  "kind": "needs-conditional-kt128",
+  "failed": "ehs2-32-64-256",
+  "gate": {
+    "rung": 300000000,
+    "strata": [
+      {
+        "board": "2c3d7hJs9c",
+        "exactMean": 0.026028999999999997,
+        "exactHw": 0.00046277426336209873,
+        "observed": true,
+        "meanPasses": true,
+        "hwPasses": true,
+        "paired": [
+          {
+            "seed": 4320,
+            "candidate": 0.025927,
+            "incumbent": 0.304122,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4321,
+            "candidate": 0.026244,
+            "incumbent": 0.305309,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4322,
+            "candidate": 0.025916,
+            "incumbent": 0.304349,
+            "strictlyBetter": true
+          }
+        ],
+        "pairedPasses": true
+      },
+      {
+        "board": "7sKhAdJs9c",
+        "exactMean": 0.015592666666666666,
+        "exactHw": 0.00011979903708757769,
+        "observed": true,
+        "meanPasses": true,
+        "hwPasses": true,
+        "paired": [
+          {
+            "seed": 4320,
+            "candidate": 0.015598,
+            "incumbent": 0.302271,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4321,
+            "candidate": 0.015542,
+            "incumbent": 0.303227,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4322,
+            "candidate": 0.015638,
+            "incumbent": 0.302715,
+            "strictlyBetter": true
+          }
+        ],
+        "pairedPasses": true
+      },
+      {
+        "board": "7sKhKdJs9c",
+        "exactMean": 0.015295666666666666,
+        "exactHw": 0.0005825989392604867,
+        "observed": true,
+        "meanPasses": true,
+        "hwPasses": true,
+        "paired": [
+          {
+            "seed": 4320,
+            "candidate": 0.015465,
+            "incumbent": 0.244066,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4321,
+            "candidate": 0.015028,
+            "incumbent": 0.244518,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4322,
+            "candidate": 0.015394,
+            "incumbent": 0.244363,
+            "strictlyBetter": true
+          }
+        ],
+        "pairedPasses": true
+      },
+      {
+        "board": "QsKsAsJs9c",
+        "exactMean": 0.015705333333333335,
+        "exactHw": 0.0001424185384823377,
+        "observed": true,
+        "meanPasses": true,
+        "hwPasses": true,
+        "paired": [
+          {
+            "seed": 4320,
+            "candidate": 0.015641,
+            "incumbent": 0.064554,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4321,
+            "candidate": 0.015751,
+            "incumbent": 0.064025,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4322,
+            "candidate": 0.015724,
+            "incumbent": 0.064244,
+            "strictlyBetter": true
+          }
+        ],
+        "pairedPasses": true
+      },
+      {
+        "board": "7sKhAsJs9c",
+        "exactMean": 0.025367333333333335,
+        "exactHw": 0.0005043900008645205,
+        "observed": true,
+        "meanPasses": true,
+        "hwPasses": true,
+        "paired": [
+          {
+            "seed": 4320,
+            "candidate": 0.025592,
+            "incumbent": 0.259961,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4321,
+            "candidate": 0.025197,
+            "incumbent": 0.259795,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4322,
+            "candidate": 0.025313,
+            "incumbent": 0.259726,
+            "strictlyBetter": true
+          }
+        ],
+        "pairedPasses": true
+      },
+      {
+        "board": "2c3d7hJs2s",
+        "exactMean": 0.018178999999999997,
+        "exactHw": 0.0005090105257624817,
+        "observed": true,
+        "meanPasses": true,
+        "hwPasses": true,
+        "paired": [
+          {
+            "seed": 4320,
+            "candidate": 0.018201,
+            "incumbent": 0.393367,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4321,
+            "candidate": 0.018372,
+            "incumbent": 0.393586,
+            "strictlyBetter": true
+          },
+          {
+            "seed": 4322,
+            "candidate": 0.017964,
+            "incumbent": 0.393498,
+            "strictlyBetter": true
+          }
+        ],
+        "pairedPasses": true
+      }
+    ],
+    "worstBoard": "2c3d7hJs9c",
+    "worstExact": 0.026028999999999997,
+    "worstPasses": true,
+    "allStrataObserved": true,
+    "passes": true,
+    "reasons": []
+  }
+}
