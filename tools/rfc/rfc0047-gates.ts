@@ -1,16 +1,20 @@
 // RFC 0047 Stage-1 frozen evaluator of record.
 //
-// S1 implements only the STRUCTURAL predicates:
+// S1 structural predicates:
 //   G1  per-request concrete-infoset envelope (< 1,000,000) for the
 //       depth-limited turn solve and the worst-case reached (line,card) river
 //       re-solve, on every frozen stratum, plus per-card cross-line uniformity.
 //   G4  canonical board-class constants and the turn x48 = 5 x river identity.
-// G2/G3 (oracle accuracy, error-propagation slope) are added in S2; until
-// then this evaluator cannot emit a Stage PASS, only the S1 structural result.
+// S2 adds:
+//   G2  oracle certified accuracy over a frozen coverage-frame cert CSV
+//       (CERT per-entry <= 0.005 BB, seedless reference residual <= 0.001 BB,
+//       QUAL exact-hole summed <= 0.03 BB). Pass an optional third CSV path.
+// G3 (error-propagation slope) is added later in S2.
 //
 // Inputs are the tidy CSVs emitted by the guarded C++ binaries:
 //   bigshark-rfc0047-infoset-budget -> s1-infoset-budget.csv
 //   bigshark-rfc0047-census         -> s1-census.csv  (metric,value)
+//   bigshark-rfc0047-oracle-build   -> <out>.bsncv.cert.csv (G2 frame)
 // Malformed or missing rows fail closed (a thrown GateInputError, exit 2).
 
 export const MAX_INFOSETS = 1_000_000;
@@ -228,7 +232,170 @@ export function evaluateS1(infosetCsv: string, censusCsv: string): S1Result {
   return {g1: failures.length === 0, g4: failures.length === 0, failures, rows};
 }
 
-// Manual entrypoint: node dist/tools/rfc/rfc0047-gates.js <infoset.csv> <census.csv>
+// --- S2 G2: oracle certified accuracy --------------------------------------
+//
+// G2 inherits RFC 0044's distinction between a within-instrument convergence
+// gap and an exact-hole SUMMED gap; both are SUMMED best-response/NashConv
+// quantities (see rfc0044-gates.ts meanGap / exact gap), never a per-combo
+// worst value. The V3 builder is SEEDLESS (bitwise-identical rerun, no RNG),
+// has no abstraction bucket loss, and enumerates every compatible deal, so:
+//   CERT g(T)   = candidate exact full-deal SUMMED NashConv (the within-
+//                 instrument convergence gap); gated at 0.005 BB;
+//   half-width  = 0 BY CONSTRUCTION for a seedless solver (RFC 0044's value is
+//                 the t*SE of an independent-seed mean, which does not exist);
+//                 a bitwise-identical rerun native test covers it, and here we
+//                 additionally require the higher-accuracy reference be at
+//                 least as converged as the candidate;
+//   QUAL        = candidate exact SUMMED NashConv against the exact-hole
+//                 evaluator - the SAME instrument for V3 (no bucket loss), so
+//                 it equals CERT; gated at the inherited 0.03 BB.
+// The per-combo quantities (drift_max = e_max, drift/cert RMS, and the shipped
+// one-sided per-entry bound) are RECORDED ONLY: they are the oracle entry
+// error that G3 propagates through the turn-equilibrium leaf reach rho, and
+// the production inequalities UCB(hybrid) <= 0.010 / UCB(t_river) <= 0.002 are
+// what bound a per-entry error - not a 0.005 worst-combo bar here.
+export const EPS_CERT_BB = 0.005;  // within-instrument summed NashConv
+export const EPS_QUAL_BB = 0.03;   // exact-hole summed NashConv (HU)
+// Reference-quality diagnostic bar (not an RFC 0044 seed half-width, which is
+// exactly 0 for a seedless solver): the reference must be at least this much
+// more converged than the candidate so it is a meaningful reference.
+export const EPS_REF_NC_BB = 0.005;
+
+export interface CertRow {
+  stratum: string;
+  shapeId: number;
+  group: number;
+  potChips: number;
+  candNashConvBb: number;
+  refNashConvBb: number;
+  driftMaxBb: number;
+  residualMaxBb: number;
+  certMaxBb: number;
+  driftRmsBb: number;
+  residualRmsBb: number;
+  certRmsBb: number;
+}
+
+export function parseCertCsv(text: string): CertRow[] {
+  const rows = parseCsv(text);
+  const header = rows.shift();
+  if (header === undefined)
+    throw new GateInputError('cert CSV is empty');
+  requireHeader(header, [
+    'stratum', 'shape_id', 'group', 'pot_chips', 'cand_nash_conv_bb',
+    'ref_nash_conv_bb', 'drift_max_bb', 'residual_max_bb', 'cert_max_bb',
+    'drift_rms_bb', 'residual_rms_bb', 'cert_rms_bb',
+  ]);
+  return rows.map((cols) => {
+    const r: Record<string, string> = {};
+    header.forEach((h, i) => { r[h] = cols[i] ?? ''; });
+    if (!r.stratum)
+      throw new GateInputError('cert row has an empty stratum');
+    return {
+      stratum: r.stratum,
+      shapeId: num(r, 'shape_id'),
+      group: num(r, 'group'),
+      potChips: num(r, 'pot_chips'),
+      candNashConvBb: num(r, 'cand_nash_conv_bb'),
+      refNashConvBb: num(r, 'ref_nash_conv_bb'),
+      driftMaxBb: num(r, 'drift_max_bb'),
+      residualMaxBb: num(r, 'residual_max_bb'),
+      certMaxBb: num(r, 'cert_max_bb'),
+      driftRmsBb: num(r, 'drift_rms_bb'),
+      residualRmsBb: num(r, 'residual_rms_bb'),
+      certRmsBb: num(r, 'cert_rms_bb'),
+    };
+  });
+}
+
+export interface S2G2Result {
+  g2: boolean;
+  failures: string[];
+  rows: number;
+  certBb: number;          // worst within-instrument summed NashConv (CERT)
+  qualBb: number;          // worst exact-hole summed NashConv (QUAL; == CERT for V3)
+  refNcMaxBb: number;      // worst reference NashConv (reference-quality check)
+  eMaxBb: number;          // RECORDED per-combo worst drift (G3 input)
+  driftRmsMaxBb: number;   // RECORDED per-combo RMS drift (G3 e_l2, uniform rho)
+  certMaxBb: number;       // RECORDED shipped per-entry worst bound
+  byStratum: Record<string, {cert: number; refNc: number; eMax: number;
+                             driftRms: number; n: number}>;
+}
+
+export function evaluateS2G2(certCsv: string): S2G2Result {
+  const rows = parseCertCsv(certCsv);
+  const failures: string[] = [];
+  if (rows.length === 0)
+    throw new GateInputError('cert CSV has no data rows');
+
+  let certBb = 0;
+  let refNcMaxBb = 0;
+  let eMaxBb = 0;
+  let driftRmsMaxBb = 0;
+  let certMaxBb = 0;
+  const byStratum: S2G2Result['byStratum'] = {};
+  const seen = new Set<string>();
+
+  for (const r of rows) {
+    const key = `${r.stratum}:${r.shapeId}:${r.group}`;
+    if (seen.has(key))
+      failures.push(`duplicate cert row ${key}`);
+    seen.add(key);
+    for (const v of [r.candNashConvBb, r.refNashConvBb, r.driftMaxBb,
+                     r.residualMaxBb, r.certMaxBb, r.driftRmsBb,
+                     r.residualRmsBb, r.certRmsBb])
+      if (!(v >= 0))
+        failures.push(`${key}: negative/NaN metric`);
+    // The reference must be at least as converged as the candidate.
+    if (r.refNashConvBb > r.candNashConvBb + 1e-12)
+      failures.push(`${key}: reference NashConv ${r.refNashConvBb} > candidate `
+                    + `${r.candNashConvBb}`);
+    // Shipped per-entry bound must dominate both of its non-negative
+    // components, in both norms (integrity; not a magnitude gate).
+    if (r.certMaxBb + 1e-12 < Math.max(r.driftMaxBb, r.residualMaxBb))
+      failures.push(`${key}: cert max below a component`);
+    if (r.certRmsBb + 1e-12 < Math.max(r.driftRmsBb, r.residualRmsBb))
+      failures.push(`${key}: cert rms below a component`);
+
+    certBb = Math.max(certBb, r.candNashConvBb);
+    refNcMaxBb = Math.max(refNcMaxBb, r.refNashConvBb);
+    eMaxBb = Math.max(eMaxBb, r.driftMaxBb);
+    driftRmsMaxBb = Math.max(driftRmsMaxBb, r.driftRmsBb);
+    certMaxBb = Math.max(certMaxBb, r.certMaxBb);
+    const b = byStratum[r.stratum]
+      ?? {cert: 0, refNc: 0, eMax: 0, driftRms: 0, n: 0};
+    b.cert = Math.max(b.cert, r.candNashConvBb);
+    b.refNc = Math.max(b.refNc, r.refNashConvBb);
+    b.eMax = Math.max(b.eMax, r.driftMaxBb);
+    b.driftRms = Math.max(b.driftRms, r.driftRmsBb);
+    b.n += 1;
+    byStratum[r.stratum] = b;
+  }
+
+  // CERT: within-instrument summed NashConv convergence gap.
+  if (certBb > EPS_CERT_BB)
+    failures.push(`CERT summed NashConv ${certBb.toExponential(3)} > `
+                  + `${EPS_CERT_BB} BB`);
+  // QUAL: exact-hole summed gap (same exact instrument for the seedless,
+  // bucket-free V3 kernel, so it equals the CERT value).
+  if (certBb > EPS_QUAL_BB)
+    failures.push(`QUAL exact-hole summed gap ${certBb.toExponential(3)} > `
+                  + `${EPS_QUAL_BB} BB`);
+  // Reference-quality diagnostic: the higher-accuracy reference must itself be
+  // below the CERT scale to be a meaningful reference. (The RFC 0044 seed
+  // half-width is exactly 0 for the seedless solver, verified by the
+  // bitwise-identical rerun native test, not re-gated here.)
+  if (refNcMaxBb > EPS_REF_NC_BB)
+    failures.push(`reference NashConv ${refNcMaxBb.toExponential(3)} > `
+                  + `${EPS_REF_NC_BB} BB`);
+
+  return {g2: failures.length === 0, failures, rows: rows.length, certBb,
+          qualBb: certBb, refNcMaxBb, eMaxBb, driftRmsMaxBb, certMaxBb,
+          byStratum};
+}
+
+// Manual entrypoint:
+//   node dist/tools/rfc/rfc0047-gates.js <infoset.csv> <census.csv> [cert.csv]
 const isMain = (() => {
   try {
     return process.argv[1] !== undefined &&
@@ -242,21 +409,41 @@ if (isMain) {
   const {readFileSync} = await import('node:fs');
   const infosetPath = process.argv[2];
   const censusPath = process.argv[3];
+  const certPath = process.argv[4];
   if (!infosetPath || !censusPath) {
-    console.error('usage: rfc0047-gates <s1-infoset-budget.csv> <s1-census.csv>');
+    console.error(
+      'usage: rfc0047-gates <s1-infoset-budget.csv> <s1-census.csv> [s2-cert.csv]');
     process.exit(2);
   }
   try {
-    const result = evaluateS1(readFileSync(infosetPath, 'utf8'),
-                             readFileSync(censusPath, 'utf8'));
-    if (!result.g1 || !result.g4) {
+    const s1 = evaluateS1(readFileSync(infosetPath, 'utf8'),
+                          readFileSync(censusPath, 'utf8'));
+    if (!s1.g1 || !s1.g4) {
       console.error('RFC 0047 S1 structural gates FAILED:');
-      for (const f of result.failures)
+      for (const f of s1.failures)
         console.error(`  - ${f}`);
       process.exit(1);
     }
     console.log('RFC 0047 S1 structural gates PASS (G1 infoset envelope, G4 census).');
-    console.log('G2/G3 oracle accuracy/slope gates are pending S2 (no Stage PASS yet).');
+
+    if (!certPath) {
+      console.log('G2/G3 not evaluated (no cert CSV supplied).');
+      process.exit(0);
+    }
+    const g2 = evaluateS2G2(readFileSync(certPath, 'utf8'));
+    console.log(
+      `G2 over ${g2.rows} subgames: CERT/QUAL summed NashConv ${g2.certBb.toExponential(3)} `
+      + `(bars ${EPS_CERT_BB}/${EPS_QUAL_BB}), reference ${g2.refNcMaxBb.toExponential(3)} `
+      + `(seed half-width 0 by seedlessness); recorded per-entry e_max `
+      + `${g2.eMaxBb.toExponential(3)}, drift RMS ${g2.driftRmsMaxBb.toExponential(3)} `
+      + `(feeds G3 reach envelope, not gated here).`);
+    if (!g2.g2) {
+      console.error('RFC 0047 S2 G2 oracle-accuracy gate FAILED:');
+      for (const f of g2.failures)
+        console.error(`  - ${f}`);
+      process.exit(1);
+    }
+    console.log('RFC 0047 S2 G2 oracle-accuracy gate PASS.');
   } catch (err) {
     console.error(`RFC 0047 gate input error: ${(err as Error).message}`);
     process.exit(2);

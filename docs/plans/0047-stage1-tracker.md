@@ -102,7 +102,229 @@ RFC text gets an S1 measurement note (no redesign).
 
 ## S2 — Per-combo turn-CV oracle and certification
 
-Status: NOT STARTED.
+Status: **IN PROGRESS (S2.1 deterministic river kernel; convergence-law
+feasibility established on single leaves; S2.2 builder/oracle next).**
+
+> Note: S1 is committed separately as `3bac9ed` (TechLead round 103); S2 work
+> is uncommitted in this working tree by design.
+
+### S2.1 deterministic full-deal river solver (V3 kernel)
+
+- Guarded `engine/benchmarks/rfc0047/river_solver.{hpp,cpp}`: SEEDLESS
+  zero-sum cap-1 RIVER-rooted solver, fixed five-card board, 1081 own combos,
+  all 990 compatible opponent combos every traversal, RM+ + linear averaging,
+  reusable scratch pool (zero per-iteration allocation). Board-fixed int8
+  signed showdown matrix (one matvec per showdown leaf); folds O(C).
+- NashConv normalized on the 1081x990 uniform joint deals, summed over both
+  seats / BB (B4 summed-BB).
+- Bug fixed during S2: the viewer's own EQUILIBRIUM eval nodes summed child
+  values without the average-strategy weights sigma (BR argmax was correct);
+  before the fix NashConv was inflated (~2.9 BB false floor).
+- Deterministic summed-BB NashConv (~33 iter/s, single thread):
+
+  | iters | W1 | monotone (full range, 10 action nodes) |
+  |---:|---:|---:|
+  | 80 | 0.109 | 0.106 |
+  | 180 | 0.044 | 0.039 |
+  | 405 | 0.0172 | 0.0172 |
+  | 608 | 0.0093 | 0.0106 |
+  | 912 | - | 0.0061 |
+  | 1368 | - | 0.0030 |
+
+  Smooth, no sampled noise, no T^-0.55 plateau here; reaches the R0 = 0.002 BB
+  scale at a few thousand iterations (~1-2 min/leaf). Strong positive evidence
+  for G2 on a single leaf; NOT yet CERT/QUAL vs a reference, the margin
+  identity, the G3 slope, or G4 coverage cost. Data:
+  docs/plans/ablation/rfc0047/s2/.
+
+  Full single-leaf result (single-thread, deterministic), the hardest online
+  shape included:
+
+  | shape (action nodes) | iterations at <=0.002 BB | wall |
+  |---|---:|---:|
+  | W1 (10) | ~2,052 (0.00201 @2,052; 0.00488 @912) | ~89 s to 3k |
+  | monotone full range (10) | ~2,000 (0.0030 @1,368; 0.0014 projected @2,052) | ~59 s to 2k |
+  | raised-SRP pot 8 (12) | ~1,100 (0.00230 @912, 0.00140 @1,368, 0.00084 @2,052) | ~108 s to 3k |
+
+  Conclusion (S2.1): a deterministic full-deal river solve certifies a single
+  online-reached subtree to R0 in well under the offline per-leaf budget,
+  unlike RFC 0039's 10M-iteration/138 s sampled nested leaf. The remaining S2
+  risks are not single-leaf convergence; they are (a) certified error vs a
+  higher-accuracy reference (CERT/QUAL), (b) the G3 boundary-error slope into
+  the turn gadget, and (c) G4 coverage/build across the class universe.
+- Native `rfc0047_river_solver`: bitwise determinism, finite/range, monotone
+  reduction, near-equilibrium sanity bound. (A zero-sum MEAN-CFV assertion was
+  correctly removed: counterfactual values exclude own reach.)
+- Per-combo equilibrium + BR values exposed (`river_combo_values`) for the
+  oracle builder / G2 exact gap.
+- **S2.2 pipeline skeleton:** `bigshark-rfc0047-oracle-build <stratum>
+  <shape_id> <iters> <out.bsncv>` solves the check-to-river frontier
+  deterministically and writes all 2x1081 five-card BSNCV01 rows with a
+  conservative per-entry `certified_error_chips` = summed-BB NashConv x BB;
+  round-trips through the S1 immutable reader. Verified: w1 @2,000 ->
+  nash_conv_bb 0.00209, artifact 86,544 bytes = 32 header + 2,162 x 40 + 32
+  SHA-256 (`docs/plans/ablation/rfc0047/s2/artifacts/w1-shape7-2000.bsncv`).
+- **S2.3 multi-leaf post-chance builder + frontier census native test.**
+  `rfc0047_oracle_build` now loops over EVERY post-chance leaf from
+  `enumerate_frontiers` (432 limped / 528 raised), dedups identical river
+  subgames on the full tuple (pot, gross contributions, stacks behind,
+  five-card board), solves each unique subgame once, and emits keyed rows for
+  every leaf (online lookup arrives through a specific turn line). Distinct
+  subgames = distinct (ledger, card): 240 for w1 (5 ledgers x 48 cards).
+  Smoke: w1 @50 iters -> 432 leaves / 240 unique solves / 933,984 rows /
+  37,359,424 bytes, 382 s single-thread; worst NashConv 0.175 BB at 50 iters
+  (convergence iteration count is the production knob, measured in S2.1).
+  Native `rfc0047_frontier_enumerator` pins 432/528 leaves, exactly 48 cards
+  per turn betting line, 5/6 distinct ledgers, five-card/river validity on all
+  six strata (0.05 s).
+- **S2.4 margin identity tiny game (`rfc0047_margin_identity`, 8 s).** A
+  hand-built two-stage polar/bluff-catcher game solved four ways. GATED
+  (tolerances scaled by the 1M-iteration linear-CFR reference's own
+  exploitability ~1e-4 BB):
+  - C2 exact-leaf depth-limited trunk reproduces the full-game turn strategy
+    (gap 3.2e-3);
+  - per-leaf river re-solve gadgets are subtree equilibria (max NashConv
+    4.7e-5);
+  - **C4b (the RFC identity): the gadget's locked responder leaf margin equals
+    the full-game conditioned margin for every hand reaching the line, gap
+    3.2e-4**;
+  - **micro-G3 teeth: a known +0.5 chip margin perturbation appears as a
+    0.500 responder-value error (leaf error->value slope = 1).**
+  REPORT-ONLY (not gated), an important scope finding: feeding the trunk a
+  STANDALONE-UNIFORM oracle instead of exact leaves shifts its turn decision
+  (gap ~1), and the static two-sided hybrid NashConv across independently
+  re-solved chance leaves is 0.49 even with exact leaves - because at a
+  frontier whose generator range collapses to one hand, a value-indifferent
+  bluff frequency is not pinned by a one-sided margin. This is exactly why
+  production continual re-solving serves only the ONE reached card and why G3
+  measures the reached-leaf hybrid on the real engine (RFC 0046 partition
+  walker); the tiny test certifies the margin machinery, not oracle accuracy.
+- **S2.5 per-combo reference-certified error + G2 evaluator.** The builder now
+  solves every unique subgame TWICE (candidate `cand_iters`, higher-accuracy
+  reference `ref_iters`, optional `max_groups` frame sampling) and ships a
+  per-(seat,combo) one-sided bound
+  `cert = |CV_cand - CV_ref| + max(0, BR_ref - CV_ref)` in
+  `certified_error_chips`, plus a `<out>.cert.csv` sidecar with per-frame
+  cand/ref NashConv, drift/residual/cert in both MAX (e_max) and RMS (e_l2,
+  uniform leaf rho) BB norms. `RiverSolveResult` exposes per-combo
+  `root_br_seat0/1`.
+  Key scaling measurement (w1 check-to-river, pot 4, single subgame):
+
+  | cand / ref iters | mean NashConv (cand) | CERT e_max | CERT RMS |
+  |---:|---:|---:|---:|
+  | 150 / 1,500 | 0.0523 BB | 0.552 BB | 0.032 BB |
+  | 2,000 / 20,000 | 0.00193 BB | 0.0297 BB | 0.0061 BB |
+
+  **Update 2026-11-05 (drift/residual split + correct G2 statistic).** At
+  3k/30k the higher-accuracy reference is essentially exact (residual RMS
+  2.9e-5 BB, residual max 1.5e-4), so the bound is dominated by candidate
+  DRIFT, not reference error. Reading RFC 0044's CERT code
+  (`rfc0044-gates.ts`, CERT gates on `meanGap` + seed half-width, never a
+  worst-combo quantity) clarified that G2's 0.005 bar acts on the MEAN/RMS
+  convergence gap, not per-combo worst. Corrected picture:
+
+  | cand/ref | mean NashConv | drift RMS (CERT) | residual RMS (half-width) | e_max (drift, ->G3) |
+  |---:|---:|---:|---:|---:|
+  | 150 / 1,500 | 0.0523 | 0.032 | — | 0.552 |
+  | 2,000 / 20,000 | 0.00193 | 0.0061 | — | 0.0297 |
+  | 3,000 / 30,000 | 0.00121 | **0.00483** | **0.000029** | 0.0239 |
+
+  **Final statistic correction (2026-11-05): G2 is a SUMMED gap, per-entry
+  error is G3's input.** Re-reading the RFC 0044/0045 CSV schema, CERT g(T)
+  is `bucket_sum_gap_bb` and QUAL is the exact-hole `sum_gap_bb` - both
+  SUMMED BR/NashConv quantities, never per-combo. So for the seedless,
+  bucket-free, exact-full-deal V3 kernel: CERT = QUAL = candidate summed
+  NashConv (bar 0.005 / 0.03); the RFC 0044 independent-seed half-width is
+  exactly 0 BY SEEDLESSNESS (covered by the bitwise-identical rerun native
+  test), with a separate reference-quality check (ref NashConv no worse than
+  cand). The per-combo drift e_max / drift RMS and the shipped one-sided
+  per-entry bound are RECORDED ONLY - they are the oracle entry error G3
+  propagates through real turn-equilibrium leaf reach rho; large-pot or
+  value-indifferent combos (per-combo drift RMS up to 1.08e-2, e_max up to
+  3.1e-2 on the frame) are therefore not a G2 failure.
+- **G2 frozen frame RESULT (2026-11-05): PASS on all six strata.**
+  cand 6k / ref 20k, stride-48 (one representative card per ledger: all 5/6
+  distinct pots incl. the degenerate all-in pot-400 ledger):
+
+  | stratum | CERT/QUAL summed NC | ref NC | e_max (->G3) | drift RMS (->G3) |
+  |---|---:|---:|---:|---:|
+  | w1 | 4.60e-4 | 6.16e-5 | 1.75e-2 | 7.17e-3 |
+  | unpaired-rainbow-ahigh | 3.60e-4 | 6.00e-5 | 1.11e-2 | 3.34e-3 |
+  | paired | 5.07e-4 | 1.06e-4 | 1.61e-2 | 3.86e-3 |
+  | monotone | 3.36e-5 | 3.10e-6 | 1.93e-3 | 6.98e-4 |
+  | unpaired-twotone | 3.82e-4 | 4.86e-5 | 3.09e-2 | 1.08e-2 |
+  | raised-srp | 1.54e-4 | 1.42e-5 | 2.89e-2 | 2.47e-3 |
+
+  CERT/QUAL is ~10x inside the 0.005 bar and ~60x inside 0.03 on every
+  stratum; reference <= 1.1e-4. A texture-diverse stride-12 frame (4 river
+  cards per ledger: one board-pairing + three non-pair low/mid/over cards,
+  offsets 0/12/24/36 of the 48 live cards) confirms the river-card texture
+  dimension, not just the ledger dimension. Frozen consolidated evidence:
+  `docs/plans/ablation/rfc0047/s2/g2-frame12-6strata-6k20k.csv` (124 unique
+  subgames, 20 per limped stratum + 24 raised; per-stratum per-group rows in
+  `cert/frame12-<s>.bsncv.cert.csv`). Verdict: **G2 PASS all six**, CERT/QUAL
+  worst 8.37e-4 BB (6x inside 0.005), reference worst 1.67e-4; per-combo
+  e_max worst 7.35e-2 BB and drift RMS worst 1.08e-2 are recorded as G3 inputs
+  (the larger e_max vs stride-48 is expected: stride-12 adds non-pairing
+  overcards whose value moves more across iteration levels). The 3-4 MB
+  per-frame `.bsncv` binaries are deterministic rebuild products (byte-
+  identical rerun), not required as tracked gate input - the CSV is.
+- **Parallel deterministic builder (2026-11-05).** `rfc0047_oracle_build`
+  solves the independent unique subgames on a std::thread pool (optional args
+  `[MAX_GROUPS] [GROUP_STRIDE] [THREADS]`), then emits artifact + sidecar
+  serially in ascending group order. Verified byte-identical artifact and
+  CSV across 1 vs 4 threads (seedless solves; only ordering synchronized).
+  56 cores.
+  Remaining S2: G3 turn-scale harness (the dominant remaining build): an
+  independent rfc0047 turn-rooted solver with oracle-valued post-chance
+  leaves (1128 four-card combos mapped through the dealt card to 1081 five-card
+  dense rows, blocker-aware), real per-leaf CF reach rho, additive CV
+  perturbation arms, and the independent telescoping hybrid-BR walker.
+- **G3 implementation constraint (scoped 2026-11-05).** The
+  `rfc0047_link_guard` forbids `bigshark_rfc0047_bench` linking
+  `bigshark_rfc0046_bench`, so the RFC 0046 partition walker is reused as a
+  SPEC, not a library: S2 adds an independent rfc0047 telescoping exact-BR
+  hybrid-NashConv walker (`g(I) = own_prefix_H(I) (max_a PV_BR(a) -
+  sum_a sigma_H(a) PV_BR(a))`, blocker-aware full joint deals, per-leaf real
+  CF reach rho returned for e_l2). G3 then: solve the turn-rooted cap-1 tree
+  with oracle-valued leaves to a turn equilibrium, inject additive five-card
+  CV perturbations (zero-mean across combos; coherent same-sign adversarial;
+  levels 1e-6..gate-scale in pot fraction), re-measure exact hybrid NashConv,
+  and fit the one-sided UCB envelope delta <= f(e_max, e_l2) with production
+  inequalities UCB(hybrid) <= 0.010 and UCB(t_river) <= 0.002 BB. The
+  tiny-game micro-G3 already pins leaf slope = 1; real-scale rho and the
+  turn amplification are the open quantities.
+- **G3 harness frozen build plan (next focused unit).** New guarded files
+  `engine/benchmarks/rfc0047/turn_solver.{hpp,cpp}` +
+  `rfc0047_g3_probe.cpp` (manual binary, no CTest), spec reimplemented
+  independently of `bigshark_rfc0046_bench` per the link guard:
+  1. TurnGame: range-vectorized two-seat CFR over the turn-rooted cap-1 tree;
+     action nodes reuse the river kernel's RM+/linear update and scratch pool;
+     CHANCE nodes (48 live river cards) average child CFVs; a TerminalFrontier
+     leaf is a matrix terminal whose per-own-combo value is
+     `sum_j w(i,j) V_ref[i_five,j_five]`, where the turn combo (1128 dense on
+     the 4-card board, blocker-filtered to those NOT using the dealt card) maps
+     via `holding_for_dense`+`dense_pair_index` to the 1081 five-card dense row
+     of that leaf's river solve (read from the BSNCV01 oracle or an in-memory
+     matrix). Fold/showdown terminals handled exactly as the river kernel.
+  2. After turn equilibrium, record per-leaf per-seat CF reach rho(seat,c)
+     (opponent/chance view reach times own prefix probability), normalized per
+     leaf per seat for e_l2.
+  3. Perturb the five-card leaf matrix additively at predeclared pot-fraction
+     levels {1e-6,1e-5,...,1e-2}: a zero-mean-across-combos arm and a coherent
+     same-sign-over-a-player's-combos adversarial arm. e_max and
+     e_l2 = sqrt(sum rho (Delta v/p)^2) recorded per injection.
+  4. Independent telescoping exact-BR hybrid walk gives hybrid NashConv delta
+     (and a t_river-only accumulation) vs the unperturbed turn equilibrium.
+  5. Fit the one-sided UCB worst-case envelope coefficient over the six strata
+     (deals 4320..4324 n=5 t=2.776 as in RFC 0044/0047); acceptance
+     UCB(hybrid) <= 0.010 BB and UCB(t_river) <= 0.002 BB at the operating
+     e_max_frozen implied by the shipped per-entry bounds. Native validation:
+     zero perturbation -> hybrid NashConv equals the turn solver's own
+     NashConv within tolerance (the telescoping identity, mirroring RFC 0046
+     addendum 5.3's 1e-9-root-pot check).
+  This same TurnGame is the S3 online turn solve core, so it is built once
+  under the rfc0047 guard and reused.
 
 Acceptable results (to be detailed at S1 closure without changing RFC gates):
 

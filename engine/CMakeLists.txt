@@ -648,6 +648,8 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/board_classes.cpp
   benchmarks/rfc0047/tree_budget.cpp
   benchmarks/rfc0047/cv_oracle.cpp
+  benchmarks/rfc0047/frontier_enumerator.cpp
+  benchmarks/rfc0047/river_solver.cpp
 )
 target_include_directories(bigshark_rfc0047_bench PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -660,6 +662,18 @@ add_executable(bigshark-rfc0047-infoset-budget benchmarks/rfc0047/rfc0047_infose
 target_link_libraries(bigshark-rfc0047-infoset-budget PRIVATE bigshark_rfc0047_bench)
 add_executable(bigshark-rfc0047-census benchmarks/rfc0047/rfc0047_census.cpp)
 target_link_libraries(bigshark-rfc0047-census PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0047 S2 manual binaries (NOT CTests): post-chance frontier census,
+# deterministic full-deal river NashConv probes, and the parallel G2 oracle
+# builder (candidate + higher-accuracy reference, per-combo certified error).
+add_executable(bigshark-rfc0047-frontier-check benchmarks/rfc0047/rfc0047_frontier_check.cpp)
+target_link_libraries(bigshark-rfc0047-frontier-check PRIVATE bigshark_rfc0047_bench)
+add_executable(bigshark-rfc0047-river-probe benchmarks/rfc0047/rfc0047_river_probe.cpp)
+target_link_libraries(bigshark-rfc0047-river-probe PRIVATE bigshark_rfc0047_bench)
+add_executable(bigshark-rfc0047-river-curve benchmarks/rfc0047/rfc0047_river_curve.cpp)
+target_link_libraries(bigshark-rfc0047-river-curve PRIVATE bigshark_rfc0047_bench)
+add_executable(bigshark-rfc0047-oracle-build benchmarks/rfc0047/rfc0047_oracle_build.cpp)
+target_link_libraries(bigshark-rfc0047-oracle-build PRIVATE bigshark_rfc0047_bench)
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
 # calibration for the bounded cap-1 river (G1) and street-start turn (G2)
@@ -1191,6 +1205,21 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_oracle_codec tests/test_rfc0047_oracle_codec.cpp)
   target_link_libraries(test_rfc0047_oracle_codec PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_oracle_codec COMMAND test_rfc0047_oracle_codec)
+
+  # RFC 0047 S2: deterministic full-deal river kernel (determinism, finite/
+  # range, monotone reduction, BR domination), post-chance frontier census,
+  # and the depth-limited continual-resolving margin identity tiny game.
+  add_executable(test_rfc0047_river_solver tests/test_rfc0047_river_solver.cpp)
+  target_link_libraries(test_rfc0047_river_solver PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_river_solver COMMAND test_rfc0047_river_solver)
+
+  add_executable(test_rfc0047_frontier_enumerator tests/test_rfc0047_frontier_enumerator.cpp)
+  target_link_libraries(test_rfc0047_frontier_enumerator PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_frontier_enumerator COMMAND test_rfc0047_frontier_enumerator)
+
+  add_executable(test_rfc0047_margin_identity tests/test_rfc0047_margin_identity.cpp)
+  target_link_libraries(test_rfc0047_margin_identity PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_margin_identity COMMAND test_rfc0047_margin_identity)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
