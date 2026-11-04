@@ -25,6 +25,10 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/engine/cmake/stage6_offline_guard.cmake")
 # both sibling targets exist before the closure walk.
 include("${CMAKE_CURRENT_SOURCE_DIR}/engine/cmake/stage6_train_edge_guard.cmake")
 
+
+# RFC 0047 Stage-1: successor benchmark arm link isolation (included last).
+include("${CMAKE_CURRENT_SOURCE_DIR}/engine/cmake/rfc0047_link_guard.cmake")
+
 if(TARGET engine-format AND TARGET engine-host-format)
   add_custom_target(format DEPENDS engine-format engine-host-format)
   add_custom_target(format-check DEPENDS engine-format-check engine-host-format-check)

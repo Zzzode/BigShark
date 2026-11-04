@@ -1,0 +1,7 @@
+stratum,pot,total_nodes,turn_action_nodes,chance_nodes,frontier_leaves,river_action_nodes_total,reached_min,reached_mean_x1000,reached_max,per_card_actions_min,per_card_actions_max,per_card_uniform,turn_combos,river_combos,turn_infosets,reached_river_infosets_max,per_card_infosets_offline,conservative_online_sum,under_1m
+w1,4,10923,10,9,432,3936,0,9.111000,12,82,82,true,1128,1081,12408,14053,89723,26461,true
+unpaired-rainbow-ahigh,4,10923,10,9,432,3936,0,9.111000,12,82,82,true,1128,1081,12408,14053,89723,26461,true
+paired,4,10923,10,9,432,3936,0,9.111000,12,82,82,true,1128,1081,12408,14053,89723,26461,true
+monotone,4,10923,10,9,432,3936,0,9.111000,12,82,82,true,1128,1081,12408,14053,89723,26461,true
+unpaired-twotone,4,10923,10,9,432,3936,0,9.111000,12,82,82,true,1128,1081,12408,14053,89723,26461,true
+raised-srp,8,14385,12,11,528,5184,0,9.818000,12,108,108,true,1128,1081,14664,14053,117829,28717,true

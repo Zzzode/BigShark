@@ -639,6 +639,28 @@ if(OpenMP_CXX_FOUND)
   target_link_libraries(bigshark-subgame-nash-conv PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# RFC 0047 Stage-1 successor arm (depth-limited per-river certified resolve +
+# offline per-combo turn-CV oracle). Independent measurement library; it links
+# no production resolver/composition root. Benchmark-only; deleted under
+# no-legacy unless a production addendum promotes a named subset.
+add_library(bigshark_rfc0047_bench STATIC
+  benchmarks/rfc0047/strata.cpp
+  benchmarks/rfc0047/board_classes.cpp
+  benchmarks/rfc0047/tree_budget.cpp
+  benchmarks/rfc0047/cv_oracle.cpp
+)
+target_include_directories(bigshark_rfc0047_bench PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(bigshark_rfc0047_bench PUBLIC bigshark_solver)
+
+# RFC 0047 S1 manual binaries (NOT CTests): G1 per-river infoset budget and
+# the G4 canonical-board/frontier census.
+add_executable(bigshark-rfc0047-infoset-budget benchmarks/rfc0047/rfc0047_infoset_budget.cpp)
+target_link_libraries(bigshark-rfc0047-infoset-budget PRIVATE bigshark_rfc0047_bench)
+add_executable(bigshark-rfc0047-census benchmarks/rfc0047/rfc0047_census.cpp)
+target_link_libraries(bigshark-rfc0047-census PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
 # calibration for the bounded cap-1 river (G1) and street-start turn (G2)
 # production shapes, with identity menus and full-range uniform priors.
@@ -1155,6 +1177,20 @@ if(BUILD_TESTING)
   add_executable(test_nash_conv_units tests/test_nash_conv_units.cpp)
   target_link_libraries(test_nash_conv_units PRIVATE bigshark_solver)
   add_test(NAME nash_conv_units COMMAND test_nash_conv_units)
+
+  # RFC 0047 Stage-1: canonical board classes, per-river infoset budget,
+  # and BSNCV01 oracle codec native tests.
+  add_executable(test_rfc0047_board_classes tests/test_rfc0047_board_classes.cpp)
+  target_link_libraries(test_rfc0047_board_classes PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_board_classes COMMAND test_rfc0047_board_classes)
+
+  add_executable(test_rfc0047_tree_budget tests/test_rfc0047_tree_budget.cpp)
+  target_link_libraries(test_rfc0047_tree_budget PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_tree_budget COMMAND test_rfc0047_tree_budget)
+
+  add_executable(test_rfc0047_oracle_codec tests/test_rfc0047_oracle_codec.cpp)
+  target_link_libraries(test_rfc0047_oracle_codec PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_oracle_codec COMMAND test_rfc0047_oracle_codec)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
