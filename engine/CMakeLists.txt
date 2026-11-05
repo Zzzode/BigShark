@@ -650,6 +650,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/cv_oracle.cpp
   benchmarks/rfc0047/frontier_enumerator.cpp
   benchmarks/rfc0047/river_solver.cpp
+  benchmarks/rfc0047/turn_solver.cpp
 )
 target_include_directories(bigshark_rfc0047_bench PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -674,6 +675,12 @@ add_executable(bigshark-rfc0047-river-curve benchmarks/rfc0047/rfc0047_river_cur
 target_link_libraries(bigshark-rfc0047-river-curve PRIVATE bigshark_rfc0047_bench)
 add_executable(bigshark-rfc0047-oracle-build benchmarks/rfc0047/rfc0047_oracle_build.cpp)
 target_link_libraries(bigshark-rfc0047-oracle-build PRIVATE bigshark_rfc0047_bench)
+# RFC 0047 G3 manual probes: zero-perturbation turn-solve baseline and the
+# additive-CV perturbation slope campaign (NOT CTests).
+add_executable(bigshark-rfc0047-g3-step1 benchmarks/rfc0047/rfc0047_g3_step1.cpp)
+target_link_libraries(bigshark-rfc0047-g3-step1 PRIVATE bigshark_rfc0047_bench)
+add_executable(bigshark-rfc0047-g3-probe benchmarks/rfc0047/rfc0047_g3_probe.cpp)
+target_link_libraries(bigshark-rfc0047-g3-probe PRIVATE bigshark_rfc0047_bench)
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
 # calibration for the bounded cap-1 river (G1) and street-start turn (G2)
@@ -1220,6 +1227,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_margin_identity tests/test_rfc0047_margin_identity.cpp)
   target_link_libraries(test_rfc0047_margin_identity PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_margin_identity COMMAND test_rfc0047_margin_identity)
+
+  add_executable(test_rfc0047_turn_solver tests/test_rfc0047_turn_solver.cpp)
+  target_link_libraries(test_rfc0047_turn_solver PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_turn_solver COMMAND test_rfc0047_turn_solver)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)

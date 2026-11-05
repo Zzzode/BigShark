@@ -1,11 +1,10 @@
 #include "river_solver.hpp"
 
+#include <algorithm>
+#include <array>
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
 #include <bs/eval.hpp>
-
-#include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -25,8 +24,8 @@ using bs::tree::TreeNode;
 
 namespace {
 
-constexpr std::uint32_t kC = 1081;             // C(47,2) own combos on a river board
-constexpr std::uint32_t kCompat = 990;         // C(45,2) compatible opponent combos
+constexpr std::uint32_t kC = 1081;      // C(47,2) own combos on a river board
+constexpr std::uint32_t kCompat = 990;  // C(45,2) compatible opponent combos
 constexpr double kNorm = static_cast<double>(kC) * kCompat;
 
 // Deterministic full-deal zero-sum cap-1 river solver (V3 kernel). Every
@@ -38,8 +37,7 @@ constexpr double kNorm = static_cast<double>(kC) * kCompat;
 class RiverGame {
  public:
   explicit RiverGame(const GameDef& d) : def_(d) {
-    if (def_.player_count != 2 || def_.board_size != 5 ||
-        def_.terminal != TerminalDepth::River)
+    if (def_.player_count != 2 || def_.board_size != 5 || def_.terminal != TerminalDepth::River)
       throw std::invalid_argument("river_solver: needs a 2-seat five-card river-root def");
     std::array<int, 5> bd{};
     for (int i = 0; i < 5; ++i)
@@ -59,7 +57,7 @@ class RiverGame {
   void iterate_weighted(double weight) {
     for (std::size_t trav = 0; trav < 2; ++trav) {
       std::array<std::vector<double>, 2> pi{std::vector<double>(kC, 1.0),
-                                           std::vector<double>(kC, 1.0)};
+                                            std::vector<double>(kC, 1.0)};
       avg_weight_[trav] = weight;
       GameState state(def_);
       const std::size_t v = cfr(trav, state, tree_->root_index(), pi);
@@ -78,11 +76,11 @@ class RiverGame {
   ComboValues combo_values(std::size_t seat) {
     build_sigma();
     std::array<std::vector<double>, 2> pi{std::vector<double>(kC, 1.0),
-                                         std::vector<double>(kC, 1.0)};
+                                          std::vector<double>(kC, 1.0)};
     GameState ev_state(def_);
     const std::size_t ev = eval(seat, /*br=*/false, ev_state, tree_->root_index(), pi);
     std::array<std::vector<double>, 2> pi2{std::vector<double>(kC, 1.0),
-                                          std::vector<double>(kC, 1.0)};
+                                           std::vector<double>(kC, 1.0)};
     GameState br_state(def_);
     const std::size_t br = eval(seat, /*br=*/true, br_state, tree_->root_index(), pi2);
     ComboValues out{std::vector<double>(kC), std::vector<double>(kC)};
@@ -105,7 +103,41 @@ class RiverGame {
     return raw / kNorm;
   }
 
+  // Seat-0 payoff for EVERY joint private pair (i,j) under the average
+  // strategy, raw: M[i*kC+j] = expected u0 if holdings i,j play the average
+  // profile. For a physically incompatible pair (shared hole card) the value
+  // is the fold-path payoff only (showdown is zeroed by the signed matrix),
+  // matching the kernel's terminal-value reach convention; the TURN solver
+  // filters these pairs with its own combo mask. A row summed over all j equals
+  // the equilibrium root CFV times the 990-deal normalization.
+  std::vector<double> equilibrium_deal_matrix() {
+    build_sigma();
+    std::vector<double> m(static_cast<std::size_t>(kC) * kC, 0.0);
+    for (std::uint32_t i = 0; i < kC; ++i)
+      for (std::uint32_t j = 0; j < kC; ++j)
+        m[static_cast<std::size_t>(i) * kC + j] = scalar_deal(tree_->root_index(), i, j);
+    return m;
+  }
+
  private:
+  // Simple, allocation-per-call fixed-profile expected u0 for one deal (i,j).
+  // Payoff is history-independent; each node only needs who acts (not state).
+  double scalar_deal(std::size_t n, std::uint32_t i, std::uint32_t j) {
+    const TreeNode& node = tree_->node(n);
+    if (node.kind == NodeKind::TerminalFold)
+      return fold0_[n];
+    if (node.is_terminal())
+      return stake_[n] * static_cast<double>(a0_[static_cast<std::size_t>(i) * kC + j]);
+    if (node.is_chance())
+      throw std::runtime_error("river_solver: chance node in river-root tree");
+    const std::uint32_t hand = node.actor == 0 ? i : j;
+    const std::size_t A = menu_[n];
+    double v = 0.0;
+    for (std::size_t a = 0; a < A; ++a)
+      v += (*sigma_[n])[hand * A + a] * scalar_deal(node.children[a], i, j);
+    return v;
+  }
+
   using Reaches = std::array<std::vector<double>, 2>;
 
   void precompute(const std::array<int, 5>& bd) {
@@ -218,17 +250,15 @@ class RiverGame {
           tot += (*sum_[n])[i * menu_[n] + a];
         for (std::size_t a = 0; a < menu_[n]; ++a)
           (*s)[i * menu_[n] + a] =
-              tot > 0.0 ? (*sum_[n])[i * menu_[n] + a] / tot
-                        : 1.0 / static_cast<double>(menu_[n]);
+              tot > 0.0 ? (*sum_[n])[i * menu_[n] + a] / tot : 1.0 / static_cast<double>(menu_[n]);
       }
       sigma_[n] = s;
     }
   }
 
   double avg(std::size_t n, std::uint32_t i, std::size_t a) const {
-    return sigma_[n] == nullptr
-               ? 1.0 / static_cast<double>(menu_[n])
-               : (*sigma_[n])[i * menu_[n] + a];
+    return sigma_[n] == nullptr ? 1.0 / static_cast<double>(menu_[n])
+                                : (*sigma_[n])[i * menu_[n] + a];
   }
 
   // Terminal raw CFV per own combo (sums compatible opponent reach). Returns a
@@ -386,7 +416,7 @@ class RiverGame {
   GameDef def_;
   std::unique_ptr<AbstractTree> tree_;
   std::vector<std::array<int, 2>> holdings_;
-  std::vector<std::int8_t> a0_;          // dense signed seat-0 showdown matrix
+  std::vector<std::int8_t> a0_;  // dense signed seat-0 showdown matrix
   std::vector<double> fold0_;
   std::vector<double> stake_;
   std::vector<std::uint8_t> actor_;
@@ -416,8 +446,7 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
   for (std::uint64_t t = 1; t <= cfg.iterations; ++t) {
     game.iterate_weighted(cfg.linear_averaging ? static_cast<double>(t) : 1.0);
     while (cp < checkpoints.size() && checkpoints[cp] <= t) {
-      const double nc = game.nash_conv_chips() /
-                        (cfg.def.big_blind > 0 ? cfg.def.big_blind : 1);
+      const double nc = game.nash_conv_chips() / (cfg.def.big_blind > 0 ? cfg.def.big_blind : 1);
       out.history_nash_conv_bb.push_back(nc);
       ++cp;
     }
@@ -432,6 +461,8 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
   out.root_br_seat0 = std::move(cv0.br);
   out.root_cfv_seat1 = std::move(cv1.ev);
   out.root_br_seat1 = std::move(cv1.br);
+  if (cfg.compute_deal_matrix)
+    out.deal_value_seat0 = game.equilibrium_deal_matrix();
   return out;
 }
 

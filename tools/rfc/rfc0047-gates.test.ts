@@ -8,14 +8,20 @@ import {
   CONCRETE_RIVER_BOARDS,
   CONCRETE_TURN_BOARDS,
   EPS_CERT_BB,
+  EPS_HYBRID_B0,
   EPS_QUAL_BB,
+  EPS_RIVER_R0,
   evaluateS1,
   evaluateS2G2,
+  evaluateS2G3,
   GateInputError,
   MAX_INFOSETS,
+  operatingEMaxPotFraction,
   parseCensusCsv,
   parseCertCsv,
+  parseG3Csv,
   parseInfosetCsv,
+  T_CRIT_0_95_5,
   TURN_X48,
 } from './rfc0047-gates.js';
 
@@ -225,4 +231,93 @@ test('G2 rejects a duplicate (stratum,shape,group) row and a bad header', () => 
   const dup = [CERT_HEADER, certRow(), certRow()].join('\n');
   assert.equal(evaluateS2G2(dup).g2, false);
   assert.throws(() => parseCertCsv('a,b\n1,2\n'), GateInputError);
+});
+
+// --- G3 error-propagation slope -------------------------------------------
+
+const G3_STRATA = [
+  'w1', 'unpaired-rainbow-ahigh', 'paired', 'monotone',
+  'unpaired-twotone', 'raised-srp',
+];
+const G3_LEVELS = [1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 2e-2];
+// Linear per-arm slope delta = slope * e_max; coh is the adversarial worst.
+const G3_SLOPE: Record<string, number> = {
+  zm: 0.05, coh: 0.5, pat: 0.15, act: 0.02,
+};
+
+function g3Row(stratum: string, arm: string, level: number,
+               slope: number | null): string {
+  if (slope === null)  // identity row
+    return `${stratum},identity,0,0,0,0.001,0.0008,0`;
+  const eMax = level;
+  const delta = slope * level;
+  const turnGap = 0.001 + delta;
+  return `${stratum},${arm},${level.toExponential()},${eMax},`
+    + `${(level * 0.8).toExponential()},${turnGap.toFixed(8)},0.0008,`
+    + `${delta.toFixed(8)}`;
+}
+
+function g3Frame(): string {
+  const lines = ['stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,'
+    + 'delta_hybrid_bb'];
+  for (const s of G3_STRATA) {
+    lines.push(g3Row(s, 'identity', 0, null));
+    for (const arm of ['zm', 'coh', 'pat', 'act'])
+      for (const lvl of G3_LEVELS)
+        lines.push(g3Row(s, arm, lvl, G3_SLOPE[arm]!));
+  }
+  return lines.join('\n');
+}
+
+function g3Cert(certMaxBb: number, potChips = 400): string {
+  const lines = [CERT_HEADER];
+  for (const s of G3_STRATA)
+    lines.push(certRow({stratum: s, group: 0, pot_chips: potChips,
+                        cert_max_bb: certMaxBb}));
+  return lines.join('\n');
+}
+
+test('G3 operating point derives from shipped cert bound over root pot', () => {
+  const rows = parseCertCsv(
+    [CERT_HEADER, certRow({pot_chips: 4, cert_max_bb: 0.0308})].join('\n'));
+  assert.ok(Math.abs(operatingEMaxPotFraction(rows) - 0.0308 * 2 / 4) < 1e-12);
+});
+
+test('G3 parses a six-stratum frame and certifies the worst-arm UCB envelope', () => {
+  const cert = g3Cert(0.0004, 400);  // E = 0.0004*2/400 = 2e-6
+  const r = evaluateS2G3(g3Frame(), cert);
+  assert.equal(r.rows, (1 + 4 * G3_LEVELS.length) * G3_STRATA.length);
+  assert.ok(Math.abs(r.eMaxFrozenPotFraction - 2e-6) < 1e-15);
+  assert.equal(r.perStratum.length, 6);
+  for (const p of r.perStratum) {
+    assert.equal(p.worstArm, 'coh');
+    assert.ok(Math.abs(p.worstDeltaBb - 0.5 * 2e-6) < 1e-15);
+  }
+  // Identical strata -> zero SD -> UCB equals the mean.
+  assert.ok(Math.abs(r.deltaPropUcbBb - 1e-6) < 1e-12);
+  assert.ok(Math.abs(r.projectedHeadroomBb
+    - (EPS_HYBRID_B0 - EPS_RIVER_R0 - 1e-6)) < 1e-12);
+  assert.equal(r.g3, true);
+  assert.deepEqual(r.failures, []);
+});
+
+test('G3 fails closed when the operating point exceeds the top injected level', () => {
+  const cert = g3Cert(1.0, 4);  // E = 1*2/4 = 0.5 >> 2e-2 top level
+  const r = evaluateS2G3(g3Frame(), cert);
+  assert.equal(r.g3, false);
+  assert.ok(r.failures.some((f) => f.includes('exceeds the largest injected')));
+});
+
+test('G3 one-sided t constant is the df=5 value and missing strata fail', () => {
+  assert.ok(Math.abs(T_CRIT_0_95_5 - 2.0150) < 1e-9);
+  const one = [
+    'stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb',
+    g3Row('w1', 'identity', 0, null),
+    ...['zm', 'coh', 'pat', 'act'].flatMap((arm) =>
+      G3_LEVELS.map((lvl) => g3Row('w1', arm, lvl, G3_SLOPE[arm]!))),
+  ].join('\n');
+  const r = evaluateS2G3(one, g3Cert(0.0004, 400));
+  assert.equal(r.g3, false);
+  assert.ok(r.failures.some((f) => f.includes("missing g3 stratum")));
+  assert.throws(() => parseG3Csv('a,b\n1,2\n'), GateInputError);
 });

@@ -394,8 +394,230 @@ export function evaluateS2G2(certCsv: string): S2G2Result {
           byStratum};
 }
 
+// --- S2 G3: error-propagation slope ---------------------------------------
+//
+// The telescoping walker is an EXACT, SEEDLESS full-deal evaluator (identity
+// to machine epsilon), so a G3 draw has no sampling distribution; inventing
+// NashConv seeds would be the pseudo-replication RFC 0047 G3(d) forbids. The
+// honest variability that bounds a non-probed mounted node is ACROSS THE SIX
+// FROZEN STRATA. The probe CSV (append-mode, one run per stratum) carries an
+// `identity` row (zero-perturbation walker gap vs the solver's own NashConv)
+// and one row per (arm, level) with the frozen norms e_max/e_l2 (pot fraction)
+// and the resulting hybrid gap components in BB.
+export const EPS_HYBRID_B0 = 0.010;  // UCB propagated hybrid NashConv (BB)
+export const EPS_RIVER_R0 = 0.002;   // UCB online river term t_river (BB)
+// One-sided 95% Student t for df = n-1 = 5 (six strata).
+export const T_CRIT_0_95_5 = 2.0150;
+export const G3_ARMS = ['zm', 'coh', 'pat', 'act'] as const;
+export type G3Arm = (typeof G3_ARMS)[number];
+
+export interface G3Row {
+  stratum: string;
+  arm: string;       // G3Arm or 'identity'
+  level: number;     // injected amplitude (pot fraction); 0 for identity
+  eMax: number;
+  eL2: number;
+  turnGapBb: number;
+  riverTermBb: number;
+  deltaHybridBb: number;
+}
+
+const G3_HEADER =
+  'stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb';
+
+export function parseG3Csv(text: string): G3Row[] {
+  const rows = parseCsv(text);
+  const header = rows.shift();
+  if (header === undefined)
+    throw new GateInputError('g3 CSV is empty');
+  requireHeader(header, G3_HEADER.split(','));
+  return rows.map((cols) => {
+    const r: Record<string, string> = {};
+    header.forEach((h, i) => { r[h] = cols[i] ?? ''; });
+    if (!r.stratum)
+      throw new GateInputError('g3 row has an empty stratum');
+    return {
+      stratum: r.stratum,
+      arm: r.arm ?? '',
+      level: num(r, 'level'),
+      eMax: num(r, 'e_max'),
+      eL2: num(r, 'e_l2'),
+      turnGapBb: num(r, 'turn_gap_bb'),
+      riverTermBb: num(r, 'river_term_bb'),
+      deltaHybridBb: num(r, 'delta_hybrid_bb'),
+    };
+  });
+}
+
+// Production operating point: the largest SHIPPED one-sided per-entry bound
+// (cert_max = drift + reference residual) expressed as a fraction of that
+// leaf's root pot. G3 must envelope every mounted entry at this magnitude.
+export function operatingEMaxPotFraction(certRows: CertRow[]): number {
+  let e = 0;
+  for (const r of certRows) {
+    if (r.potChips <= 0)
+      throw new GateInputError(`cert row ${r.stratum}:${r.group} has nonpositive pot`);
+    e = Math.max(e, r.certMaxBb * 2 / r.potChips);
+  }
+  return e;
+}
+
+// Piecewise-linear interpolation of y=delta at x=eMax over one arm's rows
+// sorted by measured e_max. Fails closed if E is not bracketed above (the
+// campaign must include a level >= the operating point).
+function interpolateDeltaAt(points: Array<[number, number]>, e: number): number {
+  const p = [...points].sort((a, b) => a[0] - b[0]);
+  if (p.length < 2)
+    throw new GateInputError('need >= 2 points to interpolate the envelope');
+  const first = p[0]!;
+  const last = p[p.length - 1]!;
+  if (e < first[0])
+    return first[1];
+  for (let k = 1; k < p.length; ++k) {
+    const hi = p[k]!;
+    if (e <= hi[0]) {
+      const lo = p[k - 1]!;
+      const f = hi[0] === lo[0] ? 0 : (e - lo[0]) / (hi[0] - lo[0]);
+      return lo[1] + f * (hi[1] - lo[1]);
+    }
+  }
+  throw new GateInputError(
+    `operating e_max ${e.toExponential(3)} exceeds the largest injected level `
+    + `${last[0].toExponential(3)}; add a bracketing level`);
+}
+
+export interface G3StratumResult {
+  stratum: string;
+  perArmDelta: Record<string, number>;  // interpolated delta at eMaxFrozen
+  worstArm: string;
+  worstDeltaBb: number;
+  identityGapBb: number;
+  offlineRiverTermBb: number;  // campaign leaf-solve residual, NOT production
+}
+
+export interface S2G3Result {
+  g3: boolean;
+  failures: string[];
+  eMaxFrozenPotFraction: number;
+  rows: number;
+  perStratum: G3StratumResult[];
+  // One-sided 95% UCB across the six strata (t, df=5).
+  deltaPropMeanBb: number;
+  deltaPropUcbBb: number;
+  // Composition is finalized in S3 with the online G5 river term; this is the
+  // room left once the R0 = 0.002 river budget is reserved.
+  projectedHeadroomBb: number;
+}
+
+export function evaluateS2G3(g3Csv: string, certCsv: string): S2G3Result {
+  const rows = parseG3Csv(g3Csv);
+  const certRows = parseCertCsv(certCsv);
+  const failures: string[] = [];
+  const eMaxFrozen = operatingEMaxPotFraction(certRows);
+
+  if (rows.length === 0)
+    throw new GateInputError('g3 CSV has no data rows');
+
+  // Bucket rows by stratum.
+  const byStratum = new Map<string, G3Row[]>();
+  for (const r of rows) {
+    const a = byStratum.get(r.stratum) ?? [];
+    a.push(r);
+    byStratum.set(r.stratum, a);
+  }
+  for (const s of STRATA)
+    if (!byStratum.has(s))
+      failures.push(`missing g3 stratum '${s}'`);
+
+  const perStratum: G3StratumResult[] = [];
+  const worstDeltas: number[] = [];
+
+  for (const s of STRATA) {
+    const srows = byStratum.get(s);
+    if (!srows)
+      continue;
+    const ident = srows.filter((r) => r.arm === 'identity');
+    if (ident.length !== 1)
+      failures.push(`${s}: expected exactly one identity row, got ${ident.length}`);
+    const identityGapBb = ident[0]?.deltaHybridBb === 0
+      ? ident[0]!.turnGapBb
+      : (ident[0]?.turnGapBb ?? NaN);
+
+    const perArmDelta: Record<string, number> = {};
+    let worstArm = '';
+    let worstDelta = -Infinity;
+    for (const arm of G3_ARMS) {
+      const arows = srows.filter((r) => r.arm === arm);
+      if (arows.length < 2) {
+        failures.push(`${s}: arm ${arm} needs >= 2 levels`);
+        continue;
+      }
+      for (const r of arows)
+        if (!(r.eMax >= 0) || !Number.isFinite(r.deltaHybridBb))
+          failures.push(`${s}:${arm}: non-finite/negative norm or delta`);
+      const pts = arows.map((r) => [r.eMax, r.deltaHybridBb] as [number, number]);
+      let d: number;
+      try {
+        d = interpolateDeltaAt(pts, eMaxFrozen);
+      } catch (err) {
+        failures.push(`${s}:${arm}: ${(err as Error).message}`);
+        continue;
+      }
+      perArmDelta[arm] = d;
+      if (d > worstDelta) {
+        worstDelta = d;
+        worstArm = arm;
+      }
+    }
+    const offlineRiverTermBb = ident[0]?.riverTermBb ?? NaN;
+    perStratum.push({
+      stratum: s, perArmDelta, worstArm,
+      worstDeltaBb: worstDelta === -Infinity ? NaN : worstDelta,
+      identityGapBb, offlineRiverTermBb,
+    });
+    if (Number.isFinite(worstDelta))
+      worstDeltas.push(worstDelta);
+  }
+
+  // One-sided 95% UCB of the worst-arm propagated delta over six strata.
+  // The zero-perturbation telescoping identity (walker gap == solver NashConv
+  // to machine epsilon) is enforced by the native rfc0047_turn_solver CTest,
+  // not re-derived here.
+  let deltaPropMeanBb = NaN;
+  let deltaPropUcbBb = NaN;
+  let projectedHeadroomBb = NaN;
+  if (worstDeltas.length === STRATA.length) {
+    deltaPropMeanBb = worstDeltas.reduce((a, b) => a + b, 0) / worstDeltas.length;
+    const sd = Math.sqrt(
+      worstDeltas.reduce((a, b) => a + (b - deltaPropMeanBb) ** 2, 0)
+      / (worstDeltas.length - 1));
+    deltaPropUcbBb = deltaPropMeanBb
+      + T_CRIT_0_95_5 * sd / Math.sqrt(worstDeltas.length);
+    projectedHeadroomBb = EPS_HYBRID_B0 - EPS_RIVER_R0 - deltaPropUcbBb;
+    if (!(deltaPropUcbBb <= EPS_HYBRID_B0 - EPS_RIVER_R0))
+      failures.push(
+        `propagated-delta UCB ${deltaPropUcbBb.toExponential(3)} > B0-R0 `
+        + `${(EPS_HYBRID_B0 - EPS_RIVER_R0).toExponential(3)} BB at `
+        + `e_max_frozen ${eMaxFrozen.toExponential(3)}`);
+  } else {
+    failures.push('cannot compute UCB: need worst-arm delta for all six strata');
+  }
+
+  return {
+    g3: failures.length === 0,
+    failures,
+    eMaxFrozenPotFraction: eMaxFrozen,
+    rows: rows.length,
+    perStratum,
+    deltaPropMeanBb,
+    deltaPropUcbBb,
+    projectedHeadroomBb,
+  };
+}
+
 // Manual entrypoint:
 //   node dist/tools/rfc/rfc0047-gates.js <infoset.csv> <census.csv> [cert.csv]
+//   [g3.csv]
 const isMain = (() => {
   try {
     return process.argv[1] !== undefined &&
@@ -410,9 +632,11 @@ if (isMain) {
   const infosetPath = process.argv[2];
   const censusPath = process.argv[3];
   const certPath = process.argv[4];
+  const g3Path = process.argv[5];
   if (!infosetPath || !censusPath) {
     console.error(
-      'usage: rfc0047-gates <s1-infoset-budget.csv> <s1-census.csv> [s2-cert.csv]');
+      'usage: rfc0047-gates <s1-infoset-budget.csv> <s1-census.csv> '
+      + '[s2-cert.csv] [s2-g3.csv]');
     process.exit(2);
   }
   try {
@@ -444,6 +668,31 @@ if (isMain) {
       process.exit(1);
     }
     console.log('RFC 0047 S2 G2 oracle-accuracy gate PASS.');
+
+    if (!g3Path) {
+      console.log('G3 not evaluated (no g3 slope CSV supplied).');
+      process.exit(0);
+    }
+    const g3 = evaluateS2G3(readFileSync(g3Path, 'utf8'),
+                            readFileSync(certPath, 'utf8'));
+    console.log(
+      `G3 over ${g3.rows} rows: operating e_max_frozen `
+      + `${g3.eMaxFrozenPotFraction.toExponential(3)} pot-fraction; worst-arm `
+      + `propagated hybrid delta mean ${g3.deltaPropMeanBb.toExponential(3)} `
+      + `UCB ${g3.deltaPropUcbBb.toExponential(3)} BB (bar B0-R0 `
+      + `${(EPS_HYBRID_B0 - EPS_RIVER_R0).toExponential(3)}; the online R0 `
+      + `term is finalized in S3/G5).`);
+    for (const r of g3.perStratum)
+      console.log(
+        `  ${r.stratum}: worst arm ${r.worstArm} delta `
+        + `${r.worstDeltaBb.toExponential(3)} BB`);
+    if (!g3.g3) {
+      console.error('RFC 0047 S2 G3 error-propagation gate FAILED:');
+      for (const f of g3.failures)
+        console.error(`  - ${f}`);
+      process.exit(1);
+    }
+    console.log('RFC 0047 S2 G3 error-propagation gate PASS (slope envelope).');
   } catch (err) {
     console.error(`RFC 0047 gate input error: ${(err as Error).message}`);
     process.exit(2);
