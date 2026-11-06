@@ -530,6 +530,29 @@ feasibility established on single leaves; S2.2 builder/oracle next).**
   the evaluator then gates the frozen-frame MAX stratum box-corner delta at
   e_l2=L* against 0.008 (no mean-CI-as-envelope). Verdict stays provisional
   until that passes and R0 is measured in S3/G5.
+- **G3 spike box result on the r600 PROXY: borderline FAIL; production L*
+  measured next (2026-11-06).** Six-stratum production-convergence spike
+  campaign (r600/t3200/r2400, 7 injections/stratum, `g3-spike-frame6.csv`)
+  traces delta vs reach-weighted e_l2 at amplitude E=0.0184. The reach-weighted
+  norm of the LOOSE r600/r2400 drift (`g3-realnorms.csv`) is much larger than
+  the earlier unweighted RMS guess: L*(r600) = w1 .00785, paired .00606,
+  monotone .00441, ahigh .00581, twotone .00512, raised .00393 (emax_real
+  r600 up to .206 pot vs the shipped 6k cert_max .0184 - the r600 leaves are a
+  deliberately sloppy proxy). evaluateS2G3Spike box-corner deltas at this
+  proxy L*: ahigh .00237, twotone .00230, paired .00362, monotone .00563,
+  w1 .00746 (chord; concave so possibly higher), **raised-srp .00872 > 0.008**
+  -> frozen-frame MAX 8.72e-3, FAILS by 9% on the proxy. The spike DELTA
+  frontier is a fixed-leaf-game quantity and leaf-accuracy independent (proven
+  earlier), but the L* coordinate is not: the correct production object is the
+  reach-weighted e_l2 of the 6k/20k (not r600/r2400) drift, joined with the
+  production-leaf turn-equilibrium rho. A norms-only campaign at r6000/ref20000
+  (task bjx0h0to4, per-stratum files g3-norms6k-*.csv) is measuring it; with
+  r600 errors ~an order of magnitude larger than shipped, L*(6k) is expected
+  to fall well into the measured low-q region (q=.02 e_l2 .0024-.0028,
+  raised delta .0044) but this is MEASURED, not assumed. The G3 box verdict is
+  held until L*(6k) returns; if the production corner still exceeds 0.008 the
+  response is tighter G2 per-entry bounds (more river iterations) or an S3
+  mount-time shape/e_l2 contract, never a relaxed gate.
 - **G3 step-2 design (frozen; next implementation).** Perturb the per-leaf
 - **G3 step-2 implemented (2026-11-05, uncommitted).**
   1. `TurnSolveResult.leaf_reaches`: per-config-leaf, per-seat, per-five-card

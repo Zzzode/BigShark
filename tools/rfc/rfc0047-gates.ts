@@ -766,11 +766,12 @@ export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
     const lStar = lByStratum.get(s);
     if (!srows || lStar === undefined)
       continue;
-    // Spike points at the operating amplitude E (e_max == E on selected
-    // combos), varying concentration q -> varying measured e_l2.
+    // Spike points at the operating amplitude E: select by measured e_max
+    // (the level column rounds to one exponent so 0.0184 prints as 2e-2),
+    // varying concentration q -> varying measured e_l2.
     const pts = srows
       .filter((r) => r.arm.startsWith('spike')
-              && Math.abs(r.level - SPIKE_E_POT_FRACTION) < 1e-12)
+              && Math.abs(r.eMax - SPIKE_E_POT_FRACTION) < 1e-9)
       .map((r) => [r.eL2, r.deltaHybridBb] as [number, number])
       .sort((a, b) => a[0] - b[0]);
     if (pts.length < 2) {
