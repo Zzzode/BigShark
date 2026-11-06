@@ -472,6 +472,25 @@ feasibility established on single leaves; S2.2 builder/oracle next).**
   raised-srp). Final evaluator concatenates w1 + the five campaign CSVs and
   certifies the joint (e_max,e_l2) envelope via evaluateS2G3; tracker verdict
   and evidence are the next G3 commit after UCB.
+- **G3 VERDICT: PASS (2026-11-06), joint two-norm certificate.** All six
+  strata completed (150 injections; `g3/g3-frame6.csv`). Operating point from
+  the shipped G2 bounds: E = 1.8370e-2 (max cert_max/pot), L = 2.6974e-3
+  (max cert_rms/pot). The evaluator (`evaluateS2G3`, 22 node tests) certifies
+  the propagated TURN delta along the REAL signed-drift ray (the `act` arm),
+  interpolated at E per stratum, with one-sided 95% t=2.015 UCB across six:
+  **mean 1.3211e-3 / UCB 2.0694e-3 BB <= B0-R0 = 0.008 (headroom 5.93e-3,
+  ~3.9x).** Per-stratum joint delta: w1 .93e-3, ahigh .86e-3, paired .68e-3,
+  monotone 3.01e-3 (worst), twotone .73e-3, raised-srp 1.71e-3. The act ray
+  e_l2 at E (4.98e-3..7.78e-3) is >= L on every stratum, so the certified
+  point is no less correlated than any mounted node (conservative). The
+  single-norm coherent stress arm UCB is 1.5135e-2 and is RECORDED as
+  over-budget, not gated: a whole-range same-sign bias at the max per-entry
+  bound is not a realizable deterministic-exact-solver residual (residuals
+  are diffuse mixed-sign, captured by e_l2) - this is exactly why RFC 0047
+  G3(a) defines both norms. Full numbers and conservatism notes in
+  `g3/G3-VERDICT.md`. The online R0 = 0.002 river term remains an explicit
+  S3/G5 item (campaign used loose r600 leaves; its t_river is a diagnostic,
+  not the production R0); G3 bounds only the propagated turn delta above it.
 - **G3 step-2 design (frozen; next implementation).** Perturb the per-leaf
 - **G3 step-2 implemented (2026-11-05, uncommitted).**
   1. `TurnSolveResult.leaf_reaches`: per-config-leaf, per-seat, per-five-card

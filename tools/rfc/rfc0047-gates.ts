@@ -462,50 +462,101 @@ export function operatingEMaxPotFraction(certRows: CertRow[]): number {
   return e;
 }
 
-// Piecewise-linear interpolation of y=delta at x=eMax over one arm's rows
-// sorted by measured e_max. Fails closed if E is not bracketed above (the
-// campaign must include a level >= the operating point).
-function interpolateDeltaAt(points: Array<[number, number]>, e: number): number {
-  const p = [...points].sort((a, b) => a[0] - b[0]);
+// Second operating coordinate: the largest shipped RMS per-entry bound
+// (cert_rms) over root pot. RFC 0047 G3(a) defines BOTH e_max and e_l2; the
+// deterministic exact solver's residual is diffuse mixed-sign, so the RMS is
+// far below the max and is what makes a mounted node realizable.
+export function operatingEL2PotFraction(certRows: CertRow[]): number {
+  let l = 0;
+  for (const r of certRows) {
+    if (r.potChips <= 0)
+      throw new GateInputError(`cert row ${r.stratum}:${r.group} has nonpositive pot`);
+    l = Math.max(l, r.certRmsBb * 2 / r.potChips);
+  }
+  return l;
+}
+
+// Interpolate one arm's (e_l2, delta) at a target e_max along its amplitude
+// ray. Fails closed if E is not bracketed above (the campaign must include a
+// level whose measured e_max is >= the operating point).
+interface ArmPoint {
+  eL2: number;
+  deltaBb: number;
+}
+
+function interpolateArmAt(arows: G3Row[], eMax: number): ArmPoint {
+  const p = arows.map((r) => [r.eMax, r.eL2, r.deltaHybridBb] as const)
+    .sort((a, b) => a[0] - b[0]);
   if (p.length < 2)
     throw new GateInputError('need >= 2 points to interpolate the envelope');
   const first = p[0]!;
   const last = p[p.length - 1]!;
-  if (e < first[0])
-    return first[1];
+  const at = (row: readonly [number, number, number]): ArmPoint =>
+    ({eL2: row[1], deltaBb: row[2]});
+  if (eMax < first[0])
+    return at(first);
   for (let k = 1; k < p.length; ++k) {
     const hi = p[k]!;
-    if (e <= hi[0]) {
+    if (eMax <= hi[0]) {
       const lo = p[k - 1]!;
-      const f = hi[0] === lo[0] ? 0 : (e - lo[0]) / (hi[0] - lo[0]);
-      return lo[1] + f * (hi[1] - lo[1]);
+      const f = hi[0] === lo[0] ? 0 : (eMax - lo[0]) / (hi[0] - lo[0]);
+      return {
+        eL2: lo[1] + f * (hi[1] - lo[1]),
+        deltaBb: lo[2] + f * (hi[2] - lo[2]),
+      };
     }
   }
   throw new GateInputError(
-    `operating e_max ${e.toExponential(3)} exceeds the largest injected level `
-    + `${last[0].toExponential(3)}; add a bracketing level`);
+    `operating e_max ${eMax.toExponential(3)} exceeds the largest injected `
+    + `level ${last[0].toExponential(3)}; add a bracketing level`);
 }
+
+function oneSidedUcb(values: number[]): {mean: number; sd: number; ucb: number} {
+  const n = values.length;
+  const mean = values.reduce((a, b) => a + b, 0) / n;
+  const sd = Math.sqrt(
+    values.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1));
+  return {mean, sd, ucb: mean + T_CRIT_0_95_5 * sd / Math.sqrt(n)};
+}
+
+// The arm that carries the REAL signed per-combo G2 drift shape; the joint
+// (e_max,e_l2) certificate is read along this ray. The synthetic arms (zm,
+// coh, pat) are single-norm / correlation stress patterns reported alongside.
+export const G3_REAL_ARM = 'act';
 
 export interface G3StratumResult {
   stratum: string;
-  perArmDelta: Record<string, number>;  // interpolated delta at eMaxFrozen
-  worstArm: string;
-  worstDeltaBb: number;
   identityGapBb: number;
-  offlineRiverTermBb: number;  // campaign leaf-solve residual, NOT production
+  offlineRiverTermBb: number;  // loose campaign leaf residual, NOT production
+  perArmDelta: Record<string, number>;  // interpolated delta at eMaxFrozen
+  // Joint certificate along the real-drift ray at E: its e_l2 and propagated
+  // delta, plus the conservative single-norm coherent-arm delta.
+  jointEL2AtE: number;
+  jointDeltaBb: number;
+  coherentDeltaBb: number;
 }
 
 export interface S2G3Result {
   g3: boolean;
   failures: string[];
   eMaxFrozenPotFraction: number;
+  eL2FrozenPotFraction: number;
   rows: number;
   perStratum: G3StratumResult[];
-  // One-sided 95% UCB across the six strata (t, df=5).
-  deltaPropMeanBb: number;
-  deltaPropUcbBb: number;
-  // Composition is finalized in S3 with the online G5 river term; this is the
-  // room left once the R0 = 0.002 river budget is reserved.
+  // One-sided 95% UCB across the six strata (t, df=5) of the propagated TURN
+  // delta along the real signed-drift ray - the gated joint certificate.
+  jointDeltaMeanBb: number;
+  jointDeltaUcbBb: number;
+  // True when the real ray's e_l2 at E is >= the shipped L on every stratum,
+  // i.e. the certified point is no less correlated than any mounted node.
+  rayDominatesProduction: boolean;
+  // Recorded (NOT gated) single-norm e_max-only coherent worst case: shows why
+  // a max-only bound is insufficient and why the RFC's e_l2 is load-bearing.
+  coherentMeanBb: number;
+  coherentUcbBb: number;
+  // Room left once the R0 = 0.002 online river budget is reserved; the R0
+  // term itself is certified separately in S3/G5 (this campaign uses loose
+  // river solves, so its t_river is a diagnostic, not the production R0).
   projectedHeadroomBb: number;
 }
 
@@ -514,6 +565,7 @@ export function evaluateS2G3(g3Csv: string, certCsv: string): S2G3Result {
   const certRows = parseCertCsv(certCsv);
   const failures: string[] = [];
   const eMaxFrozen = operatingEMaxPotFraction(certRows);
+  const eL2Frozen = operatingEL2PotFraction(certRows);
 
   if (rows.length === 0)
     throw new GateInputError('g3 CSV has no data rows');
@@ -530,7 +582,9 @@ export function evaluateS2G3(g3Csv: string, certCsv: string): S2G3Result {
       failures.push(`missing g3 stratum '${s}'`);
 
   const perStratum: G3StratumResult[] = [];
-  const worstDeltas: number[] = [];
+  const jointDeltas: number[] = [];
+  const coherentDeltas: number[] = [];
+  let rayDominates = true;
 
   for (const s of STRATA) {
     const srows = byStratum.get(s);
@@ -539,13 +593,13 @@ export function evaluateS2G3(g3Csv: string, certCsv: string): S2G3Result {
     const ident = srows.filter((r) => r.arm === 'identity');
     if (ident.length !== 1)
       failures.push(`${s}: expected exactly one identity row, got ${ident.length}`);
-    const identityGapBb = ident[0]?.deltaHybridBb === 0
-      ? ident[0]!.turnGapBb
-      : (ident[0]?.turnGapBb ?? NaN);
+    const identityGapBb = ident[0]?.turnGapBb ?? NaN;
+    const offlineRiverTermBb = ident[0]?.riverTermBb ?? NaN;
 
     const perArmDelta: Record<string, number> = {};
-    let worstArm = '';
-    let worstDelta = -Infinity;
+    let jointEL2 = NaN;
+    let jointDelta = NaN;
+    let coherentDelta = NaN;
     for (const arm of G3_ARMS) {
       const arows = srows.filter((r) => r.arm === arm);
       if (arows.length < 2) {
@@ -553,65 +607,82 @@ export function evaluateS2G3(g3Csv: string, certCsv: string): S2G3Result {
         continue;
       }
       for (const r of arows)
-        if (!(r.eMax >= 0) || !Number.isFinite(r.deltaHybridBb))
+        if (!(r.eMax >= 0) || !Number.isFinite(r.deltaHybridBb)
+            || !Number.isFinite(r.eL2))
           failures.push(`${s}:${arm}: non-finite/negative norm or delta`);
-      const pts = arows.map((r) => [r.eMax, r.deltaHybridBb] as [number, number]);
-      let d: number;
+      let pt: ArmPoint;
       try {
-        d = interpolateDeltaAt(pts, eMaxFrozen);
+        pt = interpolateArmAt(arows, eMaxFrozen);
       } catch (err) {
         failures.push(`${s}:${arm}: ${(err as Error).message}`);
         continue;
       }
-      perArmDelta[arm] = d;
-      if (d > worstDelta) {
-        worstDelta = d;
-        worstArm = arm;
+      perArmDelta[arm] = pt.deltaBb;
+      if (arm === G3_REAL_ARM) {
+        jointEL2 = pt.eL2;
+        jointDelta = pt.deltaBb;
       }
+      if (arm === 'coh')
+        coherentDelta = pt.deltaBb;
     }
-    const offlineRiverTermBb = ident[0]?.riverTermBb ?? NaN;
+    // The real-drift ray must be no LESS correlated (e_l2) at E than a shipped
+    // mounted node (L), otherwise interpolating along it would not dominate
+    // the production point.
+    if (!(jointEL2 >= eL2Frozen)) {
+      rayDominates = false;
+      failures.push(
+        `${s}: real-arm e_l2 at E ${jointEL2.toExponential(3)} < shipped L `
+        + `${eL2Frozen.toExponential(3)}; the ray does not dominate production`);
+    }
     perStratum.push({
-      stratum: s, perArmDelta, worstArm,
-      worstDeltaBb: worstDelta === -Infinity ? NaN : worstDelta,
-      identityGapBb, offlineRiverTermBb,
+      stratum: s, identityGapBb, offlineRiverTermBb, perArmDelta,
+      jointEL2AtE: jointEL2, jointDeltaBb: jointDelta,
+      coherentDeltaBb: coherentDelta,
     });
-    if (Number.isFinite(worstDelta))
-      worstDeltas.push(worstDelta);
+    if (Number.isFinite(jointDelta))
+      jointDeltas.push(jointDelta);
+    if (Number.isFinite(coherentDelta))
+      coherentDeltas.push(coherentDelta);
   }
 
-  // One-sided 95% UCB of the worst-arm propagated delta over six strata.
-  // The zero-perturbation telescoping identity (walker gap == solver NashConv
-  // to machine epsilon) is enforced by the native rfc0047_turn_solver CTest,
-  // not re-derived here.
-  let deltaPropMeanBb = NaN;
-  let deltaPropUcbBb = NaN;
-  let projectedHeadroomBb = NaN;
-  if (worstDeltas.length === STRATA.length) {
-    deltaPropMeanBb = worstDeltas.reduce((a, b) => a + b, 0) / worstDeltas.length;
-    const sd = Math.sqrt(
-      worstDeltas.reduce((a, b) => a + (b - deltaPropMeanBb) ** 2, 0)
-      / (worstDeltas.length - 1));
-    deltaPropUcbBb = deltaPropMeanBb
-      + T_CRIT_0_95_5 * sd / Math.sqrt(worstDeltas.length);
-    projectedHeadroomBb = EPS_HYBRID_B0 - EPS_RIVER_R0 - deltaPropUcbBb;
-    if (!(deltaPropUcbBb <= EPS_HYBRID_B0 - EPS_RIVER_R0))
+  // One-sided 95% UCB of the propagated TURN delta. The zero-perturbation
+  // telescoping identity (walker gap == solver NashConv to machine epsilon)
+  // is enforced by the native rfc0047_turn_solver CTest, not re-derived here.
+  let jointMean = NaN, jointUcb = NaN, cohMean = NaN, cohUcb = NaN;
+  let headroom = NaN;
+  if (jointDeltas.length === STRATA.length) {
+    const j = oneSidedUcb(jointDeltas);
+    jointMean = j.mean;
+    jointUcb = j.ucb;
+    headroom = EPS_HYBRID_B0 - EPS_RIVER_R0 - jointUcb;
+    if (!(jointUcb <= EPS_HYBRID_B0 - EPS_RIVER_R0))
       failures.push(
-        `propagated-delta UCB ${deltaPropUcbBb.toExponential(3)} > B0-R0 `
-        + `${(EPS_HYBRID_B0 - EPS_RIVER_R0).toExponential(3)} BB at `
+        `joint (e_max,e_l2) propagated-delta UCB ${jointUcb.toExponential(3)} `
+        + `> B0-R0 ${(EPS_HYBRID_B0 - EPS_RIVER_R0).toExponential(3)} BB at `
         + `e_max_frozen ${eMaxFrozen.toExponential(3)}`);
   } else {
-    failures.push('cannot compute UCB: need worst-arm delta for all six strata');
+    failures.push('cannot compute joint UCB: need real-arm delta for all six strata');
+  }
+  if (coherentDeltas.length === STRATA.length) {
+    const c = oneSidedUcb(coherentDeltas);
+    cohMean = c.mean;
+    cohUcb = c.ucb;
+    // Reported, never gated: documents the single-norm conservative bound.
   }
 
   return {
     g3: failures.length === 0,
     failures,
     eMaxFrozenPotFraction: eMaxFrozen,
+    eL2FrozenPotFraction: eL2Frozen,
     rows: rows.length,
     perStratum,
-    deltaPropMeanBb,
-    deltaPropUcbBb,
-    projectedHeadroomBb,
+    jointDeltaMeanBb: jointMean,
+    jointDeltaUcbBb: jointUcb,
+    rayDominatesProduction: rayDominates,
+    coherentMeanBb: cohMean,
+    coherentUcbBb: cohUcb,
+    projectedHeadroomBb: headroom,
   };
 }
 
@@ -676,23 +747,30 @@ if (isMain) {
     const g3 = evaluateS2G3(readFileSync(g3Path, 'utf8'),
                             readFileSync(certPath, 'utf8'));
     console.log(
-      `G3 over ${g3.rows} rows: operating e_max_frozen `
-      + `${g3.eMaxFrozenPotFraction.toExponential(3)} pot-fraction; worst-arm `
-      + `propagated hybrid delta mean ${g3.deltaPropMeanBb.toExponential(3)} `
-      + `UCB ${g3.deltaPropUcbBb.toExponential(3)} BB (bar B0-R0 `
-      + `${(EPS_HYBRID_B0 - EPS_RIVER_R0).toExponential(3)}; the online R0 `
-      + `term is finalized in S3/G5).`);
+      `G3 over ${g3.rows} rows: operating (e_max,e_l2) = (`
+      + `${g3.eMaxFrozenPotFraction.toExponential(3)}, `
+      + `${g3.eL2FrozenPotFraction.toExponential(3)}) pot-fraction; JOINT `
+      + `real-signed-drift propagated turn delta mean `
+      + `${g3.jointDeltaMeanBb.toExponential(3)} UCB `
+      + `${g3.jointDeltaUcbBb.toExponential(3)} BB (bar B0-R0 `
+      + `${(EPS_HYBRID_B0 - EPS_RIVER_R0).toExponential(3)}; ray dominates `
+      + `production e_l2: ${g3.rayDominatesProduction}).`);
+    console.log(
+      `  single-norm e_max-only coherent bound UCB `
+      + `${g3.coherentUcbBb.toExponential(3)} BB (RECORDED, not gated; `
+      + `unreachable by a diffuse mixed-sign deterministic residual).`);
     for (const r of g3.perStratum)
       console.log(
-        `  ${r.stratum}: worst arm ${r.worstArm} delta `
-        + `${r.worstDeltaBb.toExponential(3)} BB`);
+        `  ${r.stratum}: joint delta ${r.jointDeltaBb.toExponential(3)} `
+        + `(e_l2@E ${r.jointEL2AtE.toExponential(3)}), coherent `
+        + `${r.coherentDeltaBb.toExponential(3)} BB`);
     if (!g3.g3) {
       console.error('RFC 0047 S2 G3 error-propagation gate FAILED:');
       for (const f of g3.failures)
         console.error(`  - ${f}`);
       process.exit(1);
     }
-    console.log('RFC 0047 S2 G3 error-propagation gate PASS (slope envelope).');
+    console.log('RFC 0047 S2 G3 error-propagation gate PASS (joint two-norm envelope).');
   } catch (err) {
     console.error(`RFC 0047 gate input error: ${(err as Error).message}`);
     process.exit(2);

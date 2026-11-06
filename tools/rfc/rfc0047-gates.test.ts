@@ -17,6 +17,7 @@ import {
   GateInputError,
   MAX_INFOSETS,
   operatingEMaxPotFraction,
+  operatingEL2PotFraction,
   parseCensusCsv,
   parseCertCsv,
   parseG3Csv,
@@ -269,43 +270,77 @@ function g3Frame(): string {
   return lines.join('\n');
 }
 
-function g3Cert(certMaxBb: number, potChips = 400): string {
+function g3Cert(certMaxBb: number, certRmsBb: number, potChips = 400): string {
   const lines = [CERT_HEADER];
   for (const s of G3_STRATA)
     lines.push(certRow({stratum: s, group: 0, pot_chips: potChips,
-                        cert_max_bb: certMaxBb}));
+                        cert_max_bb: certMaxBb, cert_rms_bb: certRmsBb}));
   return lines.join('\n');
 }
 
-test('G3 operating point derives from shipped cert bound over root pot', () => {
+test('G3 operating points derive from shipped cert bounds over root pot', () => {
   const rows = parseCertCsv(
-    [CERT_HEADER, certRow({pot_chips: 4, cert_max_bb: 0.0308})].join('\n'));
+    [CERT_HEADER, certRow({pot_chips: 4, cert_max_bb: 0.0308,
+                           cert_rms_bb: 0.0074})].join('\n'));
   assert.ok(Math.abs(operatingEMaxPotFraction(rows) - 0.0308 * 2 / 4) < 1e-12);
+  assert.ok(Math.abs(operatingEL2PotFraction(rows) - 0.0074 * 2 / 4) < 1e-12);
 });
 
-test('G3 parses a six-stratum frame and certifies the worst-arm UCB envelope', () => {
-  const cert = g3Cert(0.0004, 400);  // E = 0.0004*2/400 = 2e-6
+test('G3 joint (e_max,e_l2) envelope passes on the real-drift ray', () => {
+  // E = 0.0004*2/400 = 2e-6; L = 0.0002*2/400 = 1e-6 (act e_l2@E = 0.8*2e-6
+  // = 1.6e-6 >= L, so the ray dominates the production point).
+  const cert = g3Cert(0.0004, 0.0002, 400);
   const r = evaluateS2G3(g3Frame(), cert);
   assert.equal(r.rows, (1 + 4 * G3_LEVELS.length) * G3_STRATA.length);
   assert.ok(Math.abs(r.eMaxFrozenPotFraction - 2e-6) < 1e-15);
+  assert.ok(Math.abs(r.eL2FrozenPotFraction - 1e-6) < 1e-15);
   assert.equal(r.perStratum.length, 6);
+  assert.equal(r.rayDominatesProduction, true);
   for (const p of r.perStratum) {
-    assert.equal(p.worstArm, 'coh');
-    assert.ok(Math.abs(p.worstDeltaBb - 0.5 * 2e-6) < 1e-15);
+    assert.ok(Math.abs(p.jointDeltaBb - 0.02 * 2e-6) < 1e-15);
+    assert.ok(Math.abs(p.coherentDeltaBb - 0.5 * 2e-6) < 1e-15);
   }
   // Identical strata -> zero SD -> UCB equals the mean.
-  assert.ok(Math.abs(r.deltaPropUcbBb - 1e-6) < 1e-12);
+  assert.ok(Math.abs(r.jointDeltaUcbBb - 0.04e-6) < 1e-15);
+  assert.ok(Math.abs(r.coherentUcbBb - 1e-6) < 1e-15);
   assert.ok(Math.abs(r.projectedHeadroomBb
-    - (EPS_HYBRID_B0 - EPS_RIVER_R0 - 1e-6)) < 1e-12);
+    - (EPS_HYBRID_B0 - EPS_RIVER_R0 - 0.04e-6)) < 1e-12);
   assert.equal(r.g3, true);
   assert.deepEqual(r.failures, []);
 });
 
-test('G3 fails closed when the operating point exceeds the top injected level', () => {
-  const cert = g3Cert(1.0, 4);  // E = 1*2/4 = 0.5 >> 2e-2 top level
+test('G3 joint gate passes while the single-norm coherent bound is over budget',
+     () => {
+  // E = 0.0184: real act ray delta .02*.0184 = 3.68e-4 (pass), coherent
+  // .5*.0184 = .0092 (recorded, over B0-R0, but NOT the gated coordinate).
+  // L = 1.0*2/400 = 0.005 <= act e_l2@E = 0.8*.0184 = .01472.
+  const cert = g3Cert(3.68, 1.0, 400);
+  const r = evaluateS2G3(g3Frame(), cert);
+  assert.ok(Math.abs(r.eMaxFrozenPotFraction - 0.0184) < 1e-12);
+  assert.ok(r.coherentUcbBb > EPS_HYBRID_B0 - EPS_RIVER_R0);
+  assert.ok(r.jointDeltaUcbBb < EPS_HYBRID_B0 - EPS_RIVER_R0);
+  assert.equal(r.g3, true);
+});
+
+test('G3 fails closed when the operating e_max exceeds the top injected level',
+     () => {
+  // E = 1*2/4 = 0.5 >> 2e-2 top level; also L = 0.0002*2/4 = 1e-4.
+  const cert = g3Cert(1.0, 0.0002, 4);
   const r = evaluateS2G3(g3Frame(), cert);
   assert.equal(r.g3, false);
   assert.ok(r.failures.some((f) => f.includes('exceeds the largest injected')));
+});
+
+test('G3 fails when the real-drift ray is less correlated than production',
+     () => {
+  // E tiny (2e-6) but L huge (1.0*2/400 = 0.005 > act e_l2@E 1.6e-6): the
+  // real ray no longer dominates a shipped node, so a joint certificate is
+  // refused rather than silently claimed.
+  const cert = g3Cert(0.0004, 1.0, 400);
+  const r = evaluateS2G3(g3Frame(), cert);
+  assert.equal(r.g3, false);
+  assert.equal(r.rayDominatesProduction, false);
+  assert.ok(r.failures.some((f) => f.includes('does not dominate')));
 });
 
 test('G3 one-sided t constant is the df=5 value and missing strata fail', () => {
@@ -316,7 +351,7 @@ test('G3 one-sided t constant is the df=5 value and missing strata fail', () => 
     ...['zm', 'coh', 'pat', 'act'].flatMap((arm) =>
       G3_LEVELS.map((lvl) => g3Row('w1', arm, lvl, G3_SLOPE[arm]!))),
   ].join('\n');
-  const r = evaluateS2G3(one, g3Cert(0.0004, 400));
+  const r = evaluateS2G3(one, g3Cert(0.0004, 0.0002, 400));
   assert.equal(r.g3, false);
   assert.ok(r.failures.some((f) => f.includes("missing g3 stratum")));
   assert.throws(() => parseG3Csv('a,b\n1,2\n'), GateInputError);
