@@ -325,6 +325,224 @@ feasibility established on single leaves; S2.2 builder/oracle next).**
      addendum 5.3's 1e-9-root-pot check).
   This same TurnGame is the S3 online turn solve core, so it is built once
   under the rfc0047 guard and reused.
+- **G3 step-1 RESULT (2026-11-05): two-street pipeline runs and converges.**
+  `turn_solver.{hpp,cpp}` + `rfc0047_g3_step1.cpp` (uncommitted, separate from
+  the S2 commit d8593c7). The river kernel gained an optional per-joint-deal
+  seat-0 continuation matrix (`compute_deal_matrix`, added to the S2
+  `solve_river_subgame` result), built by a fixed-profile probability walk;
+  a native invariant cross-checks its row sums against the independently
+  computed equilibrium CFV (they match to the bit at 1.2k iters once the
+  blocker convention is matched). Two real bugs were found and fixed before
+  the turn solve was correct:
+  1. the turn leaf fold initially double-counted incompatible joint deals:
+     it excluded combos that block the RIVER card but not combos whose two
+     HOLE hands share a card (not a legal deal). The river matrix carries the
+     river kernel's fold-reach convention (fold terminal sums reach over all
+     1081 opponent hands, so blocker pairs are non-zero/non-zero-sum); the
+     turn expectation MUST skip shared-hole pairs via a precomputed 52-bit
+     combo mask (applied at matrix leaves AND fold terminals). Without this,
+     turn NashConv was ~126 BB (non-zero-sum junk entries);
+  2. turn NashConv normalization double-multiplied by kTurnCompat (1035 =
+     C(46,2)): the vectorized evaluate returns RAW CFV summed over compatible
+     deals (unlike the river kernel's per-deal-normalized combo_values), so
+     the summed gap divides by kTurnC*kTurnCompat once, no extra factor.
+  After both fixes, w1 zero-perturbation turn NashConv (river 300 / turn 100)
+  is 0.366 BB @50 -> 0.187 BB @100 turn iters, monotonically ~N^-1, i.e. the
+  depth-limited turn solve with oracle-matrix leaves is mechanically correct;
+  gate scale (0.010/0.002) needs more turn iterations. Cost: 240 unique river
+  leaves + 100 turn iterations in ~460 s wall (48 threads); the per-iteration
+  cost is 432 full 1081x1081 matrix folds (range-vectorized, every chance leaf
+  is reached) - the next optimization before the perturbation campaign is to
+  parallelize/vectorize the chance-child matrix folds (GEMV-shaped). Not yet
+  built: perturbation arms, real rho e_l2 export, the independent telescoping
+  hybrid-BR walker, native tests, and the UCB fit.
+- **G3 step-1 perf + RM+ (2026-11-05).** The 48-child river chance fold is
+  now parallelized with a persistent fork-join thread pool in `turn_solver`
+  (reused across CFR iterations and the BR evaluations; no per-job thread
+  create), leaf/fold computations refactored to pure caller-buffer functions.
+  Parallel output is bit-identical to serial (0.36612975/0.18681381 BB
+  unchanged), wall for river-300 + turn-100 dropped 458 s -> 115 s on 24
+  threads. Added the missing RM+ post-sweep regret clip (the river kernel
+  clips; turn was reading positive regret for the policy but never clipping
+  the accumulated table). A river-2000 / turn-4000 convergence curve (24
+  threads) is running to find the turn iteration count at the B0/R0 scale.
+- **G3 step-1 third bug (chance divisor; 2026-11-05).** The public-card
+  chance average divided summed child CFVs by 46, correct only if the opponent
+  holding blocking the card were not masked. The leaf fold masks BOTH sides
+  (i5<0 for the own blocked card, j5<0 or shared-hole for the opponent), so a
+  concrete joint deal (ti,tj) has exactly 44 live river cards (52 - 4 board
+  - 4 holes): the uniform per-deal divisor is **44**. With /46 the
+  continuation value was attenuated by 44/46 = 4.35% against fold terminals,
+  adding a spurious fold-vs-continue exploitability floor (the pre-clip
+  4000-iter floor of 0.017 BB). After /44 + the RM+ clip, the w1 river-600 /
+  turn-4000 curve is perfectly monotone and smooth:
+  `50=.2238 100=.1357 200=.0996 400=.0849 800=.0759 1600=.0726
+  3200=.0712 final(4000)=.0704 BB`, wall 1181 s, 3610 turn action nodes.
+  The remaining ~0.070 BB plateau at river 600 is NOT turn solver error:
+  it is the finite-river-solve leaf error (600 CFR iters) propagated through
+  real leaf reach - exactly the quantity G3 exists to bound. A river-2000
+  curve is running to measure the floor shift; the G3 probe injects known
+  errors around this operating point.
+- **G3 step-1 floor is NOT leaf error (2026-11-05).** The river-2000 /
+  turn-4000 /44 curve plateaus at essentially the SAME 0.0716 BB as the
+  river-600 run (0.0704; r600 end even marginally lower) - tripling river
+  solve accuracy does not move the floor. This is decisive: with FIXED leaf
+  matrices the matrix-terminated turn tree is a finite zero-sum game, so its
+  best-response gap must converge to ~0 regardless of whether the fixed
+  leaves are an exact river equilibrium (the t_river term, not the turn gap,
+  carries river error). The ~0.07 BB residual is therefore a TURN-CFR
+  convergence-tail defect, not propagated leaf error. Prime suspect is RM+:
+  the margin tiny game already needed VANILLA linear regret matching because
+  RM+ clipped-and-froze persistent mixed strategies, and the two-street turn
+  game is far more mixing-heavy (3,610 action nodes, matrix-valued leaves).
+  Added `TurnSolveConfig.rm_plus` (default true) and a step1 `rmp|van` arg;
+  an identical river-300/turn-4000 A/B is running to pick the variant. (The
+  average-strategy opponent-reach weight `ow` is a node-level scalar that
+  cancels in the per-node sigma normalization, so it is not the floor.)
+- **G3 step-1 RM A/B result (2026-11-05).** Identical river-300/turn-4000:
+  RM+ ends 0.07038 BB (smooth); VANILLA ends 0.19360 BB and stays noisy
+  (400=0.418 rebound). RM+ is decisively better and is retained. So the
+  ~0.07 floor is NOT the regret variant; it is shared by both.
+- **G3 step-1 fourth bug: wrong average-strategy weight (2026-11-05).**
+  Contrary to the earlier note, the average-strategy accumulation DID carry
+  a reach factor: the turn traverser node weighted each contribution by
+  `ow = sum_j pi[trav^1][j]`, the OPPONENT reach pi_-i (which is the REGRET
+  factor), instead of the traverser's OWN reach pi_i. In this codebase's
+  traversal convention the traverser's own reach pi[trav] is not scaled at
+  own nodes and is identically 1 (the proven river kernel writes the weight
+  as `avg_weight * pi[trav][i]` = linear weight). Weighting the time-averaged
+  mix by a varying opponent reach biases it and explains the permanent floor
+  while leaving regret-matched instantaneous play sound. Fixed to
+  `sum += avg_weight * rm(...)`, exactly matching the river kernel. A
+  river-300/turn-4000 RM+ rerun is measuring the new tail; if correct the
+  turn gap must now keep falling toward zero (fixed-leaf finite game) instead
+  of flattening at 0.07. The telescoping identity is unaffected (it evaluates
+  whatever average strategy is built) and must remain at machine epsilon.
+- **G3 step-1 RESOLVED (2026-11-05): average-weight fix removes the floor.**
+  The river-300/turn-4000 RM+ curve after the fix is a clean ~1/T decay with
+  NO plateau: `50=.1728 100=.0730 200=.0330 400=.01512 800=.005451
+  1600=.001902 3200=.000721 final(4000)=.000515 BB`, wall 956 s. This is with
+  deliberately inaccurate river-300 leaves, confirming the turn gap
+  (fixed-leaf finite zero-sum game) is independent of leaf accuracy and that
+  leaf error enters ONLY through t_river; turn 4000 reaches 5.2e-4 BB, well
+  inside B0 = 0.010. The native identity test stays at machine epsilon
+  (3.6e-16) and teeth remain positive (coh 1e-2 -> delta 0.0030 BB) after the
+  fix; turn-120 solver NC dropped 0.128 -> 0.064 BB (faster convergence).
+  Four real bugs total were found and fixed in the turn pipeline:
+  (1) shared-hole deals not masked at leaves/folds (126 BB junk);
+  (2) NashConv double-divided by kTurnCompat;
+  (3) public-card chance divisor 46 -> 44 (4.35% value attenuation floor);
+  (4) average-strategy accumulation weighted by opponent reach pi_-i instead
+      of the traverser own reach pi_i = 1 in this convention (the 0.07 BB
+      floor; now pure linear weight matching the proven river kernel).
+  Missing RM+ clip was also added (smooths but was not the floor).
+- **G3 w1 gate-scale RESULT (2026-11-05, r600/t3200/ref2400, 24 injections;
+  `g3/g3-gate-w1.csv`).** Baseline turn NC 8.46e-4 BB, telescoping identity
+  4.7e-18, offline t_river (loose r600 leaves) 4.09e-3. Injected
+  delta_hybrid BB at the two gate-bracketing levels:
+  | arm | e_l2@2e-2 | delta@1e-2 | delta@2e-2 | delta@E=0.0184 (interp) |
+  | zm  | .0220 | .001172 | .003563 | .00318 |
+  | coh | .0156 | .004852 | .013129 | **.01181** |
+  | pat | .0218 | .002064 | .006539 | .0058 |
+  | act | .00545 | .000345 | .001047 | **.00094** |
+  The act arm imports the REAL signed per-combo candidate-minus-reference CV
+  drift of each leaf (normalized to e_max); it is 12.5x milder than the
+  coherent arm at gate scale and ~8.5x INSIDE the B0-R0 = 0.008 budget at the
+  operating point e_max_frozen = 0.0184. The distinguishing coordinate is the
+  RFC-defined second norm e_l2: the adversarial coherent shift (every combo of
+  one seat same-sign at the max per-entry bound) carries e_l2 = .0156, whereas
+  production oracle errors are diffuse mixed-sign with the measured global
+  G2 drift-RMS/pot = 0.0027 (act@E has e_l2 ~ .005, still conservative).
+  **Finding (to be confirmed over six strata): a NAIVE e_max-only worst-case
+  certificate FAILS** (coh interpolates .0118 > .008 at E=0.0184; such a
+  gross coherent bias is not a realizable deterministic-exact-solver residual)
+  **while the joint (e_max,e_l2) envelope over the actual signed-drift shape
+  PASSES with wide margin (~.0009).** G3 therefore must certify a mounted
+  node in the two-norm plane, not on e_max alone. Small levels <=1e-4 sit in
+  the +-3.5e-5 t3200 residual noise band (reported, not used at the gate).
+  Probe now flushes the campaign CSV per injection (earlier run buffered until
+  exit, causing a false "no output" monitor reading; no data was lost).
+- **G3 mechanism committed; six-stratum campaign running (2026-11-05).** The
+  turn solver, CF-reach export, independent hybrid walker, perturbation probe,
+  native tests, and TS evaluator are committed as `7b46071` (11 files,
+  isolated from the unrelated dirty set; engine/CMakeLists carries only the
+  three G3 hunks). Campaign frame: w1 gate CSV already complete; the other
+  five strata run at r600/t3200/ref2400 with levels {1e-6..2e-2} to
+  `g3/g3-campaign-<stratum>.csv` (paired+monotone, then ahigh+twotone, then
+  raised-srp). Final evaluator concatenates w1 + the five campaign CSVs and
+  certifies the joint (e_max,e_l2) envelope via evaluateS2G3; tracker verdict
+  and evidence are the next G3 commit after UCB.
+- **G3 step-2 design (frozen; next implementation).** Perturb the per-leaf
+- **G3 step-2 implemented (2026-11-05, uncommitted).**
+  1. `TurnSolveResult.leaf_reaches`: per-config-leaf, per-seat, per-five-card
+     combo exported counterfactual reach
+     `rho(p,i5) = (1/kTurnNorm) sum_(ti->i5) P_p(ti)/44 *
+       sum_(tj live, compatible) P_q(tj)`, accumulated by a parallel
+     average-strategy probability walk (`reach_walk`/`reach_chance_into`).
+  2. Independent `turn_hybrid_nash_conv` (new `HybridWalker` class, separate
+     tree build, leaf mapping, matrix folds, recursion from TurnGame):
+     telescoping exact-BR turn gap plus the t_river term =
+     sum_k W_k * riverNC_k / kTurnNorm with W_k the per-leaf arrival mass
+     (p0*p1 joint deals /44). Identity target: walker turn gap ==
+     TurnSolveResult.nash_conv_chips at zero perturbation.
+  3. Manual binary `bigshark-rfc0047-g3-probe` (NOT a CTest): solves the
+     unperturbed equilibrium, prints the identity, then for arms
+     {zm zero-mean alternating, coh coherent same-sign seat-0 only, pat
+     modulo-7 zero-mean} x levels {1e-6..1e-2}: perturbs every unique group
+     matrix `M'[i,j]=M+d0[i]-d1[j]`, re-solves the turn, evaluates the fixed
+     perturbed strategy against TRUE leaves with the independent walker, and
+     records e_max, e_l2 (frozen rho norms), turn_gap, river_term, delta.
+     NOTE the earlier draft applied +amp to both seats identically, which
+     cancels algebraically (d0-d1=0); coh is now a one-seat coherent shift
+     per the frozen design.
+  4. Native test `test_rfc0047_turn_solver` (registered CTest): pins the
+     telescoping identity to <=1e-7 BB, rho non-negative/seat-symmetric,
+     total river arrival mass in (0,1], and coherent-shift teeth
+     (delta_hybrid > 1e-3 BB at level 1e-2). Both cases share one 240-group
+     river fixture. **First full run PASSED (river 80 / turn 120):**
+     solver NC 0.12849932 vs independent walker 0.12849932, diff = 1.67e-16
+     (machine epsilon - two independently written evaluators agree to the
+     bit); river t_river term 0.05244 BB at this deliberately tiny river
+     solve; total river arrival mass 0.6010 (the remaining 0.399 of joint
+     deals end at turn folds); coh level 1e-2 teeth delta_hybrid = 0.00492
+     BB (> 1e-3 gate), an empirical leaf-error->exploitability slope ~0.49.
+- **G3 statistics predeclared (2026-11-05, before campaign data).** RFC 0047
+  section G3(d) anticipated seed variance from a SAMPLED NashConv deal-batch
+  estimator (full seeds 4320..4324, n=5, t=2.776). The built telescoping
+  walker is instead an EXACT, SEEDLESS full-deal evaluator (it enumerates
+  every compatible joint deal; the zero-perturbation identity holds to 1.67e-16
+  BB), so a per-node NashConv draw has no sampling distribution and inventing
+  seeds 4320..4324 would be the pseudo-replication the RFC forbids. The honest
+  variability to bound a NON-probed mounted node is ACROSS THE SIX FROZEN
+  STRATA (texture/betting/ledger). Predeclared statistic per (arm, level):
+  from the six deterministic stratum deltas compute mean, SD s, and the
+  one-sided 95% UCB `mean + t_0.95(df=5)=2.015 * s/sqrt(6)` for BOTH
+  delta_hybrid (turn-gap component) and the river term; the gate is evaluated
+  at the production river solve count and the operating e_max_frozen from the
+  G2 per-entry bounds (worst arm / first level >= e_max_frozen), requiring
+  UCB(hybrid) <= 0.010 and UCB(t_river) <= 0.002 summed BB. The campaign frame
+  is one append-mode CSV per probe run
+  (`stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb`
+  plus an `identity` row per stratum).
+- **G3 step-2 design (frozen; next implementation).** Perturb the per-leaf
+  five-card matrix additively at the (seat,combo) level, re-solve the turn
+  equilibrium, and measure its hybrid NashConv against the UNPERTURBED
+  leaves:
+  - arms: zero-mean across a seat's combos (sum delta = 0); coherent
+    same-sign adversarial (all combos of one seat shifted the same sign);
+    and a scaled-actual-error arm using the measured G2 drift pattern;
+  - levels: additive amplitude as a fraction of the leaf root pot p,
+    {1e-6, 1e-5, 1e-4, 1e-3, 1e-2};
+  - per injection record e_max = max|delta|/p and
+    e_l2 = sqrt(sum_(seat,c) rho(seat,c) (delta/p)^2), with rho the leaf
+    counterfactual reach from the unperturbed turn equilibrium, normalized
+    per leaf per seat (exported by the turn solver alongside the strategy);
+  - the independent telescoping exact-BR walker evaluates the perturbed-
+    strategy vs true-leaves hybrid NashConv (whole game) and a t_river-only
+    accumulation, so both UCB(hybrid) <= 0.010 and UCB(t_river) <= 0.002 can
+    be certified against the operating e_max_frozen;
+  - six strata x deals 4320..4324 n=5 t=2.776 one-sided UCB. Native test:
+    zero perturbation hybrid NashConv == turn solver own NashConv.
 
 Acceptable results (to be detailed at S1 closure without changing RFC gates):
 

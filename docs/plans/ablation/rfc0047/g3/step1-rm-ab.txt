@@ -1,0 +1,24 @@
+=== RM+ run ===
+stratum=w1 leaves=432 unique_groups=240 river_iters=300 turn_iters=4000 threads=24 rm=rm+ wall=1240.3s
+turn_action_nodes=3610
+iters,nash_conv_bb
+50,0.22612860
+100,0.13601604
+200,0.09952368
+400,0.08374815
+800,0.07416996
+1600,0.07124142
+3200,0.07057712
+final,0.07038248
+=== vanilla run ===
+stratum=w1 leaves=432 unique_groups=240 river_iters=300 turn_iters=4000 threads=24 rm=vanilla wall=1063.3s
+turn_action_nodes=3610
+iters,nash_conv_bb
+50,0.38452150
+100,0.20335167
+200,0.14085322
+400,0.41775679
+800,0.25918241
+1600,0.30674801
+3200,0.19053501
+final,0.19359896

@@ -1,0 +1,11 @@
+stratum=w1 leaves=432 unique_groups=240 river_iters=300 turn_iters=4000 threads=24 rm=rm+ wall=955.6s
+turn_action_nodes=3610
+iters,nash_conv_bb
+50,0.17277782
+100,0.07295551
+200,0.03297883
+400,0.01512108
+800,0.00545092
+1600,0.00190239
+3200,0.00072087
+final,0.00051542
