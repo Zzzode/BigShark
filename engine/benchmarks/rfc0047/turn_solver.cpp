@@ -676,6 +676,125 @@ class HybridWalker {
     return raw / kTurnNorm;
   }
 
+  // w(leaf,seat,i5) = (BR own-reach - average own-reach) to that five-card
+  // combo, /kTurnNorm (same units as the exported equilibrium rho).
+  std::vector<TurnLeafGapWeight> leaf_gap_weights() {
+    std::unordered_map<std::size_t, std::size_t> idx;
+    for (std::size_t k = 0; k < cfg_.leaves.size(); ++k)
+      idx.emplace(cfg_.leaves[k].child_node, k);
+    std::vector<TurnLeafGapWeight> out(cfg_.leaves.size());
+    for (std::size_t k = 0; k < cfg_.leaves.size(); ++k) {
+      out[k].child_node = cfg_.leaves[k].child_node;
+      for (int seat = 0; seat < 2; ++seat)
+        out[k].w[seat].assign(kRiverC, 0.0);
+    }
+    for (int viewer = 0; viewer < 2; ++viewer) {
+      std::vector<Val> br_tab(cfg_.leaves.size(), Val(kRiverC, 0.0));
+      std::vector<Val> sg_tab(cfg_.leaves.size(), Val(kRiverC, 0.0));
+      {
+        Val own(kTurnC, 1.0), opp(kTurnC, 1.0);
+        GameState st(def_);
+        policy_reach(st, tree_->root_index(), viewer, /*use_br=*/true, own, opp, idx, br_tab);
+      }
+      {
+        Val own(kTurnC, 1.0), opp(kTurnC, 1.0);
+        GameState st(def_);
+        policy_reach(st, tree_->root_index(), viewer, /*use_br=*/false, own, opp, idx, sg_tab);
+      }
+      for (std::size_t k = 0; k < cfg_.leaves.size(); ++k)
+        for (std::uint32_t c = 0; c < kRiverC; ++c)
+          out[k].w[viewer][c] = (br_tab[k][c] - sg_tab[k][c]) / kTurnNorm;
+    }
+    return out;
+  }
+
+  // Accumulate the viewer's OWN-combo arrival reach to a chance child leaf:
+  // own[ti]/44 times the compatible live-opponent reach sum, mapped to i5.
+  void weight_leaf_into(std::size_t child, std::size_t viewer, const Val& own, const Val& opp,
+                        Val& out5) const {
+    const WLeaf& wl = leaves_.at(child);
+    for (std::uint32_t ti = 0; ti < kTurnC; ++ti) {
+      const std::int32_t i5 = wl.dense5[ti];
+      if (i5 < 0 || own[ti] == 0.0)
+        continue;
+      const std::uint64_t imask = masks_[ti];
+      double so = 0.0;
+      for (std::uint32_t tj = 0; tj < kTurnC; ++tj) {
+        const std::int32_t j5 = wl.dense5[tj];
+        if (j5 >= 0 && (imask & masks_[tj]) == 0)
+          so += opp[tj];
+      }
+      out5[static_cast<std::size_t>(i5)] += own[ti] * so / 44.0;
+    }
+  }
+
+  // Reach walk under the viewer's best-response policy (use_br: route each
+  // own combo only to its argmax BR action) or the average strategy; opponent
+  // always plays average. Accumulates the viewer's own-combo leaf reach.
+  void policy_reach(GameState& state, std::size_t n, std::size_t viewer, bool use_br,
+                    const Val& own, const Val& opp,
+                    const std::unordered_map<std::size_t, std::size_t>& idx,
+                    std::vector<Val>& tab) {
+    const TreeNode& node = tree_->node(n);
+    if (auto it = idx.find(n); it != idx.end()) {
+      weight_leaf_into(n, viewer, own, opp, tab[it->second]);
+      return;
+    }
+    if (node.is_terminal())
+      return;
+    if (node.is_chance()) {
+      const std::size_t nc = node.children.size();
+      pool_.parallel_for(nc, [&](std::size_t a) {
+        auto ci = idx.find(node.children[a]);
+        if (ci != idx.end())
+          weight_leaf_into(node.children[a], viewer, own, opp, tab[ci->second]);
+      });
+      return;
+    }
+
+    const std::size_t actor = node.actor;
+    const std::size_t A = menu(n);
+    if (actor == viewer && use_br) {
+      // Child BR continuation values at THIS node's opponent reach; gap_walk's
+      // returned value carries no own reach, so the per-action argmax is clean.
+      std::vector<Val> kv(A);
+      for (std::size_t a = 0; a < A; ++a) {
+        Val down(kTurnC, 1.0);
+        GameState cs = state.after_action(actor, node.actions[a]);
+        double dg = 0.0;
+        kv[a] = gap_walk(cs, node.children[a], viewer, opp, down, dg);
+      }
+      for (std::size_t a = 0; a < A; ++a) {
+        Val nown(kTurnC, 0.0);
+        for (std::uint32_t h = 0; h < kTurnC; ++h) {
+          int best = 0;
+          for (std::size_t b = 1; b < A; ++b)
+            if (kv[b][h] > kv[best][h])
+              best = static_cast<int>(b);
+          if (best == static_cast<int>(a))
+            nown[h] = own[h];
+        }
+        GameState cs = state.after_action(actor, node.actions[a]);
+        policy_reach(cs, node.children[a], viewer, use_br, nown, opp, idx, tab);
+      }
+      return;
+    }
+
+    for (std::size_t a = 0; a < A; ++a) {
+      Val nown = own;
+      Val nopp = opp;
+      if (actor == viewer) {
+        for (std::uint32_t h = 0; h < kTurnC; ++h)
+          nown[h] = own[h] * sig(n, h, a);
+      } else {
+        for (std::uint32_t h = 0; h < kTurnC; ++h)
+          nopp[h] = opp[h] * sig(n, h, a);
+      }
+      GameState cs = state.after_action(actor, node.actions[a]);
+      policy_reach(cs, node.children[a], viewer, use_br, nown, nopp, idx, tab);
+    }
+  }
+
   // Per-config-leaf unnormalized arrival mass W_k = (1/44) sum over live,
   // compatible joint deals of p0(ti)*p1(tj), under the fixed average strategy.
   std::vector<double> leaf_masses() {
@@ -899,6 +1018,12 @@ HybridNashConv turn_hybrid_nash_conv(const TurnSolveConfig& true_cfg,
   out.turn_gap_bb = out.turn_gap_chips / bb;
   out.river_term_bb = out.river_term_chips / bb;
   return out;
+}
+
+std::vector<TurnLeafGapWeight> turn_leaf_gap_weights(
+    const TurnSolveConfig& cfg, std::span<const std::vector<double>> node_sigma) {
+  HybridWalker walker(cfg, node_sigma);
+  return walker.leaf_gap_weights();
 }
 
 }  // namespace bs::rfc0047

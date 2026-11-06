@@ -14,6 +14,7 @@ import {
   evaluateS1,
   evaluateS2G2,
   evaluateS2G3,
+  evaluateS2G3Spike,
   GateInputError,
   MAX_INFOSETS,
   operatingEMaxPotFraction,
@@ -21,6 +22,7 @@ import {
   parseCensusCsv,
   parseCertCsv,
   parseG3Csv,
+  parseNormsCsv,
   parseInfosetCsv,
   T_CRIT_0_95_5,
   TURN_X48,
@@ -331,16 +333,16 @@ test('G3 fails closed when the operating e_max exceeds the top injected level',
   assert.ok(r.failures.some((f) => f.includes('exceeds the largest injected')));
 });
 
-test('G3 fails when the real-drift ray is less correlated than production',
+test('G3 ray non-dominance is informational; the spike box gate is authoritative',
      () => {
-  // E tiny (2e-6) but L huge (1.0*2/400 = 0.005 > act e_l2@E 1.6e-6): the
-  // real ray no longer dominates a shipped node, so a joint certificate is
-  // refused rather than silently claimed.
+  // E tiny (2e-6) but unweighted L huge (1.0*2/400 = 0.005 > act e_l2@E
+  // 1.6e-6): the act-ray flag reports non-dominance but no longer fails the
+  // ray coordinate by itself (exploitability is not monotone in e_l2; the
+  // evaluateS2G3Spike box envelope certifies mounted nodes).
   const cert = g3Cert(0.0004, 1.0, 400);
   const r = evaluateS2G3(g3Frame(), cert);
-  assert.equal(r.g3, false);
   assert.equal(r.rayDominatesProduction, false);
-  assert.ok(r.failures.some((f) => f.includes('does not dominate')));
+  assert.equal(r.g3, true);
 });
 
 test('G3 one-sided t constant is the df=5 value and missing strata fail', () => {
@@ -355,4 +357,82 @@ test('G3 one-sided t constant is the df=5 value and missing strata fail', () => 
   assert.equal(r.g3, false);
   assert.ok(r.failures.some((f) => f.includes("missing g3 stratum")));
   assert.throws(() => parseG3Csv('a,b\n1,2\n'), GateInputError);
+});
+
+// --- G3 spike box envelope (independent-review closure) -------------------
+
+const SPIKE_E = 0.0184;
+// (e_l2, delta) frontier points at amplitude E, ascending in e_l2 (more
+// concentrated q -> smaller e_l2). delta rises mildly with concentration.
+const SPIKE_PTS: Array<[string, number, number]> = [
+  ['spike1.000', 0.0135, 0.0035],
+  ['spike0.050', 0.00304, 0.0012],
+  ['spike0.033', 0.00248, 0.0008],
+  ['spike0.020', 0.00195, 0.0005],
+];
+
+function spikeRow(stratum: string, label: string, level: number,
+                  eL2: number, delta: number): string {
+  return `${stratum},${label},${level.toExponential()},${SPIKE_E},`
+    + `${eL2},${(0.001 + delta).toFixed(8)},0.004,${delta.toFixed(8)}`;
+}
+
+function spikeFrame(): string {
+  const lines = ['stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,'
+    + 'delta_hybrid_bb'];
+  for (const s of G3_STRATA) {
+    lines.push(`${s},identity,0,0,0,0.001,0.004,0`);
+    for (const [label, eL2, delta] of SPIKE_PTS)
+      lines.push(spikeRow(s, label, SPIKE_E, eL2, delta));
+  }
+  return lines.join('\n');
+}
+
+function normsCsv(lStar: number): string {
+  return ['stratum,emax_real,lstar_real',
+    ...G3_STRATA.map((s) => `${s},0.04,${lStar}`)].join('\n');
+}
+
+test('G3 spike box envelope gates the frozen-frame MAX at reach-weighted L*', () => {
+  const r = evaluateS2G3Spike(spikeFrame(), normsCsv(0.0025));
+  assert.equal(r.rows, G3_STRATA.length * (SPIKE_PTS.length + 1));
+  assert.equal(r.perStratum.length, 6);
+  // lStar 0.0025 sits between 0.00248 (d .0008) and 0.00304 (d .0012).
+  for (const p of r.perStratum) {
+    assert.ok(Math.abs(p.lStar - 0.0025) < 1e-12);
+    assert.ok(p.boxDeltaBb > 0.0008 && p.boxDeltaBb < 0.00085);
+  }
+  assert.ok(r.envelopeMaxBb < r.barBb);
+  assert.equal(r.meanUcbBb, r.envelopeMaxBb);  // identical strata -> zero SD
+  assert.equal(r.g3, true);
+});
+
+test('G3 spike clamps to the finest point when L* is more concentrated', () => {
+  const r = evaluateS2G3Spike(spikeFrame(), normsCsv(0.0010));
+  assert.equal(r.perStratum.every((p) => p.clampedBelowFinest), true);
+  assert.ok(Math.abs(r.envelopeMaxBb - 0.0005) < 1e-12);
+  assert.equal(r.g3, true);
+});
+
+test('G3 spike envelope fails closed when the box corner exceeds the budget', () => {
+  const frame = ['stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,'
+    + 'delta_hybrid_bb'];
+  for (const s of G3_STRATA) {
+    frame.push(`${s},identity,0,0,0,0.001,0.004,0`);
+    for (const [label, eL2] of SPIKE_PTS)
+      frame.push(spikeRow(s, label, SPIKE_E, eL2, 0.011));
+  }
+  const r = evaluateS2G3Spike(frame.join('\n'), normsCsv(0.0025));
+  assert.equal(r.g3, false);
+  assert.ok(r.failures.some((f) => f.includes('envelope MAX')));
+});
+
+test('G3 spike rejects a missing norms stratum and a bad norms header', () => {
+  const one = G3_STRATA.slice(0, 1)
+    .map((s) => `sentinel,0.04,0.0025`.replace('sentinel', s)).join('\n');
+  const r = evaluateS2G3Spike(spikeFrame(),
+    `stratum,emax_real,lstar_real\n${one}`);
+  assert.equal(r.g3, false);
+  assert.ok(r.failures.some((f) => f.includes('missing norms')));
+  assert.throws(() => parseNormsCsv('a,b\n1,2\n'), GateInputError);
 });

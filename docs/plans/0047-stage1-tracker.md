@@ -491,6 +491,45 @@ feasibility established on single leaves; S2.2 builder/oracle next).**
   `g3/G3-VERDICT.md`. The online R0 = 0.002 river term remains an explicit
   S3/G5 item (campaign used loose r600 leaves; its t_river is a diagnostic,
   not the production R0); G3 bounds only the propagated turn delta above it.
+- **G3 independent review CHANGES-REQUESTED + full verification (2026-11-06).**
+  A separately launched non-author reviewer reproduced all arithmetic
+  (act-ray UCB 2.07e-3, coh 1.51e-2, 22 node tests) and confirmed the
+  instrument (independent walker, machine-epsilon identity) but rejected the
+  claim that the act ray certifies an arbitrary mounted node. Accepted
+  findings:
+  1. BLOCKING: a 1-D ray cannot bound the 2-D box {e_max<=E,e_l2<=L};
+     exploitability is NOT monotone in e_l2 (frame itself: w1 1e-2 zm
+     e_l2 .0110/delta .00117 vs coh e_l2 .0078/delta .00485). Missing worst
+     shape = partially coherent BR-weight-ranked SPIKE on the ~(L/E)^2 ~3%
+     combos carrying most telescoping BR-deviation weight.
+  2. BLOCKING: shipped L is UNWEIGHTED per-group cert RMS; probe e_l2 is
+     reach-weighted and pooled - different norms; must recompute L* reach
+     weighted from per-combo cert vectors and exported rho.
+  3. MAJOR: joint framing is RFC-supported, but no mount-time per-node e_l2
+     contract exists yet (future S3 production RFC must enforce it); coherent
+     arm is RFC-required adversarial and fails, reported not hidden.
+  4. MAJOR: t-UCb 2.07e-3 is a MEAN bound below the observed worst stratum
+     (monotone 3.01e-3); the non-probed-node envelope is the frozen-frame MAX
+     (3.01e-3, still < 0.008) or a tolerance factor on a census-sampled
+     frame, not a mean CI.
+  5. MAJOR labeling: full G3 acceptance also needs R0<=0.002 (S3/G5);
+     relabeled act-ray result to PROVISIONAL turn-propagation component.
+  6. MINOR: act per-group/per-seat max normalization overstates cross-leaf
+     scale (conservative); nominal d vs effective d0-mean(d1) (conservative);
+     signed 6k/20k drift never exported - required before production auth.
+  Full milestone verification on commit aaaa89d was GREEN: release build RC=0,
+  ctest 91/91, npm run check RC=0, npm run proto:check RC=0.
+  Closure under way: probe gained (a) independent-walker BR-minus-sigma leaf
+  gap weights `turn_leaf_gap_weights` (per-leaf/seat/combo w = BR own-reach
+  minus average own-reach), (b) deterministic `spike(q)` arms that water-fill
+  a +E payoff shift onto the top-q rho mass ranked by w/rho
+  (q=.02/.033/.05/.1; smoke confirms e_l2 scales .00195/.00248/.00304/.0135 at
+  E, q=.033 ~ L), and (c) a reach-weighted real-norm sidecar L* from the
+  exported rho and the measured signed drift. Six-stratum production
+  convergence spike campaign (r600/t3200/r2400, task bqcxegknd) is running;
+  the evaluator then gates the frozen-frame MAX stratum box-corner delta at
+  e_l2=L* against 0.008 (no mean-CI-as-envelope). Verdict stays provisional
+  until that passes and R0 is measured in S3/G5.
 - **G3 step-2 design (frozen; next implementation).** Perturb the per-leaf
 - **G3 step-2 implemented (2026-11-05, uncommitted).**
   1. `TurnSolveResult.leaf_reaches`: per-config-leaf, per-seat, per-five-card

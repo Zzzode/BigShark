@@ -625,15 +625,11 @@ export function evaluateS2G3(g3Csv: string, certCsv: string): S2G3Result {
       if (arm === 'coh')
         coherentDelta = pt.deltaBb;
     }
-    // The real-drift ray must be no LESS correlated (e_l2) at E than a shipped
-    // mounted node (L), otherwise interpolating along it would not dominate
-    // the production point.
-    if (!(jointEL2 >= eL2Frozen)) {
+    // INFORMATIONAL only. The reviewer showed exploitability is not monotone
+    // in e_l2, so a ray-dominance rule cannot bound the norm box; the spike
+    // box-envelope gate (evaluateS2G3Spike, reach-weighted L*) is authoritative.
+    if (!(jointEL2 >= eL2Frozen))
       rayDominates = false;
-      failures.push(
-        `${s}: real-arm e_l2 at E ${jointEL2.toExponential(3)} < shipped L `
-        + `${eL2Frozen.toExponential(3)}; the ray does not dominate production`);
-    }
     perStratum.push({
       stratum: s, identityGapBb, offlineRiverTermBb, perArmDelta,
       jointEL2AtE: jointEL2, jointDeltaBb: jointDelta,
@@ -686,9 +682,168 @@ export function evaluateS2G3(g3Csv: string, certCsv: string): S2G3Result {
   };
 }
 
+// --- S2 G3 spike-frontier box envelope (independent-review closure) -------
+//
+// The act ray alone cannot bound the 2-D norm box. The spike campaign places a
+// coherent +E payoff shift on the minimal top-fraction of combos ranked by the
+// independent walker's BR-minus-sigma gap weight w (water-filling w.r.t. rho),
+// tracing the worst shape at each reach-weighted e_l2. The production e_l2
+// coordinate L* is reach-weighted (NOT the unweighted per-group cert RMS),
+// measured in the same campaign from the exported rho and signed drift.
+export const SPIKE_E_POT_FRACTION = 0.0184;  // amplitude at the operating E
+
+export interface NormsRow {
+  stratum: string;
+  eMaxReal: number;
+  lStarReal: number;
+}
+
+export function parseNormsCsv(text: string): NormsRow[] {
+  const rows = parseCsv(text);
+  const header = rows.shift();
+  if (header === undefined)
+    throw new GateInputError('norms CSV is empty');
+  requireHeader(header, ['stratum', 'emax_real', 'lstar_real']);
+  return rows.map((cols) => {
+    if (cols[0] === undefined || !cols[0])
+      throw new GateInputError('norms row has empty stratum');
+    const lStar = Number(cols[2]);
+    const eMax = Number(cols[1]);
+    if (!Number.isFinite(lStar) || !Number.isFinite(eMax))
+      throw new GateInputError('norms row non-numeric');
+    return {stratum: cols[0], eMaxReal: eMax, lStarReal: lStar};
+  });
+}
+
+export interface SpikeStratumResult {
+  stratum: string;
+  lStar: number;
+  // Interpolated propagated turn delta at the box corner (e_max=E, e_l2=L*).
+  boxDeltaBb: number;
+  clampedBelowFinest: boolean;  // L* below the finest measured spike e_l2
+  spikePoints: Array<[number, number]>;  // (e_l2, delta) at amplitude E
+}
+
+export interface S2G3SpikeResult {
+  g3: boolean;
+  failures: string[];
+  rows: number;
+  perStratum: SpikeStratumResult[];
+  // FINDING 4: the non-probed-node envelope is the frozen-frame MAX (not a
+  // mean confidence bound). Descriptive t statistics are reported alongside.
+  envelopeMaxBb: number;
+  meanBb: number;
+  sdBb: number;
+  meanUcbBb: number;
+  barBb: number;
+}
+
+export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
+    S2G3SpikeResult {
+  const spikeRows = parseG3Csv(spikeCsv);
+  const norms = parseNormsCsv(normsCsv);
+  const failures: string[] = [];
+  const lByStratum = new Map(norms.map((n) => [n.stratum, n.lStarReal]));
+  for (const s of STRATA)
+    if (!lByStratum.has(s))
+      failures.push(`missing norms row for '${s}'`);
+
+  const byStratum = new Map<string, G3Row[]>();
+  for (const r of spikeRows) {
+    const a = byStratum.get(r.stratum) ?? [];
+    a.push(r);
+    byStratum.set(r.stratum, a);
+  }
+  for (const s of STRATA)
+    if (!byStratum.has(s))
+      failures.push(`missing spike stratum '${s}'`);
+
+  const perStratum: SpikeStratumResult[] = [];
+  const boxDeltas: number[] = [];
+
+  for (const s of STRATA) {
+    const srows = byStratum.get(s);
+    const lStar = lByStratum.get(s);
+    if (!srows || lStar === undefined)
+      continue;
+    // Spike points at the operating amplitude E (e_max == E on selected
+    // combos), varying concentration q -> varying measured e_l2.
+    const pts = srows
+      .filter((r) => r.arm.startsWith('spike')
+              && Math.abs(r.level - SPIKE_E_POT_FRACTION) < 1e-12)
+      .map((r) => [r.eL2, r.deltaHybridBb] as [number, number])
+      .sort((a, b) => a[0] - b[0]);
+    if (pts.length < 2) {
+      failures.push(`${s}: need >= 2 spike points at E`);
+      continue;
+    }
+    for (const [x, y] of pts)
+      if (!(x >= 0) || !Number.isFinite(y))
+        failures.push(`${s}: non-finite spike point`);
+    const finest = pts[0]!;
+    const coarsest = pts[pts.length - 1]!;
+    let boxDelta: number;
+    let clamped = false;
+    if (lStar <= finest[0]) {
+      // Production e_l2 is below the finest spike; the finest water-fill is
+      // the most concentrated (most adversarial per unit e_l2) measured
+      // point, so it bounds the corner from above.
+      boxDelta = finest[1];
+      clamped = true;
+    } else if (lStar > coarsest[0]) {
+      failures.push(`${s}: L* ${lStar.toExponential(3)} above the coarsest `
+        + `spike e_l2 ${coarsest[0].toExponential(3)}; add a broader q`);
+      continue;
+    } else {
+      boxDelta = NaN;
+      for (let k = 1; k < pts.length; ++k) {
+        const hi = pts[k]!;
+        if (lStar <= hi[0]) {
+          const lo = pts[k - 1]!;
+          const f = hi[0] === lo[0] ? 0 : (lStar - lo[0]) / (hi[0] - lo[0]);
+          boxDelta = lo[1] + f * (hi[1] - lo[1]);
+          break;
+        }
+      }
+    }
+    perStratum.push({
+      stratum: s, lStar, boxDeltaBb: boxDelta!, clampedBelowFinest: clamped,
+      spikePoints: pts,
+    });
+    boxDeltas.push(boxDelta!);
+  }
+
+  let envelopeMax = NaN, mean = NaN, sd = NaN, meanUcb = NaN;
+  const bar = EPS_HYBRID_B0 - EPS_RIVER_R0;
+  if (boxDeltas.length === STRATA.length) {
+    envelopeMax = Math.max(...boxDeltas);
+    const u = oneSidedUcb(boxDeltas);
+    mean = u.mean;
+    sd = u.sd;
+    meanUcb = u.ucb;
+    if (!(envelopeMax <= bar))
+      failures.push(`spike box-corner envelope MAX ${envelopeMax.toExponential(3)} `
+        + `> B0-R0 ${bar.toExponential(3)} BB`);
+  } else {
+    failures.push('cannot compute spike envelope: need all six strata');
+  }
+
+  return {
+    g3: failures.length === 0,
+    failures,
+    rows: spikeRows.length,
+    perStratum,
+    envelopeMaxBb: envelopeMax,
+    meanBb: mean,
+    sdBb: sd,
+    meanUcbBb: meanUcb,
+    barBb: bar,
+  };
+}
+
 // Manual entrypoint:
 //   node dist/tools/rfc/rfc0047-gates.js <infoset.csv> <census.csv> [cert.csv]
-//   [g3.csv]
+//   [g3.csv] [spike.csv] [norms.csv]
 const isMain = (() => {
   try {
     return process.argv[1] !== undefined &&
@@ -704,10 +859,12 @@ if (isMain) {
   const censusPath = process.argv[3];
   const certPath = process.argv[4];
   const g3Path = process.argv[5];
+  const spikePath = process.argv[6];
+  const normsPath = process.argv[7];
   if (!infosetPath || !censusPath) {
     console.error(
       'usage: rfc0047-gates <s1-infoset-budget.csv> <s1-census.csv> '
-      + '[s2-cert.csv] [s2-g3.csv]');
+      + '[s2-cert.csv] [s2-g3.csv] [s2-g3-spike.csv] [s2-g3-norms.csv]');
     process.exit(2);
   }
   try {
@@ -765,12 +922,39 @@ if (isMain) {
         + `(e_l2@E ${r.jointEL2AtE.toExponential(3)}), coherent `
         + `${r.coherentDeltaBb.toExponential(3)} BB`);
     if (!g3.g3) {
-      console.error('RFC 0047 S2 G3 error-propagation gate FAILED:');
+      console.error('RFC 0047 S2 G3 act-ray coordinate FAILED:');
       for (const f of g3.failures)
         console.error(`  - ${f}`);
       process.exit(1);
     }
-    console.log('RFC 0047 S2 G3 error-propagation gate PASS (joint two-norm envelope).');
+    console.log('RFC 0047 S2 G3 act real-drift ray coordinate PASS '
+      + '(PROVISIONAL component; the box envelope is the spike gate below).');
+
+    if (spikePath && normsPath) {
+      const sp = evaluateS2G3Spike(readFileSync(spikePath, 'utf8'),
+                                   readFileSync(normsPath, 'utf8'));
+      console.log(
+        `G3 spike box envelope over ${sp.rows} injections: frozen-frame MAX `
+        + `${sp.envelopeMaxBb.toExponential(3)} BB (bar B0-R0 `
+        + `${sp.barBb.toExponential(3)}); mean ${sp.meanBb.toExponential(3)}, `
+        + `descriptive t-UCB ${sp.meanUcbBb.toExponential(3)} BB.`);
+      for (const r of sp.perStratum)
+        console.log(
+          `  ${r.stratum}: L* ${r.lStar.toExponential(3)} box-corner delta `
+          + `${r.boxDeltaBb.toExponential(3)} BB`
+          + (r.clampedBelowFinest ? ' [bounded by finest spike]' : ''));
+      if (!sp.g3) {
+        console.error('RFC 0047 S2 G3 spike box-envelope gate FAILED:');
+        for (const f of sp.failures)
+          console.error(`  - ${f}`);
+        process.exit(1);
+      }
+      console.log('RFC 0047 S2 G3 spike box-envelope gate PASS '
+        + '(non-probed mounted-node bound).');
+    } else {
+      console.log('G3 spike box envelope not evaluated '
+        + '(provide spike.csv and norms.csv); non-probed nodes not certified.');
+    }
   } catch (err) {
     console.error(`RFC 0047 gate input error: ${(err as Error).message}`);
     process.exit(2);

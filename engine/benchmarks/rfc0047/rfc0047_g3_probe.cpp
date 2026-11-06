@@ -74,6 +74,8 @@ struct Group {
   // "act" arm: signed per-combo candidate-minus-reference root-CV drift
   // (real G2 error shape), per seat, normalized to max|.| = 1.
   std::array<std::vector<double>, 2> act_unit;
+  // Un-normalized signed drift/pot (for the reach-weighted real L* norm).
+  std::array<std::vector<double>, 2> drift;
 };
 
 // Additive amplitudes as fractions of each leaf pot. The upper level 2e-2
@@ -114,6 +116,8 @@ int main(int argc, char** argv) {
   // High-accuracy reference solve supplies the signed actual-error pattern.
   const std::uint64_t ref_iters = argc >= 6 ? std::stoull(argv[5]) : river_iters * 4;
   const char* out_csv = argc >= 7 ? argv[6] : nullptr;
+  const std::string arm_set = argc >= 8 ? argv[7] : "all";
+  const char* norms_csv = argc >= 9 ? argv[8] : nullptr;
   // Append so one campaign can concatenate all strata into a single frame;
   // write the header only when the file is newly created/empty.
   FILE* csv = nullptr;
@@ -182,10 +186,12 @@ int main(int argc, char** argv) {
         const std::array<const std::vector<double>*, 2> rr = {&ref.root_cfv_seat0,
                                                               &ref.root_cfv_seat1};
         for (int seat = 0; seat < 2; ++seat) {
+          groups[g].drift[seat].assign(kRiverC, 0.0);
           groups[g].act_unit[seat].assign(kRiverC, 0.0);
           double mx = 0.0;
           for (std::uint32_t c = 0; c < kRiverC; ++c) {
             const double d = ((*rc[seat])[c] - (*rr[seat])[c]) / groups[g].pot;
+            groups[g].drift[seat][c] = d;
             groups[g].act_unit[seat][c] = d;
             mx = std::max(mx, std::fabs(d));
           }
@@ -263,6 +269,133 @@ int main(int argc, char** argv) {
   }
   std::printf("arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb\n");
 
+  using Shifts = std::vector<std::array<std::vector<double>, 2>>;  // [g][seat][c]
+
+  // Generic injection: dimensionless per-group per-seat shift sh (delta/pot),
+  // amplitude level. Builds M' = M + p*level*(sh0[i] - sh1[j]), re-solves the
+  // turn, evaluates the fixed perturbed strategy against the TRUE leaves, and
+  // records e_max / reach-weighted e_l2 / hybrid delta.
+  auto inject = [&](const char* label, double level, const Shifts& sh) {
+    std::vector<std::vector<double>> pert(n_groups);
+    for (std::size_t g = 0; g < n_groups; ++g) {
+      pert[g] = groups[g].matrix;
+      const double amp = groups[g].pot * level;
+      double* mp = pert[g].data();
+      for (std::uint32_t i = 0; i < kRiverC; ++i) {
+        const double e0 = amp * sh[g][0][i];
+        for (std::uint32_t j = 0; j < kRiverC; ++j)
+          mp[static_cast<std::size_t>(i) * kRiverC + j] += e0 - amp * sh[g][1][j];
+      }
+    }
+    std::vector<std::vector<double>*> pert_ptrs(leaves.size());
+    for (std::size_t i = 0; i < leaves.size(); ++i)
+      pert_ptrs[i] = &pert[group_of_leaf[i]];
+    std::vector<TurnLeafValue> pert_tleaves;
+    TurnSolveConfig pcfg;
+    fill_cfg(pcfg, pert_ptrs, pert_tleaves);
+    const TurnSolveResult pr = solve_turn_subgame(pcfg);
+    const HybridNashConv h = turn_hybrid_nash_conv(true_cfg, pr.sigma, river_nc);
+
+    double e_max = 0.0, acc2 = 0.0;
+    for (std::size_t li = 0; li < leaves.size(); ++li) {
+      const std::size_t g = group_of_leaf[li];
+      const TurnLeafReach& rho = base.leaf_reaches[li];
+      for (int seat = 0; seat < 2; ++seat)
+        for (std::uint32_t c = 0; c < kRiverC; ++c) {
+          const double ef = level * sh[g][seat][c];
+          e_max = std::max(e_max, std::fabs(ef));
+          acc2 += rho.rho[seat][c] * ef * ef;
+        }
+    }
+    const double e_l2 = std::sqrt(acc2);
+    const double delta =
+        (h.turn_gap_bb + h.river_term_bb) - (ident.turn_gap_bb + ident.river_term_bb);
+    std::printf("%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f\n", label, level, e_max, e_l2, h.turn_gap_bb,
+                h.river_term_bb, delta);
+    if (csv != nullptr) {
+      std::fprintf(csv, "%s,%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f\n", spec->name, label, level, e_max,
+                   e_l2, h.turn_gap_bb, h.river_term_bb, delta);
+      std::fflush(csv);
+    }
+    std::fflush(stdout);
+  };
+
+  // Independent-walker BR-minus-sigma gap weights, aggregated per group, plus
+  // the matching equilibrium rho (the water-filling importance is w/rho).
+  std::vector<TurnLeafGapWeight> gw_leaves = turn_leaf_gap_weights(true_cfg, base.sigma);
+  Shifts gw(n_groups), grho(n_groups);
+  for (std::size_t g = 0; g < n_groups; ++g)
+    for (int seat = 0; seat < 2; ++seat) {
+      gw[g][seat].assign(kRiverC, 0.0);
+      grho[g][seat].assign(kRiverC, 0.0);
+    }
+  for (std::size_t li = 0; li < leaves.size(); ++li) {
+    const std::size_t g = group_of_leaf[li];
+    for (int seat = 0; seat < 2; ++seat)
+      for (std::uint32_t c = 0; c < kRiverC; ++c) {
+        gw[g][seat][c] += gw_leaves[li].w[seat][c];
+        grho[g][seat][c] += base.leaf_reaches[li].rho[seat][c];
+      }
+  }
+
+  // Partially-coherent SPIKE: per group/seat rank combos by water-filling
+  // importance w/rho among gap-increasing combos (w>0), and put a +level pot
+  // payoff shift on the minimal set carrying a fraction q of their rho mass.
+  auto spike_shifts = [&](double q) {
+    Shifts sh(n_groups);
+    for (std::size_t g = 0; g < n_groups; ++g) {
+      for (int seat = 0; seat < 2; ++seat) {
+        sh[g][seat].assign(kRiverC, 0.0);
+        std::vector<std::uint32_t> cand;
+        double total_rho = 0.0;
+        for (std::uint32_t c = 0; c < kRiverC; ++c)
+          if (gw[g][seat][c] > 0.0) {
+            cand.push_back(c);
+            total_rho += grho[g][seat][c];
+          }
+        std::sort(cand.begin(), cand.end(), [&](std::uint32_t a, std::uint32_t b) {
+          const double ia = gw[g][seat][a] / (grho[g][seat][a] + 1e-30);
+          const double ib = gw[g][seat][b] / (grho[g][seat][b] + 1e-30);
+          return ia > ib;
+        });
+        const double target = q * total_rho;
+        double acc = 0.0;
+        for (std::uint32_t c : cand) {
+          sh[g][seat][c] = 1.0;  // payoff-increasing for this seat
+          acc += grho[g][seat][c];
+          if (acc >= target)
+            break;
+        }
+      }
+    }
+    return sh;
+  };
+
+  // Reach-weighted norm of the REAL (un-normalized) r600/r2400 drift: the
+  // production-relevant e_l2 coordinate L* (Finding 2), and its max e_max.
+  double emax_real = 0.0, l2star_acc = 0.0;
+  for (std::size_t li = 0; li < leaves.size(); ++li) {
+    const std::size_t g = group_of_leaf[li];
+    const TurnLeafReach& rho = base.leaf_reaches[li];
+    for (int seat = 0; seat < 2; ++seat)
+      for (std::uint32_t c = 0; c < kRiverC; ++c) {
+        const double d = groups[g].drift[seat][c];
+        emax_real = std::max(emax_real, std::fabs(d));
+        l2star_acc += rho.rho[seat][c] * d * d;
+      }
+  }
+  const double lstar_real = std::sqrt(l2star_acc);
+  if (norms_csv != nullptr) {
+    FILE* nf = std::fopen(norms_csv, "a+");
+    if (nf != nullptr) {
+      if (std::ftell(nf) == 0)
+        std::fprintf(nf, "stratum,emax_real,lstar_real\n");
+      std::fprintf(nf, "%s,%.8f,%.8f\n", spec->name, emax_real, lstar_real);
+      std::fclose(nf);
+    }
+  }
+  std::fprintf(stderr, "real norms: e_max=%.6f L*(reach-weighted)=%.6f\n", emax_real, lstar_real);
+
   // Precompute per-seat zero-mean offsets for the alternating/structured arms.
   auto recenter = [&](const char* arm) {
     double mean = 0.0;
@@ -292,59 +425,44 @@ int main(int argc, char** argv) {
     return unit(arm, c);
   };
 
-  for (const char* arm : {"zm", "coh", "pat", "act"}) {
-    for (double level : kLevels) {
-      // Perturb every group matrix with per-seat additive CV errors:
-      //   M'[i,j] = M[i,j] + d0[i] - d1[j]   (seat-1 gain is -d1),
-      // d_seat(c) in chips = pot * level * uval(arm,group,seat,c).
-      std::vector<std::vector<double>> pert(n_groups);
-      for (std::size_t g = 0; g < n_groups; ++g) {
-        pert[g] = groups[g].matrix;
-        const double amp = groups[g].pot * level;
-        double* mp = pert[g].data();
-        for (std::uint32_t i = 0; i < kRiverC; ++i) {
-          const double d0 = amp * uval(arm, g, 0, i);
-          for (std::uint32_t j = 0; j < kRiverC; ++j) {
-            const double d1 = amp * uval(arm, g, 1, j);
-            mp[static_cast<std::size_t>(i) * kRiverC + j] += d0 - d1;
-          }
-        }
+  auto pattern_shifts = [&](const char* arm) {
+    Shifts sh(n_groups);
+    for (std::size_t g = 0; g < n_groups; ++g)
+      for (int seat = 0; seat < 2; ++seat) {
+        sh[g][seat].assign(kRiverC, 0.0);
+        for (std::uint32_t c = 0; c < kRiverC; ++c)
+          sh[g][seat][c] = uval(arm, g, seat, c);
       }
-      std::vector<std::vector<double>*> pert_ptrs(leaves.size());
-      for (std::size_t i = 0; i < leaves.size(); ++i)
-        pert_ptrs[i] = &pert[group_of_leaf[i]];
-      std::vector<TurnLeafValue> pert_tleaves;
-      TurnSolveConfig pcfg;
-      fill_cfg(pcfg, pert_ptrs, pert_tleaves);
-      const TurnSolveResult pr = solve_turn_subgame(pcfg);
-      const HybridNashConv h = turn_hybrid_nash_conv(true_cfg, pr.sigma, river_nc);
+    return sh;
+  };
 
-      // Frozen G3 norms: e_max = max|delta|/p;
-      // e_l2 = sqrt(sum rho (delta/p)^2), delta/p = level*uval.
-      double e_max = 0.0, acc2 = 0.0;
-      for (std::size_t li = 0; li < leaves.size(); ++li) {
-        const std::size_t g = group_of_leaf[li];
-        const TurnLeafReach& rho = base.leaf_reaches[li];
-        for (int seat = 0; seat < 2; ++seat)
-          for (std::uint32_t c = 0; c < kRiverC; ++c) {
-            const double ef = level * uval(arm, g, seat, c);
-            e_max = std::max(e_max, std::fabs(ef));
-            acc2 += rho.rho[seat][c] * ef * ef;
-          }
-      }
-      const double e_l2 = std::sqrt(acc2);
-      const double delta_hybrid =
-          (h.turn_gap_bb + h.river_term_bb) - (ident.turn_gap_bb + ident.river_term_bb);
-      std::printf("%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f\n", arm, level, e_max, e_l2, h.turn_gap_bb,
-                  h.river_term_bb, delta_hybrid);
-      if (csv != nullptr) {
-        std::fprintf(csv, "%s,%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f\n", spec->name, arm, level, e_max,
-                     e_l2, h.turn_gap_bb, h.river_term_bb, delta_hybrid);
-        std::fflush(csv);  // make per-injection progress durable for monitors
-      }
-      std::fflush(stdout);
+  if (arm_set != "spike") {
+    for (const char* arm : {"zm", "coh", "pat", "act"}) {
+      const Shifts sh = pattern_shifts(arm);
+      for (double level : kLevels)
+        inject(arm, level, sh);
     }
   }
+
+  // Partially-coherent BR-weight-ranked spike arms at the operating amplitude
+  // E (and a 1e-2 bracket point). q is the fraction of positive-weight rho mass
+  // driven to a +E payoff shift; q ~= (L/E)^2 lands at e_l2 ~= L. q=1 is the
+  // all-combo coherent cross-check. Labels carry q in the arm field.
+  if (arm_set != "patterns") {
+    constexpr double kE = 0.0184;
+    for (double q : {0.02, 0.033, 0.05}) {
+      const Shifts sh = spike_shifts(q);
+      char label[24];
+      std::snprintf(label, sizeof(label), "spike%.3f", q);
+      inject(label, 1e-2, sh);
+      inject(label, kE, sh);
+    }
+    {
+      const Shifts sh = spike_shifts(1.0);
+      inject("spike1.0", kE, sh);
+    }
+  }
+
   if (csv != nullptr) {
     std::fclose(csv);
   }

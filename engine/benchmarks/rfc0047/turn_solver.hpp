@@ -111,6 +111,22 @@ HybridNashConv turn_hybrid_nash_conv(const TurnSolveConfig& cfg,
                                      std::span<const std::vector<double>> node_sigma,
                                      std::span<const double> leaf_river_nc_chips);
 
+// Per-leaf, per-seat, per-five-card-combo linearization weight of the fixed
+// turn strategy's telescoping BR gap wrt that leaf's continuation payoff:
+// w = own-combo arrival reach when the viewer BEST-responds minus the own
+// arrival reach under the average strategy (same /kTurnNorm units as
+// TurnLeafReach::rho). Large positive w marks combos where a leaf-CV error
+// most raises exploitability; the G3 partially-coherent SPIKE arm ranks and
+// targets them.
+struct TurnLeafGapWeight {
+  std::size_t child_node = 0;
+  std::array<std::vector<double>, 2> w;  // indexed by five-card dense combo
+};
+
+// Independent-walker BR-minus-sigma leaf gap weights under node_sigma.
+std::vector<TurnLeafGapWeight> turn_leaf_gap_weights(
+    const TurnSolveConfig& cfg, std::span<const std::vector<double>> node_sigma);
+
 TurnSolveResult solve_turn_subgame(const TurnSolveConfig& cfg);
 
 }  // namespace bs::rfc0047

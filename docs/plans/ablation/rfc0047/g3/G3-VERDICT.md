@@ -67,6 +67,36 @@ campaign: 5.1e-4..8.5e-4 BB on all six strata.
 
 ## Gate status
 
-**G3 error-propagation certificate: PASS** (UCB 2.07e-3 <= 0.008 BB, six
-strata, joint two-norm envelope). The online R0 term remains an explicit S3/G5
-acceptance item and is not claimed here.
+**G3 turn-propagation component: PROVISIONAL PASS — superseded by independent
+review (2026-11-06, Changes-Requested).** The act-ray number above is sound,
+but a non-authoring reviewer showed it does NOT yet bound a non-probed
+mounted node:
+
+1. a 1-D ray cannot bound the 2-D norm box {e_max<=E, e_l2<=L}; exploitability
+   is not monotone in e_l2 (the frame itself: w1 1e-2 zm e_l2 .0110 / delta
+   .00117 vs coh e_l2 .0078 / delta .00485). The missing worst shape is a
+   partially coherent, best-response-weight-ranked SPIKE on the ~3% combos
+   carrying most telescoping BR-deviation weight. Closure: add deterministic
+   spike(q) arms ranked by w = BR-reach - sigma-reach and gate the 2-D
+   frontier.
+2. the shipped L (unweighted per-group cert RMS) and the probe e_l2
+   (reach-weighted, pooled over leaves/seats) are different norms; the
+   production reach-weighted L* must be recomputed from the per-combo cert
+   vectors and the exported rho before any dominance comparison.
+3. the t-UCb (2.07e-3) is a bound on the MEAN and lies below the observed
+   worst stratum (monotone 3.01e-3); the envelope for a non-probed node is
+   the frozen-frame MAX plus margin, not a mean confidence bound.
+4. full G3 acceptance also requires UCB(t_river) <= 0.002 with the production
+   exact-key river re-solve (S3/G5); this campaign's loose r600 t_river is
+   diagnostic only.
+
+Until the spike frontier, L*, and the max-envelope are measured, the
+authoritative status is **G3 act-ray provisional only; do not serve a
+non-probed mounted node as G3-certified**. The coherent single-norm arm
+fails (UCB 1.51e-2), exactly why the two-norm + spike closure is required.
+
+## (superseded) prior act-ray headline
+
+~~G3 error-propagation certificate: PASS (UCB 2.07e-3 <= 0.008 BB, six strata,
+joint two-norm envelope).~~ Superseded as a full-node certificate by the
+review above; the numeric ray result remains valid as one stress coordinate.
