@@ -553,6 +553,22 @@ feasibility established on single leaves; S2.2 builder/oracle next).**
   held until L*(6k) returns; if the production corner still exceeds 0.008 the
   response is tighter G2 per-entry bounds (more river iterations) or an S3
   mount-time shape/e_l2 contract, never a relaxed gate.
+- **G3 production L* measured (2026-11-07): far below the proxy.** The
+  r6000/ref20000 reach-weighted real norms (`g3-norms6k-*.csv`, per-stratum
+  single-writer files; emax_real is now 0.0061-0.0232 pot, i.e. the shipped
+  accuracy regime) give L*(6k) = w1 **.000801**, paired **.001294**, monotone
+  **.000993**, ahigh **.000984**, twotone **.001136**, raised **.000431** —
+  5-6x smaller than the r600 proxy (.0039-.0079) and well below the finest
+  measured spike concentration q=.02 (e_l2 .00236-.00279 at E). Since delta
+  at E decreases monotonically as q shrinks on every stratum (q=.02 is the
+  smallest/adversarial-most-efficient point), the production box corner at
+  L*(6k) is bounded above by the r600-leaf q=.02 spike: raised .00439,
+  monotone .00304, paired .00130, ahigh .00044, twotone .00083, w1 .00142 —
+  frozen MAX .00439 < 0.008. To close the residual leaf-substitution
+  objection directly (the spike frontier used r600 leaves/rho), a
+  candidate-only r6000 prod box campaign measures q=.01/.02 at E with
+  production leaves and the production equilibrium rho (2 injections/stratum,
+  task btguooss4); the box verdict is finalized from that.
 - **G3 step-2 design (frozen; next implementation).** Perturb the per-leaf
 - **G3 step-2 implemented (2026-11-05, uncommitted).**
   1. `TurnSolveResult.leaf_reaches`: per-config-leaf, per-seat, per-five-card

@@ -177,27 +177,33 @@ int main(int argc, char** argv) {
 
         // Signed candidate-minus-reference per-combo CV drift: the real G2
         // error shape (not fabs), normalized by pot and rescaled to max|.|=1
-        // so the arm's amplitude is set purely by the injected level.
-        RiverSolveConfig rcfg = cfg;
-        rcfg.iterations = ref_iters;
-        rcfg.compute_deal_matrix = false;
-        const RiverSolveResult ref = solve_river_subgame(rcfg, {});
-        const std::array<const std::vector<double>*, 2> rc = {&r.root_cfv_seat0, &r.root_cfv_seat1};
-        const std::array<const std::vector<double>*, 2> rr = {&ref.root_cfv_seat0,
-                                                              &ref.root_cfv_seat1};
+        // so the arm's amplitude is set purely by the injected level. The
+        // production spike-only mode ("prod") needs no reference/drift.
         for (int seat = 0; seat < 2; ++seat) {
           groups[g].drift[seat].assign(kRiverC, 0.0);
           groups[g].act_unit[seat].assign(kRiverC, 0.0);
-          double mx = 0.0;
-          for (std::uint32_t c = 0; c < kRiverC; ++c) {
-            const double d = ((*rc[seat])[c] - (*rr[seat])[c]) / groups[g].pot;
-            groups[g].drift[seat][c] = d;
-            groups[g].act_unit[seat][c] = d;
-            mx = std::max(mx, std::fabs(d));
+        }
+        if (arm_set != "prod") {
+          RiverSolveConfig rcfg = cfg;
+          rcfg.iterations = ref_iters;
+          rcfg.compute_deal_matrix = false;
+          const RiverSolveResult ref = solve_river_subgame(rcfg, {});
+          const std::array<const std::vector<double>*, 2> rc = {&r.root_cfv_seat0,
+                                                                &r.root_cfv_seat1};
+          const std::array<const std::vector<double>*, 2> rr = {&ref.root_cfv_seat0,
+                                                                &ref.root_cfv_seat1};
+          for (int seat = 0; seat < 2; ++seat) {
+            double mx = 0.0;
+            for (std::uint32_t c = 0; c < kRiverC; ++c) {
+              const double d = ((*rc[seat])[c] - (*rr[seat])[c]) / groups[g].pot;
+              groups[g].drift[seat][c] = d;
+              groups[g].act_unit[seat][c] = d;
+              mx = std::max(mx, std::fabs(d));
+            }
+            if (mx > 0.0)
+              for (double& x : groups[g].act_unit[seat])
+                x /= mx;
           }
-          if (mx > 0.0)
-            for (double& x : groups[g].act_unit[seat])
-              x /= mx;
         }
         const std::size_t d = done.fetch_add(1) + 1;
         if (d % 24 == 0 || d == n_groups) {
@@ -385,16 +391,24 @@ int main(int argc, char** argv) {
       }
   }
   const double lstar_real = std::sqrt(l2star_acc);
-  if (norms_csv != nullptr) {
-    FILE* nf = std::fopen(norms_csv, "a+");
+  if (norms_csv != nullptr && arm_set != "prod") {
+    // norms-only campaign writes a fresh PER-STRATUM file (single writer ->
+    // no append/header race); all/spike use append for a shared sidecar.
+    const char* mode = arm_set == "norms" ? "w" : "a+";
+    FILE* nf = std::fopen(norms_csv, mode);
     if (nf != nullptr) {
-      if (std::ftell(nf) == 0)
+      if (mode[0] == 'w' || std::ftell(nf) == 0)
         std::fprintf(nf, "stratum,emax_real,lstar_real\n");
       std::fprintf(nf, "%s,%.8f,%.8f\n", spec->name, emax_real, lstar_real);
       std::fclose(nf);
     }
   }
   std::fprintf(stderr, "real norms: e_max=%.6f L*(reach-weighted)=%.6f\n", emax_real, lstar_real);
+
+  // norms-only: the production L* measurement needs the production river
+  // solves and turn-equilibrium rho, but no perturbation injections.
+  if (arm_set == "norms")
+    return 0;
 
   // Precompute per-seat zero-mean offsets for the alternating/structured arms.
   auto recenter = [&](const char* arm) {
@@ -436,7 +450,7 @@ int main(int argc, char** argv) {
     return sh;
   };
 
-  if (arm_set != "spike") {
+  if (arm_set != "spike" && arm_set != "prod") {
     for (const char* arm : {"zm", "coh", "pat", "act"}) {
       const Shifts sh = pattern_shifts(arm);
       for (double level : kLevels)
@@ -448,7 +462,20 @@ int main(int argc, char** argv) {
   // E (and a 1e-2 bracket point). q is the fraction of positive-weight rho mass
   // driven to a +E payoff shift; q ~= (L/E)^2 lands at e_l2 ~= L. q=1 is the
   // all-combo coherent cross-check. Labels carry q in the arm field.
-  if (arm_set != "patterns") {
+  if (arm_set == "prod") {
+    // Production-leaf box corner: candidate-only leaves (river_iters passed
+    // on the CLI), fine concentrations q=.01/.02 at amplitude E only. These
+    // bracket/lie above the production reach-weighted L* (.0004-.0013) and
+    // directly measure whether an even more concentrated error could exceed
+    // the budget, using production leaves and the production equilibrium rho.
+    constexpr double kE = 0.0184;
+    for (double q : {0.01, 0.02}) {
+      const Shifts sh = spike_shifts(q);
+      char label[24];
+      std::snprintf(label, sizeof(label), "spike%.3f", q);
+      inject(label, kE, sh);
+    }
+  } else if (arm_set != "patterns") {
     constexpr double kE = 0.0184;
     for (double q : {0.02, 0.033, 0.05}) {
       const Shifts sh = spike_shifts(q);
