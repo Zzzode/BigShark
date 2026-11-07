@@ -130,7 +130,7 @@ int main(int argc, char** argv) {
     if (std::ftell(csv) == 0)
       std::fprintf(csv,
                    "stratum,arm,level,e_max,e_l2,turn_gap_bb,"
-                   "river_term_bb,delta_hybrid_bb\n");
+                   "river_term_bb,delta_hybrid_bb,analytic_bound_bb\n");
   }
 
   const std::vector<FrontierLeaf> leaves = enumerate_frontiers(*spec, 1);
@@ -183,7 +183,8 @@ int main(int argc, char** argv) {
           groups[g].drift[seat].assign(kRiverC, 0.0);
           groups[g].act_unit[seat].assign(kRiverC, 0.0);
         }
-        if (arm_set != "prod") {
+        // "full" needs the reference (real drift/L*); prod/prodfine skip it.
+        if (arm_set != "prod" && arm_set != "prodfine") {
           RiverSolveConfig rcfg = cfg;
           rcfg.iterations = ref_iters;
           rcfg.compute_deal_matrix = false;
@@ -269,7 +270,7 @@ int main(int argc, char** argv) {
   // Identity row in the campaign frame: turn_gap is the zero-perturbation
   // baseline hybrid gap; the evaluator cross-checks it against solver NC.
   if (csv != nullptr) {
-    std::fprintf(csv, "%s,identity,0,0,0,%.8f,%.8f,0\n", spec->name, ident.turn_gap_bb,
+    std::fprintf(csv, "%s,identity,0,0,0,%.8f,%.8f,0,0\n", spec->name, ident.turn_gap_bb,
                  ident.river_term_bb);
     std::fflush(csv);
   }
@@ -277,10 +278,81 @@ int main(int argc, char** argv) {
 
   using Shifts = std::vector<std::array<std::vector<double>, 2>>;  // [g][seat][c]
 
+  // Independent-walker BR-minus-sigma gap weights and matching equilibrium
+  // rho, aggregated per group (the water-filling importance is w/rho).
+  std::vector<TurnLeafGapWeight> gw_leaves = turn_leaf_gap_weights(true_cfg, base.sigma);
+  Shifts gw(n_groups), grho(n_groups);
+  for (std::size_t g = 0; g < n_groups; ++g)
+    for (int seat = 0; seat < 2; ++seat) {
+      gw[g][seat].assign(kRiverC, 0.0);
+      grho[g][seat].assign(kRiverC, 0.0);
+    }
+  for (std::size_t li = 0; li < leaves.size(); ++li) {
+    const std::size_t g = group_of_leaf[li];
+    for (int seat = 0; seat < 2; ++seat)
+      for (std::uint32_t c = 0; c < kRiverC; ++c) {
+        gw[g][seat][c] += gw_leaves[li].w[seat][c];
+        grho[g][seat][c] += base.leaf_reaches[li].rho[seat][c];
+      }
+  }
+  const double bb_gate =
+      true_cfg.def.big_blind > 0 ? static_cast<double>(true_cfg.def.big_blind) : 1.0;
+
+  // Shape-free first-order box upper bound (independent review F1/F2):
+  // maximize sum |w| pot |d| / BB over ALL pooled (group,seat,combo) cells
+  // (global cross-group concentration, both w tails via sign(w)) subject to
+  // |d|<=E and sum rho d^2 <= L^2. Optimal d is a capped water-fill ranked by
+  // (|w| pot)/(rho); lambda is bisectioned to hit the energy.
+  auto analytic_box = [&](double E, double L) {
+    struct Cell {
+      double coeff, rho;
+    };
+    std::vector<Cell> cells;
+    for (std::size_t g = 0; g < n_groups; ++g)
+      for (int seat = 0; seat < 2; ++seat)
+        for (std::uint32_t c = 0; c < kRiverC; ++c) {
+          const double rho = grho[g][seat][c];
+          if (rho <= 0.0)
+            continue;
+          cells.push_back({std::fabs(gw[g][seat][c]) * groups[g].pot / bb_gate, rho});
+        }
+    std::sort(cells.begin(), cells.end(),
+              [](const Cell& a, const Cell& b) { return a.coeff / a.rho > b.coeff / b.rho; });
+    auto energy = [&](double lam) {
+      double s = 0.0;
+      for (const Cell& x : cells) {
+        double d = x.coeff / (lam * x.rho);
+        if (d > E)
+          d = E;
+        s += x.rho * d * d;
+      }
+      return s;
+    };
+    double lo = 1e-18, hi = 1e9;
+    for (int it = 0; it < 200; ++it) {
+      const double mid = 0.5 * (lo + hi);
+      if (energy(mid) > L * L)
+        lo = mid;
+      else
+        hi = mid;
+    }
+    const double lam = 0.5 * (lo + hi);
+    double bound = 0.0;
+    for (const Cell& x : cells) {
+      double d = x.coeff / (lam * x.rho);
+      if (d > E)
+        d = E;
+      bound += x.coeff * d;
+    }
+    return bound;
+  };
+
   // Generic injection: dimensionless per-group per-seat shift sh (delta/pot),
   // amplitude level. Builds M' = M + p*level*(sh0[i] - sh1[j]), re-solves the
   // turn, evaluates the fixed perturbed strategy against the TRUE leaves, and
-  // records e_max / reach-weighted e_l2 / hybrid delta.
+  // records e_max / reach-weighted e_l2 / hybrid delta plus the shape-free
+  // analytic upper bound at the SAME (e_max,e_l2) (must dominate the measured
+  // delta; the ratio is the first-order linearization quality check).
   auto inject = [&](const char* label, double level, const Shifts& sh) {
     std::vector<std::vector<double>> pert(n_groups);
     for (std::size_t g = 0; g < n_groups; ++g) {
@@ -316,33 +388,16 @@ int main(int argc, char** argv) {
     const double e_l2 = std::sqrt(acc2);
     const double delta =
         (h.turn_gap_bb + h.river_term_bb) - (ident.turn_gap_bb + ident.river_term_bb);
-    std::printf("%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f\n", label, level, e_max, e_l2, h.turn_gap_bb,
-                h.river_term_bb, delta);
+    const double analytic = analytic_box(e_max, e_l2);
+    std::printf("%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f\n", label, level, e_max, e_l2, h.turn_gap_bb,
+                h.river_term_bb, delta, analytic);
     if (csv != nullptr) {
-      std::fprintf(csv, "%s,%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f\n", spec->name, label, level, e_max,
-                   e_l2, h.turn_gap_bb, h.river_term_bb, delta);
+      std::fprintf(csv, "%s,%s,%.0e,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f\n", spec->name, label, level,
+                   e_max, e_l2, h.turn_gap_bb, h.river_term_bb, delta, analytic);
       std::fflush(csv);
     }
     std::fflush(stdout);
   };
-
-  // Independent-walker BR-minus-sigma gap weights, aggregated per group, plus
-  // the matching equilibrium rho (the water-filling importance is w/rho).
-  std::vector<TurnLeafGapWeight> gw_leaves = turn_leaf_gap_weights(true_cfg, base.sigma);
-  Shifts gw(n_groups), grho(n_groups);
-  for (std::size_t g = 0; g < n_groups; ++g)
-    for (int seat = 0; seat < 2; ++seat) {
-      gw[g][seat].assign(kRiverC, 0.0);
-      grho[g][seat].assign(kRiverC, 0.0);
-    }
-  for (std::size_t li = 0; li < leaves.size(); ++li) {
-    const std::size_t g = group_of_leaf[li];
-    for (int seat = 0; seat < 2; ++seat)
-      for (std::uint32_t c = 0; c < kRiverC; ++c) {
-        gw[g][seat][c] += gw_leaves[li].w[seat][c];
-        grho[g][seat][c] += base.leaf_reaches[li].rho[seat][c];
-      }
-  }
 
   // Partially-coherent SPIKE: per group/seat rank combos by water-filling
   // importance w/rho among gap-increasing combos (w>0), and put a +level pot
@@ -391,19 +446,26 @@ int main(int argc, char** argv) {
       }
   }
   const double lstar_real = std::sqrt(l2star_acc);
-  if (norms_csv != nullptr && arm_set != "prod") {
-    // norms-only campaign writes a fresh PER-STRATUM file (single writer ->
-    // no append/header race); all/spike use append for a shared sidecar.
-    const char* mode = arm_set == "norms" ? "w" : "a+";
+
+  // Bound at the stratum's own measured full-census (e_max, L*). The analytic
+  // bound is exactly linear in E for fixed L, so the evaluator rescales it to
+  // the global envelope E_env = max strata emax_real (keeping L*) to close F3.
+  const double box_own = analytic_box(emax_real, lstar_real);
+
+  if (norms_csv != nullptr && arm_set != "prod" && arm_set != "prodfine") {
+    // norms/full write a fresh PER-STRATUM file (single writer -> no append
+    // race); all/spike append to a shared sidecar.
+    const char* mode = (arm_set == "norms" || arm_set == "full") ? "w" : "a+";
     FILE* nf = std::fopen(norms_csv, mode);
     if (nf != nullptr) {
       if (mode[0] == 'w' || std::ftell(nf) == 0)
-        std::fprintf(nf, "stratum,emax_real,lstar_real\n");
-      std::fprintf(nf, "%s,%.8f,%.8f\n", spec->name, emax_real, lstar_real);
+        std::fprintf(nf, "stratum,emax_real,lstar_real,analytic_box_bb\n");
+      std::fprintf(nf, "%s,%.8f,%.8f,%.8f\n", spec->name, emax_real, lstar_real, box_own);
       std::fclose(nf);
     }
   }
-  std::fprintf(stderr, "real norms: e_max=%.6f L*(reach-weighted)=%.6f\n", emax_real, lstar_real);
+  std::fprintf(stderr, "real norms: e_max=%.6f L*=%.6f analytic_box=%.6f\n", emax_real, lstar_real,
+               box_own);
 
   // norms-only: the production L* measurement needs the production river
   // solves and turn-equilibrium rho, but no perturbation injections.
@@ -450,7 +512,7 @@ int main(int argc, char** argv) {
     return sh;
   };
 
-  if (arm_set != "spike" && arm_set != "prod" && arm_set != "prodfine") {
+  if (arm_set != "spike" && arm_set != "prod" && arm_set != "prodfine" && arm_set != "full") {
     for (const char* arm : {"zm", "coh", "pat", "act"}) {
       const Shifts sh = pattern_shifts(arm);
       for (double level : kLevels)
@@ -479,6 +541,18 @@ int main(int argc, char** argv) {
   } else if (arm_set == "prodfine") {
     constexpr double kE = 0.0184;
     for (double q : {0.002, 0.005}) {
+      const Shifts sh = spike_shifts(q);
+      char label[24];
+      std::snprintf(label, sizeof(label), "spike%.3f", q);
+      inject(label, kE, sh);
+    }
+  } else if (arm_set == "full") {
+    // Definitive single campaign: production candidate+reference (real
+    // drift/L* via the norms sidecar), identity, and the four fine spikes at
+    // E, each carrying its analytic first-order box bound column (so measured
+    // delta vs the global-pooled analytic bound is cross-checked in one run).
+    constexpr double kE = 0.0184;
+    for (double q : {0.002, 0.005, 0.01, 0.02}) {
       const Shifts sh = spike_shifts(q);
       char label[24];
       std::snprintf(label, sizeof(label), "spike%.3f", q);

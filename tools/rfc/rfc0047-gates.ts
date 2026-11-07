@@ -430,7 +430,15 @@ export function parseG3Csv(text: string): G3Row[] {
   const header = rows.shift();
   if (header === undefined)
     throw new GateInputError('g3 CSV is empty');
-  requireHeader(header, G3_HEADER.split(','));
+  // Accept the current 8-column schema and the earlier 9-column schema that
+  // also carried a per-injection analytic upper-bound column.
+  const base = G3_HEADER.split(',');
+  if (header.length === base.length + 1) {
+    if (header.join(',') !== [...base, 'analytic_bound_bb'].join(','))
+      throw new GateInputError('unexpected 9-column g3 header');
+  } else {
+    requireHeader(header, base);
+  }
   return rows.map((cols) => {
     const r: Record<string, string> = {};
     header.forEach((h, i) => { r[h] = cols[i] ?? ''; });
@@ -698,30 +706,49 @@ export interface NormsRow {
   lStarReal: number;
 }
 
+export interface NormsRow {
+  stratum: string;
+  eMaxReal: number;   // full-census measured per-combo |drift|/pot envelope
+  lStarReal: number;  // reach-weighted e_l2 of the real signed drift
+  analyticBoxBb: number;  // shape-free first-order box bound at (eMaxReal,L*)
+}
+
 export function parseNormsCsv(text: string): NormsRow[] {
   const rows = parseCsv(text);
   const header = rows.shift();
   if (header === undefined)
     throw new GateInputError('norms CSV is empty');
-  requireHeader(header, ['stratum', 'emax_real', 'lstar_real']);
+  requireHeader(header, ['stratum', 'emax_real', 'lstar_real', 'analytic_box_bb']);
   return rows.map((cols) => {
     if (cols[0] === undefined || !cols[0])
       throw new GateInputError('norms row has empty stratum');
-    const lStar = Number(cols[2]);
-    const eMax = Number(cols[1]);
-    if (!Number.isFinite(lStar) || !Number.isFinite(eMax))
+    const v: Record<string, string> = {};
+    ['stratum', 'emax_real', 'lstar_real', 'analytic_box_bb'].forEach((h, i) => {
+      v[h] = cols[i] ?? '';
+    });
+    const eMax = Number(v.emax_real);
+    const lStar = Number(v.lstar_real);
+    const box = Number(v.analytic_box_bb);
+    if (![eMax, lStar, box].every(Number.isFinite))
       throw new GateInputError('norms row non-numeric');
-    return {stratum: cols[0], eMaxReal: eMax, lStarReal: lStar};
+    if (box < 0)
+      throw new GateInputError('norms analytic box bound negative');
+    return {stratum: v.stratum!, eMaxReal: eMax, lStarReal: lStar,
+            analyticBoxBb: box};
   });
 }
 
 export interface SpikeStratumResult {
   stratum: string;
+  eMaxReal: number;
   lStar: number;
-  // Interpolated propagated turn delta at the box corner (e_max=E, e_l2=L*).
-  boxDeltaBb: number;
-  clampedBelowFinest: boolean;  // L* below the finest measured spike e_l2
-  spikePoints: Array<[number, number]>;  // (e_l2, delta) at amplitude E
+  // Empirical: interpolated/clamped measured spike delta at L*.
+  empiricalBoxDeltaBb: number;
+  clampedBelowFinest: boolean;
+  spikePoints: Array<[number, number]>;
+  // Shape-free analytic first-order box bound rescaled to the global
+  // full-census amplitude E_env (linear in E, L kept): the gated coordinate.
+  analyticEnvBoxBb: number;
 }
 
 export interface S2G3SpikeResult {
@@ -736,6 +763,7 @@ export interface S2G3SpikeResult {
   sdBb: number;
   meanUcbBb: number;
   barBb: number;
+  eEnvPotFraction: number;  // full-census amplitude envelope (F3)
 }
 
 export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
@@ -743,10 +771,17 @@ export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
   const spikeRows = parseG3Csv(spikeCsv);
   const norms = parseNormsCsv(normsCsv);
   const failures: string[] = [];
-  const lByStratum = new Map(norms.map((n) => [n.stratum, n.lStarReal]));
+  const nByStratum = new Map(norms.map((n) => [n.stratum, n]));
   for (const s of STRATA)
-    if (!lByStratum.has(s))
+    if (!nByStratum.has(s))
       failures.push(`missing norms row for '${s}'`);
+
+  // F3: the true amplitude envelope is the full-census measured per-combo
+  // bound (max over strata), NOT the frame12-sample E. The analytic box is
+  // exactly linear in E, so it is rescaled to this E_env below.
+  const eEnv = norms.reduce((m, n) => Math.max(m, n.eMaxReal), 0);
+  if (!(eEnv > 0))
+    failures.push('non-positive full-census e_max envelope');
 
   const byStratum = new Map<string, G3Row[]>();
   for (const r of spikeRows) {
@@ -759,16 +794,16 @@ export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
       failures.push(`missing spike stratum '${s}'`);
 
   const perStratum: SpikeStratumResult[] = [];
-  const boxDeltas: number[] = [];
+  const analyticEnv: number[] = [];
 
   for (const s of STRATA) {
     const srows = byStratum.get(s);
-    const lStar = lByStratum.get(s);
-    if (!srows || lStar === undefined)
+    const nr = nByStratum.get(s);
+    if (!srows || !nr)
       continue;
-    // Spike points at the operating amplitude E: select by measured e_max
-    // (the level column rounds to one exponent so 0.0184 prints as 2e-2),
-    // varying concentration q -> varying measured e_l2.
+    const lStar = nr.lStarReal;
+    // Empirical spike points at amplitude SPIKE_E, ascending in measured
+    // reach-weighted e_l2.
     const pts = srows
       .filter((r) => r.arm.startsWith('spike')
               && Math.abs(r.eMax - SPIKE_E_POT_FRACTION) < 1e-9)
@@ -781,44 +816,52 @@ export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
     for (const [x, y] of pts)
       if (!(x >= 0) || !Number.isFinite(y))
         failures.push(`${s}: non-finite spike point`);
+    // Reviewer condition (iii): refuse to chord a non-monotone frontier.
+    for (let k = 1; k < pts.length; ++k)
+      if (pts[k]![1] + 1e-12 < pts[k - 1]![1])
+        failures.push(`${s}: spike delta not monotone in e_l2 at index ${k}`);
+
     const finest = pts[0]!;
     const coarsest = pts[pts.length - 1]!;
-    let boxDelta: number;
+    let empirical: number;
     let clamped = false;
     if (lStar <= finest[0]) {
-      // Production e_l2 is below the finest spike; the finest water-fill is
-      // the most concentrated (most adversarial per unit e_l2) measured
-      // point, so it bounds the corner from above.
-      boxDelta = finest[1];
+      empirical = finest[1];  // most concentrated measured point bounds it
       clamped = true;
     } else if (lStar > coarsest[0]) {
-      failures.push(`${s}: L* ${lStar.toExponential(3)} above the coarsest `
-        + `spike e_l2 ${coarsest[0].toExponential(3)}; add a broader q`);
+      failures.push(`${s}: L* ${lStar.toExponential(3)} above coarsest spike `
+        + `e_l2 ${coarsest[0].toExponential(3)}; add a broader q`);
       continue;
     } else {
-      boxDelta = NaN;
+      empirical = NaN;
       for (let k = 1; k < pts.length; ++k) {
         const hi = pts[k]!;
         if (lStar <= hi[0]) {
           const lo = pts[k - 1]!;
           const f = hi[0] === lo[0] ? 0 : (lStar - lo[0]) / (hi[0] - lo[0]);
-          boxDelta = lo[1] + f * (hi[1] - lo[1]);
+          empirical = lo[1] + f * (hi[1] - lo[1]);
           break;
         }
       }
     }
+
+    // Shape-free first-order box bound at the global full-census amplitude
+    // E_env (linear rescale of the probe's own-emax bound, L* kept) — covers
+    // global cross-group pooling and BOTH w tails by construction.
+    const aEnv = nr.analyticBoxBb * (eEnv / nr.eMaxReal);
     perStratum.push({
-      stratum: s, lStar, boxDeltaBb: boxDelta!, clampedBelowFinest: clamped,
-      spikePoints: pts,
+      stratum: s, eMaxReal: nr.eMaxReal, lStar,
+      empiricalBoxDeltaBb: empirical!, clampedBelowFinest: clamped,
+      spikePoints: pts, analyticEnvBoxBb: aEnv,
     });
-    boxDeltas.push(boxDelta!);
+    analyticEnv.push(aEnv);
   }
 
   let envelopeMax = NaN, mean = NaN, sd = NaN, meanUcb = NaN;
   const bar = EPS_HYBRID_B0 - EPS_RIVER_R0;
-  if (boxDeltas.length === STRATA.length) {
-    envelopeMax = Math.max(...boxDeltas);
-    const u = oneSidedUcb(boxDeltas);
+  if (analyticEnv.length === STRATA.length) {
+    envelopeMax = Math.max(...analyticEnv);
+    const u = oneSidedUcb(analyticEnv);
     mean = u.mean;
     sd = u.sd;
     meanUcb = u.ucb;
@@ -839,6 +882,7 @@ export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
     sdBb: sd,
     meanUcbBb: meanUcb,
     barBb: bar,
+    eEnvPotFraction: eEnv,
   };
 }
 
@@ -935,15 +979,17 @@ if (isMain) {
       const sp = evaluateS2G3Spike(readFileSync(spikePath, 'utf8'),
                                    readFileSync(normsPath, 'utf8'));
       console.log(
-        `G3 spike box envelope over ${sp.rows} injections: frozen-frame MAX `
+        `G3 shape-free analytic box (global pooling, both w tails, full-census `
+        + `E_env ${sp.eEnvPotFraction.toExponential(3)}): frozen-frame MAX `
         + `${sp.envelopeMaxBb.toExponential(3)} BB (bar B0-R0 `
-        + `${sp.barBb.toExponential(3)}); mean ${sp.meanBb.toExponential(3)}, `
-        + `descriptive t-UCB ${sp.meanUcbBb.toExponential(3)} BB.`);
+        + `${sp.barBb.toExponential(3)}); mean ${sp.meanBb.toExponential(3)}.`);
       for (const r of sp.perStratum)
         console.log(
-          `  ${r.stratum}: L* ${r.lStar.toExponential(3)} box-corner delta `
-          + `${r.boxDeltaBb.toExponential(3)} BB`
-          + (r.clampedBelowFinest ? ' [bounded by finest spike]' : ''));
+          `  ${r.stratum}: analytic@E_env ${r.analyticEnvBoxBb.toExponential(3)} `
+          + `BB (own e_max ${r.eMaxReal.toExponential(3)}, L* `
+          + `${r.lStar.toExponential(3)}); measured-spike corner `
+          + `${r.empiricalBoxDeltaBb.toExponential(3)}`
+          + (r.clampedBelowFinest ? ' [finest-spike clamp]' : ''));
       if (!sp.g3) {
         console.error('RFC 0047 S2 G3 spike box-envelope gate FAILED:');
         for (const f of sp.failures)

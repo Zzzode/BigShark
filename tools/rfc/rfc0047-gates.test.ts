@@ -388,51 +388,78 @@ function spikeFrame(): string {
   return lines.join('\n');
 }
 
-function normsCsv(lStar: number): string {
-  return ['stratum,emax_real,lstar_real',
-    ...G3_STRATA.map((s) => `${s},0.04,${lStar}`)].join('\n');
+function normsCsv(lStar: number, analyticBox = 0.001, eMaxReal = 0.04): string {
+  return ['stratum,emax_real,lstar_real,analytic_box_bb',
+    ...G3_STRATA.map((s) => `${s},${eMaxReal},${lStar},${analyticBox}`)]
+    .join('\n');
 }
 
-test('G3 spike box envelope gates the frozen-frame MAX at reach-weighted L*', () => {
-  const r = evaluateS2G3Spike(spikeFrame(), normsCsv(0.0025));
+test('G3 analytic box gates the frozen-frame MAX at the full-census envelope',
+     () => {
+  const r = evaluateS2G3Spike(spikeFrame(), normsCsv(0.0025, 0.001, 0.04));
   assert.equal(r.rows, G3_STRATA.length * (SPIKE_PTS.length + 1));
   assert.equal(r.perStratum.length, 6);
-  // lStar 0.0025 sits between 0.00248 (d .0008) and 0.00304 (d .0012).
+  // Identical strata -> E_env = 0.04 rescales analytic exactly (no change).
+  assert.ok(Math.abs(r.eEnvPotFraction - 0.04) < 1e-12);
   for (const p of r.perStratum) {
     assert.ok(Math.abs(p.lStar - 0.0025) < 1e-12);
-    assert.ok(p.boxDeltaBb > 0.0008 && p.boxDeltaBb < 0.00085);
+    // empirical measured-spike corner interpolated between .00248 and .00304
+    assert.ok(p.empiricalBoxDeltaBb > 0.0008 && p.empiricalBoxDeltaBb < 0.00085);
+    assert.ok(Math.abs(p.analyticEnvBoxBb - 0.001) < 1e-15);
   }
   assert.ok(r.envelopeMaxBb < r.barBb);
-  assert.equal(r.meanUcbBb, r.envelopeMaxBb);  // identical strata -> zero SD
+  assert.equal(r.meanUcbBb, r.envelopeMaxBb);
   assert.equal(r.g3, true);
 });
 
-test('G3 spike clamps to the finest point when L* is more concentrated', () => {
-  const r = evaluateS2G3Spike(spikeFrame(), normsCsv(0.0010));
+test('G3 empirical corner clamps when L* is more concentrated than finest', () => {
+  const r = evaluateS2G3Spike(spikeFrame(), normsCsv(0.0010, 0.001));
   assert.equal(r.perStratum.every((p) => p.clampedBelowFinest), true);
-  assert.ok(Math.abs(r.envelopeMaxBb - 0.0005) < 1e-12);
+  assert.ok(Math.abs(r.perStratum[0]!.empiricalBoxDeltaBb - 0.0005) < 1e-12);
   assert.equal(r.g3, true);
 });
 
-test('G3 spike envelope fails closed when the box corner exceeds the budget', () => {
-  const frame = ['stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,'
-    + 'delta_hybrid_bb'];
-  for (const s of G3_STRATA) {
-    frame.push(`${s},identity,0,0,0,0.001,0.004,0`);
-    for (const [label, eL2] of SPIKE_PTS)
-      frame.push(spikeRow(s, label, SPIKE_E, eL2, 0.011));
-  }
-  const r = evaluateS2G3Spike(frame.join('\n'), normsCsv(0.0025));
+test('G3 analytic envelope rescales to the global full-census e_max', () => {
+  // one stratum has larger measured emax: E_env = .05; analytic rescales by
+  // .05/.04 for that stratum and dominates the frozen-frame MAX.
+  const rows = G3_STRATA.map((s, i) =>
+    `${s},${i === 0 ? 0.05 : 0.04},0.0025,0.0008`).join('\n');
+  const norms = `stratum,emax_real,lstar_real,analytic_box_bb\n${rows}`;
+  const r = evaluateS2G3Spike(spikeFrame(), norms);
+  assert.ok(Math.abs(r.eEnvPotFraction - 0.05) < 1e-12);
+  // stratum 0 (w1) already at emax .05 -> no rescale; the .04 strata rescale.
+  assert.ok(Math.abs(r.perStratum[0]!.analyticEnvBoxBb - 0.0008) < 1e-15);
+  assert.ok(Math.abs(r.perStratum[1]!.analyticEnvBoxBb - 0.001) < 1e-15);
+  assert.ok(Math.abs(r.envelopeMaxBb - 0.001) < 1e-15);
+  assert.equal(r.g3, true);
+});
+
+test('G3 spike envelope fails closed when the analytic box exceeds the budget',
+     () => {
+  const r = evaluateS2G3Spike(spikeFrame(), normsCsv(0.0025, 0.011, 0.04));
   assert.equal(r.g3, false);
   assert.ok(r.failures.some((f) => f.includes('envelope MAX')));
 });
 
-test('G3 spike rejects a missing norms stratum and a bad norms header', () => {
-  const one = G3_STRATA.slice(0, 1)
-    .map((s) => `sentinel,0.04,0.0025`.replace('sentinel', s)).join('\n');
-  const r = evaluateS2G3Spike(spikeFrame(),
-    `stratum,emax_real,lstar_real\n${one}`);
+test('G3 spike rejects a non-monotone frontier and a missing norms stratum',
+     () => {
+  const bad = ['stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,'
+    + 'delta_hybrid_bb'];
+  for (const s of G3_STRATA) {
+    bad.push(`${s},identity,0,0,0,0.001,0.004,0`);
+    // delta DECREASES as e_l2 grows -> must be refused, not chorded.
+    bad.push(spikeRow(s, SPIKE_PTS[0]![0], SPIKE_E, 0.00195, 0.003));
+    bad.push(spikeRow(s, SPIKE_PTS[1]![0], SPIKE_E, 0.00248, 0.001));
+  }
+  const r = evaluateS2G3Spike(bad.join('\n'), normsCsv(0.0022, 0.001, 0.04));
   assert.equal(r.g3, false);
-  assert.ok(r.failures.some((f) => f.includes('missing norms')));
+  assert.ok(r.failures.some((f) => f.includes('not monotone')));
+
+  const one = G3_STRATA.slice(0, 1)
+    .map((s) => `${s},0.04,0.0025,0.001`).join('\n');
+  const r2 = evaluateS2G3Spike(spikeFrame(),
+    `stratum,emax_real,lstar_real,analytic_box_bb\n${one}`);
+  assert.equal(r2.g3, false);
+  assert.ok(r2.failures.some((f) => f.includes('missing norms')));
   assert.throws(() => parseNormsCsv('a,b\n1,2\n'), GateInputError);
 });
