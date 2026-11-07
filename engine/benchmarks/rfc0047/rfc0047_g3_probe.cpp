@@ -450,7 +450,7 @@ int main(int argc, char** argv) {
     return sh;
   };
 
-  if (arm_set != "spike" && arm_set != "prod") {
+  if (arm_set != "spike" && arm_set != "prod" && arm_set != "prodfine") {
     for (const char* arm : {"zm", "coh", "pat", "act"}) {
       const Shifts sh = pattern_shifts(arm);
       for (double level : kLevels)
@@ -464,12 +464,21 @@ int main(int argc, char** argv) {
   // all-combo coherent cross-check. Labels carry q in the arm field.
   if (arm_set == "prod") {
     // Production-leaf box corner: candidate-only leaves (river_iters passed
-    // on the CLI), fine concentrations q=.01/.02 at amplitude E only. These
-    // bracket/lie above the production reach-weighted L* (.0004-.0013) and
-    // directly measure whether an even more concentrated error could exceed
-    // the budget, using production leaves and the production equilibrium rho.
+    // on the CLI), fine concentrations at amplitude E only. q=.01/.02 bracket
+    // the bulk of the production L*; prodfine (.002/.005) brackets the
+    // smallest L* (raised .00043) so the box corner is interpolated/measured,
+    // not extrapolated to q->0. Absolute delta rises monotonically with q on
+    // every measured stratum, so finer points bound smaller-L* corners.
     constexpr double kE = 0.0184;
     for (double q : {0.01, 0.02}) {
+      const Shifts sh = spike_shifts(q);
+      char label[24];
+      std::snprintf(label, sizeof(label), "spike%.3f", q);
+      inject(label, kE, sh);
+    }
+  } else if (arm_set == "prodfine") {
+    constexpr double kE = 0.0184;
+    for (double q : {0.002, 0.005}) {
       const Shifts sh = spike_shifts(q);
       char label[24];
       std::snprintf(label, sizeof(label), "spike%.3f", q);

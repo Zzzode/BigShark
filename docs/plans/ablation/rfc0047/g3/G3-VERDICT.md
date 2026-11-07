@@ -1,5 +1,72 @@
 # RFC 0047 G3 verdict — six-stratum error-propagation certificate
 
+> **Status (2026-11-07): TURN-PROPAGATION COMPONENT PASS ON THE PRODUCTION
+> BOX (pending the q=.002/.005 ultra-fine bracket); full G3 acceptance still
+> pending S3/G5 R0.** An independent non-author review (Changes-Requested)
+> rejected the original act-ray-only certificate; the two BLOCKING findings
+> have been closed with a partially-coherent spike frontier and a
+> reach-weighted production L*. The numbers below supersede the earlier
+> ray-only section. Final zero-extrapolation box verdict lands after the
+> prodfine campaign.
+
+## Production operating point (reach-weighted, r6000/ref20000)
+
+- e_max_frozen E = max shipped cert_max/pot = **1.8370e-2**.
+- L* = reach-weighted e_l2 of the REAL r6000-vs-r20000 signed drift joined
+  with the production-leaf turn-equilibrium rho (`g3-norms6k-*.csv`):
+  w1 8.01e-4, paired 1.29e-3, monotone 9.93e-4, ahigh 9.84e-4, twotone
+  1.14e-3, raised **4.31e-4**. (The earlier unweighted per-group RMS 2.70e-3
+  and the loose r600 reach-weighted proxy 3.9e-3..7.9e-3 were wrong/different
+  norms and are superseded.)
+
+## Partially-coherent BR-weight-ranked spike box (production r6000 leaves)
+
+The spike(q) arm puts a +E·pot payoff shift on the minimal top-q rho mass
+ranked by the independent walker's BR-minus-sigma gap weight w — the worst
+shape in the (e_max,e_l2) box. Measured with production r6000 leaves and the
+production equilibrium rho (`g3-prod-*`, `g3-prod-frame6.csv`):
+
+| stratum | L* | q=.01 e_l2 | box-corner delta (clamped) |
+|---|---:|---:|---:|
+| w1 | 8.01e-4 | 1.77e-3 | 8.95e-4 |
+| paired | 1.29e-3 | 1.84e-3 | 1.43e-3 |
+| monotone | 9.93e-4 | 1.92e-3 | 2.21e-3 |
+| ahigh | 9.84e-4 | 2.00e-3 | 4.95e-4 |
+| twotone | 1.14e-3 | 1.86e-3 | 3.41e-4 |
+| raised | 4.31e-4 | 1.70e-3 | **2.27e-3** |
+
+Frozen-frame **MAX 2.27e-3 BB <= B0-R0 = 0.008 (3.5x headroom)**;
+evaluateS2G3Spike PASS. Every L* is below the finest measured spike q=.01, and
+absolute delta rises monotonically with q on every stratum, so the q=.01
+delta bounds the box corner from above (clamp). The q=.002/.005 campaign
+brackets even the smallest L* (raised) with measured points to remove the
+q->0 extrapolation entirely.
+
+## What is and is not certified
+
+- CERTIFIED: propagated TURN exploitability of a non-probed mounted node whose
+  per-combo one-sided error has e_max<=E and reach-weighted e_l2<=L* for the
+  cap-1 shapes of the six frozen strata: <= 2.27e-3 BB (frame max).
+- RECORDED, NOT GATED: the synthetic fully-coherent single-norm arm (UCB
+  1.51e-2) — unreachable by a deterministic exact solver's diffuse mixed-sign
+  residual; kept as a sensitivity bound. A future S3 production RFC must
+  enforce per-node e_max/e_l2 at mount time for this to hold in production.
+- NOT YET: UCB(t_river) <= R0 = 0.002 with the online exact-key one-card river
+  re-solve (S3/G5); and the signed 6k/20k coherence is measured here but the
+  per-node mount-time e_l2 contract belongs to S3.
+- The exact-seedless telescoping walker identity (machine epsilon, native
+  CTest) and full milestone verification (ctest 91/91, npm/proto green)
+  underpin the instrument.
+
+## (superseded) earlier act-ray-only headline
+
+The original joint act-ray UCB 2.07e-3 was a valid stress coordinate but did
+not bound the 2-D box (a 1-D ray cannot); the spike box above is the reviewer-
+required certificate.
+
+---
+
+
 Date: 2026-11-06. Evaluator: `tools/rfc/rfc0047-gates.ts` (`evaluateS2G3`).
 Frame: `g3-frame6.csv` (six strata x 25 rows = 150 injections + 6 identity
 rows), built from `g3-gate-w1.csv` and `g3-campaign-<stratum>.csv`.
