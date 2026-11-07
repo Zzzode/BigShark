@@ -569,6 +569,21 @@ feasibility established on single leaves; S2.2 builder/oracle next).**
   candidate-only r6000 prod box campaign measures q=.01/.02 at E with
   production leaves and the production equilibrium rho (2 injections/stratum,
   task btguooss4); the box verdict is finalized from that.
+- **G3 production box FINAL (2026-11-07): turn-propagation component PASS.**
+  q=.01/.02 with production r6000 leaves gave frame MAX 2.27e-3 (3.5x); the
+  ultra-fine q=.002/.005 production points (`g3-prodfine-*`, combined
+  `g3-prodbox-frame6.csv`, 4 measured points/stratum) then bracket EVERY
+  operating L* with measured points (raised L*=.00043 < q=.002 e_l2=.00080,
+  clamped) - zero extrapolation. Final box-corner propagated turn delta:
+  w1 1.47e-4, ahigh 1.24e-4, paired 7.14e-4, monotone **8.19e-4** (max),
+  twotone 2.87e-5, raised 5.35e-4. **Frozen-frame ENVELOPE MAX 8.19e-4 BB <=
+  B0-R0 0.008, ~9.8x headroom; evaluateS2G3Spike PASS.** Independent review
+  Findings 1 (ray vs box), 2 (reach-weighted production L*), 4 (frame MAX not
+  mean CI) are closed; Finding 5 (labeling) applied (this is the
+  turn-propagation component, not full G3 acceptance); Finding 3's mount-time
+  per-node e_max/e_l2 contract and the R0<=0.002 term remain explicit S3/G5
+  items. Committed through eca44bb; prodfine evidence and this final number
+  follow in the next commit with a full milestone re-verification.
 - **G3 step-2 design (frozen; next implementation).** Perturb the per-leaf
 - **G3 step-2 implemented (2026-11-05, uncommitted).**
   1. `TurnSolveResult.leaf_reaches`: per-config-leaf, per-seat, per-five-card

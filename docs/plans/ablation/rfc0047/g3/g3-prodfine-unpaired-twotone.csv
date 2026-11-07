@@ -1,0 +1,4 @@
+stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb
+unpaired-twotone,identity,0,0,0,0.00079583,0.00021737,0
+unpaired-twotone,spike0.002,2e-02,0.01840000,0.00092917,0.00073799,0.00021773,-0.00005748
+unpaired-twotone,spike0.005,2e-02,0.01840000,0.00134895,0.00091300,0.00021792,0.00011772

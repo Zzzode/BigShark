@@ -1,0 +1,6 @@
+stratum=unpaired-rainbow-ahigh leaves=432 groups=240 river_iters=6000 turn_iters=3200 threads=24 wall=9967.6s
+turn_action_nodes=3610 tree_size=10923
+baseline_turn_nc_bb=0.00065983 identity_walker_gap_bb=0.00065983 identity_diff_bb=9.433e-18 river_term_bb=0.00017889
+arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb
+spike0.002,2e-02,0.01840000,0.00097020,0.00077933,0.00017839,0.00011899
+spike0.005,2e-02,0.01840000,0.00144668,0.00096997,0.00017789,0.00030913

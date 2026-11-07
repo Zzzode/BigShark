@@ -1,0 +1,4 @@
+stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb
+unpaired-rainbow-ahigh,identity,0,0,0,0.00065983,0.00017889,0
+unpaired-rainbow-ahigh,spike0.002,2e-02,0.01840000,0.00097020,0.00077933,0.00017839,0.00011899
+unpaired-rainbow-ahigh,spike0.005,2e-02,0.01840000,0.00144668,0.00096997,0.00017789,0.00030913

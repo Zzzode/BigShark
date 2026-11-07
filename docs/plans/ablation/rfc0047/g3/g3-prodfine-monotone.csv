@@ -1,0 +1,4 @@
+stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb
+monotone,identity,0,0,0,0.00071492,0.00016134,0
+monotone,spike0.002,2e-02,0.01840000,0.00090318,0.00142239,0.00016043,0.00070656
+monotone,spike0.005,2e-02,0.01840000,0.00140768,0.00205293,0.00016024,0.00133691

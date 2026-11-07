@@ -42,6 +42,17 @@ delta bounds the box corner from above (clamp). The q=.002/.005 campaign
 brackets even the smallest L* (raised) with measured points to remove the
 q->0 extrapolation entirely.
 
+### Final zero-extrapolation box (prod + prodfine)
+
+Adding production q=.002/.005 points (`g3-prodfine-*`, combined
+`g3-prodbox-frame6.csv`, four measured points/stratum), every operating L* is
+now between measured points or bounded by the finest (raised L*=.00043 <
+q=.002 e_l2=.00080) — NO extrapolation. Box-corner propagated turn delta:
+w1 1.47e-4 (clamp), ahigh 1.24e-4 (interp), paired 7.14e-4, monotone
+**8.19e-4** (interp, the max), twotone 2.87e-5, raised 5.35e-4 (clamp).
+**Frozen-frame ENVELOPE MAX = 8.19e-4 BB <= B0-R0 = 0.008 (9.8x headroom);
+the non-probed mounted-node G3 turn-propagation component PASSES.**
+
 ## What is and is not certified
 
 - CERTIFIED: propagated TURN exploitability of a non-probed mounted node whose
