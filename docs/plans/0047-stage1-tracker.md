@@ -713,3 +713,15 @@ RFCs 0041/0043/0045/0046).
   corners 1.5e-4..8.2e-4, far below). 27 gate node tests. Review F1 (global
   pooling), F2 (negative tail), F3 (full-census amplitude) closed; R0<=0.002
   and the mount-time e_max/e_l2 contract remain explicit S3/G5 items.
+- **G3 turn-propagation component CLOSED + independent APPROVAL (2026-11-08).**
+  Four rounds of non-author review converged to APPROVED. Final gates: shape-
+  free analytic global-pooled two-tail box envelope MAX 5.66e-3 BB <= B0-R0
+  0.008 (per-stratum own full-census envelope); exact box-corner optimizer
+  measured <= analytic on all six strata (max ratio .793, largest measured
+  2.84e-3 BB); automated evaluateG3Corner fail-closed node gate (29 G3 node
+  tests). Final full verification green: release build RC=0, ctest 91/91,
+  npm check RC=0 (141 node tests), proto:check RC=0. B0 ledger 1.06e-3 finite
+  turn gap + 5.66e-3 propagated + R0<=2.0e-3 = 8.72e-3 <= B0 0.010.
+  Deferred to S3/G5 (not claimed): online one-card R0<=0.002 (G5), the
+  mount-time per-node (e_max,e_l2) contract, and six-fixture -> G4 census
+  generalization. Commits 7b46071..73250c4 (14 G3 commits), local only.
