@@ -1,0 +1,5 @@
+stratum=raised-srp leaves=528 groups=288 river_iters=6000 turn_iters=3200 threads=24 wall=12446.7s
+turn_action_nodes=4764 tree_size=14385
+baseline_turn_nc_bb=0.00105508 identity_walker_gap_bb=0.00105508 identity_diff_bb=3.426e-17 river_term_bb=0.00005593
+arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb
+corner,1e+00,0.00613100,0.00043052,0.00312152,0.00005600,0.00206652,0.00260681

@@ -1,0 +1,5 @@
+stratum=monotone leaves=432 groups=240 river_iters=6000 turn_iters=3200 threads=24 wall=9316.9s
+turn_action_nodes=3610 tree_size=10923
+baseline_turn_nc_bb=0.00071492 identity_walker_gap_bb=0.00071492 identity_diff_bb=5.313e-18 river_term_bb=0.00016134
+arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb
+corner,1e+00,0.02164269,0.00099306,0.00346114,0.00015929,0.00274416,0.00481531

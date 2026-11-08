@@ -83,6 +83,19 @@ ahigh 2.15e-3, twotone 5.53e-3, raised 2.61e-3.
 bound.** The measured corners (1.5e-4..8.2e-4) sit far below, showing the
 analytic bound is conservative.
 
+### Exact box-corner injection (review R1): convexity/tail closure at the point
+
+The `corner` arm injects the bisection optimizer's EXACT d* (sign(w)-signed,
+so both w>0 and w<0 tails, including any BR action switching) at each
+stratum's own measured envelope (e_max_real, L*), then re-solves. At all six
+strata the measured propagated delta is below the analytic first-order bound
+(`g3-corner-*`): w1 .00158 <= .00208, paired .00284 <= .00566, monotone
+.00274 <= .00482, ahigh .00163 <= .00215, twotone .00253 <= .00553, raised
+.00207 <= .00261 (tightest ratio 1.26x). The convex piecewise-linear gap's
+second-order curvature therefore does NOT break the subgradient bound at the
+claimed box corner, and the negative tail is exercised directly rather than
+argued by symmetry. Largest exact-corner measured delta: 2.84e-3 BB (paired).
+
 ## What is and is not certified
 
 - CERTIFIED (gated coordinate): propagated TURN exploitability of a
