@@ -23,6 +23,8 @@ import {
   parseCertCsv,
   parseG3Csv,
   parseNormsCsv,
+  evaluateG3Corner,
+  parseG3CornerCsv,
   parseInfosetCsv,
   T_CRIT_0_95_5,
   TURN_X48,
@@ -463,4 +465,36 @@ test('G3 spike rejects a non-monotone frontier and a missing norms stratum',
   assert.equal(r2.g3, false);
   assert.ok(r2.failures.some((f) => f.includes('missing norms')));
   assert.throws(() => parseNormsCsv('a,b\n1,2\n'), GateInputError);
+});
+
+// --- G3 exact box-corner convexity/tail check -----------------------------
+
+const CORNER_HEADER =
+  'stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb,'
+  + 'analytic_bound_bb';
+
+function cornerCsv(measured: number, bound: number, strata = G3_STRATA): string {
+  const lines = [CORNER_HEADER];
+  for (const s of strata)
+    lines.push(`${s},corner,1e+00,0.01,0.001,0.002,0.004,${measured},${bound}`);
+  return lines.join('\n');
+}
+
+test('G3 exact-corner check passes when measured <= analytic on all strata', () => {
+  const r = evaluateG3Corner(cornerCsv(0.002, 0.005));
+  assert.equal(r.rows, 6);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.failures, []);
+  assert.ok(Math.abs(r.perStratum[0]!.ratio - 0.4) < 1e-12);
+});
+
+test('G3 exact-corner check fails closed on a bound violation or missing stratum',
+     () => {
+  const bad = evaluateG3Corner(cornerCsv(0.009, 0.005));
+  assert.equal(bad.ok, false);
+  assert.ok(bad.failures.every((f) => f.includes('exact-corner measured')));
+  const one = evaluateG3Corner(cornerCsv(0.002, 0.005, ['w1']));
+  assert.equal(one.ok, false);
+  assert.ok(one.failures.some((f) => f.includes('missing exact-corner')));
+  assert.throws(() => parseG3CornerCsv('a,b\n1,2\n'), GateInputError);
 });

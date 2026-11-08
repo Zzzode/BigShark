@@ -422,6 +422,75 @@ export interface G3Row {
   deltaHybridBb: number;
 }
 
+// --- G3 exact box-corner convexity/tail check (review R1 automation) ------
+
+export interface G3CornerRow {
+  stratum: string;
+  eMax: number;
+  eL2: number;
+  measuredDeltaBb: number;
+  analyticBoundBb: number;
+}
+
+const G3_CORNER_HEADER =
+  'stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb,'
+  + 'analytic_bound_bb';
+
+export function parseG3CornerCsv(text: string): G3CornerRow[] {
+  const rows = parseCsv(text);
+  const header = rows.shift();
+  if (header === undefined)
+    throw new GateInputError('g3 corner CSV is empty');
+  requireHeader(header, G3_CORNER_HEADER.split(','));
+  return rows
+    .filter((cols) => cols[1] === 'corner')
+    .map((cols) => {
+      const r: Record<string, string> = {};
+      header.forEach((h, i) => { r[h] = cols[i] ?? ''; });
+      if (!r.stratum)
+        throw new GateInputError('g3 corner row has empty stratum');
+      return {
+        stratum: r.stratum,
+        eMax: num(r, 'e_max'),
+        eL2: num(r, 'e_l2'),
+        measuredDeltaBb: num(r, 'delta_hybrid_bb'),
+        analyticBoundBb: num(r, 'analytic_bound_bb'),
+      };
+    });
+}
+
+export interface G3CornerResult {
+  ok: boolean;
+  failures: string[];
+  rows: number;
+  perStratum: Array<{stratum: string; measuredDeltaBb: number;
+                     analyticBoundBb: number; ratio: number}>;
+}
+
+// Fail-closed assertion that the exact box-corner optimizer's MEASURED
+// propagated delta never exceeds its analytic first-order bound (convexity /
+// BR-switching / negative tail cannot break the subgradient certificate at the
+// claimed point). One corner row per stratum.
+export function evaluateG3Corner(cornerCsv: string): G3CornerResult {
+  const rows = parseG3CornerCsv(cornerCsv);
+  const failures: string[] = [];
+  for (const s of STRATA)
+    if (!rows.some((r) => r.stratum === s))
+      failures.push(`missing exact-corner row for '${s}'`);
+  const perStratum = rows.map((r) => ({
+    stratum: r.stratum,
+    measuredDeltaBb: r.measuredDeltaBb,
+    analyticBoundBb: r.analyticBoundBb,
+    ratio: r.analyticBoundBb > 0 ? r.measuredDeltaBb / r.analyticBoundBb : NaN,
+  }));
+  for (const r of rows)
+    if (!(r.measuredDeltaBb <= r.analyticBoundBb))
+      failures.push(
+        `${r.stratum}: exact-corner measured ${r.measuredDeltaBb.toExponential(3)} `
+        + `> analytic bound ${r.analyticBoundBb.toExponential(3)} BB`);
+  return {ok: failures.length === 0, failures, rows: rows.length, perStratum};
+}
+
 const G3_HEADER =
   'stratum,arm,level,e_max,e_l2,turn_gap_bb,river_term_bb,delta_hybrid_bb';
 
@@ -905,10 +974,12 @@ if (isMain) {
   const g3Path = process.argv[5];
   const spikePath = process.argv[6];
   const normsPath = process.argv[7];
+  const cornerPath = process.argv[8];
   if (!infosetPath || !censusPath) {
     console.error(
       'usage: rfc0047-gates <s1-infoset-budget.csv> <s1-census.csv> '
-      + '[s2-cert.csv] [s2-g3.csv] [s2-g3-spike.csv] [s2-g3-norms.csv]');
+      + '[s2-cert.csv] [s2-g3.csv] [s2-g3-spike.csv] [s2-g3-norms.csv] '
+      + '[s2-g3-corner.csv]');
     process.exit(2);
   }
   try {
@@ -999,6 +1070,20 @@ if (isMain) {
       }
       console.log('RFC 0047 S2 G3 spike box-envelope gate PASS '
         + '(non-probed mounted-node bound).');
+      if (cornerPath) {
+        const cn = evaluateG3Corner(readFileSync(cornerPath, 'utf8'));
+        console.log(
+          `G3 exact box-corner convexity check over ${cn.rows} rows: measured `
+          + `<= analytic bound on every stratum (max ratio `
+          + `${Math.max(...cn.perStratum.map((p) => p.ratio)).toFixed(3)}).`);
+        if (!cn.ok) {
+          console.error('RFC 0047 S2 G3 exact-corner check FAILED:');
+          for (const f of cn.failures)
+            console.error(`  - ${f}`);
+          process.exit(1);
+        }
+        console.log('RFC 0047 S2 G3 exact-corner check PASS.');
+      }
     } else {
       console.log('G3 spike box envelope not evaluated '
         + '(provide spike.csv and norms.csv); non-probed nodes not certified.');
