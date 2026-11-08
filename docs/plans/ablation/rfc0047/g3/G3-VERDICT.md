@@ -1,13 +1,15 @@
 # RFC 0047 G3 verdict — six-stratum error-propagation certificate
 
-> **Status (2026-11-07): TURN-PROPAGATION COMPONENT PASS ON THE PRODUCTION
-> BOX (pending the q=.002/.005 ultra-fine bracket); full G3 acceptance still
-> pending S3/G5 R0.** An independent non-author review (Changes-Requested)
-> rejected the original act-ray-only certificate; the two BLOCKING findings
-> have been closed with a partially-coherent spike frontier and a
-> reach-weighted production L*. The numbers below supersede the earlier
-> ray-only section. Final zero-extrapolation box verdict lands after the
-> prodfine campaign.
+> **Status (2026-11-08): TURN-PROPAGATION COMPONENT APPROVED on the shape-free
+> analytic box (independent non-author review, conditional on S3 entry items).
+> Full G3 acceptance still requires the S3/G5 online R0<=0.002 term and an S3
+> mount-time per-node (e_max,e_l2) contract.** The original act-ray-only
+> certificate was rejected by review; the gated coordinate is now the
+> shape-free global-pooled two-tail analytic water-fill bound at each
+> stratum's own measured full-census envelope (envelope MAX 5.66e-3 BB <=
+> B0-R0 0.008), empirically validated to dominate every measured spike point.
+> The older empirical spike numbers and act-ray section are retained below as
+> corroboration/history, not as the gated coordinate.
 
 ## Production operating point (reach-weighted, r6000/ref20000)
 
@@ -83,9 +85,14 @@ analytic bound is conservative.
 
 ## What is and is not certified
 
-- CERTIFIED: propagated TURN exploitability of a non-probed mounted node whose
-  per-combo one-sided error has e_max<=E and reach-weighted e_l2<=L* for the
-  cap-1 shapes of the six frozen strata: <= 2.27e-3 BB (frame max).
+- CERTIFIED (gated coordinate): propagated TURN exploitability of a
+  non-probed mounted node within the stratum's own measured full-census
+  envelope (per-combo |error|<=e_max_real and reach-weighted e_l2<=L*) for the
+  cap-1 shapes of the six frozen strata: shape-free analytic envelope MAX
+  5.66e-3 BB <= B0-R0 0.008. The empirical measured corners (1.5e-4..8.2e-4)
+  corroborate that the analytic bound is conservative; the 2.27e-3 empirical
+  zero-extrapolation number in the section above is a measured data point, not
+  the gated bound.
 - RECORDED, NOT GATED: the synthetic fully-coherent single-norm arm (UCB
   1.51e-2) — unreachable by a deterministic exact solver's diffuse mixed-sign
   residual; kept as a sensitivity bound. A future S3 production RFC must

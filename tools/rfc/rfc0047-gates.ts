@@ -702,12 +702,6 @@ export const SPIKE_E_POT_FRACTION = 0.0184;  // amplitude at the operating E
 
 export interface NormsRow {
   stratum: string;
-  eMaxReal: number;
-  lStarReal: number;
-}
-
-export interface NormsRow {
-  stratum: string;
   eMaxReal: number;   // full-census measured per-combo |drift|/pot envelope
   lStarReal: number;  // reach-weighted e_l2 of the real signed drift
   analyticBoxBb: number;  // shape-free first-order box bound at (eMaxReal,L*)
@@ -746,8 +740,8 @@ export interface SpikeStratumResult {
   empiricalBoxDeltaBb: number;
   clampedBelowFinest: boolean;
   spikePoints: Array<[number, number]>;
-  // Shape-free analytic first-order box bound rescaled to the global
-  // full-census amplitude E_env (linear in E, L kept): the gated coordinate.
+  // Shape-free analytic first-order box bound at this stratum's OWN measured
+  // full-census envelope (e_max_real, L*); the gated coordinate.
   analyticEnvBoxBb: number;
 }
 
@@ -776,9 +770,10 @@ export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
     if (!nByStratum.has(s))
       failures.push(`missing norms row for '${s}'`);
 
-  // F3: the true amplitude envelope is the full-census measured per-combo
-  // bound (max over strata), NOT the frame12-sample E. The analytic box is
-  // exactly linear in E, so it is rescaled to this E_env below.
+  // F3: the cross-stratum amplitude maximum E_env = max full-census measured
+  // per-combo envelope. It is REPORTED only; each stratum is gated at its own
+  // e_max_real (re-applying E_env to a low-emax stratum would assume an error
+  // amplitude its own measured envelope rules out).
   const eEnv = norms.reduce((m, n) => Math.max(m, n.eMaxReal), 0);
   if (!(eEnv > 0))
     failures.push('non-positive full-census e_max envelope');

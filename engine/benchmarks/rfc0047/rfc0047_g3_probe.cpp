@@ -185,6 +185,7 @@ int main(int argc, char** argv) {
         }
         // "full" needs the reference (real drift/L*); prod/prodfine skip it.
         if (arm_set != "prod" && arm_set != "prodfine") {
+          // corner/full/norms/spike/all/patterns all keep the reference solve.
           RiverSolveConfig rcfg = cfg;
           rcfg.iterations = ref_iters;
           rcfg.compute_deal_matrix = false;
@@ -303,27 +304,42 @@ int main(int argc, char** argv) {
   // (global cross-group concentration, both w tails via sign(w)) subject to
   // |d|<=E and sum rho d^2 <= L^2. Optimal d is a capped water-fill ranked by
   // (|w| pot)/(rho); lambda is bisectioned to hit the energy.
-  auto analytic_box = [&](double E, double L) {
-    struct Cell {
-      double coeff, rho;
-    };
+  // All pooled cells with their (group,seat,combo) address, ranked by
+  // (|w| pot/BB)/rho - the global box optimizer's ranking (R1/F1/F2).
+  struct Cell {
+    std::size_t g;
+    int seat;
+    std::uint32_t c;
+    double coeff, rho;
+  };
+  auto build_cells = [&]() {
     std::vector<Cell> cells;
     for (std::size_t g = 0; g < n_groups; ++g)
       for (int seat = 0; seat < 2; ++seat)
         for (std::uint32_t c = 0; c < kRiverC; ++c) {
           const double rho = grho[g][seat][c];
-          if (rho <= 0.0)
+          const double w = gw[g][seat][c];
+          if (rho <= 0.0) {
+            if (w != 0.0)
+              throw std::runtime_error("analytic_box: zero-reach cell with nonzero gap weight");
             continue;
-          cells.push_back({std::fabs(gw[g][seat][c]) * groups[g].pot / bb_gate, rho});
+          }
+          cells.push_back({g, seat, c, std::fabs(w) * groups[g].pot / bb_gate, rho});
         }
     std::sort(cells.begin(), cells.end(),
               [](const Cell& a, const Cell& b) { return a.coeff / a.rho > b.coeff / b.rho; });
+    return cells;
+  };
+  const std::vector<Cell> cells = build_cells();
+  auto d_at = [&](const Cell& x, double lam, double E) {
+    double d = x.coeff / (lam * x.rho);
+    return d > E ? E : d;
+  };
+  auto solve_lambda = [&](double E, double L) {
     auto energy = [&](double lam) {
       double s = 0.0;
       for (const Cell& x : cells) {
-        double d = x.coeff / (lam * x.rho);
-        if (d > E)
-          d = E;
+        const double d = d_at(x, lam, E);
         s += x.rho * d * d;
       }
       return s;
@@ -336,15 +352,30 @@ int main(int argc, char** argv) {
       else
         hi = mid;
     }
-    const double lam = 0.5 * (lo + hi);
+    return 0.5 * (lo + hi);
+  };
+  auto analytic_box = [&](double E, double L) {
+    const double lam = solve_lambda(E, L);
     double bound = 0.0;
-    for (const Cell& x : cells) {
-      double d = x.coeff / (lam * x.rho);
-      if (d > E)
-        d = E;
-      bound += x.coeff * d;
-    }
+    for (const Cell& x : cells)
+      bound += x.coeff * d_at(x, lam, E);
     return bound;
+  };
+  // R1: the exact box-corner maximizing shift d* (dimensionless pot fraction),
+  // sign(w)-signed so both tails are exercised, written back per
+  // (group,seat,combo). Injecting it and re-solving gives a measured delta that
+  // must be <= analytic_box(E,L).
+  auto corner_shifts = [&](double E, double L) {
+    const double lam = solve_lambda(E, L);
+    Shifts sh(n_groups);
+    for (std::size_t g = 0; g < n_groups; ++g)
+      for (int seat = 0; seat < 2; ++seat)
+        sh[g][seat].assign(kRiverC, 0.0);
+    for (const Cell& x : cells) {
+      const double mag = d_at(x, lam, E);
+      sh[x.g][x.seat][x.c] = (gw[x.g][x.seat][x.c] >= 0.0 ? mag : -mag);
+    }
+    return sh;
   };
 
   // Generic injection: dimensionless per-group per-seat shift sh (delta/pot),
@@ -447,15 +478,17 @@ int main(int argc, char** argv) {
   }
   const double lstar_real = std::sqrt(l2star_acc);
 
-  // Bound at the stratum's own measured full-census (e_max, L*). The analytic
-  // bound is exactly linear in E for fixed L, so the evaluator rescales it to
-  // the global envelope E_env = max strata emax_real (keeping L*) to close F3.
+  // Shape-free box bound at the stratum's OWN measured full-census
+  // (e_max_real, L*). Piecewise-linear in E (the capped cell set can change),
+  // so no global-amplitude rescale is assumed; the evaluator uses this value
+  // directly and reports E_env = max strata emax_real separately.
   const double box_own = analytic_box(emax_real, lstar_real);
 
   if (norms_csv != nullptr && arm_set != "prod" && arm_set != "prodfine") {
-    // norms/full write a fresh PER-STRATUM file (single writer -> no append
-    // race); all/spike append to a shared sidecar.
-    const char* mode = (arm_set == "norms" || arm_set == "full") ? "w" : "a+";
+    // norms/full/corner write a fresh PER-STRATUM file (single writer -> no
+    // append race); all/spike append to a shared sidecar.
+    const char* mode =
+        (arm_set == "norms" || arm_set == "full" || arm_set == "corner") ? "w" : "a+";
     FILE* nf = std::fopen(norms_csv, mode);
     if (nf != nullptr) {
       if (mode[0] == 'w' || std::ftell(nf) == 0)
@@ -512,7 +545,8 @@ int main(int argc, char** argv) {
     return sh;
   };
 
-  if (arm_set != "spike" && arm_set != "prod" && arm_set != "prodfine" && arm_set != "full") {
+  if (arm_set != "spike" && arm_set != "prod" && arm_set != "prodfine" && arm_set != "full" &&
+      arm_set != "corner") {
     for (const char* arm : {"zm", "coh", "pat", "act"}) {
       const Shifts sh = pattern_shifts(arm);
       for (double level : kLevels)
@@ -558,6 +592,15 @@ int main(int argc, char** argv) {
       std::snprintf(label, sizeof(label), "spike%.3f", q);
       inject(label, kE, sh);
     }
+  } else if (arm_set == "corner") {
+    // R1: inject the EXACT box-corner optimizer d* at the stratum's own
+    // measured full-census envelope (e_max_real, L*), sign(w)-signed so both
+    // w tails are exercised. level=1 because corner_shifts already holds the
+    // dimensionless d*. The row's analytic_bound_bb must dominate the measured
+    // delta, pinning the certificate at its claimed point rather than via a
+    // q-family interpolation.
+    const Shifts sh = corner_shifts(emax_real, lstar_real);
+    inject("corner", 1.0, sh);
   } else if (arm_set != "patterns") {
     constexpr double kE = 0.0184;
     for (double q : {0.02, 0.033, 0.05}) {
