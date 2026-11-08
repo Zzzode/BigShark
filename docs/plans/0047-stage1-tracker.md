@@ -696,3 +696,20 @@ None yet. Any failed RFC premise is logged here with: the failing gate, the
 measured evidence, the affected milestone, and a concrete alternative
 (per RFC 0047: range-conditioned oracle branch; governance closure precedent
 RFCs 0041/0043/0045/0046).
+- **G3 round-2 closure FINAL (2026-11-08): shape-free analytic box PASS.**
+  Definitive `full` campaign (candidate r6000 + reference r20000 + four fine
+  spikes q=.002/.005/.01/.02 at E per stratum, `g3-full-frame6.csv`,
+  `g3-norms6k-full.csv`). The analytic global-pooled two-tail water-fill bound
+  (commit 22a9441) DOMINATES the measured delta at all 24 production spike
+  points (3-15x margin), empirically validating the first-order bound despite
+  the telescoping gap's convexity. Each stratum is certified at its OWN
+  measured full-census envelope (a mounted node's error <= that stratum's
+  e_max_real and reach-weighted L*); applying the cross-stratum amplitude max
+  E_env=.02321 to low-emax strata was an incorrect over-rescale and is
+  reported only. Own-envelope analytic box bounds BB: w1 2.08e-3, paired
+  5.66e-3 (MAX), monotone 4.82e-3, ahigh 2.15e-3, twotone 5.53e-3, raised
+  2.61e-3. **Frozen-frame analytic ENVELOPE MAX 5.66e-3 <= B0-R0 0.008 (1.41x);
+  G3 turn-propagation component PASSES on the shape-free bound** (measured
+  corners 1.5e-4..8.2e-4, far below). 27 gate node tests. Review F1 (global
+  pooling), F2 (negative tail), F3 (full-census amplitude) closed; R0<=0.002
+  and the mount-time e_max/e_l2 contract remain explicit S3/G5 items.

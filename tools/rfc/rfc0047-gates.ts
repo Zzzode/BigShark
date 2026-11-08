@@ -845,16 +845,20 @@ export function evaluateS2G3Spike(spikeCsv: string, normsCsv: string):
       }
     }
 
-    // Shape-free first-order box bound at the global full-census amplitude
-    // E_env (linear rescale of the probe's own-emax bound, L* kept) — covers
-    // global cross-group pooling and BOTH w tails by construction.
-    const aEnv = nr.analyticBoxBb * (eEnv / nr.eMaxReal);
+    // Shape-free first-order box bound at THIS stratum's own measured
+    // full-census envelope (e_max_real, L*). A mounted node built from these
+    // leaves has per-combo error <= the stratum emax_real and reach-weighted
+    // e_l2 <= L*, so the own-envelope bound is a valid (conservative) node
+    // certificate; re-applying the GLOBAL E_env to a low-emax stratum would
+    // assume an error amplitude its measured envelope rules out. E_env is
+    // reported separately as the cross-stratum amplitude maximum (F3).
+    const aOwn = nr.analyticBoxBb;
     perStratum.push({
       stratum: s, eMaxReal: nr.eMaxReal, lStar,
       empiricalBoxDeltaBb: empirical!, clampedBelowFinest: clamped,
-      spikePoints: pts, analyticEnvBoxBb: aEnv,
+      spikePoints: pts, analyticEnvBoxBb: aOwn,
     });
-    analyticEnv.push(aEnv);
+    analyticEnv.push(aOwn);
   }
 
   let envelopeMax = NaN, mean = NaN, sd = NaN, meanUcb = NaN;
@@ -979,13 +983,15 @@ if (isMain) {
       const sp = evaluateS2G3Spike(readFileSync(spikePath, 'utf8'),
                                    readFileSync(normsPath, 'utf8'));
       console.log(
-        `G3 shape-free analytic box (global pooling, both w tails, full-census `
-        + `E_env ${sp.eEnvPotFraction.toExponential(3)}): frozen-frame MAX `
+        `G3 shape-free analytic box (global pooling, both w tails, each stratum `
+        + `at its own full-census envelope; cross-stratum amplitude max E_env `
+        + `${sp.eEnvPotFraction.toExponential(3)}): frozen-frame MAX `
         + `${sp.envelopeMaxBb.toExponential(3)} BB (bar B0-R0 `
         + `${sp.barBb.toExponential(3)}); mean ${sp.meanBb.toExponential(3)}.`);
       for (const r of sp.perStratum)
         console.log(
-          `  ${r.stratum}: analytic@E_env ${r.analyticEnvBoxBb.toExponential(3)} `
+          `  ${r.stratum}: analytic(own envelope) `
+          + `${r.analyticEnvBoxBb.toExponential(3)} `
           + `BB (own e_max ${r.eMaxReal.toExponential(3)}, L* `
           + `${r.lStar.toExponential(3)}); measured-spike corner `
           + `${r.empiricalBoxDeltaBb.toExponential(3)}`

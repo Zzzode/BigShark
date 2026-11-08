@@ -419,18 +419,19 @@ test('G3 empirical corner clamps when L* is more concentrated than finest', () =
   assert.equal(r.g3, true);
 });
 
-test('G3 analytic envelope rescales to the global full-census e_max', () => {
-  // one stratum has larger measured emax: E_env = .05; analytic rescales by
-  // .05/.04 for that stratum and dominates the frozen-frame MAX.
+test('G3 analytic box gates at each stratum own measured envelope (F3)', () => {
+  // stratum 0 has a larger measured emax; each row's analytic box is used at
+  // its OWN envelope (no artificial global-amplitude rescale), and the
+  // cross-stratum E_env is reported separately.
   const rows = G3_STRATA.map((s, i) =>
-    `${s},${i === 0 ? 0.05 : 0.04},0.0025,0.0008`).join('\n');
+    `${s},${i === 0 ? 0.05 : 0.04},0.0025,${i === 0 ? 0.002 : 0.001}`).join('\n');
   const norms = `stratum,emax_real,lstar_real,analytic_box_bb\n${rows}`;
   const r = evaluateS2G3Spike(spikeFrame(), norms);
   assert.ok(Math.abs(r.eEnvPotFraction - 0.05) < 1e-12);
-  // stratum 0 (w1) already at emax .05 -> no rescale; the .04 strata rescale.
-  assert.ok(Math.abs(r.perStratum[0]!.analyticEnvBoxBb - 0.0008) < 1e-15);
+  // Own-envelope bounds are used unchanged; frozen-frame MAX = the .002 row.
+  assert.ok(Math.abs(r.perStratum[0]!.analyticEnvBoxBb - 0.002) < 1e-15);
   assert.ok(Math.abs(r.perStratum[1]!.analyticEnvBoxBb - 0.001) < 1e-15);
-  assert.ok(Math.abs(r.envelopeMaxBb - 0.001) < 1e-15);
+  assert.ok(Math.abs(r.envelopeMaxBb - 0.002) < 1e-15);
   assert.equal(r.g3, true);
 });
 

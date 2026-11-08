@@ -1,2 +1,2 @@
-stratum,emax_real,lstar_real
-unpaired-twotone,0.01377985,0.00113566
+stratum,emax_real,lstar_real,analytic_box_bb
+unpaired-twotone,0.01377985,0.00113566,0.00553223

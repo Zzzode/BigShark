@@ -1,2 +1,2 @@
-stratum,emax_real,lstar_real
-w1,0.01427184,0.00080053
+stratum,emax_real,lstar_real,analytic_box_bb
+w1,0.01427184,0.00080053,0.00207848

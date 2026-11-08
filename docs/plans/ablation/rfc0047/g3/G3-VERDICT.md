@@ -53,6 +53,34 @@ w1 1.47e-4 (clamp), ahigh 1.24e-4 (interp), paired 7.14e-4, monotone
 **Frozen-frame ENVELOPE MAX = 8.19e-4 BB <= B0-R0 = 0.008 (9.8x headroom);
 the non-probed mounted-node G3 turn-propagation component PASSES.**
 
+## Shape-free analytic box (independent-review round-2 closure)
+
+The empirical spike family was a restricted per-group positive-tail
+water-fill. The authoritative certificate is now a SHAPE-FREE first-order
+analytic bound computed from the already-exported weights (commit 22a9441):
+maximize sum |w|*pot*|d|/BB over ALL pooled (group,seat,combo) cells (global
+cross-river-card concentration, both w tails via sign(w)) subject to
+per-cell |d|<=e_max and reach-weighted sum rho d^2 <= L*^2 — a capped global
+water-fill ranked by (|w| pot)/rho, no extra solves.
+
+Convexity: the fixed-strategy telescoping gap is convex in leaf payoffs, so
+this first-order quantity is an upper bound only if it dominates the measured
+delta across the operating region. It does on ALL 24 production spike points
+(`g3-full-*`, analytic_bound_bb >= delta_hybrid_bb everywhere; the bound runs
+3-15x the measured value).
+
+Each stratum is certified at its OWN measured full-census envelope
+(e_max_real, L*) — valid because every mounted node in that stratum has
+per-combo error <= e_max_real and reach-weighted e_l2 <= L* (the global
+E_env=.02321 is reported, not re-applied to low-emax strata). Analytic box
+bounds (BB): w1 2.08e-3, paired **5.66e-3** (the max), monotone 4.82e-3,
+ahigh 2.15e-3, twotone 5.53e-3, raised 2.61e-3.
+
+**Frozen-frame analytic ENVELOPE MAX = 5.66e-3 BB <= B0-R0 = 0.008
+(1.41x headroom); G3 turn-propagation component PASSES on the shape-free
+bound.** The measured corners (1.5e-4..8.2e-4) sit far below, showing the
+analytic bound is conservative.
+
 ## What is and is not certified
 
 - CERTIFIED: propagated TURN exploitability of a non-probed mounted node whose
