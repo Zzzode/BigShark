@@ -93,6 +93,12 @@ analytic bound is conservative.
 - NOT YET: UCB(t_river) <= R0 = 0.002 with the online exact-key one-card river
   re-solve (S3/G5); and the signed 6k/20k coherence is measured here but the
   per-node mount-time e_l2 contract belongs to S3.
+- B0 ledger for S3: the production t3200 turn solve leaves a FINITE-GADGET
+  turn gap even with exact leaves (identity rows in g3-full-*: 5.1e-4..1.06e-3
+  BB, worst raised 1.06e-3), distinct from the oracle-error propagated delta
+  above. The full hybrid B0 must compose (finite turn gap) + (propagated
+  oracle-error bound 5.66e-3) + (online R0 <= 2.0e-3); do not count only the
+  propagated term.
 - The exact-seedless telescoping walker identity (machine epsilon, native
   CTest) and full milestone verification (ctest 91/91, npm/proto green)
   underpin the instrument.
