@@ -682,6 +682,12 @@ target_link_libraries(bigshark-rfc0047-g3-step1 PRIVATE bigshark_rfc0047_bench)
 add_executable(bigshark-rfc0047-g3-probe benchmarks/rfc0047/rfc0047_g3_probe.cpp)
 target_link_libraries(bigshark-rfc0047-g3-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0047 S3/G5 manual online one-card exact river re-solve envelope probe
+# (R0 summed NashConv, 1e-9 root-pot responder kill gate, G1 timing/nodes/RSS).
+add_executable(bigshark-rfc0047-online-river benchmarks/rfc0047/rfc0047_online_river.cpp)
+target_link_libraries(bigshark-rfc0047-online-river PRIVATE bigshark_rfc0047_bench)
+
+
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
 # calibration for the bounded cap-1 river (G1) and street-start turn (G2)
 # production shapes, with identity menus and full-range uniform priors.

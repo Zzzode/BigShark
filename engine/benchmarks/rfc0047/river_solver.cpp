@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "strata.hpp"
+#include "thread_pool.hpp"
 
 namespace bs::rfc0047 {
 
@@ -36,9 +37,10 @@ constexpr double kNorm = static_cast<double>(kC) * kCompat;
 // pool and in-place opponent-reach scaling (zero heap allocation in the loop).
 class RiverGame {
  public:
-  explicit RiverGame(const GameDef& d) : def_(d) {
+  explicit RiverGame(const GameDef& d, std::size_t threads) : def_(d) {
     if (def_.player_count != 2 || def_.board_size != 5 || def_.terminal != TerminalDepth::River)
       throw std::invalid_argument("river_solver: needs a 2-seat five-card river-root def");
+    workers_ = std::make_unique<Pool>(threads);
     std::array<int, 5> bd{};
     for (int i = 0; i < 5; ++i)
       bd[i] = def_.board[i];
@@ -53,17 +55,109 @@ class RiverGame {
   const AbstractTree& tree() const { return *tree_; }
   std::size_t action_node_count() const { return action_nodes_; }
 
-  // CFR iteration with explicit average-strategy weight.
+  // CFR traversal via explicit reach / fused terminal eval / backprop passes.
+  // Restructuring the recursive walk this way lets every showdown-leaf matvec
+  // run inside ONE fork-join region per traversal (one barrier, not one per
+  // leaf). All per-combo reductions keep their exact serial operation order,
+  // so the produced regrets/average strategy are bitwise identical to the
+  // recursive kernel at every thread count.
   void iterate_weighted(double weight) {
-    for (std::size_t trav = 0; trav < 2; ++trav) {
-      std::array<std::vector<double>, 2> pi{std::vector<double>(kC, 1.0),
-                                            std::vector<double>(kC, 1.0)};
-      avg_weight_[trav] = weight;
-      GameState state(def_);
-      const std::size_t v = cfr(trav, state, tree_->root_index(), pi);
-      release(v);
-    }
+    avg_weight_[0] = weight;
+    avg_weight_[1] = weight;
+    run_traversal(0);
+    run_traversal(1);
     clip_regrets();
+  }
+
+  void run_traversal(std::size_t trav) {
+    const std::size_t opp = trav ^ 1;
+    const std::size_t root = tree_->root_index();
+    for (std::uint32_t i = 0; i < kC; ++i) {
+      reach_[root][0][i] = 1.0;
+      reach_[root][1][i] = 1.0;
+    }
+    // Top-down reach propagation (DFS build guarantees parent index < child).
+    // Only the acting (opponent) player's reach is scaled by its RM+ strategy;
+    // the traverser's own counterfactual reach is left unchanged, matching the
+    // recursive counterfactual form.
+    for (std::size_t n = 0; n < tree_->size(); ++n) {
+      if (!tree_->node(n).is_action())
+        continue;
+      const std::size_t actor = actor_[n];
+      const std::size_t A = menu_[n];
+      const std::vector<std::size_t>& kids = tree_->node(n).children;
+      for (std::size_t a = 0; a < A; ++a) {
+        const std::size_t c = kids[a];
+        reach_[c][0] = reach_[n][0];
+        reach_[c][1] = reach_[n][1];
+        if (actor != trav)
+          for (std::uint32_t i = 0; i < kC; ++i)
+            reach_[c][actor][i] = reach_[n][actor][i] * rm(n, i, a);
+      }
+    }
+    // Fold terminals: serial O(kC), combo-independent payoff.
+    for (std::size_t n : fold_nodes_) {
+      const std::vector<double>& r = reach_[n][opp];
+      const double c = trav == 0 ? fold0_[n] : -fold0_[n];
+      double total = 0.0;
+      for (std::uint32_t j = 0; j < kC; ++j)
+        total += r[j];
+      std::vector<double>& out = value_[n];
+      for (std::uint32_t i = 0; i < kC; ++i)
+        out[i] = c * total;
+    }
+    // ALL showdown matvecs in a single fork-join region. Row task i fills each
+    // leaf's i-th value with a serial j-reduction; distinct leaves write
+    // distinct vectors, so tasks never share writable state.
+    workers_->parallel_for(kC, [&](std::uint32_t i) {
+      for (std::size_t n : showdown_nodes_) {
+        const std::vector<double>& r = reach_[n][opp];
+        const double stake = stake_[n];
+        double acc = 0.0;
+        if (trav == 0) {
+          const std::int8_t* row =
+              reinterpret_cast<const std::int8_t*>(a0_.data()) +
+              static_cast<std::size_t>(i) * kC;
+          for (std::uint32_t j = 0; j < kC; ++j)
+            acc += static_cast<double>(row[j]) * r[j];
+        } else {
+          for (std::uint32_t j = 0; j < kC; ++j)
+            acc -= static_cast<double>(a0_[static_cast<std::size_t>(j) * kC + i]) * r[j];
+        }
+        value_[n][i] = stake * acc;
+      }
+    });
+    // Bottom-up backprop and RM+ regret / linear-average updates.
+    for (std::size_t k = tree_->size(); k-- > 0;) {
+      const std::size_t n = k;
+      if (!tree_->node(n).is_action())
+        continue;
+      const std::size_t actor = actor_[n];
+      const std::size_t A = menu_[n];
+      const std::vector<std::size_t>& kids = tree_->node(n).children;
+      std::vector<double>& V = value_[n];
+      if (actor == trav) {
+        const std::vector<double>& own_reach = reach_[n][trav];
+        for (std::uint32_t i = 0; i < kC; ++i) {
+          double ev = 0.0;
+          for (std::size_t a = 0; a < A; ++a)
+            ev += rm(n, i, a) * value_[kids[a]][i];
+          V[i] = ev;
+          const double w = avg_weight_[trav] * own_reach[i];
+          for (std::size_t a = 0; a < A; ++a) {
+            (*reg_[n])[i * A + a] += value_[kids[a]][i] - ev;
+            (*sum_[n])[i * A + a] += w * rm(n, i, a);
+          }
+        }
+      } else {
+        for (std::uint32_t i = 0; i < kC; ++i) {
+          double acc = 0.0;
+          for (std::size_t a = 0; a < A; ++a)
+            acc += value_[kids[a]][i];
+          V[i] = acc;
+        }
+      }
+    }
   }
 
   // Per-combo equilibrium-game value (both average) and best-response value
@@ -113,9 +207,10 @@ class RiverGame {
   std::vector<double> equilibrium_deal_matrix() {
     build_sigma();
     std::vector<double> m(static_cast<std::size_t>(kC) * kC, 0.0);
-    for (std::uint32_t i = 0; i < kC; ++i)
+    workers_->parallel_for(kC, [&](std::uint32_t i) {
       for (std::uint32_t j = 0; j < kC; ++j)
         m[static_cast<std::size_t>(i) * kC + j] = scalar_deal(tree_->root_index(), i, j);
+    });
     return m;
   }
 
@@ -194,11 +289,31 @@ class RiverGame {
       reg_[n] = new std::vector<double>(kC * menu_[n], 0.0);
       sum_[n] = new std::vector<double>(kC * menu_[n], 0.0);
     }
-    // Pre-warm the scratch pool generously (vectors reused every iteration).
+    // Pre-warm the scratch pool generously (vectors reused by the post-solve
+    // eval walks; the hot CFR traversal uses the preallocated reach_/value_).
     for (int k = 0; k < 64; ++k) {
       pool_.emplace_back(std::make_unique<std::vector<double>>(kC, 0.0));
       slots_.push_back(pool_.back().get());
       free_.push_back(slots_.size() - 1);
+    }
+    // Hot-traversal storage: per-node two-seat reach vectors and per-node value
+    // vectors, plus the fixed sets of terminal leaves (the full tree is walked
+    // every traversal, so these sets are constant).
+    reach_.clear();
+    reach_.resize(tree_->size());
+    for (auto& ra : reach_) {
+      ra[0].assign(kC, 0.0);
+      ra[1].assign(kC, 0.0);
+    }
+    value_.assign(tree_->size(), std::vector<double>(kC, 0.0));
+    showdown_nodes_.clear();
+    fold_nodes_.clear();
+    for (std::size_t n = 0; n < tree_->size(); ++n) {
+      const TreeNode& node = tree_->node(n);
+      if (node.kind == NodeKind::TerminalShowdown)
+        showdown_nodes_.push_back(n);
+      else if (node.kind == NodeKind::TerminalFold)
+        fold_nodes_.push_back(n);
     }
   }
 
@@ -262,7 +377,9 @@ class RiverGame {
   }
 
   // Terminal raw CFV per own combo (sums compatible opponent reach). Returns a
-  // scratch id.
+  // scratch id. SERIAL: this serves only the handful of post-solve eval walks;
+  // the hot per-iteration traversal evaluates all showdown leaves in one fused
+  // fork-join region via run_traversal instead.
   std::size_t terminal_value(std::size_t n, std::size_t viewer, const Reaches& pi) {
     const std::size_t opp = viewer ^ 1;
     const std::size_t id = acquire();
@@ -299,57 +416,6 @@ class RiverGame {
       }
     }
     return id;
-  }
-
-  // CFR recursion. Traverser own reach is NOT scaled at its own nodes (standard
-  // counterfactual form); opponent reach is scaled in place per action and
-  // restored after the child returns.
-  std::size_t cfr(std::size_t trav, GameState& state, std::size_t n, Reaches& pi) {
-    const TreeNode& node = tree_->node(n);
-    if (node.is_terminal())
-      return terminal_value(n, trav, pi);
-    if (node.is_chance())
-      throw std::runtime_error("river_solver: chance node in river-root tree");
-    const std::size_t actor = actor_[n];
-    const std::size_t A = menu_[n];
-    const std::size_t out = acquire();
-    std::vector<double>& V = vec(out);
-    std::fill(V.begin(), V.end(), 0.0);
-
-    if (actor == trav) {
-      std::vector<std::size_t> kids(A);
-      for (std::size_t act = 0; act < A; ++act) {
-        GameState cs = state.after_action(actor, node.actions[act]);
-        kids[act] = cfr(trav, cs, node.children[act], pi);  // own reach unchanged
-      }
-      for (std::uint32_t i = 0; i < kC; ++i) {
-        double ev = 0.0;
-        for (std::size_t act = 0; act < A; ++act)
-          ev += rm(n, i, act) * vec(kids[act])[i];
-        V[i] = ev;
-        const double w = avg_weight_[trav] * pi[trav][i];
-        for (std::size_t act = 0; act < A; ++act) {
-          (*reg_[n])[i * A + act] += vec(kids[act])[i] - ev;
-          (*sum_[n])[i * A + act] += w * rm(n, i, act);
-        }
-      }
-      for (std::size_t act = 0; act < A; ++act)
-        release(kids[act]);
-    } else {
-      const std::size_t opp = actor;
-      const std::vector<double> saved = pi[opp];  // restore without division
-      for (std::size_t act = 0; act < A; ++act) {
-        for (std::uint32_t j = 0; j < kC; ++j)
-          pi[opp][j] = saved[j] * rm(n, j, act);
-        GameState cs = state.after_action(actor, node.actions[act]);
-        const std::size_t child = cfr(trav, cs, node.children[act], pi);
-        for (std::uint32_t i = 0; i < kC; ++i)
-          V[i] += vec(child)[i];
-        release(child);
-        pi[opp] = saved;
-      }
-    }
-    return out;
   }
 
   // Evaluation recursion for viewer: br=true best-responds at viewer nodes,
@@ -415,6 +481,7 @@ class RiverGame {
 
   GameDef def_;
   std::unique_ptr<AbstractTree> tree_;
+  std::unique_ptr<Pool> workers_;
   std::vector<std::array<int, 2>> holdings_;
   std::vector<std::int8_t> a0_;  // dense signed seat-0 showdown matrix
   std::vector<double> fold0_;
@@ -426,7 +493,14 @@ class RiverGame {
   std::vector<std::vector<double>*> sigma_;
   std::size_t action_nodes_ = 0;
   std::array<double, 2> avg_weight_{1.0, 1.0};
-  // Scratch vector pool (id -> pointer), no per-iteration allocation.
+  // Hot-traversal per-node state (preallocated, no per-iteration allocation):
+  // two-seat reach vectors and value vectors indexed by tree node, plus the
+  // constant terminal-leaf sets the fused fork-join region iterates over.
+  std::vector<std::array<std::vector<double>, 2>> reach_;
+  std::vector<std::vector<double>> value_;
+  std::vector<std::size_t> showdown_nodes_;
+  std::vector<std::size_t> fold_nodes_;
+  // Scratch vector pool (id -> pointer), used by the post-solve eval walks.
   std::vector<std::unique_ptr<std::vector<double>>> pool_;
   std::vector<std::vector<double>*> slots_;
   std::vector<std::size_t> free_;
@@ -436,7 +510,7 @@ class RiverGame {
 
 RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
                                      std::span<const std::uint64_t> checkpoints) {
-  RiverGame game(cfg.def);
+  RiverGame game(cfg.def, cfg.threads);
   RiverSolveResult out;
   out.iterations = cfg.iterations;
   out.action_nodes = game.action_node_count();
@@ -468,7 +542,7 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
 
 ComboNashConv river_combo_values(const RiverSolveConfig& cfg, std::uint64_t iterations,
                                  bool linear_averaging) {
-  RiverGame game(cfg.def);
+  RiverGame game(cfg.def, cfg.threads);
   for (std::uint64_t t = 1; t <= iterations; ++t)
     game.iterate_weighted(linear_averaging ? static_cast<double>(t) : 1.0);
   // RiverGame::ComboValues is exposed by the same deterministic eval walks;

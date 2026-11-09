@@ -70,6 +70,26 @@ bool test_bitwise_deterministic() {
   return true;
 }
 
+bool test_threading_bitwise_identical() {
+  // The O(kC^2) terminal fold and deal matrix run on a fork-join pool; each
+  // own-combo row is an independent task with a serial inner reduction, so the
+  // multi-thread solve must reproduce the serial solve bit-for-bit (the G3/
+  // online seedless premise).
+  RiverSolveConfig serial = w1cfg(60);
+  serial.threads = 1;
+  serial.compute_deal_matrix = true;
+  RiverSolveConfig parallel = w1cfg(60);
+  parallel.threads = 8;
+  parallel.compute_deal_matrix = true;
+  const RiverSolveResult s = solve_river_subgame(serial, {});
+  const RiverSolveResult p = solve_river_subgame(parallel, {});
+  CHECK(s.nash_conv_chips == p.nash_conv_chips);
+  CHECK(s.root_cfv_seat0 == p.root_cfv_seat0);
+  CHECK(s.root_cfv_seat1 == p.root_cfv_seat1);
+  CHECK(s.deal_value_seat0 == p.deal_value_seat0);
+  return true;
+}
+
 bool test_combo_br_dominates_ev() {
   // At a near-converged point, per-combo best-response value must weakly
   // dominate the equilibrium value for every combo (the exact form of the
@@ -119,7 +139,8 @@ bool test_deal_matrix_matches_cfv() {
 
 int main() {
   if (!test_finite_and_range() || !test_monotone_reduction() || !test_bitwise_deterministic() ||
-      !test_combo_br_dominates_ev() || !test_deal_matrix_matches_cfv())
+      !test_threading_bitwise_identical() || !test_combo_br_dominates_ev() ||
+      !test_deal_matrix_matches_cfv())
     return 1;
   std::printf("rfc0047_river_solver: all checks passed\n");
   return 0;

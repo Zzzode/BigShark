@@ -31,6 +31,11 @@ struct RiverSolveConfig {
   // frontier leaf value the G3 turn solver consumes. ~9 MB/leaf, off by
   // default.
   bool compute_deal_matrix = false;
+  // Worker threads for the O(kC^2) terminal showdown folds and the deal
+  // matrix. 0 = hardware count; 1 = deterministic serial. Results are
+  // bitwise identical across thread counts (each own-combo row is an
+  // independent fork-join task with a serial inner reduction).
+  std::size_t threads = 1;
 };
 
 struct ComboNashConv {

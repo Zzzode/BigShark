@@ -18,6 +18,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "thread_pool.hpp"
+
 namespace bs::rfc0047 {
 
 namespace {
@@ -32,95 +34,6 @@ using Val = std::vector<double>;
 using Reaches = std::array<Val, 2>;
 
 constexpr double kTurnNorm = static_cast<double>(kTurnC) * static_cast<double>(kTurnCompat);
-
-// Persistent fork-join worker pool: dispatch N independent jobs, block until
-// all finish, reuse threads across CFR iterations (no per-job thread create).
-class Pool {
- public:
-  explicit Pool(std::size_t n) {
-    if (n == 0)
-      n = std::thread::hardware_concurrency();
-    if (n == 0)
-      n = 1;
-    for (std::size_t t = 0; t < n; ++t)
-      workers_.emplace_back([this] { worker_loop(); });
-  }
-  ~Pool() {
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      stop_ = true;
-    }
-    cv_.notify_all();
-    for (auto& w : workers_)
-      w.join();
-  }
-  std::size_t size() const { return workers_.size(); }
-
-  void parallel_for(std::size_t n, const std::function<void(std::size_t)>& fn) {
-    if (n <= 1 || workers_.size() <= 1) {
-      for (std::size_t i = 0; i < n; ++i)
-        fn(i);
-      return;
-    }
-    {
-      std::lock_guard<std::mutex> lk(mu_);
-      fn_ = &fn;
-      total_ = n;
-      next_ = 0;
-      done_ = 0;
-      gen_ += 1;
-    }
-    cv_.notify_all();
-    // Main thread helps drain; every executed task (any thread) bumps done_.
-    std::size_t i;
-    while ((i = next_.fetch_add(1)) < n) {
-      fn(i);
-      done_.fetch_add(1);
-    }
-    std::unique_lock<std::mutex> lk(done_mu_);
-    done_cv_.wait(lk, [&] { return done_.load() >= total_; });
-    {
-      std::lock_guard<std::mutex> lk2(mu_);
-      fn_ = nullptr;
-    }
-  }
-
- private:
-  void worker_loop() {
-    std::size_t seen = 0;
-    for (;;) {
-      std::size_t total;
-      {
-        std::unique_lock<std::mutex> lk(mu_);
-        cv_.wait(lk, [&] { return stop_ || gen_ != seen; });
-        if (stop_)
-          return;
-        seen = gen_;
-        total = total_;
-      }
-      std::size_t i;
-      while ((i = next_.fetch_add(1)) < total) {
-        (*fn_)(i);
-        if (done_.fetch_add(1) + 1 == total_) {
-          std::lock_guard<std::mutex> dlk(done_mu_);
-          done_cv_.notify_all();
-        }
-      }
-    }
-  }
-
-  std::vector<std::thread> workers_;
-  std::mutex mu_;
-  std::condition_variable cv_;
-  const std::function<void(std::size_t)>* fn_ = nullptr;
-  std::size_t total_ = 0;
-  std::atomic<std::size_t> next_{0};
-  std::atomic<std::size_t> done_{0};
-  std::size_t gen_ = 0;
-  bool stop_ = false;
-  std::mutex done_mu_;
-  std::condition_variable done_cv_;
-};
 
 // Two-seat turn-rooted range-vectorized CFR with oracle-matrix river leaves.
 class TurnGame {
