@@ -1,0 +1,1 @@
+groups=240 missing=0 worst_R0_bb=0.00122520 gate_0.002=PASS
