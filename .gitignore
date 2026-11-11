@@ -100,3 +100,12 @@ artifacts/flop-library-25bb.bin.sha256
 # docs/plans/ablation/rfc0045-g2-campaign.csv).
 /rfc45-ckpt/
 /rfc45-run2/
+
+# RFC 0047 S3 R240 river census working state. Per-batch partials, salvaged
+# rows, orchestrator logs, and superseded timing/smoke CSVs are scratch; the
+# certified 240-group evidence of record is committed under
+# docs/plans/ablation/rfc0047/s3/r240-census/ (same pattern as RFC 0045).
+/docs/plans/ablation/rfc0047/s3/salvaged-partials/
+/docs/plans/ablation/rfc0047/s3/*.log
+/docs/plans/ablation/rfc0047/s3/online-river-*.csv
+/docs/plans/ablation/rfc0047/s3/batch-*.csv
