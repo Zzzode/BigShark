@@ -37,14 +37,16 @@ constexpr double kNorm = static_cast<double>(kC) * kCompat;
 // pool and in-place opponent-reach scaling (zero heap allocation in the loop).
 class RiverGame {
  public:
-  explicit RiverGame(const GameDef& d, std::size_t threads) : def_(d) {
+  explicit RiverGame(const GameDef& d, std::size_t threads, std::uint8_t action_cap) : def_(d) {
     if (def_.player_count != 2 || def_.board_size != 5 || def_.terminal != TerminalDepth::River)
       throw std::invalid_argument("river_solver: needs a 2-seat five-card river-root def");
     workers_ = std::make_unique<Pool>(threads);
     std::array<int, 5> bd{};
     for (int i = 0; i < 5; ++i)
       bd[i] = def_.board[i];
-    tree_ = std::make_unique<AbstractTree>(d, bs::abstraction::ActionAbstraction::identity(1));
+    // action_cap = max raises per street; 0 means no cap (the exact cap-0 menu).
+    tree_ =
+        std::make_unique<AbstractTree>(d, bs::abstraction::ActionAbstraction::identity(action_cap));
     holdings_.resize(kC);
     for (std::uint32_t x = 0; x < kC; ++x)
       holdings_[x] = holding_for_dense(std::span<const int>(bd.data(), 5), x);
@@ -54,6 +56,18 @@ class RiverGame {
 
   const AbstractTree& tree() const { return *tree_; }
   std::size_t action_node_count() const { return action_nodes_; }
+
+  // Snapshot the built average strategy keyed by tree node (empty at
+  // non-action nodes). Benchmark-only fixed-policy consumers read this instead
+  // of touching the internal regret/sum tables.
+  std::vector<std::vector<double>> snapshot_sigma() {
+    build_sigma();
+    std::vector<std::vector<double>> out(tree_->size());
+    for (std::size_t n = 0; n < tree_->size(); ++n)
+      if (sigma_[n] != nullptr)
+        out[n] = *sigma_[n];
+    return out;
+  }
 
   // CFR traversal via explicit reach / fused terminal eval / backprop passes.
   // Restructuring the recursive walk this way lets every showdown-leaf matvec
@@ -116,8 +130,7 @@ class RiverGame {
         double acc = 0.0;
         if (trav == 0) {
           const std::int8_t* row =
-              reinterpret_cast<const std::int8_t*>(a0_.data()) +
-              static_cast<std::size_t>(i) * kC;
+              reinterpret_cast<const std::int8_t*>(a0_.data()) + static_cast<std::size_t>(i) * kC;
           for (std::uint32_t j = 0; j < kC; ++j)
             acc += static_cast<double>(row[j]) * r[j];
         } else {
@@ -510,7 +523,7 @@ class RiverGame {
 
 RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
                                      std::span<const std::uint64_t> checkpoints) {
-  RiverGame game(cfg.def, cfg.threads);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap);
   RiverSolveResult out;
   out.iterations = cfg.iterations;
   out.action_nodes = game.action_node_count();
@@ -537,12 +550,13 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
   out.root_br_seat1 = std::move(cv1.br);
   if (cfg.compute_deal_matrix)
     out.deal_value_seat0 = game.equilibrium_deal_matrix();
+  out.avg_sigma = game.snapshot_sigma();
   return out;
 }
 
 ComboNashConv river_combo_values(const RiverSolveConfig& cfg, std::uint64_t iterations,
                                  bool linear_averaging) {
-  RiverGame game(cfg.def, cfg.threads);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap);
   for (std::uint64_t t = 1; t <= iterations; ++t)
     game.iterate_weighted(linear_averaging ? static_cast<double>(t) : 1.0);
   // RiverGame::ComboValues is exposed by the same deterministic eval walks;

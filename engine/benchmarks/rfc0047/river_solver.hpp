@@ -36,6 +36,11 @@ struct RiverSolveConfig {
   // bitwise identical across thread counts (each own-combo row is an
   // independent fork-join task with a serial inner reduction).
   std::size_t threads = 1;
+  // Max full raises per street in the action menu (ActionAbstraction::identity).
+  // Default 1 is the bounded online cap-1 menu; 0 means no cap (the exact
+  // cap-0 reference used only by the menu-materiality measurement). The
+  // seedless solve stays exact for whichever menu is selected.
+  std::uint8_t action_cap = 1;
 };
 
 struct ComboNashConv {
@@ -67,6 +72,12 @@ struct RiverSolveResult {
   // strategy (combos_per_seat^2 row major; 0 on blocker-incompatible pairs).
   // Populated only when config.compute_deal_matrix is set.
   std::vector<double> deal_value_seat0;
+  // Node-indexed average strategy: one flat combos*menu row-major vector per
+  // ACTION node (empty at non-action indices), menu = that node's action count.
+  // Populated on every solve so benchmark-only fixed-policy consumers (the
+  // cap-0 menu-materiality embedding) can evaluate the solved policy without
+  // touching the kernel's internal regret/sum tables or re-running CFR.
+  std::vector<std::vector<double>> avg_sigma;
 };
 
 // Deterministic exact solve. Throws std::invalid_argument on a malformed

@@ -652,6 +652,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/quality_report.cpp
   benchmarks/rfc0047/river_solver.cpp
   benchmarks/rfc0047/river_serve.cpp
+  benchmarks/rfc0047/cap_embedding.cpp
   benchmarks/rfc0047/turn_solver.cpp
   benchmarks/rfc0047/turn_serve.cpp
 )
@@ -695,6 +696,10 @@ target_link_libraries(bigshark-rfc0047-online-river PRIVATE bigshark_rfc0047_ben
 # M2 gap per subgame so quality cannot be laundered through one number.
 add_executable(bigshark-rfc0047-g6-report benchmarks/rfc0047/rfc0047_g6_report.cpp)
 target_link_libraries(bigshark-rfc0047-g6-report PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0047 S3/G5 manual cap-1 vs cap-0 menu-materiality probe (NOT a CTest).
+add_executable(bigshark-rfc0047-cap-materiality benchmarks/rfc0047/rfc0047_cap_materiality.cpp)
+target_link_libraries(bigshark-rfc0047-cap-materiality PRIVATE bigshark_rfc0047_bench)
 
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
@@ -1258,6 +1263,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_turn_solver tests/test_rfc0047_turn_solver.cpp)
   target_link_libraries(test_rfc0047_turn_solver PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_turn_solver COMMAND test_rfc0047_turn_solver)
+
+  add_executable(test_rfc0047_cap_embedding tests/test_rfc0047_cap_embedding.cpp)
+  target_link_libraries(test_rfc0047_cap_embedding PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_cap_embedding COMMAND test_rfc0047_cap_embedding)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
