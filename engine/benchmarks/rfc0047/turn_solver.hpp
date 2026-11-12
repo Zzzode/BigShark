@@ -86,6 +86,16 @@ struct TurnSolveResult {
   // sum over leaves and combos is the per-joint-deal river-arrival probability
   // (<= 1; turn folds carry no leaf mass). This is the frozen G3 e_l2 weight.
   std::vector<TurnLeafReach> leaf_reaches;
+  // Per-turn-combo root values from the INDEPENDENT evaluate walker (it reads
+  // only the materialized average strategy and exact leaf/settlement payoff,
+  // never the CFR regret/average tables), normalized per compatible opponent
+  // deal (raw CFV / kTurnCompat), in chips. Length kTurnC. These are the
+  // responder best response (br) and equilibrium value (cfv/ev) the G5
+  // serve-point-A certifier compares against the sealed trunk margin b_turn.
+  std::vector<double> root_cfv_seat0;
+  std::vector<double> root_br_seat0;
+  std::vector<double> root_cfv_seat1;
+  std::vector<double> root_br_seat1;
 };
 
 // Independent telescoping exact-best-response hybrid NashConv of a FIXED turn

@@ -652,6 +652,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/river_solver.cpp
   benchmarks/rfc0047/river_serve.cpp
   benchmarks/rfc0047/turn_solver.cpp
+  benchmarks/rfc0047/turn_serve.cpp
 )
 target_include_directories(bigshark_rfc0047_bench PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -1230,6 +1231,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_river_serve tests/test_rfc0047_river_serve.cpp)
   target_link_libraries(test_rfc0047_river_serve PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_river_serve COMMAND test_rfc0047_river_serve)
+
+  add_executable(test_rfc0047_turn_serve tests/test_rfc0047_turn_serve.cpp)
+  target_link_libraries(test_rfc0047_turn_serve PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_turn_serve COMMAND test_rfc0047_turn_serve)
 
   add_executable(test_rfc0047_frontier_enumerator tests/test_rfc0047_frontier_enumerator.cpp)
   target_link_libraries(test_rfc0047_frontier_enumerator PRIVATE bigshark_rfc0047_bench)

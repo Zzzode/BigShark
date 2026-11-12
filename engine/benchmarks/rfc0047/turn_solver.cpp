@@ -101,6 +101,31 @@ class TurnGame {
     return sigma_;
   }
 
+  // Independent per-combo root equilibrium value (ev, br=false) and responder
+  // best response (br, br=true) for one seat, normalized per compatible
+  // opponent deal (the raw evaluate CFV sums over kTurnCompat deals, so divide
+  // once). Both walks read only the materialized average strategy and exact
+  // leaf/settlement payoff, never the CFR regret/average tables.
+  struct RootComboValues {
+    Val ev;
+    Val br;
+  };
+  RootComboValues root_combo_values(std::size_t viewer) {
+    build_sigma();
+    Val ro(kTurnC, 1.0);
+    GameState st(def_);
+    Val raw_ev = evaluate(viewer, false, st, tree_->root_index(), ro);
+    Val ro2(kTurnC, 1.0);
+    GameState st2(def_);
+    Val raw_br = evaluate(viewer, true, st2, tree_->root_index(), ro2);
+    RootComboValues out{Val(kTurnC, 0.0), Val(kTurnC, 0.0)};
+    for (std::uint32_t i = 0; i < kTurnC; ++i) {
+      out.ev[i] = raw_ev[i] / static_cast<double>(kTurnCompat);
+      out.br[i] = raw_br[i] / static_cast<double>(kTurnCompat);
+    }
+    return out;
+  }
+
   // Counterfactual reach per config leaf under the average strategy (see
   // TurnLeafReach in the header for the frozen formula).
   std::vector<TurnLeafReach> export_leaf_reaches() {
@@ -907,6 +932,12 @@ TurnSolveResult solve_turn_subgame(const TurnSolveConfig& cfg) {
   out.tree_size = game.tree_node_count();
   out.sigma = game.average_sigma();
   out.leaf_reaches = game.export_leaf_reaches();
+  auto cv0 = game.root_combo_values(0);
+  auto cv1 = game.root_combo_values(1);
+  out.root_cfv_seat0 = std::move(cv0.ev);
+  out.root_br_seat0 = std::move(cv0.br);
+  out.root_cfv_seat1 = std::move(cv1.ev);
+  out.root_br_seat1 = std::move(cv1.br);
   const double nc = game.nash_conv_chips();
   out.nash_conv_chips = nc;
   out.nash_conv_bb = nc / bb;
