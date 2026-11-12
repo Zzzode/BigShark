@@ -650,6 +650,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/cv_oracle.cpp
   benchmarks/rfc0047/frontier_enumerator.cpp
   benchmarks/rfc0047/river_solver.cpp
+  benchmarks/rfc0047/river_serve.cpp
   benchmarks/rfc0047/turn_solver.cpp
 )
 target_include_directories(bigshark_rfc0047_bench PUBLIC
@@ -1225,6 +1226,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_river_solver tests/test_rfc0047_river_solver.cpp)
   target_link_libraries(test_rfc0047_river_solver PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_river_solver COMMAND test_rfc0047_river_solver)
+
+  add_executable(test_rfc0047_river_serve tests/test_rfc0047_river_serve.cpp)
+  target_link_libraries(test_rfc0047_river_serve PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_river_serve COMMAND test_rfc0047_river_serve)
 
   add_executable(test_rfc0047_frontier_enumerator tests/test_rfc0047_frontier_enumerator.cpp)
   target_link_libraries(test_rfc0047_frontier_enumerator PRIVATE bigshark_rfc0047_bench)
