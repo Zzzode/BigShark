@@ -55,6 +55,7 @@ struct RiverServeRequest {
   std::span<const double> baseline_seat1;
   // Fraction of root pot added to the baseline. Defaults to the production
   // 1e-9 kill gate; tests may pass 1e-6 to prove the tighter value is binding.
+  // Must be finite and non-negative or the serve returns InvalidInput.
   double tolerance_pot = kServeCertPotTolerance;
 };
 
@@ -65,14 +66,19 @@ struct RiverServeResult {
   RiverSolveResult solve;
   // All violating margin records (empty iff Certified); retained for reporting.
   std::vector<ServeMarginRecord> violations;
-  // Maximum slack over every seat and combo; <= 0 exactly when Certified.
+  // True maximum slack over every seat and combo (negative on a Certified
+  // serve, i.e. the tightest remaining safety margin); +infinity is impossible
+  // because non-finite inputs are rejected.
   double worst_slack = 0.0;
   std::size_t combos_per_seat = 0;
 };
 
 // Exact-key re-solve followed by independent per-combo responder
-// certification. Never throws on a certifiable rejection; a malformed request
-// yields ServeStatus::InvalidInput rather than an exception.
+// certification. Never throws and never promotes an uncertified strategy:
+// non-finite/negative tolerance, a tolerance whose chip-scale product overflows,
+// non-positive or non-finite pot, malformed baseline size, any non-finite
+// baseline or best-response value, or a malformed GameDef (the kernel's
+// std::invalid_argument) all yield InvalidInput.
 RiverServeResult serve_river_certified(const RiverServeRequest& request);
 
 }  // namespace bs::rfc0047

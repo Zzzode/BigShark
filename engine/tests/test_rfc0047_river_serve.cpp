@@ -15,6 +15,7 @@
 // is the system under test.
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <vector>
 
 #include "../benchmarks/rfc0047/river_serve.hpp"
@@ -75,7 +76,10 @@ bool test_certified_against_own_baseline_and_deterministic() {
   RiverServeResult a = serve_river_certified(req);
   CHECK(a.status == ServeStatus::Certified);
   CHECK(a.violations.empty());
-  CHECK(a.worst_slack <= 0.0);  // slack = BR - BR - tol*pot = -tol*pot
+  // Every slack is BR - BR - tol*pot = -tol*pot exactly, so the true maximum
+  // (not a hard-coded zero) must equal the single negative safety margin.
+  const double expected_slack = -kServeCertPotTolerance * static_cast<double>(cfg.def.pot);
+  CHECK(a.worst_slack == expected_slack);
   CHECK(a.combos_per_seat == C);
 
   // Determinism: a second in-process call reproduces status, slack, and value.
@@ -157,12 +161,109 @@ bool test_node_envelope() {
   return true;
 }
 
+// Review hardening: non-finite values must fail closed. A NaN compares false in
+// every inequality, so without an explicit isfinite guard a NaN baseline or
+// tolerance would otherwise certify an unprovable combo (fail-open).
+bool test_non_finite_inputs_rejected() {
+  RiverSolveConfig cfg = serve_cfg(300);
+  RiverSolveResult ref = solve_river_subgame(cfg, {});
+  const std::size_t C = ref.combos_per_seat;
+  constexpr double nan = std::numeric_limits<double>::quiet_NaN();
+  constexpr double inf = std::numeric_limits<double>::infinity();
+
+  for (double bad : {nan, inf}) {
+    std::vector<double> b0 = ref.root_br_seat0;
+    std::vector<double> b1 = ref.root_br_seat1;
+    b0[C / 2] = bad;
+    RiverServeRequest req;
+    req.solve = cfg;
+    req.baseline_seat0 = std::span<const double>(b0);
+    req.baseline_seat1 = std::span<const double>(b1);
+    CHECK(serve_river_certified(req).status == ServeStatus::InvalidInput);
+  }
+
+  RiverServeRequest nt;  // non-finite tolerance
+  nt.solve = cfg;
+  nt.baseline_seat0 = std::span<const double>(ref.root_br_seat0);
+  nt.baseline_seat1 = std::span<const double>(ref.root_br_seat1);
+  nt.tolerance_pot = nan;
+  CHECK(serve_river_certified(nt).status == ServeStatus::InvalidInput);
+  return true;
+}
+
+// Review hardening: the enumerated request bounds. Chips is unsigned, so the
+// pot guard is reachable only at pot == 0 (negative pots cannot be encoded);
+// the tolerance sign and empty-baseline checks cover the other malformed arms.
+bool test_request_bounds_rejected() {
+  RiverSolveConfig cfg = serve_cfg(300);
+  RiverSolveResult ref = solve_river_subgame(cfg, {});
+
+  RiverServeRequest neg;
+  neg.solve = cfg;
+  neg.baseline_seat0 = std::span<const double>(ref.root_br_seat0);
+  neg.baseline_seat1 = std::span<const double>(ref.root_br_seat1);
+  neg.tolerance_pot = -1e-9;
+  CHECK(serve_river_certified(neg).status == ServeStatus::InvalidInput);
+
+  RiverServeRequest zeropot;
+  zeropot.solve = cfg;
+  zeropot.solve.def.pot = 0;  // unsigned: the only reachable non-positive pot
+  zeropot.baseline_seat0 = std::span<const double>(ref.root_br_seat0);
+  zeropot.baseline_seat1 = std::span<const double>(ref.root_br_seat1);
+  CHECK(serve_river_certified(zeropot).status == ServeStatus::InvalidInput);
+
+  const std::vector<double> empty;
+  RiverServeRequest nobase;
+  nobase.solve = cfg;
+  nobase.baseline_seat0 = std::span<const double>(empty);
+  nobase.baseline_seat1 = std::span<const double>(ref.root_br_seat1);
+  CHECK(serve_river_certified(nobase).status == ServeStatus::InvalidInput);
+  return true;
+}
+
+// Review hardening: a malformed GameDef makes the kernel throw
+// std::invalid_argument; the serve entry must absorb it into InvalidInput and
+// never let an exception cross the no-throw API boundary.
+bool test_malformed_def_maps_to_invalid_input() {
+  RiverSolveConfig good = serve_cfg(300);
+  RiverSolveResult ref = solve_river_subgame(good, {});
+  RiverSolveConfig bad = good;
+  bad.def.player_count = 3;  // kernel requires exactly two seats
+
+  RiverServeRequest req;
+  req.solve = bad;
+  req.baseline_seat0 = std::span<const double>(ref.root_br_seat0);
+  req.baseline_seat1 = std::span<const double>(ref.root_br_seat1);
+  RiverServeResult r = serve_river_certified(req);  // must not throw
+  CHECK(r.status == ServeStatus::InvalidInput);
+  return true;
+}
+
+// Review residual-risk hardening: a finite but astronomical tolerance fraction
+// overflows the chip-scale product (tol*pot -> +inf). That would otherwise
+// certify everything with an infinite slack and contradict the no-infinite-slack
+// invariant; it must be rejected as invalid input instead.
+bool test_overflowing_tolerance_rejected() {
+  RiverSolveConfig cfg = serve_cfg(300);
+  RiverSolveResult ref = solve_river_subgame(cfg, {});
+  RiverServeRequest req;
+  req.solve = cfg;
+  req.baseline_seat0 = std::span<const double>(ref.root_br_seat0);
+  req.baseline_seat1 = std::span<const double>(ref.root_br_seat1);
+  req.tolerance_pot = 1e308;  // finite as a fraction; *pot overflows to +inf
+  CHECK(std::isfinite(req.tolerance_pot));
+  CHECK(serve_river_certified(req).status == ServeStatus::InvalidInput);
+  return true;
+}
+
 }  // namespace
 
 int main() {
   if (!test_invalid_input() || !test_certified_against_own_baseline_and_deterministic() ||
       !test_fail_closed_on_tightened_baseline() ||
-      !test_production_tolerance_is_the_binding_gate() || !test_node_envelope())
+      !test_production_tolerance_is_the_binding_gate() || !test_node_envelope() ||
+      !test_non_finite_inputs_rejected() || !test_request_bounds_rejected() ||
+      !test_malformed_def_maps_to_invalid_input() || !test_overflowing_tolerance_rejected())
     return 1;
   std::printf("rfc0047_river_serve: all checks passed\n");
   return 0;
