@@ -109,3 +109,6 @@ artifacts/flop-library-25bb.bin.sha256
 /docs/plans/ablation/rfc0047/s3/*.log
 /docs/plans/ablation/rfc0047/s3/online-river-*.csv
 /docs/plans/ablation/rfc0047/s3/batch-*.csv
+# RFC 0047 S3/G6 manual dual-quality probe outputs are regenerable scratch; the
+# wiring and native test are the deliverable, not these per-run smoke CSVs.
+/docs/plans/ablation/rfc0047/s3/g6/

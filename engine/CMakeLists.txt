@@ -649,6 +649,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/tree_budget.cpp
   benchmarks/rfc0047/cv_oracle.cpp
   benchmarks/rfc0047/frontier_enumerator.cpp
+  benchmarks/rfc0047/quality_report.cpp
   benchmarks/rfc0047/river_solver.cpp
   benchmarks/rfc0047/river_serve.cpp
   benchmarks/rfc0047/turn_solver.cpp
@@ -688,6 +689,12 @@ target_link_libraries(bigshark-rfc0047-g3-probe PRIVATE bigshark_rfc0047_bench)
 # (R0 summed NashConv, 1e-9 root-pot responder kill gate, G1 timing/nodes/RSS).
 add_executable(bigshark-rfc0047-online-river benchmarks/rfc0047/rfc0047_online_river.cpp)
 target_link_libraries(bigshark-rfc0047-online-river PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0047 S3/G6 manual probe: real serve -> dual quality report wiring (NOT a
+# CTest); emits both the within-instrument convergence and the exact-hand/composed
+# M2 gap per subgame so quality cannot be laundered through one number.
+add_executable(bigshark-rfc0047-g6-report benchmarks/rfc0047/rfc0047_g6_report.cpp)
+target_link_libraries(bigshark-rfc0047-g6-report PRIVATE bigshark_rfc0047_bench)
 
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
@@ -1235,6 +1242,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_turn_serve tests/test_rfc0047_turn_serve.cpp)
   target_link_libraries(test_rfc0047_turn_serve PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_turn_serve COMMAND test_rfc0047_turn_serve)
+
+  add_executable(test_rfc0047_quality_report tests/test_rfc0047_quality_report.cpp)
+  target_link_libraries(test_rfc0047_quality_report PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_quality_report COMMAND test_rfc0047_quality_report)
 
   add_executable(test_rfc0047_frontier_enumerator tests/test_rfc0047_frontier_enumerator.cpp)
   target_link_libraries(test_rfc0047_frontier_enumerator PRIVATE bigshark_rfc0047_bench)

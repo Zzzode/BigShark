@@ -109,6 +109,7 @@ TurnServeResult serve_turn_certified(const TurnServeRequest& request) {
   out.river_term_bb = out.hybrid.river_term_bb;
   out.g3_propagated_bb = request.g3_propagated_error_bb;
   out.local_bound_bb = out.turn_gap_bb + out.g3_propagated_bb + out.river_term_bb;
+  out.b0_bb = request.b0_bb;
   out.b0_gate_pass = std::isfinite(out.local_bound_bb) && out.local_bound_bb <= request.b0_bb;
 
   // Per-combo responder non-regression at the turn root.

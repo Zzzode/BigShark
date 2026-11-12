@@ -94,6 +94,7 @@ struct TurnServeResult {
   double river_term_bb = 0.0;
   double g3_propagated_bb = 0.0;
   double local_bound_bb = 0.0;  // turn_gap + g3_propagated + river_term
+  double b0_bb = 0.0;           // the effective B0 budget applied to this serve
   bool responder_gate_pass = false;
   bool b0_gate_pass = false;
   std::size_t combos_per_seat = 0;
