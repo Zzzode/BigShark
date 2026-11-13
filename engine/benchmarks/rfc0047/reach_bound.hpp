@@ -194,4 +194,15 @@ RestrictedGapResult restricted_gaps_from_snapshot(const bs::poker::GameDef& rive
 bool subtree_is_extension_free(const bs::tree::AbstractTree& reference, const SubsetMap& subset,
                                std::size_t reference_node, std::size_t seat);
 
+// D198: per-combo root EV/BR over the reference tree for an externally
+// supplied immutable snapshot (no re-solve), reusing the ReachBound
+// evaluator. Lets an averaging-policy candidate be independently validated
+// against the solver's own root CFV. Throws on domain/snapshot failures.
+UnionRootValues root_values_from_snapshot(const bs::poker::GameDef& river_def,
+                                          const RiverSolveResult& solved,
+                                          const bs::tree::AbstractTree& reference,
+                                          const bs::tree::AbstractTree& bounded,
+                                          const SubsetMap& subset,
+                                          CapExtensionCompletion completion);
+
 }  // namespace bs::rfc0047

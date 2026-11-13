@@ -85,6 +85,33 @@ class ReachInstrument {
     return reach;
   }
 
+  // D198: per-combo root EV and BR vectors over the reference tree for the
+  // supplied snapshot, so an externally produced policy (e.g. the uniform
+  // average) can be validated against the solver's own root CFV without
+  // re-solving.
+  UnionRootValues root_values(CapExtensionCompletion completion) {
+    UnionRootValues values;
+    values.ev_seat0.resize(kC);
+    values.ev_seat1.resize(kC);
+    values.br_seat0.resize(kC);
+    values.br_seat1.resize(kC);
+    const auto collect = [&](std::size_t viewer, bool br, std::vector<double>& dst) {
+      std::array<std::vector<double>, 2> ro{std::vector<double>(kC, 1.0),
+                                            std::vector<double>(kC, 1.0)};
+      const std::size_t id = eval(viewer, br, ref_.root_index(), ro);
+      dst = vec(id);
+      release(id);
+    };
+    // The completion arm is fixed for the instrument; verify the request.
+    if (completion != completion_)
+      throw std::invalid_argument("reach_bound: root_values completion arm mismatch");
+    collect(0, false, values.ev_seat0);
+    collect(0, true, values.br_seat0);
+    collect(1, false, values.ev_seat1);
+    collect(1, true, values.br_seat1);
+    return values;
+  }
+
   ReachBoundResult run() {
     ReachBoundResult out;
     out.bounded_abstraction_digest = bounded_tree_.action_id().digest;
@@ -942,6 +969,17 @@ RestrictedGapResult restricted_gaps_from_snapshot(const bs::poker::GameDef& rive
     throw std::invalid_argument("reach_bound: needs a 2-seat five-card river-root def");
   RestrictedInstrument instrument(river_def, bounded, solved);
   return instrument.run();
+}
+
+UnionRootValues root_values_from_snapshot(const bs::poker::GameDef& river_def,
+                                          const RiverSolveResult& solved,
+                                          const AbstractTree& reference,
+                                          const AbstractTree& bounded, const SubsetMap& subset,
+                                          CapExtensionCompletion completion) {
+  validate_domain(river_def, bounded.action_abstraction(), reference.action_abstraction());
+  validate_snapshot(solved, bounded, subset, reference);
+  ReachInstrument instrument(river_def, reference, solved, bounded, subset, completion);
+  return instrument.root_values(completion);
 }
 
 RestrictedGapResult measure_restricted_gaps(

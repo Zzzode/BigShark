@@ -657,6 +657,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/union_menu.cpp
   benchmarks/rfc0047/union_embedding.cpp
   benchmarks/rfc0047/reach_bound.cpp
+  benchmarks/rfc0047/policy_hash.cpp
   benchmarks/rfc0047/turn_solver.cpp
   benchmarks/rfc0047/turn_serve.cpp
 )
@@ -729,6 +730,12 @@ target_link_libraries(bigshark-rfc0047-union-materiality PRIVATE bigshark_rfc004
 add_executable(bigshark-rfc0047-reach-diagnostic
   benchmarks/rfc0047/rfc0047_reach_diagnostic.cpp)
 target_link_libraries(bigshark-rfc0047-reach-diagnostic PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0048 D198 manual single-process two-mode averaging-policy probe
+# (NOT a CTest): uniform candidate plus in-process linear control.
+add_executable(bigshark-rfc0047-averaging-probe
+  benchmarks/rfc0047/rfc0047_averaging_probe.cpp)
+target_link_libraries(bigshark-rfc0047-averaging-probe PRIVATE bigshark_rfc0047_bench)
 
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
@@ -1308,6 +1315,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_reach_bound tests/test_rfc0047_reach_bound.cpp)
   target_link_libraries(test_rfc0047_reach_bound PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_reach_bound COMMAND test_rfc0047_reach_bound)
+
+  add_executable(test_rfc0047_averaging tests/test_rfc0047_averaging.cpp)
+  target_link_libraries(test_rfc0047_averaging PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_averaging COMMAND test_rfc0047_averaging)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
