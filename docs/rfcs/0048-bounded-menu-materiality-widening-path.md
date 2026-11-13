@@ -244,6 +244,35 @@ reach-weighted certification gate); both are out of scope here.
 4. Only after a design clears M within its stated envelope does a separate
    production addendum reach review.
 
+## Stage-1 Evidence (D176, implemented)
+
+The rollout stage-1 spike is implemented as the benchmark-only
+`rfc0047-patha-grid-budget` census (commit d87248c; independent design review
+approved, native gate green). Solve-free public-tree measurements on the w1
+turn-rooted full trunk and one reached-river root, against TreeLimits
+(2,000,000 nodes / 1 GiB) and the 1,000,000-infoset envelope:
+
+- Raise-cap widening on the full turn trunk is NOT artifact-feasible: cap >= 4
+  hits the 1 GiB byte cap (typed tree_resource_exhausted, fail-fast), and even
+  cap-1 exceeds 1 M infosets (4.27 M, reproducing the RFC 0046 full-range
+  footprint). On the reached-river subtree only caps <= 5 fit 1 M infosets, but
+  D164 showed caps <= 5 miss the 0.002 quality bar and cap-6 exceeds 1 M even
+  there, so the envelope and the quality bar do not intersect for raise-cap
+  widening.
+- Bet-sizing widening is the lower-cost lever. At cap=1 the wide grid is
+  7.07 M infosets / 11.8 MB versus cap-2's 56.4 M / 95 MB, and the coarse grid
+  reduces the turn trunk to 1.15 M infosets (only 15% over the envelope). The
+  coarse/near-1M sizing region is therefore where stage 2 should concentrate;
+  feasible builds cost single-digit milliseconds to ~20 ms, so build cost is
+  not the constraint.
+- The 1 M-infoset number is a menu-width-blind structural proxy (the census adds
+  mean/max actions-per-node columns for stage-2 byte costing); raised-srp
+  pot-8 relative inflation remains an unmeasured bounded residual.
+
+Stage 1 thus closes the feasibility question with a negative raise-cap verdict
+and a positive sizing-grid lead. No production behavior changes; stage 2
+requires its own independently-approved addendum.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the
