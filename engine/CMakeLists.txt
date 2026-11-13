@@ -653,6 +653,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/river_solver.cpp
   benchmarks/rfc0047/river_serve.cpp
   benchmarks/rfc0047/cap_embedding.cpp
+  benchmarks/rfc0047/patha_grid_budget.cpp
   benchmarks/rfc0047/turn_solver.cpp
   benchmarks/rfc0047/turn_serve.cpp
 )
@@ -706,6 +707,12 @@ target_link_libraries(bigshark-rfc0047-turn-g6-report PRIVATE bigshark_rfc0047_b
 # RFC 0047 S3/G5 manual cap-1 vs cap-0 menu-materiality probe (NOT a CTest).
 add_executable(bigshark-rfc0047-cap-materiality benchmarks/rfc0047/rfc0047_cap_materiality.cpp)
 target_link_libraries(bigshark-rfc0047-cap-materiality PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0048 Path A stage-1 (D176) manual offline wide-menu/grid footprint
+# census (NOT a CTest); solve-free public-tree build cost vs the envelope.
+add_executable(bigshark-rfc0047-patha-grid-budget
+  benchmarks/rfc0047/rfc0047_patha_grid_budget.cpp)
+target_link_libraries(bigshark-rfc0047-patha-grid-budget PRIVATE bigshark_rfc0047_bench)
 
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
@@ -1273,6 +1280,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_cap_embedding tests/test_rfc0047_cap_embedding.cpp)
   target_link_libraries(test_rfc0047_cap_embedding PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_cap_embedding COMMAND test_rfc0047_cap_embedding)
+
+  add_executable(test_rfc0047_patha_grid_budget tests/test_rfc0047_patha_grid_budget.cpp)
+  target_link_libraries(test_rfc0047_patha_grid_budget PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_patha_grid_budget COMMAND test_rfc0047_patha_grid_budget)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
