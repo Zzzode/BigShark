@@ -2715,6 +2715,37 @@ RFCs 0041/0043/0045/0046).
   sigma's reach/residual certificates are never applied to the mixed
   policy — it is re-solved and re-evaluated from scratch.
 
+- ANCHOR RESULT (measured 2026-11-14; supersedes the pre-declared
+  resource class above). One single-thread 300-iteration solve of the
+  root-only mask on w1, both completion arms evaluated on the immutable
+  snapshot (docs/plans/ablation/rfc0047/s3/mixed-menu/w1-rootonly-300.*;
+  probe rfc0047_mixed_menu_probe). Reachable closure: 2,430 action
+  nodes, 7,286 compact allowed slots vs 33,692 reference edges (21.6%);
+  candidate policy hash 969471175395458718 (genuinely distinct from the
+  coarse and cap-0 baselines).
+    bounded NashConv ............ 0.03661936 BB (coarse 0.02761552; 1.33x worse)
+    e_embed Uniform ............. 23.34239272 BB (coarse 31.24489667)
+    pure menu term Uniform ..... 23.30577336 BB (coarse 31.21728115; -25.3%, -7.91 BB)
+    e_embed BrFavorable ......... 159.63194387 BB (coarse 215.34663379)
+    solve wall/CPU .............. 3010.5 s / 3002.1 s (~50.2 min; coarse 18.0 s, 167x)
+    peak RSS .................... 730,508 KiB = 713.4 MiB (coarse 46.8 MiB, 15.3x)
+    evaluation .................. ~29.8 s/arm over the full reference tree (by design)
+  VERDICT: the per-node mixed-menu mechanism is REAL and honestly
+  measurable — root widening removes 7.91 BB of Uniform pure menu term
+  — but it is not an M2/G5 path. Residual e_embed 23.34 BB Uniform
+  misses the frozen 0.002 BB bar by ~1.17x10^4, and the bounded NashConv
+  worsens because the 2,430-node restricted game converges more slowly
+  than the 6-node coarse game at the same 300-iteration budget (the
+  T^-0.52 policy-convergence wall). Root-only widening leaves the
+  dominant menu mass in still-restricted deeper subtrees, empirically
+  confirming the D195 subtree conclusion on an actually-widened tree.
+  The pre-declared "tens of MiB / ~30 min" class was wrong on both
+  counts and is corrected here; 713.4 MiB stays inside G1's 1 GiB with
+  ~30% headroom but never engages the 10 s online half of G1, so the
+  construction is offline evidence only. All rows are mechanically
+  labeled union-candidate / supporting-evidence-not-m2-g5-pass; no
+  certificate transfers and no M2/G5 pass is claimed.
+
 - REVIEW RECORD. Round 1 (2026-11-14, independent session agent
   a56fda80e49e62818): CHANGES REQUESTED. F1 blocking — M8/local
   full-menu zero-gap claim repeated the D195 local-vs-subtree error;
@@ -2777,3 +2808,28 @@ RFCs 0041/0043/0045/0046).
   implementation review APPROVED (no blocking/major/medium; two LOW
   addressed: shape-only off-closure reach comment, M3b second fixture);
   full rfc0047 ctest regression result recorded below.
+
+- CLOSURE-SCOPING FIX AND RE-REVIEW (2026-11-14). Anchor smoke runs exposed
+  that MixedMenuGame::layout() allocated the CFR hot storage (two-seat
+  reach_, value_, and the showdown/fold work lists) over the FULL cap-0
+  reference tree even though a selective mask reaches only a subset, so
+  solver cost scaled with the reference tree rather than the restricted
+  game (5-iter w1: RSS peak 1.40 GB, solve 258.7 s). Fix scopes reach_/
+  value_ and the terminal work lists to the mask-reachable closure while
+  keeping original tree-node-id indexing (off-closure nodes hold empty
+  vectors; no index math, header, or external-wiring change). Numerics are
+  re-pinned: 5-iter policy hash, bounded NashConv, and both-arm
+  exploitability are byte-identical before/after, and M1-M10 plus the
+  dual-fixture M3b bitwise kernel-equivalence gate stay green. After:
+  RSS peak 713 MiB (inside G1's 1 GiB, ~30% headroom; offline evidence, no
+  10 s online claim), 5-iter solve 88.2 s; the ~29.8 s/arm evaluation phase
+  is unchanged by design because the embedding BR walk must still traverse
+  the full reference tree (M6). Independent targeted re-review APPROVED
+  (no code changes; one doc condition to correct the stale "tens of MiB"
+  resource prose with these measured figures; one optional debug-assert
+  hardening not taken because the gating is structural and the failure
+  mode is fail-loud). The empty tree-sized outer layer costs ~2.4 MiB
+  (~0.3%) and avoids a node-id remap that would touch every child/snapshot
+  boundary. The single layout hunk is held uncommitted until the formal
+  300-iteration anchor returns numeric parity, then lands as its own
+  isolated perf commit with the resource-prose correction.

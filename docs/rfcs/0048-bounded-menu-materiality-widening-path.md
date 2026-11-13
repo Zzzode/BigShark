@@ -1277,13 +1277,63 @@ propagation of reference-construction exhaustion plus a nodewise
 storage bound. The
 bounded w1 300-iteration anchor is used only after the tiny gates
 pass, under the existing per-run single-instance authorization. Its
-resource class is pre-declared: the solve runs over the full cap-0
-reference tree (11,232 action nodes, 33,693 total nodes, 23.7 MiB at
-w1) and is expected to take on the order of thirty minutes rather
-than the roughly twenty-second bounded-anchor class, with resident
-memory bounded by the reference envelope; any result remains
-exploratory unless it meets the frozen 0.002 BB target under the
-original target definition.
+resource class was pre-declared before measurement: the solve runs over
+the full cap-0 reference tree (11,232 action nodes, 33,693 total nodes,
+23.7 MiB at w1) and was expected to take on the order of thirty minutes
+rather than the roughly twenty-second bounded-anchor class, with
+resident memory bounded by the reference envelope. The measured outcome
+in subsection D2 supersedes both the wall-time and the memory estimate;
+any result remains exploratory unless it meets the frozen 0.002 BB
+target under the original target definition.
+
+### D2. Measured w1 anchor result (300 iterations, single instance)
+
+The root-only widening candidate was solved once on the w1
+reached-river fixture for the frozen 300 iterations (single thread,
+seedless) and evaluated on the immutable re-expanded snapshot under
+both completion arms. The mask reaches 2,430 action nodes with 7,286
+compact allowed slots against 33,692 reference edges (21.6%); the
+candidate policy hash differs from every baseline, so this is a
+genuinely new legal restricted-game policy rather than a re-labeled
+coarse solution.
+
+| quantity (BB unless noted) | coarse cap-1 baseline | root-only widened |
+|---|---|---|
+| bounded NashConv | 0.02761552 | 0.03661936 |
+| exact exploitability, Uniform arm | 31.24489667 | 23.34239272 |
+| pure menu term, Uniform arm | 31.21728115 | 23.30577336 |
+| exact exploitability, BrFavorable arm | 215.34663379 | 159.63194387 |
+| solve wall / CPU | 18.0 s / 18.0 s | 3010.5 s / 3002.1 s |
+| peak RSS | 46.8 MiB | 713.4 MiB |
+| per-arm evaluation wall | — | ~29.8 s (full reference tree) |
+
+The mechanism is real: widening the root removes 7.91 BB (25.3%) of the
+Uniform pure menu term, proving per-node selective widening has
+measurable materiality and the embedding measures it honestly. It does
+not open an M2/G5 path. The exact exploitability is still 23.34 BB under
+the Uniform arm (159.63 BB under BrFavorable), missing the frozen
+0.002 BB target by roughly 1.17x10^4, and the bounded NashConv worsens
+by 1.33x because the larger restricted game (2,430 versus 6 action
+nodes) converges more slowly at the same iteration budget. Root-only
+widening therefore leaves the dominant menu mass in the still
+restricted deeper subtrees, which is the empirical counterpart of the
+D195 subtree conclusion rather than a contradiction of it.
+
+The pre-declared resource class was wrong in two respects and is
+corrected here. Peak resident memory is 713.4 MiB, not tens of MiB:
+after the closure-scoping fix (hot CFR storage allocated only on the
+mask-reachable closure, see the tracker D202 block and the targeted
+re-review), the footprint is intrinsic to the combo-dense solve of the
+2,430 reachable action nodes and stays inside G1's 1 GiB envelope with
+about 30% headroom, but it is 15.3x the coarse solve. The solve takes
+50.2 minutes, not ~30 minutes, i.e. 167x the coarse wall time; the
+~29.8 s per-arm evaluation is unchanged by design because the embedding
+best-response walk must still traverse the full reference tree to
+preserve extension option value. These costs confirm the construction
+is offline evidence only and never engages the 10-second online
+half of G1. The candidate remains mechanically labeled
+`union-candidate` / `supporting-evidence-not-m2-g5-pass`; no prior
+certificate transfers and no M2/G5 pass is claimed.
 
 ### E. Scope and review record
 
@@ -1358,6 +1408,28 @@ Residual risk is confined to the bench exploratory tier: the optional
 w1 anchor remains an order-30-minute full-reference solve with no
 certificate transfer, and any G5 claim still requires the frozen
 0.002 BB target on the re-solved mixed policy.
+
+Addendum D202 closure-scoping re-review — 2026-11-14
+Reviewer: the same independent session agent a56fda80e49e62818
+Verdict: Approved; no code changes required.
+Trigger: anchor smoke runs showed layout() allocated CFR hot storage
+  over the full reference tree (1.40 GiB peak, 258.7 s at five
+  iterations) instead of the mask-reachable closure. The one-hunk fix
+  scopes reach/value storage and terminal work lists to reachable
+  nodes with node-id indexing unchanged; numerics are byte-identical
+  (policy hash, bounded NashConv, both-arm exploitability) and the full
+  M1-M10 plus dual-fixture M3b suite stays green. After the fix:
+  713.4 MiB peak, 88.2 s at five iterations; ~2.4 MiB empty outer-layer
+  cost avoids a node-id remap.
+Condition L1 (now closed): correct the stale resource prose with the
+  measured figures — done in subsection D2, including the 50.2-minute /
+  713.4 MiB 300-iteration anchor and the unchanged ~29.8 s full-tree
+  evaluation.
+Optional L2 (not taken): debug-only reachability assertions; the
+  gating is structural and the empty-vector failure mode is fail-loud.
+Anchor verdict: mechanism valid (25.3% Uniform menu-term reduction),
+  no M2/G5 path (23.34 BB residual, ~1.17x10^4 over the gate, bounded
+  NashConv 1.33x worse), exploratory evidence only.
 ```
 
 ## Rollback Plan
