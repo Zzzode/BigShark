@@ -152,4 +152,46 @@ void refuse_root_weights(const std::vector<double>& per_root_exploitability_bb,
 std::vector<double> naive_max_abs_payoff_bounds(const bs::tree::AbstractTree& reference,
                                                 const ReachBoundResult& result);
 
+// D195: one exact restricted-gap record per bounded own-seat action
+// node. The walk runs on the BOUNDED tree alone (no extension nodes, so
+// no completion-arm parameter); indices are bounded-tree node indices.
+struct RestrictedNodeGap {
+  std::size_t bounded_node = 0;
+  std::size_t seat = 0;
+  // Full forward own reach on the bounded tree (the telescope weight).
+  std::vector<double> own_reach;
+  // Exact bounded-game local gap g_g(n,i) = max_{a in A_b} C_g(a)
+  // - sigma.C_g, arm-free by construction.
+  std::vector<double> restricted_gap;
+};
+
+struct RestrictedGapResult {
+  std::array<std::vector<RestrictedNodeGap>, 2> records;
+  double bounded_nash_conv_bb = 0.0;
+  // Telescope sum of reach*g_g per seat in raw chips.
+  std::array<double, 2> raw_chips{0.0, 0.0};
+  double bb_normalization = 0.0;
+  double nash_conv_bb = 0.0;
+};
+
+// Self-consistent restricted BR walk over the bounded tree: at every own
+// node it maximizes only over the bounded menu and never enters a
+// reference extension. Paired back to the reference via SubsetMap only
+// for later node-level menu_gap reconciliation. Throws invalid_argument
+// on domain failures.
+RestrictedGapResult measure_restricted_gaps(
+    const bs::poker::GameDef& river_def, const bs::abstraction::ActionAbstraction& bounded_action,
+    std::uint64_t iterations, std::size_t threads);
+
+RestrictedGapResult restricted_gaps_from_snapshot(const bs::poker::GameDef& river_def,
+                                                  const RiverSolveResult& solved,
+                                                  const bs::tree::AbstractTree& bounded);
+
+// Static extension-free predicate for seat s at a mapped reference node:
+// true only when no reachable same-seat mapped action node in its subtree
+// carries a -1 edge. DFS over mapped edges only; fail-closed if a mapped
+// edge reaches an unmapped child (SubsetMap invariant violation).
+bool subtree_is_extension_free(const bs::tree::AbstractTree& reference, const SubsetMap& subset,
+                               std::size_t reference_node, std::size_t seat);
+
 }  // namespace bs::rfc0047

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <ranges>
 #include <stdexcept>
 #include <unordered_map>
@@ -688,6 +689,303 @@ std::vector<double> naive_max_abs_payoff_bounds(const AbstractTree& reference,
     bounds.push_back(max_abs);
   }
   return bounds;
+}
+
+namespace {
+
+// D195: self-consistent BR walk over the BOUNDED tree. The bounded tree has
+// no extension nodes by construction, so there is no completion-arm
+// parameter; the walk is the standard fixed-policy exploitability
+// recurrence with per-node gap recording.
+class RestrictedInstrument {
+ public:
+  RestrictedInstrument(const bs::poker::GameDef& def, const AbstractTree& bounded,
+                       const RiverSolveResult& solved)
+      : def_(def), tree_(bounded), solved_(solved) {
+    std::array<int, 5> bd{};
+    for (int i = 0; i < 5; ++i)
+      bd[i] = def.board[i];
+    for (std::uint32_t x = 0; x < kC; ++x)
+      holdings_.push_back(holding_for_dense(std::span<const int>(bd.data(), 5), x));
+    precompute(bd);
+    for (int k = 0; k < 64; ++k) {
+      pool_.emplace_back(std::vector<double>(kC, 0.0));
+      free_.push_back(pool_.size() - 1);
+    }
+    for (std::size_t s = 0; s < 2; ++s)
+      records_[s].resize(tree_.size());
+  }
+
+  RestrictedGapResult run() {
+    RestrictedGapResult out;
+    out.bounded_nash_conv_bb = solved_.nash_conv_bb;
+    const double bb = def_.big_blind > 0 ? static_cast<double>(def_.big_blind) : 1.0;
+    out.bb_normalization = kNorm * bb;
+
+    for (std::size_t viewer = 0; viewer < 2; ++viewer) {
+      // Full forward reach for the telescope weight.
+      const auto forward = forward_reach(viewer);
+      std::array<std::vector<double>, 2> ro{std::vector<double>(kC, 1.0),
+                                            std::vector<double>(kC, 1.0)};
+      const std::size_t br_id = eval(viewer, true, tree_.root_index(), ro);
+      double raw = 0.0;
+      for (std::size_t n = 0; n < tree_.size(); ++n) {
+        if (!records_[viewer][n].has_value())
+          continue;
+        RestrictedNodeGap& g = *records_[viewer][n];
+        g.own_reach = forward[n];
+        for (std::uint32_t i = 0; i < kC; ++i)
+          raw += g.own_reach[i] * g.restricted_gap[i];
+        out.records[viewer].push_back(g);
+      }
+      out.raw_chips[viewer] = raw;
+      release(br_id);
+    }
+    double total_raw = out.raw_chips[0] + out.raw_chips[1];
+    out.nash_conv_bb = total_raw / out.bb_normalization;
+    return out;
+  }
+
+ private:
+  using Reaches = std::array<std::vector<double>, 2>;
+
+  void precompute(const std::array<int, 5>& bd) {
+    a0_.assign(static_cast<std::size_t>(kC) * kC, 0);
+    for (std::uint32_t i = 0; i < kC; ++i) {
+      std::array<int, 7> h0{holdings_[i][0], holdings_[i][1], bd[0], bd[1], bd[2], bd[3], bd[4]};
+      const auto s0 = bs::evaluate(h0.data(), 7).score;
+      std::array<bool, 52> mine{};
+      mine[holdings_[i][0]] = true;
+      mine[holdings_[i][1]] = true;
+      for (std::uint32_t j = 0; j < kC; ++j) {
+        if (mine[holdings_[j][0]] || mine[holdings_[j][1]])
+          continue;
+        std::array<int, 7> h1{holdings_[j][0], holdings_[j][1], bd[0], bd[1], bd[2], bd[3], bd[4]};
+        const auto s1 = bs::evaluate(h1.data(), 7).score;
+        a0_[static_cast<std::size_t>(i) * kC + j] = s0 > s1 ? 1 : (s0 < s1 ? -1 : 0);
+      }
+    }
+    fold0_.assign(tree_.size(), 0.0);
+    stake_.assign(tree_.size(), 0.0);
+    for (std::size_t n = 0; n < tree_.size(); ++n) {
+      const TreeNode& node = tree_.node(n);
+      if (!node.is_terminal())
+        continue;
+      const auto& pl = tree_.terminal(node.terminal);
+      if (node.kind == NodeKind::TerminalFold)
+        fold0_[n] = static_cast<double>(pl.chip_utility[0]);
+      else
+        stake_[n] = static_cast<double>(pl.seats[pl.live_order[0]].contributed);
+    }
+  }
+
+  std::vector<std::vector<double>> forward_reach(std::size_t seat) const {
+    std::vector<std::vector<double>> reach(tree_.size());
+    reach[tree_.root_index()].assign(kC, 1.0);
+    for (std::size_t n = 0; n < tree_.size(); ++n) {
+      if (reach[n].empty())
+        continue;
+      const TreeNode& node = tree_.node(n);
+      if (!node.is_action())
+        continue;
+      const std::size_t menu = node.actions.size();
+      for (std::size_t a = 0; a < menu; ++a) {
+        std::vector<double> child = reach[n];
+        if (node.actor == seat)
+          for (std::uint32_t i = 0; i < kC; ++i)
+            child[i] = reach[n][i] * solved_.avg_sigma[n][i * menu + a];
+        reach[node.children[a]] = std::move(child);
+      }
+    }
+    return reach;
+  }
+
+  std::size_t acquire() {
+    if (free_.empty()) {
+      pool_.emplace_back(std::vector<double>(kC, 0.0));
+      return pool_.size() - 1;
+    }
+    const std::size_t id = free_.back();
+    free_.pop_back();
+    return id;
+  }
+  void release(std::size_t id) { free_.push_back(id); }
+  std::vector<double>& vec(std::size_t id) { return pool_[id]; }
+
+  double sigma(std::size_t n, std::uint32_t i, std::size_t a) const {
+    const std::size_t menu = tree_.node(n).actions.size();
+    return solved_.avg_sigma[n][i * menu + a];
+  }
+
+  std::size_t terminal_value(std::size_t n, std::size_t viewer, const Reaches& pi) {
+    const std::size_t opp = viewer ^ 1;
+    const std::size_t id = acquire();
+    std::vector<double>& out = vec(id);
+    const TreeNode& node = tree_.node(n);
+    if (node.kind == NodeKind::TerminalFold) {
+      const double c = viewer == 0 ? fold0_[n] : -fold0_[n];
+      double total = 0.0;
+      for (std::uint32_t j = 0; j < kC; ++j)
+        total += pi[opp][j];
+      for (std::uint32_t i = 0; i < kC; ++i)
+        out[i] = c * total;
+      return id;
+    }
+    const double stake = stake_[n];
+    if (viewer == 0) {
+      for (std::uint32_t i = 0; i < kC; ++i) {
+        double acc = 0.0;
+        const std::int8_t* row =
+            reinterpret_cast<const std::int8_t*>(a0_.data()) + static_cast<std::size_t>(i) * kC;
+        for (std::uint32_t j = 0; j < kC; ++j)
+          acc += static_cast<double>(row[j]) * pi[opp][j];
+        out[i] = stake * acc;
+      }
+    } else {
+      for (std::uint32_t i = 0; i < kC; ++i) {
+        double acc = 0.0;
+        for (std::uint32_t j = 0; j < kC; ++j)
+          acc -= static_cast<double>(a0_[static_cast<std::size_t>(j) * kC + i]) * pi[opp][j];
+        out[i] = stake * acc;
+      }
+    }
+    return id;
+  }
+
+  std::size_t eval(std::size_t viewer, bool br, std::size_t n, Reaches& pi) {
+    const TreeNode& node = tree_.node(n);
+    if (node.is_terminal())
+      return terminal_value(n, viewer, pi);
+    if (node.is_chance())
+      throw std::runtime_error("reach_bound: chance node in bounded river tree");
+    const std::size_t actor = node.actor;
+    const std::size_t A = node.actions.size();
+    const std::size_t out = acquire();
+    std::fill(vec(out).begin(), vec(out).end(), 0.0);
+
+    if (actor == viewer && br) {
+      std::vector<std::size_t> kids(A);
+      for (std::size_t a = 0; a < A; ++a)
+        kids[a] = eval(viewer, br, node.children[a], pi);
+      auto g = std::make_optional<RestrictedNodeGap>();
+      g->bounded_node = n;
+      g->seat = viewer;
+      g->restricted_gap.assign(kC, 0.0);
+      for (std::uint32_t i = 0; i < kC; ++i) {
+        double best = vec(kids[0])[i];
+        for (std::size_t a = 1; a < A; ++a)
+          best = std::max(best, vec(kids[a])[i]);
+        double policy_value = 0.0;
+        for (std::size_t a = 0; a < A; ++a)
+          policy_value += sigma(n, i, a) * vec(kids[a])[i];
+        g->restricted_gap[i] = best - policy_value;
+      }
+      records_[viewer][n] = std::move(g);
+      for (std::uint32_t i = 0; i < kC; ++i) {
+        double best = vec(kids[0])[i];
+        for (std::size_t a = 1; a < A; ++a)
+          best = std::max(best, vec(kids[a])[i]);
+        vec(out)[i] = best;
+      }
+      for (std::size_t a = 0; a < A; ++a)
+        release(kids[a]);
+      return out;
+    }
+
+    if (actor == viewer) {
+      std::vector<std::size_t> kids(A, SubsetMap::kNoNode);
+      for (std::size_t a = 0; a < A; ++a)
+        kids[a] = eval(viewer, br, node.children[a], pi);
+      for (std::uint32_t i = 0; i < kC; ++i) {
+        double v = 0.0;
+        for (std::size_t a = 0; a < A; ++a)
+          v += sigma(n, i, a) * vec(kids[a])[i];
+        vec(out)[i] = v;
+      }
+      for (std::size_t a = 0; a < A; ++a)
+        release(kids[a]);
+      return out;
+    }
+
+    const std::vector<double> saved = pi[actor];
+    for (std::size_t a = 0; a < A; ++a) {
+      for (std::uint32_t j = 0; j < kC; ++j)
+        pi[actor][j] = saved[j] * sigma(n, j, a);
+      const std::size_t child = eval(viewer, br, node.children[a], pi);
+      for (std::uint32_t i = 0; i < kC; ++i)
+        vec(out)[i] += vec(child)[i];
+      release(child);
+      pi[actor] = saved;
+    }
+    return out;
+  }
+
+  bs::poker::GameDef def_;
+  const AbstractTree& tree_;
+  const RiverSolveResult& solved_;
+  std::vector<std::array<int, 2>> holdings_;
+  std::vector<std::int8_t> a0_;
+  std::vector<double> fold0_;
+  std::vector<double> stake_;
+  std::vector<std::vector<double>> pool_;
+  std::vector<std::size_t> free_;
+  std::array<std::vector<std::optional<RestrictedNodeGap>>, 2> records_;
+};
+
+}  // namespace
+
+RestrictedGapResult restricted_gaps_from_snapshot(const bs::poker::GameDef& river_def,
+                                                  const RiverSolveResult& solved,
+                                                  const AbstractTree& bounded) {
+  if (river_def.player_count != 2 || river_def.board_size != 5 ||
+      river_def.terminal != bs::poker::TerminalDepth::River)
+    throw std::invalid_argument("reach_bound: needs a 2-seat five-card river-root def");
+  RestrictedInstrument instrument(river_def, bounded, solved);
+  return instrument.run();
+}
+
+RestrictedGapResult measure_restricted_gaps(
+    const bs::poker::GameDef& river_def, const bs::abstraction::ActionAbstraction& bounded_action,
+    std::uint64_t iterations, std::size_t threads) {
+  RiverSolveConfig cfg;
+  cfg.def = river_def;
+  cfg.iterations = iterations;
+  cfg.linear_averaging = true;
+  cfg.threads = threads;
+  cfg.action_abstraction = bounded_action;
+  const RiverSolveResult solved = solve_river_subgame(cfg, {});
+  const AbstractTree bounded(river_def, bounded_action);
+  return restricted_gaps_from_snapshot(river_def, solved, bounded);
+}
+
+bool subtree_is_extension_free(const AbstractTree& reference, const SubsetMap& subset,
+                               std::size_t reference_node, std::size_t seat) {
+  // DFS over mapped edges only. A same-seat mapped action node with any -1
+  // edge makes the subtree not extension-free; opponent-seat -1 edges are
+  // zero-mass and irrelevant. A mapped edge reaching an unmapped child is
+  // a mapper invariant violation.
+  std::vector<std::size_t> stack{reference_node};
+  while (!stack.empty()) {
+    const std::size_t n = stack.back();
+    stack.pop_back();
+    const TreeNode& node = reference.node(n);
+    if (!node.is_action() || subset.node_map[n] == SubsetMap::kNoNode)
+      continue;
+    if (node.actor == seat) {
+      for (int edge : subset.edge_map[n])
+        if (edge == -1)
+          return false;
+    }
+    for (std::size_t a = 0; a < node.actions.size(); ++a) {
+      if (subset.edge_map[n][a] == -1)
+        continue;
+      const std::size_t child = node.children[a];
+      if (subset.node_map[child] == SubsetMap::kNoNode)
+        throw std::invalid_argument("reach_bound: mapped edge reached an unmapped child");
+      stack.push_back(child);
+    }
+  }
+  return true;
 }
 
 }  // namespace bs::rfc0047

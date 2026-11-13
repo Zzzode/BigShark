@@ -12,6 +12,7 @@
 #include <numeric>
 #include <ranges>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
 #include "../benchmarks/rfc0047/cap_embedding.hpp"
@@ -481,6 +482,98 @@ bool test_t12_node_level_reach_crosscheck() {
   return true;
 }
 
+// T13 (D195): exact restricted-walk decomposition. The restricted walk
+// runs on the bounded tree (arm-free); its telescope equals the solver's
+// own bounded NashConv, and the node-level menu_gap reconciles to the
+// Stage-2b pure-menu term under both completion arms. All cross-walk
+// comparisons use chip-scale tolerances; only single-walk relations are
+// bit-exact.
+bool test_t13_restricted_decomposition() {
+  const Fixture f = coarse_vs_cap0();
+  RiverSolveConfig cfg;
+  cfg.def = f.def;
+  cfg.iterations = kIters;
+  cfg.linear_averaging = true;
+  cfg.action_abstraction = f.bounded;
+  const RiverSolveResult solved = solve_river_subgame(cfg, {});
+  const AbstractTree bounded_tree(f.def, f.bounded);
+  const AbstractTree ref_tree(f.def, f.reference);
+  const SubsetMap subset = map_bounded_subset(ref_tree, bounded_tree);
+
+  const RestrictedGapResult rr = restricted_gaps_from_snapshot(f.def, solved, bounded_tree);
+  CHECK(std::fabs(rr.nash_conv_bb - solved.nash_conv_bb) <= 1e-12);
+
+  // T13(ii): restricted telescope == bounded NashConv (scale-relative).
+  for (std::size_t s = 0; s < 2; ++s) {
+    const double tol = std::max(1e-7, 1e-12 * std::fabs(rr.raw_chips[s]));
+    double expected_seat_raw = 0.0;
+    for (const RestrictedNodeGap& g : rr.records[s])
+      for (std::uint32_t i = 0; i < kC; ++i)
+        expected_seat_raw += g.own_reach[i] * g.restricted_gap[i];
+    CHECK(std::fabs(expected_seat_raw - rr.raw_chips[s]) <= tol);
+  }
+
+  // T13(i) existence: at least one extension-free mapped node exists on
+  // this fixture, and at it the measured menu_gap is zero.
+  std::size_t free_nodes = 0;
+  for (std::size_t n = 0; n < ref_tree.size(); ++n) {
+    if (subset.node_map[n] == SubsetMap::kNoNode || !ref_tree.node(n).is_action())
+      continue;
+    if (subtree_is_extension_free(ref_tree, subset, n, ref_tree.node(n).actor))
+      ++free_nodes;
+  }
+  if (free_nodes == 0) {
+    std::printf("T13 diagnostic: no extension-free mapped node on fixture\n");
+    return false;
+  }
+
+  // T13(iii)+(i): per-node exact menu_gap under both arms. Reconcile the
+  // aggregate against the Stage-2b pure-menu column, and pin non-negativity
+  // plus the extension-free zero condition with chip tolerance.
+  for (const CapExtensionCompletion arm :
+       {CapExtensionCompletion::Uniform, CapExtensionCompletion::BrFavorable}) {
+    const ReachBoundResult rb =
+        reach_bound_from_snapshot(f.def, solved, ref_tree, bounded_tree, subset, arm);
+
+    // Inverse map: bounded node -> (seat, record index) for g_g lookup.
+    std::array<std::unordered_map<std::size_t, const RestrictedNodeGap*>, 2> by_bounded;
+    for (std::size_t s = 0; s < 2; ++s)
+      for (const RestrictedNodeGap& g : rr.records[s])
+        by_bounded[s].emplace(g.bounded_node, &g);
+
+    double menu_sum = 0.0;
+    double full_column_sum = 0.0;
+    for (std::size_t s = 0; s < 2; ++s) {
+      for (const NodeGapRecord& r : rb.records[s]) {
+        const RestrictedNodeGap* g = by_bounded[s].at(r.bounded_node);
+        for (std::uint32_t i = 0; i < kC; ++i) {
+          const double menu_gap = r.delta[i] - g->restricted_gap[i];
+          CHECK(menu_gap >= -1e-9);  // cross-walk chip tolerance
+          menu_sum += r.own_reach[i] * menu_gap;
+          full_column_sum += r.own_reach[i] * r.bounded_gap[i];
+          // Bit-exact single-walk relation.
+          CHECK(r.delta[i] >= r.bounded_gap[i]);
+        }
+        if (subtree_is_extension_free(ref_tree, subset, r.reference_node, s)) {
+          for (std::uint32_t i = 0; i < kC; ++i) {
+            const double menu_gap = r.delta[i] - g->restricted_gap[i];
+            CHECK(std::fabs(menu_gap) <= 1e-9);
+          }
+        }
+      }
+    }
+    const double menu_bb = menu_sum / rb.bb_normalization;
+    const double expected_pure_menu = rb.exact_exploitability_bb - rb.bounded_nash_conv_bb;
+    CHECK(std::fabs(menu_bb - expected_pure_menu) <= 1e-12);
+
+    // T13(iv): aggregate sandwich e_Gg <= full-column sum <= e_embed.
+    const double column_bb = full_column_sum / rb.bb_normalization;
+    CHECK(column_bb + 1e-12 >= rb.bounded_nash_conv_bb);
+    CHECK(column_bb <= rb.exact_exploitability_bb + 1e-12);
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
@@ -489,7 +582,8 @@ int main() {
       !test_t5_reach_validator() || !test_t6_widening_claim_integrity() ||
       !test_t7_bound_malformation() || !test_t8_zero_reach_enumerated() ||
       !test_t9_extension_laundering_existence() || !test_t10_determinism() ||
-      !test_t11_root_max_only() || !test_t12_node_level_reach_crosscheck())
+      !test_t11_root_max_only() || !test_t12_node_level_reach_crosscheck() ||
+      !test_t13_restricted_decomposition())
     return 1;
   std::printf("rfc0047_reach_bound: all checks passed\n");
   return 0;

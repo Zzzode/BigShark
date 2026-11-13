@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "cap_embedding.hpp"
@@ -137,6 +138,54 @@ void print_node_detail(const ReachBoundResult& rb) {
                 x.mean_own_reach, x.contribution_bb);
 }
 
+// D195 exact split: per node, the bounded-game policy residual
+// (reach*g_g, survives any widening) versus the removable menu term
+// (reach*menu_gap, disappears if the node is widened). Arm-free g_g is
+// computed once on the bounded tree and paired by bounded node.
+void print_restricted_split(const AbstractTree& reference, const SubsetMap& subset,
+                            const ReachBoundResult& rb, const RestrictedGapResult& rr) {
+  std::array<std::unordered_map<std::size_t, const RestrictedNodeGap*>, 2> by_bounded;
+  for (std::size_t s = 0; s < 2; ++s)
+    for (const RestrictedNodeGap& g : rr.records[s])
+      by_bounded[s].emplace(g.bounded_node, &g);
+  std::printf("\n# D195 exact residual/menu split (BB, descending by menu term)\n");
+  std::printf(
+      "seat,reference_node,extension_free_subtree,bounded_residual_bb,"
+      "removable_menu_bb,total_delta_bb\n");
+  struct SplitRow {
+    std::size_t seat;
+    std::size_t node;
+    bool free;
+    double residual;
+    double menu;
+    double total;
+  };
+  std::vector<SplitRow> rows;
+  for (std::size_t s = 0; s < 2; ++s) {
+    for (const NodeGapRecord& r : rb.records[s]) {
+      const RestrictedNodeGap* g = by_bounded[s].at(r.bounded_node);
+      double residual_raw = 0.0;
+      double menu_raw = 0.0;
+      for (std::uint32_t i = 0; i < r.own_reach.size(); ++i) {
+        residual_raw += r.own_reach[i] * g->restricted_gap[i];
+        menu_raw += r.own_reach[i] * (r.delta[i] - g->restricted_gap[i]);
+      }
+      const bool free = subtree_is_extension_free(reference, subset, r.reference_node, s);
+      rows.push_back({.seat = s,
+                      .node = r.reference_node,
+                      .free = free,
+                      .residual = residual_raw / rb.bb_normalization,
+                      .menu = menu_raw / rb.bb_normalization,
+                      .total = (residual_raw + menu_raw) / rb.bb_normalization});
+    }
+  }
+  std::sort(rows.begin(), rows.end(),
+            [](const SplitRow& a, const SplitRow& b) { return a.menu > b.menu; });
+  for (const SplitRow& x : rows)
+    std::printf("%zu,%zu,%d,%.8f,%.8f,%.8f\n", x.seat, x.node, x.free ? 1 : 0, x.residual, x.menu,
+                x.total);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -192,6 +241,12 @@ int main(int argc, char** argv) {
   }
 
   std::printf("%s", kSummaryHeader);
+  // D195: the restricted walk is arm-free; compute once and pair it with
+  // the primary-reference Uniform result for the exact residual/menu split.
+  const RestrictedGapResult rr = measure_restricted_gaps(def, bounded, iters, threads);
+  const ActionAbstraction primary_ref = cap0_maps ? ActionAbstraction::identity(0) : union_action;
+  const AbstractTree primary_tree(def, primary_ref);
+  const SubsetMap primary_subset = map_bounded_subset(primary_tree, bounded_tree);
   for (CapExtensionCompletion arm : arms) {
     if (cap0_maps) {
       rusage ru0{};
@@ -201,8 +256,10 @@ int main(int argc, char** argv) {
           measure_reach_bound(def, bounded, ActionAbstraction::identity(0), iters, threads, arm);
       print_summary(grid_name.c_str(), "cap0_subset", "mapped", arm, rb, ub, ur_cap0,
                     sample_resource(t0, ru0));
-      if (arm == CapExtensionCompletion::Uniform)
+      if (arm == CapExtensionCompletion::Uniform) {
         print_node_detail(rb);
+        print_restricted_split(primary_tree, primary_subset, rb, rr);
+      }
     }
     rusage ru0{};
     getrusage(RUSAGE_SELF, &ru0);
@@ -211,8 +268,10 @@ int main(int argc, char** argv) {
         measure_reach_bound(def, bounded, union_action, iters, threads, arm);
     print_summary(grid_name.c_str(), "union", cap0_maps ? "mapped" : "rejected", arm, rb, ub,
                   ur_union, sample_resource(t0, ru0));
-    if (!cap0_maps && arm == CapExtensionCompletion::Uniform)
+    if (!cap0_maps && arm == CapExtensionCompletion::Uniform) {
       print_node_detail(rb);
+      print_restricted_split(primary_tree, primary_subset, rb, rr);
+    }
   }
   return 0;
 }
