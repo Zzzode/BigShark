@@ -292,6 +292,245 @@ reference construction before quality can be measured. No production behavior
 changes; stage 2/union-formula work requires its own independently-approved
 addendum.
 
+## Stage-2b Addendum (D184): Union-Menu Reference Semantics
+
+This addendum defines the benchmark-only candidate reference that makes
+non-prefix sizing-grid quality legally measurable. It changes no production
+behavior and does not amend the frozen G5 cap-0 instrument: the committed
+`cap_embedding` component, its formula, and every recorded G5 verdict stay
+byte-stable. The new instrument is a distinct reference domain with its own
+identity and labeling; its numbers are conservative supporting evidence, never
+an M2 or G5 certification pass.
+
+### A. Candidate domain and preconditions
+
+The union reference is defined only for the same object the frozen instrument
+accepts: a two-seat, five-card, river-rooted `GameDef`
+(`TerminalDepth::River`). Every construction below fails closed with
+`std::invalid_argument` rather than returning a partial result:
+
+1. The reference and bounded trees must be built from the identical root. The
+   mapper calls the project's single root-identity predicate
+   `bs::poker::same_game_def(ref.def(), bounded.def())` before any DFS; the
+   earlier prefix mapper's kind-only comparison is insufficient for a
+   generalized subset map.
+2. The bounded menu must be a true subset of the reference menu at every paired
+   node (element-wise `Action` equality on `(type, target_total)`). Any bounded
+   action without an equal reference action is a bounded-not-subset failure.
+3. Every reference-only (extension) edge must be `Bet` or `Raise`. A passive
+   extension (`Fold`/`Check`/`Call`) cannot exist at identical states because
+   passive actions derive solely from legality; observing one proves a
+   state-divergence bug, so the mapper throws instead of mapping it.
+4. Both abstractions use `CoverSeeds::MinAndCap` and the reference is uncapped
+   (`max_raises_per_street() == 0`). The union algebra relies on the shared
+   minimum/cap seeds; a `DeclaredOnly` input is rejected.
+5. A menu exceeding 32 actions surfaces as the builder's existing
+   `invalid_argument` ("abstract action count exceeds 32"), never as a silently
+   truncated feasible menu. Callers treat it as a precondition failure.
+
+### B. Union construction and the set-union proof
+
+At any node the builder drives both abstractions from the same `LegalActions`
+and `MenuContext` (identical reached `GameState`). Under
+`build_menu_with_cover` the target set is
+
+```
+sort(unique( {minimum, cap} U {clamp(base + ceil(pot_after_call, f), minimum, cap)
+                               : f in F} ))
+```
+
+with a fixed clamp at the node and shared MinAndCap seeds. Clamping is a fixed
+function, so `clamp(F1 U F2) = clamp(F1) U clamp(F2)`; the union schedule's
+fraction set therefore produces exactly the set union of the two clamped
+target sets, and `sort` plus `unique` yields the same ordered action vector.
+Clamp collisions collapse through `unique`, which is set semantics: no target
+is lost and none is duplicated.
+
+The union abstraction is constructed as
+`ActionAbstraction::declared(union_schedule, CoverSeeds::MinAndCap, 0)`, where
+`union_schedule` merges the per-street `bets`/`raises` fraction lists of the
+uncapped identity schedule and the bounded grid schedule (value-sorted,
+deduplicated in reduced form). It deliberately mints its own declared-family
+digest: a union artifact can never be mistaken for an `identity(0)` artifact,
+and tree equality is always established by `tree_shape_digest`, never by id
+string. Passive actions are legality-derived and therefore identical; they can
+never be union-only. Cap 0 disables the cap-suppression branch, so the union
+contains the uncapped identity(0) menu.
+
+### C. Generalized subset embedding (replaces prefix indexing)
+
+The frozen prefix mapper assumes bounded actions are the first `|A_b|`
+reference edges in order. That assumption is false for real grids: on the w1
+reached-river root the coarse menu is `Check/Bet2/Bet198` while identity(0) is
+`Check/Bet2/Bet3/Bet6/Bet198`, so bounded action index 2 (`Bet198`) sits at
+reference index 4. The new path therefore uses an explicit edge map:
+
+- `node_map[n_ref]` is the paired bounded-tree node index, or `-1` for an
+  extension subtree.
+- At every paired action node, `edge_map[a_ref]` is the bounded action index
+  whose `Action` equals reference action `a_ref`, or `-1` when the edge is
+  reference-only.
+- Children are paired recursively through exact `Action` equality; a bounded
+  action with no reference match fails closed (precondition 2), and a
+  reference-only passive edge fails closed (precondition 3).
+
+All mass and zero-mass decisions and every policy lookup go through
+`edge_map`. There is no prefix-index arithmetic anywhere in the new
+evaluator: reference edge `a` has zero embedded mass exactly when
+`edge_map[a] == -1`, and otherwise its probability is
+`avg_sigma[node_b][combo * menu_b + edge_map[a]]`. The BR max loop and the
+node-level unmapped-extension interception are unchanged from the frozen
+evaluator. When the bounded menu is an ordered prefix, the constructed edge
+map is the identity map `[0..m-1, -1..]`, so the certified path's semantics
+are a special case of the generalized map, not a separate code path.
+
+### D. Evaluator, embedding identity, and the superset-BR proof
+
+The evaluator keeps the frozen structure: one EV walk and one exact BR walk
+per seat over the reference tree, the same showdown/fold/stake tables, the
+same opponent-reach snapshot scaling, and the same two completion arms on
+extension subtrees (Uniform `1/A`; BrFavorable per-combo max). The EV walk
+follows only positive-mass mapped edges and throws `logic_error` if it enters
+an unmapped extension; the BR walk maximizes over the full reference menu.
+
+For a fixed bounded profile `sigma_g` with zero mass on `G_u \ G_g`: the EV
+walk never enters an extension subtree, so `V(sigma_g; G_u) = V(sigma_g;
+G_g)`; at each best-responding node the BR maximizes over a weakly larger
+per-combo action set, so `BR(G_u)(i) >= BR(G_g)(i)` elementwise for every
+combo. The inequality is independent of the completion rule, which only
+changes continuation values inside zero-opponent-mass extension subtrees;
+terminals are chip-history-determined and identical on shared paths. Hence
+
+```
+e_embed^u = e_Gg(sigma_g) + pure_menu_term^u,   both terms >= 0
+```
+
+with the same normalization (1,081 combos, 990 compatible deals, big-blind
+conversion) as the frozen instrument. Because `G_u` is a superset of the
+identity(0) menu `G0`, the union measure is a conservative upper bound
+wherever the cap0-relative restriction is defined. Labeling precision: this
+is strictly a same-profile statement. A wide-grid profile is not playable in
+`G0` at all (it carries reference-foreign targets such as `Bet4`), so no
+cap0-relative number for that profile exists; the union run changes both the
+profile and the reference domain and can never overwrite the G5 cap0/0.002
+verdict.
+
+### E. Identity degeneration and the native gates
+
+When the bounded abstraction is `identity(1)`, the union schedule equals the
+default schedule and the union tree is structurally identical to
+`identity(0)`. Gate N1 pins exact structural equality
+(`tree_shape_digest`, node count, accounted bytes; the digest excludes
+terminal payloads, so terminal semantics are pinned separately by the EV
+oracle) and numeric equality of the union measure against the committed
+`measure_cap_materiality(cap1)`. Identical edge order implies identical
+floating operation order in the seedless kernel, so bitwise equality is
+expected in principle; the native gate uses a tolerance of `1e-12` (the same
+noise allowance the frozen distribution invariant uses) and keeps the
+existing bitwise determinism pin as supporting evidence, plus the
+EV-to-kernel-CFV `1e-6` oracle on raw per-combo root values.
+
+Native gates (all behavioral; no source-text or log-pattern assertions):
+
+- N1 identity degeneration: union(default, default, cap0) structural equality
+  with identity(0), and the union measure equal to the committed cap1 measure
+  within `1e-12`; EV oracle below `1e-6`.
+- N2 subset mapping: the coarse grid maps into identity(0) through the
+  interleaved edge map (root pin: bounded `Bet198` index 2 maps to
+  reference index 4), including an end-to-end SOLVED fixture on the real w1
+  root so a prefix-index port cannot pass; the wide grid against identity(0)
+  rejects.
+- N3 union mapping: the wide grid maps into its union with every bounded
+  action matched and no passive extension; the union menu equals the
+  element-wise sorted set union of the identity(0) and wide menus.
+- N4 enumerable controls on a hand-built shallow river root: hand-asserted
+  menu-set membership, the EV-to-kernel-CFV `1e-6` oracle, and per-combo
+  `BR_union >= BR_bounded` (the superset max monotonicity positive control).
+  The shallow root also reaches a `Raise`-type node under cap 2 with
+  divergent raise fractions (raise-fraction merge coverage), and a second
+  short-stack schedule forces two distinct fractions to clamp to the same
+  all-in target (the clamp-collision case at the center of the set-union
+  algebra).
+- N5 determinism and fail-close: repeated builds/solves are digest- and
+  bitwise-stable; mismatched roots (`same_game_def` false),
+  bounded-not-subset, malformed fractions, and the 32-action overflow all
+  throw `invalid_argument`.
+
+### F. Solver plumbing constraints
+
+The bench river solver gains one optional field,
+`RiverSolveConfig::action_abstraction` (`std::optional<ActionAbstraction>`).
+A null option is the single construction site that builds
+`ActionAbstraction::identity(action_cap)`, preserving every existing numeric
+path: tree layout, the RM+ uniform fallback, and iteration order depend only
+on the tree, and the kernel has no RNG. Both solver free functions honor the
+field through the one constructor. A grid embedding passes the SAME
+abstraction to the solver and to the separately built bounded `AbstractTree`
+(reading back `tree.action_abstraction()` where useful), so
+`avg_sigma[node]` indexing aligns with the mapper's node order.
+
+### G. Evidence shape, units, and boundedness
+
+Every emitted row carries, mechanically rather than in prose: the
+`union-candidate` reference label and a `supporting-evidence-not-m2-g5-pass`
+marking; the bounded and union abstraction id digests and both tree shape
+digests; the U1 online-resident, U2 artifact-row, and U3 build-grand-total
+units from the stage-1 taxonomy (never using U3 to negate U1); node,
+infoset, and byte counts; solve wall and CPU time; and explicit RSS as both
+the `getrusage` `ru_maxrss` high-water mark and the current
+`/proc/self/statm` resident figure. Resource boundaries fail fast as typed
+`tree_resource_exhausted` rows with every feasibility verdict false.
+
+A real single-instance coarse/wide reached-river quality run is authorized
+only after N1-N5 are green, under the existing D164 per-instance iteration
+budget (no new training or equilibrium budget), one process at a time,
+fail-fast on any overrun. If a precondition or budget fails, the run emits
+the precise counterproof or gap and no quality claim is made. A union number
+that clears 0.002 BB is a CANDIDATE conservative certificate for that root;
+it is never recorded as an M2 or G5 pass and never replaces the cap0
+identity reference or its verdicts.
+
+### H. Component boundary
+
+The frozen `cap_embedding.{hpp,cpp}` is not modified. The generalized mapper,
+union factory, edge-map evaluator, and candidate measurement entry land in
+new benchmark-only translation units under `engine/benchmarks/rfc0047/`,
+inside `bigshark_rfc0047_bench` behind its configure-time link guard. The two
+instruments are distinct reference domains rather than old and new versions
+of one component; unifying them is deferred unless a later addendum adopts
+the union path for production, at which point that addendum owns the
+refactor and its bitwise-neutral verification. No production resolver,
+composition root, solver public API, oracle, ABI, protobuf contract, or
+public CLI changes.
+
+### I. Independent review record
+
+A separately launched non-author review agent challenged the union algebra,
+subset completeness, the superset-BR proof, conservatism labeling, identity
+degeneration, solver numerics, fixture validity, and boundedness. Its first
+verdict was Changes Requested with two blocking findings (the prefix-index
+translation trap and the requirement to record the formula in this RFC) and
+five strengthening findings; the dispositions are recorded above
+(precondition 1 and the passive-extension invariant; the edge-map
+specification; the N1/N2/N4/N5 gate additions including raise-fraction,
+clamp-collision, and overflow coverage; the tolerance argument; mechanical
+candidate labeling; and the single-site solver plumbing). The final verdict
+is recorded below after re-review.
+
+Re-review verdict (2026-11-13): **Approved**, no blocking findings. The
+reviewer independently re-ran both documentation gates (48 RFCs; 507 text
+files) and accepted the subsection H component boundary (frozen
+`cap_embedding.*` byte-stable; new benchmark-only translation units carry
+the union instrument as a distinct reference domain; shared extraction is
+not required and is deferred to any future production-adoption addendum).
+Two non-blocking advisories are adopted into implementation: (L1) the
+generalized recursive mapper retains a per-pair node-kind equality guard
+that fails closed; (L2) N1 stays a permanent CTest, and the new header
+documents its derivation from the frozen evaluator (shared
+1,081-combo/990-compatible-deal normalization, opponent-reach snapshot
+scaling, Uniform/BrFavorable completion arms) so cross-instrument
+convention drift remains reviewable.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the

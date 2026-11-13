@@ -1850,3 +1850,169 @@ RFCs 0041/0043/0045/0046).
   frozen identity(0) reference (F1), NOT a failed measurement; the union-menu
   reference formula is the explicit next-addendum input. No solver/abstraction
   generalization was added (no speculative consumer); no training budget used.
+
+## RFC 0048 Path A Stage 2b — union-menu reference semantics (D184)
+
+- D184 AUTHORIZATION (TechLead, handoff 6867). The D179 freeze is lifted ONLY for
+  the math definition/implementation of a bench candidate union-menu reference,
+  plus minimal addendum + bench/native fixtures + isolated CMake + this tracker.
+  Production resolver/composition-root/solver/oracle/ABI/proto/public CLI, the
+  old certification results, and the original cap-0 identity reference stay.
+  cap1 / e_embed<=0.002 / B0=0.010 / G1 and all budgets unchanged; no
+  push/merge/publish/deploy/delete/worker/extra-training; protect the 217 dirty.
+  The new reference must mark its candidate domain and preconditions; if it is
+  not provably equivalent-or-conservative to the original certification
+  definition, its numbers are exploration/rejection, never an M2 pass.
+
+- REAL NON-PREFIX COUNTEREXAMPLES (source-verified, w1 reached-river root):
+  cap0 identity(0) root menu = Check/Bet2/Bet3/Bet6/Bet198.
+  coarse declared = Check/Bet2/Bet198 (subset of cap0 but NOT an ordered prefix:
+    its index-2 action Bet198 equals cap0 index 4 -> pair_dfs prefix mismatch).
+  wide declared   = Check/Bet2/Bet3/Bet4/Bet6/Bet198 (Bet4 is foreign to cap0 ->
+    bounded menu exceeds cap0; no embedding into cap0 exists).
+  Two distinct cases: (a) subset-but-interleaved (coarse) needs a generalized
+  subset map against cap0; (b) reference-foreign target (wide) needs a union.
+
+- ADDENDUM DESIGN (self-reviewed, pre-implementation).
+  SEMANTICS. Define the union reference G_u = cap0 identity(0) menu UNION the
+  bounded grid menu at every public node. build_menu_with_cover clamps each
+  fraction to [min,cap], sorts, uniques with shared MinAndCap seeds, so a
+  declared abstraction over the union SizeSchedule (default fractions union grid
+  fractions, MinAndCap, raise cap 0) builds exactly G_u node-for-node. Then the
+  bounded grid Gg is a true SUBSET of G_u at every node, so embedding sigma_g
+  with zero mass on G_u\\Gg is well defined.
+  CONSERVATISM / M2 RELEVANCE. G_u superset-of G0, hence BR over G_u weakly
+  dominates BR over G0 wherever both are defined; the union e_embed is an UPPER
+  bound on the cap0-relative restriction, i.e. a conservative (stricter)
+  certificate. It is a DIFFERENT reference domain, so a union number never
+  overwrites the G5 cap0/.002 verdict; it is admissible as conservative
+  supporting evidence only, explicitly labeled.
+  IDENTITY DEGENERATION. For bounded = identity(1), union(default,default)=
+  default -> G_u == G0 and the measure must equal the committed
+  measure_cap_materiality(cap1) bit-for-bit (native consistency gate).
+  GENERALIZED MAP. Replace the prefix-only pair_dfs for this path with a subset
+  embedding map: per paired node, edge_map[ref_action] -> bounded_action index
+  or -1 (extension). Pair children recursively through exact Action equality
+  (type+target_total); fail closed with invalid_argument if any bounded action
+  has no equal reference action (bounded-not-subset). Prefix identity yields the
+  identity edge map [0..m-1,-1..], leaving the certified path unchanged.
+  EVALUATOR. The same frozen structure: EV walk follows only mapped edges and
+  must reproduce the bounded kernel's own root CFV x 990 to <1e-6 (independent
+  EV oracle); BR walk maximizes over the full union menu (Uniform 1/A and
+  BrFavorable per-combo completion on extension subtrees unchanged). Identity
+  e_embed = bounded NashConv + non-negative pure-menu term carries over because
+  bounded Gg is a subset of reference G_u (superset-BR proof).
+  SOLVER ENTRY. Add an OPTIONAL explicit ActionAbstraction to bench
+  RiverSolveConfig/RiverGame (default empty -> today's identity(action_cap), so
+  no existing numeric path changes) so a grid policy can be solved seedlessly.
+  NATIVE GATES (solve-free tiny/real roots, no text matching):
+   N1 identity degeneration: union(default,default) tree == identity(0) and the
+      union measure equals measure_cap_materiality(cap1);
+   N2 subset-map: coarse maps to cap0 (interleaved, every bounded action matched,
+      extensions are exactly cap0\\coarse); wide against cap0 rejects;
+   N3 union map: wide maps into its union with no extension action equal to a
+      bounded one missed; union menu == cap0 menu UNION wide menu element-wise;
+   N4 tiny enumerable root: hand-asserted menu set membership, EV<->kernel CFV
+      1e-6, and per-combo BR_union >= BR_bounded (superset max monotonicity);
+   N5 determinism and fail-close (invalid bounded-not-subset, malformed fraction).
+  COST/UNITS. Every run emits U1 resident / U2 artifact / U3 build with source
+  and artifact identity (abstraction id digest + tree shape digest), nodes /
+  infosets / bytes / wall-cpu / explicit RSS (ru_maxrss high-water + statm
+  current), boundary rows fail-fast and never read feasible.
+  BOUNDED REAL MEASUREMENT only after N1-N5 green: single-instance reached-river
+  coarse and wide at cap1 under the existing D164 iteration budget; if the
+  precondition or budget fails, emit the precise gap/counterproof and keep going
+  on solver-free items rather than claim a pass.
+
+- INDEPENDENT REVIEW a56fda80e49e62818 (non-author, separate launch): verdict
+  CHANGES REQUESTED, core math sound (set-union, subset completeness,
+  superset-BR all hold against source). Blocking F1 = frozen evaluator's
+  prefix-index logic (a >= menu_b / direct sigma index) is false for interleaved
+  menus -> new path must route every mass/zero-mass/sigma decision through an
+  explicit per-node edge_map; N2/N4 need an end-to-end SOLVED interleaved
+  fixture. Blocking F2 = formula must be recorded as an RFC 0048 addendum, not
+  only in this tracker -> DONE, new "Stage-2b Addendum (D184)" section in
+  docs/rfcs/0048, sections A-I. F3 = enforce same_game_def before DFS and retain
+  the extension-must-be-aggressive invariant by Action type (not suffix
+  position). F4 = fixture holes closed in N4/N5: cap-2 Raise-node
+  raise-fraction merge, short-stack clamp collision, 32-action overflow throw.
+  F5 = N1 structural digest + 1e-12 tolerance gate with operation-order
+  argument, EV 1e-6 oracle retained. F6 = union built via declared(...,
+  MinAndCap, 0) with its own digest; every emitted row mechanically carries
+  union-candidate / supporting-evidence-not-m2-g5-pass labels. F7 = optional
+  RiverSolveConfig action_abstraction, nullopt single identity construction
+  site, same abstraction to solver and bounded tree. Component boundary
+  decision: frozen cap_embedding.* stays unmodified; new union translation
+  units carry the generalized mapper/evaluator (distinct reference domains,
+  not old/new versions). Re-review by the same agent required before
+  implementation; the addendum's section I records the final verdict.
+
+- RE-REVIEW APPROVED 2026-11-13 (same agent a56fda80e49e62818): no blocking
+  findings; subsection H boundary accepted (parallel instruments, N1 as the
+  permanent drift gate); L1 per-pair kind guard and L2 permanent CTest +
+  derivation comment adopted. Verdict recorded in RFC 0048 subsection I;
+  check-rfcs (48) and check-docs (507) green; docs/rfcs/README.md index
+  updated.
+
+- D184 IMPLEMENTATION (bench-only; frozen cap_embedding.* byte-stable).
+  New TUs union_menu.{hpp,cpp} (make_union_abstraction: per-street reduced-
+  fraction merge, declared(MinAndCap, 0) with its own digest;
+  map_bounded_subset: same_game_def precondition, per-node edge_map by exact
+  Action equality, fail-closed kind/not-subset/passive-extension guards, L1
+  kind guard retained) and union_embedding.{hpp,cpp} (edge_map-only
+  UnionGame evaluator, Uniform/BrFavorable arms, distribution invariants,
+  negative pure-menu-term logic_error, mechanical union-candidate /
+  supporting-evidence-not-m2-g5-pass fields, abstraction/shape digests).
+  river_solver gains the optional RiverSolveConfig::action_abstraction
+  (nullopt single identity construction site; both free functions honor it).
+  Native test test_rfc0047_union_embedding (N1-N5, all behavioral) green:
+  N1 structural digest + 1e-12 measure equality vs the frozen cap1 measure +
+  1e-6 EV oracle; N2 w1 interleaved Bet198 idx2->ref idx4 end-to-end solved,
+  wide-vs-cap0 reject; N3 wide union menu element-wise set union incl. Bet4;
+  N4 hand-audited shallow root (Check/Bet2/Bet3/Bet6/Bet8), clamp collision
+  (2/1 and 5/2 -> single Bet8), cap-2 Raise node, per-combo BR superset
+  monotonicity; N5 determinism, same_game_def/foreign/malformed/32-action/
+  DeclaredOnly fail-close. Neighbor regressions green: river_solver,
+  cap_embedding, patha_grid_budget (solver option numerics-neutral).
+  clang-format clean on the eight touched C++ files. Manual probe
+  bigshark-rfc0047-union-materiality (NOT a CTest), single-instance, emits
+  U1/U2/U3, both RSS figures, wall/CPU, and the mechanical labels.
+
+- D184 FORMAL EVIDENCE (w1 reached-river anchor, 300 iters, serial, one
+  grid per process; docs/plans/ablation/rfc0047/s3/stage2b-union/).
+  COARSE (interleaved subset; maps both to cap0 and to the union; the two
+  reference trees share shape digest 14919905793871934331 and give BITWISE
+  identical e_embed though their abstraction digests differ): bounded NC
+  0.02761552 BB; e_embed Uniform 31.24489667 / BrFavorable 215.34663379 BB;
+  pure menu 31.21728115 / 215.31901826. Bounded tree 15 nodes/9,664 B;
+  reference 33,693 nodes/23.7 MiB; U1 reference 12,142,873 infosets ->
+  under_1m=0; U2 2,162 rows/86,480 B; node+byte build limits pass;
+  wall ~23.1 s, RSS peak ~55 MiB.
+  WIDE (cap0 direct map REJECTED, union-only rows): bounded NC 0.02730796;
+  e_embed Uniform 22.74050406 / BrFavorable 151.31873978 BB; pure menu
+  22.71319610 / 151.29143183. Bounded 33 nodes; reference 45,789 nodes/
+  24.1 MiB; U1 16,501,465 -> under_1m=0; wall ~35.5 s, RSS peak 51 MiB.
+  VERDICT (candidate domain, NOT M2/G5): both grids candidate_gate_pass=0,
+  missing M=0.002 BB by ~1.1e4x (Uniform). The pure menu term dominates
+  (22.7-215 BB) over the policies' own ~0.027 BB NashConv, so on the deep
+  99 BB anchor bet-sizing-only widening does not recover the missing menu
+  value at cap 1; this is the legally measured negative answer the D179
+  canary said was undefined under the frozen prefix formula. U1 over 1M on
+  the reference trees is reported, never used to negate U3 build
+  feasibility (both fit node/byte), and no number overwrites G5.
+  Remaining: full rfc0047 ctest closure, independent implementation review,
+  isolated local commits; no production/CLI/proto/ABI change.
+
+- D184 IMPLEMENTATION REVIEW APPROVED 2026-11-13 (same non-author agent
+  a56fda80e49e62818, third review round): no blocking/major findings;
+  reviewer independently reran the N1-N5 binary and a 5-iter probe,
+  confirmed the cap0-vs-union bitwise equality at another iteration count,
+  edge_map-only lookups, evaluator branch-by-branch fidelity to the frozen
+  EmbeddedGame, solver neutrality, frozen cap_embedding.* byte-stable, and
+  the four-item CMake scope. Non-blocking advisories: L1 stage only the
+  four D184 CMake hunks (pre-existing unrelated hunks stay unstaged; this
+  is the established --recount patch workflow); L2 reference walks dominate
+  wall time (~18-35 s/row), so a future all-root sweep must not assume
+  per-row costs; L3 the 32-action pin is root-level only (adequate because
+  the builder throw is path-independent). Residual risk stays the
+  parallel-instrument drift surface, permanently bounded by the N1 CTest.
