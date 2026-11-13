@@ -2219,3 +2219,27 @@ RFCs 0041/0043/0045/0046).
   arms; L2 signed-payoff convention documented; L3 verdict recorded in
   RFC subsection H and here. Approval gates reach_bound.{hpp,cpp} +
   T1-T12 implementation, RED first; no production surface.
+
+- D192 REAL-ANCHOR DIAGNOSTIC (manual probe rfc0047_reach_diagnostic,
+  NOT a CTest; w1 reached-river, 300 iters, single instance;
+  docs/plans/ablation/rfc0047/s3/pathb-reach/). Exact Lemma-1 values
+  reproduce the D184 union CSV bitwise (coarse 31.24489667 /
+  215.34663379 BB; wide 22.74050406 / 151.31873978 BB), a second
+  real-anchor cross-instrument confirmation. Structural Lemma-2
+  certificates read 493.65 BB (coarse, both arms — arm-independent)
+  and 206.49 Uniform / 251.51 BrFav BB (wide): ~9-16x looser than the
+  exact totals and five orders of magnitude over the 0.002 bar,
+  empirically confirming the RFC's expected-looseness statement; no
+  metadata-only structural certificate can pass on this anchor.
+  NODE ALLOCATION (the durable diagnostic output). Coarse: the three
+  restricted (non-widened) reach-1.0 nodes contribute 13.7603 +
+  10.0134 + 6.3461 = 30.12 BB of 31.24 (~96%); the two widened nodes
+  contribute 0.00086 BB total, so selective widening of deeper nodes
+  cannot recover the error — the menu restriction bites at root-level
+  raise decisions, not deep low-reach lines. Wide: widened nodes carry
+  ~8.11 BB of local policy NashConv residual (not menu error); the
+  remaining ~14.63 BB sits at restricted nodes. Cost: U1 reference
+  12.1M/16.5M over 1M flagged honestly; U3 node/byte feasible;
+  23.0-35.5 s wall, RSS peak 51-58 MiB; U2 2,162 rows/86,480 B. All
+  rows mechanically labeled; nothing overwrites G5. U1/U2/U3, wall/CPU,
+  and both RSS figures are emitted per row.

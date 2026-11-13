@@ -1,0 +1,18 @@
+reference_label,m2_marking,grid,reference_kind,cap0_direct_map,completion,bounded_abstraction_digest,reference_abstraction_digest,mapped_action_nodes,widened_nodes,bounded_nash_conv_bb,exact_exploitability_bb,structural_certificate_bb,u1_bounded_infosets,u1_reference_infosets,u1_reference_under_1m,u2_artifact_rows,u2_artifact_bytes,u3_bounded_infosets,u3_reference_infosets,reference_under_node_limit,reference_under_byte_limit,wall_ms,cpu_ms,rss_peak_kb,rss_current_kb
+union-candidate,supporting-evidence-not-m2-g5-pass,wide,union,rejected,uniform,12559682940045792031,5165924507794963195,12,4,0.02730796,22.74050406,206.49006631,14053,16501465,0,2162,86480,14053,16501465,1,1,35509.854,35509.146,55872,55872
+
+# node contributions (exact Lemma-1 allocation, BB, descending)
+seat,reference_node,widened,mean_own_reach,contribution_bb
+0,22896,0,1.00000000,9.80587140
+1,0,1,1.00000000,8.10579755
+1,3,0,0.29811160,1.07106438
+0,33732,0,1.00000000,0.91049138
+0,39762,0,1.00000000,0.81228257
+0,43722,0,1.00000000,0.68753217
+1,10839,0,0.29811160,0.60672507
+1,16869,0,0.29811160,0.40414777
+1,20829,0,0.29811160,0.32925173
+0,1,1,1.00000000,0.00694513
+0,45786,1,1.00000000,0.00027764
+1,22893,1,0.29811160,0.00011726
+union-candidate,supporting-evidence-not-m2-g5-pass,wide,union,rejected,br_favorable,12559682940045792031,5165924507794963195,12,4,0.02730796,151.31873978,251.50883227,14053,16501465,0,2162,86480,14053,16501465,1,1,35505.477,35503.391,56656,56656

@@ -724,6 +724,12 @@ add_executable(bigshark-rfc0047-union-materiality
   benchmarks/rfc0047/rfc0047_union_materiality.cpp)
 target_link_libraries(bigshark-rfc0047-union-materiality PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0048 Path B (D192) manual single-instance reach-bound diagnostic
+# (NOT a CTest): node-level menu-error allocation with U1/U2/U3 and RSS.
+add_executable(bigshark-rfc0047-reach-diagnostic
+  benchmarks/rfc0047/rfc0047_reach_diagnostic.cpp)
+target_link_libraries(bigshark-rfc0047-reach-diagnostic PRIVATE bigshark_rfc0047_bench)
+
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
 # calibration for the bounded cap-1 river (G1) and street-start turn (G2)
