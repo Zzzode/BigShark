@@ -1,0 +1,23 @@
+reference_label,m2_marking,grid,reference_kind,cap0_direct_map,completion,bounded_abstraction_digest,reference_abstraction_digest,mapped_action_nodes,widened_nodes,bounded_nash_conv_bb,exact_exploitability_bb,structural_certificate_bb,u1_bounded_infosets,u1_reference_infosets,u1_reference_under_1m,u2_artifact_rows,u2_artifact_bytes,u3_bounded_infosets,u3_reference_infosets,reference_under_node_limit,reference_under_byte_limit,wall_ms,cpu_ms,rss_peak_kb,rss_current_kb
+union-candidate,supporting-evidence-not-m2-g5-pass,coarse,cap0_subset,mapped,uniform,5476788294790283900,12738560711762941148,6,2,0.02761552,31.24489667,493.64947999,7567,12142873,0,2162,86480,7567,12142873,1,1,23098.423,23097.838,68640,68640
+
+# node contributions (exact Lemma-1 allocation, BB, descending)
+seat,reference_node,widened,mean_own_reach,contribution_bb
+1,0,0,1.00000000,13.76031339
+0,1,0,1.00000000,10.01343906
+0,16848,0,1.00000000,6.34610522
+1,3,0,0.41883763,1.12417736
+0,33690,1,1.00000000,0.00069880
+1,16845,1,0.41883763,0.00016284
+
+# D195 exact residual/menu split (BB, descending by menu term)
+seat,reference_node,extension_free_subtree,bounded_residual_bb,removable_menu_bb,total_delta_bb
+1,0,0,0.01359882,13.74671457,13.76031339
+0,1,0,0.01252253,10.00091653,10.01343906
+0,16848,0,0.00047597,6.34562925,6.34610522
+1,3,0,0.00015656,1.12402080,1.12417736
+0,33690,1,0.00069880,0.00000000,0.00069880
+1,16845,1,0.00016284,0.00000000,0.00016284
+union-candidate,supporting-evidence-not-m2-g5-pass,coarse,union,mapped,uniform,5476788294790283900,5403754628181216180,6,2,0.02761552,31.24489667,493.64947999,7567,12142873,0,2162,86480,7567,12142873,1,1,23139.091,23138.777,75828,75828
+union-candidate,supporting-evidence-not-m2-g5-pass,coarse,cap0_subset,mapped,br_favorable,5476788294790283900,12738560711762941148,6,2,0.02761552,215.34663379,493.64947999,7567,12142873,0,2162,86480,7567,12142873,1,1,24495.947,24300.304,75828,75828
+union-candidate,supporting-evidence-not-m2-g5-pass,coarse,union,mapped,br_favorable,5476788294790283900,5403754628181216180,6,2,0.02761552,215.34663379,493.64947999,7567,12142873,0,2162,86480,7567,12142873,1,1,34227.530,26526.161,82956,82956

@@ -2243,3 +2243,152 @@ RFCs 0041/0043/0045/0046).
   23.0-35.5 s wall, RSS peak 51-58 MiB; U2 2,162 rows/86,480 B. All
   rows mechanically labeled; nothing overwrites G5. U1/U2/U3, wall/CPU,
   and both RSS figures are emitted per row.
+
+## RFC 0048 Path A root-menu feasibility closure (D195)
+
+- D195 AUTHORIZATION (TechLead, handoff 6867 successor). Close the
+  root-level-menu / offline-wide-blueprint feasibility loop with an
+  executable bench prototype, not another plan. Frozen: cap0 reference
+  domain, production cap1, 0.002 BB, B0=0.010, G1, training/resource
+  budgets, the coarse/wide FAILs. No full-root scan, no iteration
+  increase, no new production/certification contract, no push/merge/
+  publish/spend/delete/Worker. Any claim needs an equivalent-or-
+  conservative proof against the frozen target or stays exploratory.
+  Reuse D192 evidence; state coverage gaps; no duplicate half-hour
+  acceptance run.
+
+- COVERAGE GAP OF THE D192 DIAGNOSTIC. The node allocation proved WHERE
+  the menu error sits (three reach-1.0 restricted nodes, ~96% of the
+  coarse total) but did not split each node's delta into (a) the pure
+  menu-restriction component removable by widening and (b) the bounded
+  policy residual that survives widening. Without that split, "widen the
+  root nodes" is a hypothesis, not a feasibility verdict.
+
+- NODE-LEVEL ERROR DECOMPOSITION (REVISED after review round 1 F1). The
+  existing bounded_gap column uses FULL-walk continuations C_full, so it
+  is a one-level restriction and telescopes only to an UPPER bound on
+  e_Gg; the exact identity needs a new self-consistent RESTRICTED BR walk
+  over the bounded tree (max only over A_b at every own node, no
+  extension subtree; paired back through SubsetMap). With restricted
+  continuation C_g and local gap g_g = max_{A_b} C_g - sigma.C_g:
+    menu_gap(n,i) = delta(n,i) - g_g(n,i) >= 0 by set inclusion; the local
+      widened flag is NOT a zero condition (deeper subtree extensions can
+      keep menu_gap positive), zero only when the whole mapped subtree is
+      extension-free; cross-walk sign uses a chip tolerance (independent
+      walk summation), bit-exact retained only for single-walk columns
+    sum reach*g_g      = e_Gg = solver nash_conv_bb (exact)
+    sum reach*menu_gap = D184 pure_menu_term (exact)
+  Requires a small bench-only walk extension; the 'no TU change' premise
+  is withdrawn. Exact for any fixed finite-iteration policy.
+
+- TWO-TIER FLOOR (review F2). TIER 1 EXACT fixed-policy: embedding the
+  measured sigma (zero mass on new actions) after any node widening
+  keeps exploitability >= measured e_Gg = 0.0276 BB (14x over M), and
+  removes exactly the selected nodes' reach-weighted menu_gap. TIER 2
+  EMPIRICAL re-solve: no theorem orders finite-iteration RM+ NashConv
+  across different game shapes (D164 NC sequence 0.0240..0.1267 at 300
+  iters is non-monotonic; cap6 300->1000 iters NC 0.127->0.068 while
+  pure menu RISES 0.0022->0.0061). Refusal rests on the measured
+  T^-0.52 law (1e5-1e6 iters; 700 s at 1000) and the 0.0240-0.0276 BB
+  residual band across all grids at 300 iters, not a universal floor.
+
+- EXPRESSIBILITY GAP (stated, not patched). ActionAbstraction is
+  schedule+cap driven with no per-node menu override; a node-targeted
+  hybrid (full menu only at the three reach-1.0 nodes) cannot be built
+  without modifying the production abstraction class, which D195 does
+  not authorize. The node-level split is the rigorous bench substitute:
+  it gives the exact removable quantity and the exact residual floor
+  for EVERY possible node-widening selection, including the perfect
+  root-only selection, without a production change.
+
+- PROTOTYPE (bench-only, minimal). New restricted BR walk in
+  reach_bound (bounded tree only, SubsetMap pairing) producing exact
+  per-node g_g and menu_gap; manual probe gains the split columns;
+  native T13 in test_rfc0047_reach_bound:
+   (i) menu_gap >= 0 with chip-scale tolerance; subtree-extension-free
+       nodes measured at zero; local widened flag reported as diagnostic
+       only, never asserted equivalent to zero (review round-2 F1);
+   (ii) restricted telescope == bounded_nash_conv_bb, chip-scale
+        scale-relative tolerance (independent walk summation order);
+   (iii) exact menu-gap telescope == D184 pure_menu_term cross-
+        instrument on the same fixture, both completion arms, 1e-12 BB,
+        each paired with the ONE arm-free g_g (bounded tree has no
+        extension nodes, so completion arms are vacuous there);
+   (iv) round-3 correction: bounded_gap >= g_g is NOT nodewise true
+        (differences of ordered functions are unordered); pin the
+        AGGREGATE sandwich e_Gg <= sum reach*bounded_gap <= e_embed at
+        chip tolerance, plus the bit-exact single-walk nodewise
+        delta >= bounded_gap (one continuation vector).
+  T13(i) existence clause: scan for at least one extension-free mapped
+  node or fail with a diagnostic (no vacuous zero clause; T9 pattern).
+  Restricted walk records pair via the inverse of SubsetMap::node_map
+  (bijection onto mapped nodes); reuse existing terminal/opponent/pool
+  conventions. Permanent CTest; RED first.
+
+- BLUEPRINT ARTIFACT FEASIBILITY (existing solve-free evidence, no new
+  run needed for the reached-river object). Wide bounded tree U1 =
+  14,053 infosets (inside 1M), U2 = 2,162 rows/86,480 B, reference
+  24.1 MiB and node/byte limits pass; stage-1 turn-trunk census
+  (RFC 0048 Stage-1 Evidence): wide 7.07M infosets / 11.8 MB vs
+  cap-2 56.4M / 95 MB. Storage/build is FEASIBLE; the wall is quality
+  convergence and raise depth, not artifact size.
+
+- VERDICT CRITERIA (falsifiable). FEASIBLE only if a measured menu
+  configuration simultaneously gives (a) removable menu term leaving a
+  residual floor <= 0.002 BB within the existing iteration budget and
+  (b) U1/U2/U3 inside envelope. Otherwise INFEASIBLE with the exact
+  node-level numbers; no gate is lowered. Expected outcome from the
+  existing three menu points (coarse 31.24, wide 22.74, identity cap1
+  19.48 BB; none within 4 orders of M) plus the 0.0276 residual floor:
+  INFEASIBLE on every MEASURED configuration within frozen budgets with
+  no plausible within-budget candidate identified; the continuous
+  fraction space makes universal exclusion impossible (residual risk =
+  an unmeasured grid with materially faster same-budget convergence),
+  to be confirmed by the T13-gated split rather than assumed.
+
+- D195 REVIEW ROUNDS 3-4 (agent a56fda80e49e62818). Round 3 CR:
+  bounded_gap >= g_g is not nodewise true (differences of ordered
+  functions unordered; counterexample h=(10,0), f=(10,10)) -> aggregate
+  sandwich only + bit-exact single-walk delta >= bounded_gap; T13 zero
+  clause gained existence scan. Round 4 (2026-11-14) APPROVED, no
+  findings; sandwich endpoints independently re-derived, T13 fully
+  falsifiable, implementable as recorded. Four rounds total before code.
+
+- D195 IMPLEMENTATION (bench-only; reach_bound extended, no production
+  change). RestrictedInstrument = self-consistent BR walk on the bounded
+  tree (arm-free, no extension nodes), recording exact g_g;
+  subtree_is_extension_free static DFS over mapped edges; T13 permanent
+  CTest (RED stub exit 134 observed, then GREEN first build). T13
+  reconciles restricted telescope to solver nash_conv_bb, exact menu
+  telescope to D184 pure-menu under both arms with one arm-free g_g,
+  bit-exact single-walk delta>=bounded_gap, aggregate sandwich
+  e_Gg <= sum reach*bounded_gap <= e_embed, and an extension-free
+  existence scan (2 such nodes on the tiny fixture; strict interior
+  sandwich verified non-vacuous). Probe rfc0047_reach_diagnostic now
+  emits the per-node residual/removable-menu split.
+
+- D195 FORMAL EVIDENCE (w1 reached-river, 300 iters, single instance;
+  docs/plans/ablation/rfc0047/s3/patha-rootmenu/). COARSE split columns
+  reconcile bitwise: bounded_residual sum = 0.02761552 BB == solver
+  bounded NC; removable_menu sum = 31.21728115 BB == D184 pure-menu
+  term; total 31.24489667 == e_embed. The four restricted root-level
+  nodes (three at reach 1.0 and node 3 at mean reach 0.4188) hold
+  31.2173/31.2173 = ~100% of the removable menu
+  value; the two extension-free nodes carry zero removable menu
+  exactly. WIDE: removable menu 22.7132 BB spread across nine
+  restricted nodes; of the four LOCALLY-widened nodes, the three
+  subtree-extension-free ones carry only policy residual (0.00734 BB
+  total, zero removable menu), while the fourth (seat 1 node 0) is
+  locally widened but NOT subtree-extension-free and still carries
+  8.087 BB removable menu — the round-2 local-vs-subtree distinction
+  observed on real data. VERDICT (falsifiable,
+  measured configurations only): INFEASIBLE within frozen budgets.
+  Even PERFECT root-only widening (unattainable without a production
+  per-node abstraction change) leaves the exact fixed-policy floor
+  e_Gg = 0.0276 BB, 13.8x over M=0.002; the T^-0.52 convergence law
+  requires 1e5-1e6 iterations to move the floor (D164 measured
+  700 s/1000-iter wall). Artifact storage is non-binding (U1 bounded
+  7,567/14,053 inside 1M; reference 24 MiB; U2 86,480 B). The menu
+  restriction is removable in principle but the residual policy tier,
+  not the menu, is the binding wall on the deep 99 BB anchor. No G5/M2
+  verdict replaced; all rows union-candidate labeled.

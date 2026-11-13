@@ -813,6 +813,225 @@ record. The structural certificate's expected looseness remains the
 disclosed design property from subsection C; no production, ABI,
 proto, persisted-format, or CLI surface changes.
 
+## Path A Root-Menu Feasibility Addendum (D195)
+
+The Stage-2b and Path B instruments showed the sizing-grid menu failure
+is large and concentrated at reach-1.0 root-level nodes. This addendum
+closes the feasibility question for root-level menu widening and the
+offline wide blueprint with an executable bench decomposition, without
+modifying any production abstraction or relaxing a frozen gate.
+
+### A. Node-level menu/restriction decomposition
+
+A first-draft decomposition based on the Path B `bounded_gap` column
+was rejected in review round 1: that column is built from the FULL
+best-response walk's continuation values, so it restricts the menu only
+at the node itself while every deeper own node still maximizes over the
+full reference menu. It telescopes to an upper bound on the bounded
+game's NashConv, not an equality, and is retained in the records only as
+a conservative residual allocation. The exact decomposition requires a
+separate self-consistent restricted BR walk.
+
+The restricted walk runs over the BOUNDED tree: at every own node it
+maximizes only over `A_b`, never entering a reference extension
+subtree, and pairs each bounded node back to its reference node through
+the existing SubsetMap (whose recursion covers every bounded node). Let
+`g_g(n,i)` be its local gap and let `C_g` be its restricted
+continuation. At a paired node define
+
+```
+delta(n,i)    = max_{a in A_ref} C_full(n,i,a) - sum_b sigma C_full(n,i,b)
+g_g(n,i)      = max_{a in A_b}   C_g(n,i,a)    - sum_b sigma C_g(n,i,b)
+menu_gap(n,i) = delta(n,i) - g_g(n,i)
+```
+
+`menu_gap` is non-negative: set inclusion gives `C_full >= C_g` per
+combo under both completion arms (arms only choose policies over
+existing edges), while the policy expectations agree because extension
+edges carry zero sigma mass and the EV walk never enters them (the
+Stage-2b EV-to-kernel-CFV oracle already pins root CFV equality). A
+local menu coincidence is NOT sufficient for a zero value: even when a
+node's own edge map has no -1 entry, `C_full(n,a)` can still embed
+reference-only option value at a deeper own-seat node in its subtree,
+so `menu_gap(n) == 0` holds only when no reachable own-seat node in
+n's mapped subtree carries an extension edge (equivalently, the full
+and restricted BR values at n coincide). The local `widened` flag is
+therefore retained as a structural label, never as a zero-gap
+assertion.
+Telescoping with the full forward reach, which the review confirmed is
+the identical own-mass product on paired bounded and reference nodes,
+gives exact node-granular identities:
+
+```
+sum_n sum_i pi_s(n,i) g_g(n,i)      = e_Gg(sigma)   (bounded NashConv)
+sum_n sum_i pi_s(n,i) menu_gap(n,i) = pure_menu_term
+e_embed(sigma)                      = e_Gg + pure_menu_term
+```
+
+The first sum reconciles against the solver's own
+`nash_conv_bb`, and the second against the Stage-2b pure menu column,
+under both completion arms. This requires a small benchmark-only walk
+extension; no production abstraction changes.
+
+The restricted walk is ARM-FREE. The bounded tree contains no
+extension nodes by construction, so the Uniform/BrFavorable dispatch —
+which only fires at unmapped reference nodes — has no decision to make
+there; the walk takes no completion parameter and produces one
+arm-independent `g_g`. "Both completion arms" applies only to the
+arm-dependent `delta`/`menu_gap` reconciliations, each paired with the
+same single restricted result. Records are keyed on bounded nodes and
+paired back through the inverse of `SubsetMap::node_map`, which is a
+bijection onto the mapped node set; the walk reuses the existing
+terminal, opponent-scaling, and vector-pool conventions with no new
+payoff logic.
+
+### B. The fixed-policy floor and the empirical re-solve tier
+
+Two claims must be kept separate.
+
+1. Exact fixed-policy statement. Embedding the measured policy sigma
+   (zero mass on any new action) into a game widened at a selected set
+   of nodes removes precisely those nodes' reach-weighted
+   `menu_gap`; its exploitability stays at least the measured bounded
+   NashConv `e_Gg(sigma) = 0.0276 BB`, fourteen times the 0.002 BB
+   bar, because the unwidened nodes and the policy residual remain.
+2. Empirical re-solve tier. A re-solved policy sigma' at the same
+   iteration budget has no theorem ordering its NashConv across
+   different games: finite-iteration RM+ NashConv moves
+   non-monotonically across game shapes (the D164 cap-k online NC
+   sequence 0.0240, 0.1266, 0.0916, 0.1108, 0.0707, 0.1267 at 300
+   iterations, and the cap-6 re-split where NashConv falls
+   0.127 to 0.068 while the pure menu term rises 0.0022 to 0.0061
+   between 300 and 1,000 iterations). Refusal of a within-budget
+   re-solve therefore rests on measured evidence, not a universal
+   floor: the T^-0.52 convergence law places 0.002 BB at order
+   10^5-10^6 iterations with the observed 700 s wall at only 1,000
+   iterations, and the across-grid residual band at the frozen 300
+   iterations is 0.0240-0.0276 BB for every measured configuration.
+
+### C. Expressibility boundary
+
+The production `ActionAbstraction` builds node menus from a per-street
+schedule plus a raise cap and has no per-node override, so a hybrid
+that widens only the three reach-1.0 restricted nodes cannot be
+constructed without changing a production class, which this addendum
+does not authorize. The node-level split is the bench-rigorous
+substitute: it states the exact removable quantity and the exact
+residual floor for every widening selection, including the unattainable
+perfect one, using only benchmark translation units.
+
+### D. Blueprint artifact feasibility and the verdict criteria
+
+The storage side is feasible from existing solve-free evidence: the
+wide bounded reached-river tree holds 14,053 U1 infosets (inside the
+1M peak), 2,162 U2 rows / 86,480 bytes, and a 24.1 MiB reference tree
+inside node/byte limits; the stage-1 turn-trunk census measured the
+wide grid at 7.07M infosets / 11.8 MB against 56.4M / 95 MB for cap 2.
+Artifact size is not the constraint. A root-menu widening route is
+FEASIBLE only if a measured menu configuration leaves a residual floor
+at or below 0.002 BB within the existing iteration budget while
+staying inside every U1/U2/U3 envelope. The fraction space is
+continuous, so a finite menu set cannot prove universal
+infeasibility; the evidence closes the practical space instead.
+INFEASIBLE on every measured configuration within frozen budgets, with
+no plausible within-budget candidate identified: the three measured
+menu points (coarse 31.24 BB, wide 22.74 BB, identity cap-1 19.48 BB
+embedded exploitability) sit roughly four orders over the bar, their
+300-iteration residuals cluster within ~15% (0.0240-0.0276 BB, already
+12-14x over the bar at the policy tier), raise-cap widening was closed
+by D164, and storage is explicitly non-binding. The residual risk is
+an unmeasured grid with materially faster same-budget convergence;
+one additional existing-budget fine-grid anchor is available cheaply
+if that risk needs another point. No number produced here replaces the
+frozen G5 verdict.
+
+### E. Scope, gates, and review
+
+The work stays inside `bigshark_rfc0047_bench`: a self-consistent
+restricted BR walk over the bounded tree (a new benchmark-only walk,
+not a production change), a per-node exact menu/restriction split in
+the manual diagnostic, and one permanent native reconciliation gate
+(T13) in the Path B test. T13 asserts non-negativity and the
+subtree-extension-free zero condition with a small chip-scale
+tolerance (the two maxima come from independent walks over two trees,
+so an ulp can appear in either direction even where the math is equal;
+bit-exact assertions remain valid only for single-walk quantities such
+as the retained `delta - bounded_gap` column), and scale-relative
+chip-scale tolerances for the two telescope reconciliations —
+restricted-walk gaps to the bounded NashConv and exact menu gaps to
+the Stage-2b pure menu column under both completion arms, each paired
+with the one arm-free restricted result. The local `widened` flag is
+reported as a diagnostic, never used as a zero-gap invariant. The
+retained full-walk `bounded_gap` column is pinned only in the form
+that is actually true: an AGGREGATE sandwich
+`e_Gg <= sum reach*bounded_gap <= e_embed` at chip tolerance, since a
+difference of ordered functions has no nodewise ordering, plus the
+genuinely single-walk nodewise relation `delta(n) >= bounded_gap(n)`,
+which is bit-exact because both maxima select elements of one
+continuation vector. The T13 zero clause includes an existence scan:
+the fixture must contain at least one extension-free mapped node or
+the gate fails with a diagnostic, so it cannot pass vacuously. No
+production, ABI, proto, persisted-format, or CLI surface changes; no
+full-root sweep or iteration increase. The
+independent review rounds are recorded below.
+
+### F. Independent review record
+
+The D195 review rounds and explicit verdicts are recorded here before
+closure.
+
+Round 1 (2026-11-14, non-author agent a56fda80e49e62818): Changes
+Requested. The sign-level decomposition and bench scope were sound,
+but the draft's use of the full-walk `bounded_gap` column as an exact
+bounded NashConv telescope was rejected as a one-level upper bound
+(F1); the addendum now requires a self-consistent restricted BR walk
+over the bounded tree with exact `g_g` and `menu_gap` identities. The
+universal post-widening floor was split into the exact fixed-policy
+statement and the empirical re-solve tier with the D164
+non-monotonicity evidence cited (F2); T13 was upgraded to bit-exact
+sign checks plus chip-scale telescope tolerances (F3); and the
+infeasibility verdict was scoped to every measured configuration with
+the continuous-grid residual risk stated (F4). Round 2 returned Changes
+Requested with two gate-spec defects: the local `widened` flag is not a
+subtree zero-gap condition (corrected to an extension-free-subtree
+structural condition with the flag kept diagnostic-only), and cross-walk
+sign/zero checks cannot be bit-exact (corrected to chip-scale
+tolerances, bit-exact retained only for single-walk quantities); the
+restricted walk is now specified arm-free with inverse-map pairing. Round 3
+returned Changes Requested once more with two localized gate-spec
+fixes: the nodewise `bounded_gap >= g_g` claim was retracted (only its
+telescoped aggregate is ordered), replaced by the aggregate sandwich
+`e_Gg <= sum reach*bounded_gap <= e_embed` plus the bit-exact
+single-walk `delta >= bounded_gap` pin, and T13's zero clause gained an
+extension-free-node existence scan. The re-review verdict is recorded
+after this revision.
+
+Round 4 (2026-11-14, same agent): **Approved**, no remaining findings.
+The aggregate sandwich endpoints were independently re-derived against
+the record semantics (`W(root) = max_{A_b} C_full`; lower bound from
+set inclusion, upper bound from `A_b subset A_ref`) and confirmed
+under both completion arms using already-emitted columns; the
+single-walk `delta >= bounded_gap` pin was confirmed bit-exact. All
+four T13 clauses are fully falsifiable with no vacuous path. The
+addendum is implementable exactly as recorded; implementation-time
+residual risk is confined to coding the restricted walk as a true
+bounded-tree BR walk, backstopped by T13(ii) against the solver's own
+NashConv. No production, ABI, proto, persisted-format, or CLI surface
+changes.
+
+Implementation review (2026-11-14, same agent): **Approved**, no code
+findings. The restricted walk was verified as a true bounded-tree BR
+walk with no reference/extension reachability by construction, the
+arm-free structure holds, T13(ii) has no double normalization, the
+extension-free predicate is fail-closed and non-vacuously exercised,
+and the formal evidence reconciles bitwise with both the solver
+NashConv and the Stage-2b pure-menu column on both grids, including a
+real-data instance of the local-widened-but-subtree-restricted
+distinction. One documentation-only finding (two tracker labels
+blurring the local flag vs subtree condition) was corrected before
+closure. The INFEASIBLE verdict remains scoped to measured
+configurations within the frozen budgets.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the
