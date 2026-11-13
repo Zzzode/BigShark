@@ -738,6 +738,13 @@ add_executable(bigshark-rfc0047-averaging-probe
   benchmarks/rfc0047/rfc0047_averaging_probe.cpp)
 target_link_libraries(bigshark-rfc0047-averaging-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
+# one 300-iteration root-only widening solve, both completion arms evaluated
+# on the immutable snapshot with no second long solve.
+add_executable(bigshark-rfc0047-mixed-menu-probe
+  benchmarks/rfc0047/rfc0047_mixed_menu_probe.cpp)
+target_link_libraries(bigshark-rfc0047-mixed-menu-probe PRIVATE bigshark_rfc0047_bench)
+
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
 # calibration for the bounded cap-1 river (G1) and street-start turn (G2)
