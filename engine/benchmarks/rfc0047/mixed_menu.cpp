@@ -226,18 +226,23 @@ class MixedMenuGame {
       slots_.push_back(pool_.back().get());
       free_.push_back(slots_.size() - 1);
     }
+    // Hot per-iteration storage is allocated ONLY on the mask-reachable
+    // closure, indexed by the original tree node id. Off-closure nodes keep
+    // empty vectors, so the working set and the per-iteration matvec scale
+    // with the restricted game, not the full reference tree.
     reach_.clear();
     reach_.resize(tree_->size());
-    for (auto& ra : reach_) {
-      ra[0].assign(kC, 0.0);
-      ra[1].assign(kC, 0.0);
-    }
-    value_.assign(tree_->size(), std::vector<double>(kC, 0.0));
+    value_.assign(tree_->size(), {});
     for (std::size_t n = 0; n < tree_->size(); ++n) {
-      const TreeNode& node = tree_->node(n);
-      if (node.kind == NodeKind::TerminalShowdown)
+      if (!reachable_[n])
+        continue;
+      reach_[n][0].assign(kC, 0.0);
+      reach_[n][1].assign(kC, 0.0);
+      value_[n].assign(kC, 0.0);
+      const NodeKind kind = tree_->node(n).kind;
+      if (kind == NodeKind::TerminalShowdown)
         showdown_nodes_.push_back(n);
-      else if (node.kind == NodeKind::TerminalFold)
+      else if (kind == NodeKind::TerminalFold)
         fold_nodes_.push_back(n);
     }
   }
