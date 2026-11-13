@@ -71,13 +71,36 @@ struct GridBudget {
   // 1,128-combo turn rows and 1,081-combo river rows.
   std::uint32_t turn_combos = 0;
   std::uint32_t river_combos = 0;
-  std::uint64_t turn_infosets = 0;
-  std::uint64_t river_infosets = 0;
-  std::uint64_t conservative_infoset_sum = 0;
-  // Deterministic feasibility against the artifact envelope.
-  bool under_tree_node_limit = false;  // TreeLimits.max_nodes (2,000,000)
-  bool under_byte_limit = false;       // TreeLimits.max_bytes (1 GiB)
-  bool under_1m_infoset = false;       // the offline infoset envelope
+
+  // Three distinct units (D179 stage-2 review F1-F5). They must never be
+  // compared against the same envelope.
+  //
+  // U1 ONLINE RESIDENT (the only unit gated by ResolveLimits 1e6 infosets):
+  // the turn trunk plus ONE reached river subtree - the largest single chance
+  // child. A turn-rooted tree fans out to 48 river cards but RFC 0047 solves one
+  // reached card per serve, so only one river subtree is co-resident.
+  std::uint64_t u1_turn_infosets = 0;
+  std::uint64_t u1_reached_river_infosets_max = 0;
+  std::uint64_t u1_online_resident_infosets = 0;
+  bool u1_under_1m_infoset = false;  // ResolveLimits online peak
+  //
+  // U2 OFFLINE BSNCV ARTIFACT ROWS (cv_oracle OracleRow): one per
+  // (frontier leaf, seat, 1081 combo); menu-width-independent per-row storage.
+  // Gated by the G4 census storage budget, NOT by a 1e6-row count (none exists).
+  std::uint64_t u2_artifact_rows = 0;
+  std::uint64_t u2_artifact_bytes = 0;  // rows * sizeof(OracleRow)
+  //
+  // U3 WHOLE-TRUNK BUILD GRAND TOTAL: sums ALL 48 river fanout action nodes.
+  // Never co-resident; bounded by the build TreeLimits (node/byte) only, never
+  // by the online 1e6 infoset peak.
+  std::uint64_t u3_all_river_infosets = 0;
+  std::uint64_t u3_build_grand_total_infosets = 0;
+
+  // Build-envelope verdicts (U3): TreeLimits 2,000,000 nodes / 1 GiB. These are
+  // the only envelope flags a resource boundary row is allowed to carry; all
+  // stay false on a boundary so bytes==0 can never read as feasible.
+  bool under_tree_node_limit = false;
+  bool under_byte_limit = false;
 };
 
 // Build one tree and compute its GridBudget. Throws only non-boundary faults
@@ -96,10 +119,12 @@ GridBudget measure_grid_budget(const bs::poker::GameDef& def, const std::string&
                                const std::string& label, std::uint8_t raise_cap,
                                const std::string& grid_name, const bs::tree::TreeLimits& limits);
 
-// The frozen-envelope constants the verdict uses, exposed for the native test.
+// Envelope constants, exposed for the native test. Node/byte bound the U3
+// offline build; the infoset limit is the U1 online-peak ResolveLimits gate and
+// must never be applied to the U3 whole-trunk grand total (D179 review F2/F3).
 inline constexpr std::size_t kPathANodeLimit = 2'000'000;
 inline constexpr std::size_t kPathAByteLimit = std::size_t{1} << 30;  // 1 GiB
-inline constexpr std::uint64_t kPathAInfosetLimit = 1'000'000;
+inline constexpr std::uint64_t kPathAInfosetLimit = 1'000'000;        // U1 only
 
 std::string grid_budget_csv_header();
 std::string to_csv(const GridBudget& b);
