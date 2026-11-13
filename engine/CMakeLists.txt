@@ -656,6 +656,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/patha_grid_budget.cpp
   benchmarks/rfc0047/union_menu.cpp
   benchmarks/rfc0047/union_embedding.cpp
+  benchmarks/rfc0047/reach_bound.cpp
   benchmarks/rfc0047/turn_solver.cpp
   benchmarks/rfc0047/turn_serve.cpp
 )
@@ -1297,6 +1298,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_union_embedding tests/test_rfc0047_union_embedding.cpp)
   target_link_libraries(test_rfc0047_union_embedding PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_union_embedding COMMAND test_rfc0047_union_embedding)
+
+  add_executable(test_rfc0047_reach_bound tests/test_rfc0047_reach_bound.cpp)
+  target_link_libraries(test_rfc0047_reach_bound PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_reach_bound COMMAND test_rfc0047_reach_bound)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
