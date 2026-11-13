@@ -2392,3 +2392,140 @@ RFCs 0041/0043/0045/0046).
   restriction is removable in principle but the residual policy tier,
   not the menu, is the binding wall on the deep 99 BB anchor. No G5/M2
   verdict replaced; all rows union-candidate labeled.
+
+## Averaging-policy re-solve within frozen budgets (D198)
+
+- D198 AUTHORIZATION. Test the existing but uncovered linear_averaging
+  solver switch as a new policy candidate under the SAME menu/domain/
+  300-iter budget; no new menu builder, per-node abstraction, generic
+  solver framework, external dependency, production/schema change, full
+  root sweep, or training grid. Fixed-policy certificates are never
+  transferred to a new policy; without an equivalence/conservatism proof
+  every new-policy number stays exploratory.
+
+- BUDGET ACCOUNTING (real authorization basis; revised after review
+  round-2 F1). The authorization unit is one SINGLE-INSTANCE PROCESS at
+  300 iterations, never a per-process solve count (D164 capcurve ran
+  many solves per job); no cumulative training pool was ever defined.
+  D198's anchor binary performs BOTH averaging modes in one process:
+  one new uniform-candidate solve plus one in-process linear CONTROL
+  solve, same menu/domain/threads=1/300 iters, no new grid/root/pool.
+  The in-process linear tables make A2 hash/L1, NC comparison, and A4
+  realizable; historical linear CSVs remain the cross-run reference but
+  no golden policy table is persisted. Tiny distinctness failure still
+  cancels before the anchor process is spent on w1.
+
+- MECHANISM (river_solver.cpp:559). Each iteration t accumulates the
+  average strategy with weight w = t when linear_averaging=true (CFR+
+  linear average, recent iterations dominate) or w = 1.0 when false
+  (uniform time average); build_sigma normalizes by the per-combo action
+  sum, falling back to uniform only when the sum is zero. Both outputs
+  are legal distributions by construction; the switch changes ONLY the
+  averaging weights, never regret matching, tree, or evaluator.
+
+- PRE-SELECTED CANDIDATE (one, fixed before any anchor run).
+  sigma_uni = solve(coarse cap1 menu, w1 reached-river, 300 iters,
+  threads=1, linear_averaging=false). Hypothesis, not a promise: uniform
+  averaging weights early iterations equally and can yield a lower
+  finite-iteration exploitability than linear averaging on this small
+  tree; it can equally be worse. No current floor is assumed to carry
+  over.
+
+- TINY NATIVE GATES FIRST (new test_rfc0047_averaging.cpp, real solves,
+  no text matching; tiny 8-chip root). MODE-INDEPENDENCE fact: regret/
+  reach/RM+ path never reads avg_weight, so both runs share bitwise
+  identical per-iteration RM+ and zero-tot fallback rows.
+  A1 legality: every node/combo row of both policies finite, non-
+     negative, sums to 1 within 1e-12; uniform 1/A fallback rows legal
+     and fallback trigger node/combo SETS identical between modes;
+  A2 distinctness metric (review F1): row L1 d=sum_a|p_lin(a)-p_uni(a)|;
+     distinct iff some action node has d>=1e-12 AND content hashes
+     differ; evaluated at small tiny-root count (pre-anchor) AND again
+     at the 300-iter w1 anchor in-process at zero extra solve;
+     coincidence is a legitimate 'no new information' closure, never a
+     forced difference;
+  A3 independent external evaluation: BOTH policies reproduce solver
+     root CFV x990 below 1e-6 via the union/EV walk; reach validator
+     bitwise;
+  A4 default stability: in-process same-binary linear-vs-linear repeat
+     bitwise identical (the zero solver-TU-diff check is review/CI
+     hygiene, not a runtime CTest; no golden policy file exists);
+  A5 fail-closed: malformed (negative/non-normalized/NaN) and missing/
+     zero-reach snapshots rejected by the existing validator, including
+     the tot==0 fallback rows;
+  A6 (reported, not asserted): tiny-root NC(linear) vs NC(uniform) as an
+     early pre-anchor signal on the uniform-may-be-lower hypothesis.
+  RED-first where a new assertion is added.
+- HASH/A4/A6 SPECS (review round 2). Content hash = FNV-1a 64-bit over
+  flat avg_sigma vectors in DFS node order, combo-row-major per action,
+  reproducible across processes; supporting evidence, not historical
+  authentication. Tiny-root A2 count pinned at 60 iterations. A6 reuses
+  RiverSolveResult::nash_conv_bb for both modes (signed diff + root id
+  + iteration count + both hashes), non-asserted. A4 = in-process
+  same-binary linear-vs-linear bitwise repeat; zero solver-TU diff is a
+  review/CI hygiene item, not a runtime CTest.
+
+- ANCHOR EVALUATION (only if A2 passes). One manual non-CTest binary
+  performing, in one single-instance process, one uniform-candidate
+  solve plus one in-process linear control solve (both 300 iters) on
+  the exact D195 coarse cap1 fixture, each evaluated in the frozen
+  cap0 reference domain with the existing union/reach instrument (no
+  new math). Emits abstraction/shape/policy-hash identity, bounded
+  NashConv, e_embed, pure menu term, U1/U2/U3, wall/CPU, RSS.
+  Acceptance is strictly exploratory:
+  report whether bounded_NC(sigma_uni) is below/above the
+  linear=true baseline 0.02761552 BB and whether e_embed moves; no G5
+  pass is claimed unless the frozen 0.002 bar is met under the original
+  target definition, which the evidence will settle.
+
+- D198 REVIEW ROUNDS 1-3 (agent a56fda80e49e62818). R1 CR: undefined
+  distinctness threshold, policy-hash overclaim, missing fallback/A6.
+  R2 CR: one-solve budget contradicted anchor-level in-process check ->
+  adopted two-solves-in-one-process (per-run unit is a process, D164
+  capcurve precedent); FNV-1a DFS-order hash specified; 60-iter tiny
+  count pinned; A4 TU-diff reclassified as hygiene. R3 (2026-11-14)
+  APPROVED, no design findings; L1-L2 stale tracker lines harmonized,
+  verdict recorded in RFC subsection D. Implementation sequence:
+  test_rfc0047_averaging (A1-A6, tiny 8-chip root, 60 iters) RED-first,
+  bench FNV hash helper, then one-process two-mode w1 300-iter probe.
+
+- D198 IMPLEMENTATION (bench-only). policy_hash.{hpp,cpp}: FNV-1a 64-bit
+  DFS-ordered snapshot hash + row/max L1; root_values_from_snapshot added
+  to reach_bound (snapshot-based per-combo root EV/BR, no re-solve; D184
+  union component untouched). test_rfc0047_averaging A1-A6 native on the
+  8-chip root at 60 iters, all behavioral: legality + fallback trigger
+  parity, L1/hash distinctness, external CFV x990 oracle, in-process
+  linear bitwise stability, malformed/NaN/non-normalized fail-close,
+  non-asserted NC signal. Manual probe rfc0047_averaging_probe runs BOTH
+  modes in one single-instance process at 300 iters.
+
+- D198 FORMAL EVIDENCE (w1 coarse cap1, 300 iters, one process;
+  docs/plans/ablation/rfc0047/s3/averaging/w1-coarse-300.txt).
+  Distinctness confirmed: hashes 1922761369290757593 (linear) vs
+  285468303300579094 (uniform), per-combo max row L1 0.40069 (review L1
+  corrected the helper from a node-vector aggregate to the RFC's
+  per-combo row metric bounded in [0,2]; hashes unchanged, so the policy
+  tables themselves were unaffected). The in-process linear
+  control reproduces the historical D184/D195 values bitwise
+  (bounded NC 0.02761552; e_embed 31.24489667 Uniform / 215.34663379
+  BrFav; pure menu 31.21728115), validating same-binary reuse.
+  VERDICT: uniform-average candidate REJECTED on measured evidence.
+  Its bounded NashConv is 0.07459669 BB, 2.70x the linear control's
+  0.02761552 and 37.3x over M=0.002; e_embed moves only slightly
+  (31.09872530 / 214.92172480) because a marginally lower pure-menu
+  term (31.02412861) is offset by the worse residual. The existing
+  linear CFR+ average is the better averaging mode at this budget;
+  the uncovered switch adds no value toward M2. Both policies remain
+  orders of magnitude over the bar, no certificate transferred, all
+  rows union-candidate labeled. Cost: two 300-iter solves in one
+  process, ~18 s evaluation per row, RSS peak 46.9 MiB; U1/U2/U3
+  unchanged from D195 (storage non-binding).
+
+- D198 IMPLEMENTATION REVIEW APPROVED 2026-11-14 (agent
+  a56fda80e49e62818): no blocking/medium findings. L1 (LOW) metric unit
+  mismatch fixed in code to the RFC per-combo row L1 (bounded [0,2]);
+  L2 fallback-row inference via output equality accepted with the
+  mode-independence proof (a bench solver-side tot==0 flag accessor is a
+  future-exact option, deferred); L3 verdict recorded here and in RFC
+  subsection D. Frozen solver/union/cap TUs zero diff; reach_bound change
+  purely additive; three isolated CMake hunks.

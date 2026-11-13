@@ -1032,6 +1032,132 @@ blurring the local flag vs subtree condition) was corrected before
 closure. The INFEASIBLE verdict remains scoped to measured
 configurations within the frozen budgets.
 
+## Averaging-Policy Re-Solve Addendum (D198)
+
+The Path A closure established the fixed-policy residual floor. This
+addendum covers the one untested degree of freedom the existing
+benchmark solver already exposes: the average-strategy weighting. It
+introduces no new menu, abstraction, solver framework, reference
+domain, or certificate; it evaluates a genuinely different policy
+candidate under the frozen target.
+
+### A. Candidate definition and legality
+
+The river solver accumulates its average strategy each iteration with
+weight `w = t` under `linear_averaging=true` (the CFR+ linear average,
+recent iterations weighted more) and `w = 1.0` under
+`linear_averaging=false` (the uniform time average). Regret matching,
+the tree, and the evaluator are identical between the two; only the
+average-policy weights change. The snapshot is normalized by the
+per-combo action sum with a uniform fallback at a zero total, so both
+outputs are finite, non-negative probability rows summing to one.
+
+The regret and reach trajectory is bitwise mode-independent: regret
+updates, regret clipping, the regret-matching distribution, and reach
+propagation never read the averaging weight; only the average-strategy
+sum does. The two runs therefore share identical per-iteration RM+
+behavior and an identical zero-total row set. A `tot == 0` row means a
+combo has zero own reach at a node across every iteration — a genuinely
+unreachable infoset — and the uniform `1/A` fallback fires in both
+modes on exactly the same node/combo set. The pre-selected candidate is
+the uniform-average policy solved on the exact Path A coarse cap-1
+fixture (w1 reached-river root, 300 iterations, one thread), evaluated
+in the unchanged cap-0 reference domain.
+
+### B. No certificate transfer
+
+A reach or residual certificate derived for one fixed policy does not
+hold for a differently averaged policy without an independent
+equivalence or conservatism proof, and none is claimed here. The
+candidate is evaluated from scratch through the existing EV/BR and
+union instruments; every number is exploratory until it satisfies the
+frozen target definition itself. The reference domain, root weights,
+target quantity, conservatism direction, and the 0.002 BB bar are all
+unchanged, and no action is deleted, reweighted, or zeroed to produce a
+pass.
+
+### C. Budget, distinctness metric, and native gates
+
+The governing limit is the per-run single-instance 300-iteration
+authorization used by every prior anchor in this line of work; the
+historical authorization unit is one single-instance process, never a
+per-process solve count (the D164 cap-curve job itself ran many solves
+in one process), and no cumulative training pool exists. The anchor
+binary therefore performs both averaging modes in one single-instance
+process: one new uniform-candidate solve plus one in-process linear
+control solve, with no new grid, root, thread, or iteration budget.
+This makes every comparison use loadable in-process tables. The
+historical linear CSV aggregates remain the cross-run reference; the
+in-process linear run is the binding control because no golden policy
+table is persisted. A content hash of each `avg_sigma` table is added
+as a supporting column; it is evidence, not a historical authenticator.
+The default-path gate is an in-process same-binary linear-vs-linear
+bitwise repeat, with the zero solver-TU-diff confirmation kept as a
+review/CI hygiene item rather than a runtime assertion.
+
+Distinctness is a deterministic metric, not a verbal threshold. For two
+snapshots at the same node/combo shape define the row L1 distance
+`d = sum_a |p_linear(a) - p_uniform(a)|`, and call a policy pair
+distinct when at least one action node has `d >= 1e-12` AND their
+content hashes differ. The hash is FNV-1a 64-bit over the flat
+`avg_sigma` vectors in deterministic DFS node order, combo-row-major,
+per action, so it is reproducible across processes. The gate is
+evaluated twice: on the tiny root at 60 iterations as the pre-anchor
+spend condition, and again on the two 300-iteration w1 tables inside
+the single anchor process. If the anchor tables coincide, the run
+closes as a legitimate "no new information" result rather than forcing
+a difference.
+
+The native gates assert: (A1) finite non-negative normalized rows for
+both modes plus uniform-fallback legality and identical fallback
+trigger sets between modes; (A2) the defined L1/hash distinctness
+metric at both iteration counts with coincidence reporting; (A3)
+independent external EV/reach validation of each supplied policy
+through the unchanged evaluator; (A4) in-process linear-path bitwise
+repeat stability; (A5) fail-close rejection of malformed,
+non-normalized, NaN, and missing-data snapshots including the
+zero-reach fallback rows; and (A6) a reported, non-asserted tiny-root
+comparison that reuses the existing `nash_conv_bb` field for both
+modes with their signed difference, root id, iteration count, and both
+content hashes, as an early signal on the uniform-may-be-lower
+hypothesis. A failed tiny distinctness gate cancels the anchor rather
+than spending it.
+
+### D. Review record
+
+Round 1 (2026-11-14, non-author agent a56fda80e49e62818): Changes
+Requested. The mechanism legality and scope were sound, but the
+distinctness gate lacked a metric and threshold (resolved with the
+explicit L1/hash definition plus an anchor-level re-check), the
+baseline-reuse and policy-hash claims were re-based onto solver-TU
+immutability and existing determinism gates, fallback-row parity and a
+tiny-root NashConv signal were added, and the mode-independence of the
+regret/reach trajectory is now stated. Round 2 returned Changes
+Requested on an internal one-solve contradiction; the addendum now
+uses two solves in one single-instance process (candidate plus in-
+process linear control), specifies FNV-1a 64-bit DFS-ordered content
+hashing, pins the tiny-root count at 60 iterations, reuses
+nash_conv_bb for the A6 report, and classifies the TU-diff check as
+review hygiene.
+
+Round 3 (2026-11-14, same agent): **Approved**, no remaining design
+findings. The process-level budget unit, distinctness metric, hash
+serialization, and A1-A6 falsification set were confirmed executable
+against the existing instruments; two stale tracker lines and the
+verdict record were the only non-blocking items and are resolved.
+Implementation proceeds RED-first with no production surface.
+
+Implementation review (2026-11-14, same agent): **Approved**, no
+blocking or medium findings. The FNV hash, snapshot-only root-value
+entry, A1-A6 gates, two-solve probe, and bitwise baseline
+reconciliation were verified. One low metric-unit mismatch (an
+aggregate node L1 versus the defined per-combo row L1) was corrected
+in the helper to the RFC definition; the fallback-row inference was
+accepted under the mode-independence proof with a future solver-side
+flag noted; and the uniform-average candidate was rejected on the
+measured anchor (bounded NashConv 0.0746 BB versus the linear control
+0.0276 BB). No G5 or M2 verdict changes.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the
