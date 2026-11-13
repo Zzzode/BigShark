@@ -23,19 +23,20 @@ using bs::tree::AbstractTree;
 using bs::tree::NodeKind;
 using bs::tree::TreeNode;
 
-// Paired DFS: walk the cap-0 and cap-1 trees along their shared ordered menu
-// prefix. cap-0-only suffix subtrees (extra raises) are left unmapped.
-void pair_dfs(const AbstractTree& t0, const AbstractTree& t1, std::size_t n0, std::size_t n1,
+// Paired DFS: walk the cap-0 and bounded cap-k trees along their shared
+// ordered menu prefix. cap-0-only suffix subtrees (extra raises) are left
+// unmapped.
+void pair_dfs(const AbstractTree& t0, const AbstractTree& tb, std::size_t n0, std::size_t nb,
               std::vector<std::size_t>& map) {
-  map[n0] = n1;
+  map[n0] = nb;
   const TreeNode& a = t0.node(n0);
-  const TreeNode& b = t1.node(n1);
+  const TreeNode& b = tb.node(nb);
   if (a.kind != b.kind)
     throw std::invalid_argument("cap_embedding: paired nodes diverge in kind");
   if (!a.is_action() || !b.is_action())
     return;  // terminals/chance pair only at the node itself; no action children
   if (b.actions.size() > a.actions.size())
-    throw std::invalid_argument("cap_embedding: cap-1 menu cannot exceed cap-0 menu");
+    throw std::invalid_argument("cap_embedding: bounded menu cannot exceed cap-0 menu");
   for (std::size_t i = 0; i < b.actions.size(); ++i) {
     if (!(a.actions[i] == b.actions[i]))
       throw std::invalid_argument("cap_embedding: shared action-prefix mismatch");
@@ -47,7 +48,7 @@ void pair_dfs(const AbstractTree& t0, const AbstractTree& t1, std::size_t n0, st
     map[a.children[i]] = kNoMap;  // cap-0-only edge subtree
   }
   for (std::size_t i = 0; i < b.actions.size(); ++i)
-    pair_dfs(t0, t1, a.children[i], b.children[i], map);
+    pair_dfs(t0, tb, a.children[i], b.children[i], map);
 }
 
 // Lightweight exact fixed-policy evaluator over the cap-0 tree. It never runs
@@ -58,10 +59,15 @@ void pair_dfs(const AbstractTree& t0, const AbstractTree& t1, std::size_t n0, st
 // reaches, blocker pairs zeroed only through the showdown matrix).
 class EmbeddedGame {
  public:
-  EmbeddedGame(const bs::poker::GameDef& def, const AbstractTree& t0, const RiverSolveResult& cap1,
-               const AbstractTree& t1, const std::vector<std::size_t>& map,
-               CapExtensionCompletion completion)
-      : def_(def), tree0_(t0), cap1_(cap1), t1_(t1), map_(map), completion_(completion) {
+  EmbeddedGame(const bs::poker::GameDef& def, const AbstractTree& t0,
+               const RiverSolveResult& online, const AbstractTree& bounded,
+               const std::vector<std::size_t>& map, CapExtensionCompletion completion)
+      : def_(def),
+        tree0_(t0),
+        online_(online),
+        online_tree_(bounded),
+        map_(map),
+        completion_(completion) {
     std::array<int, 5> bd{};
     for (int i = 0; i < 5; ++i)
       bd[i] = def.board[i];
@@ -115,7 +121,7 @@ class EmbeddedGame {
     return w;
   }
 
-  // Summed-seat exploitability in BB of the embedded cap-1 policy.
+  // Summed-seat exploitability in BB of the embedded bounded cap-k policy.
   double exploitability_bb() {
     const RootWalks w = root_walks();
     double raw = 0.0;
@@ -174,23 +180,23 @@ class EmbeddedGame {
   // True when the embedded policy puts exactly zero mass on this cap-0 edge
   // for EVERY combo: a cap-0-only suffix edge on a mapped node.
   bool zero_mass_edge(std::size_t n0, std::size_t a) const {
-    const std::size_t n1 = map_[n0];
-    if (n1 == kNoMap)
+    const std::size_t nb = map_[n0];
+    if (nb == kNoMap)
       return false;
-    return a >= t1_.node(n1).actions.size();
+    return a >= online_tree_.node(nb).actions.size();
   }
 
-  // Embedded cap-1 probability for (node n0, own combo i, action a). On mapped
-  // nodes the shared prefix reads the cap-1 policy and cap-0-only suffix edges
+  // Embedded cap-k probability for (node n0, own combo i, action a). On mapped
+  // nodes the shared prefix reads the bounded policy and cap-0-only suffix edges
   // get exactly 0.0; extension (unmapped) nodes exist only under the BR walk's
   // completion rule, which intercepts before this lookup except for Uniform.
   double sigma(std::size_t n0, std::uint32_t i, std::size_t a) const {
     const TreeNode& node = tree0_.node(n0);
-    const std::size_t n1 = map_[n0];
-    if (n1 != kNoMap) {
-      const std::size_t menu1 = t1_.node(n1).actions.size();
-      if (a < menu1)
-        return cap1_.avg_sigma[n1][i * menu1 + a];
+    const std::size_t nb = map_[n0];
+    if (nb != kNoMap) {
+      const std::size_t menu_b = online_tree_.node(nb).actions.size();
+      if (a < menu_b)
+        return online_.avg_sigma[nb][i * menu_b + a];
       return 0.0;
     }
     if (completion_ == CapExtensionCompletion::Uniform)
@@ -329,8 +335,8 @@ class EmbeddedGame {
 
   bs::poker::GameDef def_;
   const AbstractTree& tree0_;
-  const RiverSolveResult& cap1_;
-  const AbstractTree& t1_;
+  const RiverSolveResult& online_;
+  const AbstractTree& online_tree_;
   const std::vector<std::size_t>& map_;
   CapExtensionCompletion completion_;
   std::vector<std::array<int, 2>> holdings_;
@@ -343,56 +349,66 @@ class EmbeddedGame {
 
 }  // namespace
 
-std::vector<std::size_t> map_cap1_to_cap0(const AbstractTree& cap0, const AbstractTree& cap1) {
+std::vector<std::size_t> map_bounded_to_cap0(const AbstractTree& cap0,
+                                             const AbstractTree& bounded) {
   std::vector<std::size_t> map(cap0.size(), kNoMap);
-  pair_dfs(cap0, cap1, cap0.root_index(), cap1.root_index(), map);
+  pair_dfs(cap0, bounded, cap0.root_index(), bounded.root_index(), map);
   return map;
 }
 
 namespace {
-// Solve the cap-1 policy, materialize both menus, build the paired map, and
-// fail-closed on any distribution invariant violation. Shared by the gate
-// measurement and the diagnostic root-value oracle.
+// Solve the cap-k bounded policy, materialize the cap-0 and cap-k menus, build
+// the paired map, and fail-closed on any distribution invariant violation.
+// Shared by the gate measurement and the diagnostic root-value oracle.
 struct PreparedEmbed {
-  RiverSolveResult cap1;
+  std::uint8_t online_cap = 1;
+  RiverSolveResult online;
   std::unique_ptr<AbstractTree> t0;
-  std::unique_ptr<AbstractTree> t1;
+  std::unique_ptr<AbstractTree> tbounded;
   std::vector<std::size_t> map;
 };
 
-PreparedEmbed prepare_embed(const bs::poker::GameDef& river_def, std::uint64_t cap1_iters,
-                            std::size_t threads) {
+PreparedEmbed prepare_embed(const bs::poker::GameDef& river_def, std::uint8_t online_cap,
+                            std::uint64_t online_iters, std::size_t threads) {
   if (river_def.player_count != 2 || river_def.board_size != 5 ||
       river_def.terminal != bs::poker::TerminalDepth::River)
     throw std::invalid_argument("cap_embedding: needs a 2-seat five-card river-root def");
+  // cap 0 is the uncapped cap-0 reference itself; its equilibrium is the
+  // multi-hour solve the frozen formula explicitly forbids as a prerequisite.
+  if (online_cap == 0)
+    throw std::invalid_argument(
+        "cap_embedding: online_cap must be >= 1 (cap-0 equilibrium is out "
+        "of scope; use the equal-menu identity fixture instead)");
 
   RiverSolveConfig cfg;
   cfg.def = river_def;
-  cfg.iterations = cap1_iters;
+  cfg.iterations = online_iters;
   cfg.linear_averaging = true;
   cfg.threads = threads;
-  cfg.action_cap = 1;
+  cfg.action_cap = online_cap;
   PreparedEmbed p;
-  p.cap1 = solve_river_subgame(cfg, {});
+  p.online_cap = online_cap;
+  p.online = solve_river_subgame(cfg, {});
   p.t0 = std::make_unique<AbstractTree>(river_def, bs::abstraction::ActionAbstraction::identity(0));
-  p.t1 = std::make_unique<AbstractTree>(river_def, bs::abstraction::ActionAbstraction::identity(1));
-  p.map = map_cap1_to_cap0(*p.t0, *p.t1);
+  p.tbounded = std::make_unique<AbstractTree>(
+      river_def, bs::abstraction::ActionAbstraction::identity(online_cap));
+  p.map = map_bounded_to_cap0(*p.t0, *p.tbounded);
 
   // Distribution invariants on mapped nodes (fail-closed, never weaken). The
-  // cap-1 snapshot vectors are indexed by the cap-1 tree's deterministic DFS
-  // node order, which is identical for the same GameDef + identity(1) menu.
+  // cap-k snapshot vectors are indexed by the bounded tree's deterministic DFS
+  // node order, which is identical for the same GameDef + identity(k) menu.
   for (std::size_t n0 = 0; n0 < p.t0->size(); ++n0) {
-    const std::size_t n1 = p.map[n0];
-    if (n1 == kNoMap || !p.t0->node(n0).is_action())
+    const std::size_t nb = p.map[n0];
+    if (nb == kNoMap || !p.t0->node(n0).is_action())
       continue;
-    const auto& s1 = p.cap1.avg_sigma[n1];
-    const std::size_t menu1 = p.t1->node(n1).actions.size();
-    if (s1.empty())
-      throw std::invalid_argument("cap_embedding: missing cap-1 policy on mapped node");
+    const auto& sigma = p.online.avg_sigma[nb];
+    const std::size_t menu_b = p.tbounded->node(nb).actions.size();
+    if (sigma.empty())
+      throw std::invalid_argument("cap_embedding: missing bounded policy on mapped node");
     for (std::uint32_t i = 0; i < kC; ++i) {
       double sum = 0.0;
-      for (std::size_t a = 0; a < menu1; ++a) {
-        const double pr = s1[i * menu1 + a];
+      for (std::size_t a = 0; a < menu_b; ++a) {
+        const double pr = sigma[i * menu_b + a];
         if (pr < 0.0)
           throw std::invalid_argument("cap_embedding: negative embedded probability");
         sum += pr;
@@ -405,16 +421,17 @@ PreparedEmbed prepare_embed(const bs::poker::GameDef& river_def, std::uint64_t c
 }
 }  // namespace
 
-CapMateriality measure_cap_materiality(const bs::poker::GameDef& river_def,
-                                       std::uint64_t cap1_iters, std::size_t threads,
+CapMateriality measure_cap_materiality(const bs::poker::GameDef& river_def, std::uint8_t online_cap,
+                                       std::uint64_t online_iters, std::size_t threads,
                                        CapExtensionCompletion completion) {
-  PreparedEmbed p = prepare_embed(river_def, cap1_iters, threads);
-  EmbeddedGame game(river_def, *p.t0, p.cap1, *p.t1, p.map, completion);
+  PreparedEmbed p = prepare_embed(river_def, online_cap, online_iters, threads);
+  EmbeddedGame game(river_def, *p.t0, p.online, *p.tbounded, p.map, completion);
   CapMateriality out;
+  out.online_cap = online_cap;
   out.cap0_action_nodes = game.action_nodes();
-  out.cap1_action_nodes = p.cap1.action_nodes;
+  out.online_action_nodes = p.online.action_nodes;
   out.mapped_nodes = game.mapped_action_nodes();
-  out.cap1_nash_conv_bb = p.cap1.nash_conv_bb;
+  out.online_nash_conv_bb = p.online.nash_conv_bb;
   out.embedded_exploitability_bb = game.exploitability_bb();
   out.gate_pass = out.embedded_exploitability_bb <= kCapMaterialityGateBb;
   // Structurally zero: the EV walk follows only positive embedded-mass edges,
@@ -425,16 +442,17 @@ CapMateriality measure_cap_materiality(const bs::poker::GameDef& river_def,
   return out;
 }
 
-EmbeddedRootValues embed_root_values(const bs::poker::GameDef& river_def, std::uint64_t cap1_iters,
-                                     std::size_t threads, CapExtensionCompletion completion) {
-  PreparedEmbed p = prepare_embed(river_def, cap1_iters, threads);
-  EmbeddedGame game(river_def, *p.t0, p.cap1, *p.t1, p.map, completion);
+EmbeddedRootValues embed_root_values(const bs::poker::GameDef& river_def, std::uint8_t online_cap,
+                                     std::uint64_t online_iters, std::size_t threads,
+                                     CapExtensionCompletion completion) {
+  PreparedEmbed p = prepare_embed(river_def, online_cap, online_iters, threads);
+  EmbeddedGame game(river_def, *p.t0, p.online, *p.tbounded, p.map, completion);
   const EmbeddedGame::RootWalks w = game.root_walks();
   return {w.ev[0], w.br[0], w.ev[1], w.br[1]};
 }
 
-StratumCapResult measure_stratum_cap_materiality(const StratumSpec& spec, std::uint64_t cap1_iters,
-                                                 std::size_t threads,
+StratumCapResult measure_stratum_cap_materiality(const StratumSpec& spec, std::uint8_t online_cap,
+                                                 std::uint64_t online_iters, std::size_t threads,
                                                  CapExtensionCompletion completion) {
   // Every enumerated (betting line, river card) leaf is a distinct reached
   // five-card subgame: lines differ in pot/contributions and cards differ in
@@ -444,7 +462,8 @@ StratumCapResult measure_stratum_cap_materiality(const StratumSpec& spec, std::u
   StratumCapResult out;
   double worst = 0.0;
   for (const FrontierLeaf& lf : leaves) {
-    const CapMateriality m = measure_cap_materiality(lf.river_def, cap1_iters, threads, completion);
+    const CapMateriality m =
+        measure_cap_materiality(lf.river_def, online_cap, online_iters, threads, completion);
     worst = std::max(worst, m.embedded_exploitability_bb);
     ++out.roots_measured;
   }

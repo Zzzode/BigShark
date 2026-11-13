@@ -69,6 +69,20 @@ class RiverGame {
     return out;
   }
 
+  // Releases the per-node regret/sum/snapshot tables. The class already owns
+  // unique_ptr members (tree, worker pool) and is therefore non-copyable, so a
+  // destructor introduces no slicing or double-free risk. Freeing these makes
+  // repeated in-process benchmark solves (the cap-k materiality sweep) retain a
+  // bounded resident footprint instead of leaking every game's tables.
+  ~RiverGame() {
+    for (std::vector<double>* p : reg_)
+      delete p;
+    for (std::vector<double>* p : sum_)
+      delete p;
+    for (std::vector<double>* p : sigma_)
+      delete p;
+  }
+
   // CFR traversal via explicit reach / fused terminal eval / backprop passes.
   // Restructuring the recursive walk this way lets every showdown-leaf matvec
   // run inside ONE fork-join region per traversal (one barrier, not one per
@@ -367,6 +381,11 @@ class RiverGame {
   }
 
   void build_sigma() {
+    // build_sigma runs more than once per game (each eval walk rebuilds the
+    // average-strategy snapshot); release the previous snapshot instead of
+    // leaking its vectors so repeated in-process solves keep a bounded footprint.
+    for (std::vector<double>* p : sigma_)
+      delete p;
     sigma_.assign(tree_->size(), nullptr);
     for (std::size_t n = 0; n < tree_->size(); ++n) {
       if (menu_[n] == 0)
