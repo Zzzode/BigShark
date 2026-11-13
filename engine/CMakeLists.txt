@@ -658,6 +658,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/union_embedding.cpp
   benchmarks/rfc0047/reach_bound.cpp
   benchmarks/rfc0047/policy_hash.cpp
+  benchmarks/rfc0047/mixed_menu.cpp
   benchmarks/rfc0047/turn_solver.cpp
   benchmarks/rfc0047/turn_serve.cpp
 )
@@ -1319,6 +1320,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_averaging tests/test_rfc0047_averaging.cpp)
   target_link_libraries(test_rfc0047_averaging PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_averaging COMMAND test_rfc0047_averaging)
+
+  add_executable(test_rfc0047_mixed_menu tests/test_rfc0047_mixed_menu.cpp)
+  target_link_libraries(test_rfc0047_mixed_menu PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_mixed_menu COMMAND test_rfc0047_mixed_menu)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
