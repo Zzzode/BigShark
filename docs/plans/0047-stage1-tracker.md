@@ -2016,3 +2016,206 @@ RFCs 0041/0043/0045/0046).
   per-row costs; L3 the 32-action pin is root-level only (adequate because
   the builder throw is path-independent). Residual risk stays the
   parallel-instrument drift surface, permanently bounded by the N1 CTest.
+
+## RFC 0048 Path B — reach-weighted certified bound (D192)
+
+- D192 AUTHORIZATION (TechLead, handoff 6867 successor). Bench-only native
+  measurability of a reach-weighted certified bound that CONSERVATIVELY
+  constrains the frozen G5 target; the long-term goal stays the original
+  G5/M2 certification, no reference/weight substitution. D184's coarse/wide
+  candidate_gate_pass=0 and 22.7-215 BB failures stand and are not repackaged.
+  Same boundaries: production cap1, cap0 reference domain, 0.002 BB, B0, G1,
+  resource/training budgets frozen; no full-root/long scans, no iteration
+  inflation, no push/merge/publish/deploy/delete/Worker; bounded tiny/native
+  first; U1/U2/U3 separate, cumulative peak never reported as per-instance
+  delta; no heuristic patches if the proof fails.
+
+- TARGET QUANTITY (what G5 actually is). The frozen per-root target is
+  e(sigma) = sum_s sum_{compatible i,j} (BR_s(i,j) - V_s(i,j)) /
+  (1081*990) / BB, an exact per-ROOT measure; the stratum gate is the MAX
+  over reached roots (no root weighting exists in the frozen contract).
+
+- REACH SOURCE AND POLICY DEPENDENCE. The only reach with a proven
+  relation to e(sigma) is the EVALUATED PROFILE'S OWN per-combo forward
+  reach pi_s(n,i), the product of sigma's own action masses root->n (the
+  evaluator already tracks pi[seat][combo] at every node). Reach from any
+  other policy tau != sigma (blueprint, prior, cap1 policy used to score a
+  hybrid sigma_h) defines a different weighted sum with NO ordering
+  relation to e(sigma): a tau that avoids a high-gap node makes the score
+  shrink while e stays large. FOREIGN REACH IS EXPLORATORY ONLY; the
+  component validates supplied reach by recomputing the forward pass from
+  sigma and rejects a mismatch.
+
+- DIMENSIONS. pi dimensionless (root 1.0 per combo); local gap delta in
+  CHIPS (counterfactual expectation over opponent reach already inside);
+  raw_s = sum_n sum_i pi_s(n,i) delta_s(n,i) chips; BB conversion divides
+  by 1081*990*big_blind, identical to the D184 normalization. Per-combo
+  dense rows, not public-node scalars (blocker structure lives per combo).
+
+- NODE/ROOT AGGREGATION. Within one root: exact sum over the seat's mapped
+  action nodes. Across roots: the frozen MAX is retained; a reach-weighted
+  root MEAN satisfies mean <= max and can therefore under-report, so it is
+  rejected as a G5 certificate (native two-root numeric control). Reach
+  weighting is legal ONLY within a root across infosets, never across
+  roots.
+
+- LEMMA 1 (reach-weighted decomposition is an IDENTITY). At every mapped
+  s-action node n define delta_s(n,i) = max_{a in A_ref(n)} C(n,i,a) -
+  sum_{a in A_b(n)} sigma(n,i,a) C(n,i,a), where C is the BR-subtree
+  continuation value (opponent fixed to sigma; reference EXTENSION actions
+  stay inside the max even though sigma has zero mass on them). Telescoping
+  the tree recurrence BR(n)-V(n) = local gap + sum_a sigma(a)(BR-V)(n_a)
+  at own nodes and linear expansion at opponent nodes gives
+  sum_i (BR_root(i)-EV_root(i)) = sum_n sum_i pi_s(n,i) delta_s(n,i).
+  Therefore the weighted sum EQUALS the frozen e_embed(sigma) to FP order:
+  conservative by equality, not by deletion. Nodes with zero own reach for
+  every combo contribute exactly zero BY THE IDENTITY (they remain
+  enumerated; nothing is assigned or removed). Native pin: node-accumulated
+  raw vs UnionGame root BR-EV per seat, tolerance 1e-9 chips.
+
+- LEMMA 2 (selective-widening sufficient certificate; CORRECTED after
+  independent review round 1). W = nodes whose bounded menu equals the
+  full reference menu (edge_map has no -1); their menu-restriction
+  component is zero. In the RAW evaluator representation a continuation
+  is C(n,i,a) = sum_j pi_opp(n,j) E[payoff|a] over ALL 1,081 opponent
+  combos (fold terminals count blocker-incompatible reaches too).
+  Define R(n) = max-min payoff over n's descendant terminals and
+  S(n) = sum_j pi_opp(n,j) (all 1,081). Any two continuations differ by
+  at most R(n)*S(n), so B(n) = R(n)*S(n) dominates delta nodewise for
+  every combo: delta = sum_a sigma(a)(C(a*)-C(a)) <= R*S. The round-1
+  draft B(n)=max|terminal payoff| was INVALID (missing S ~ 1,081 at the
+  root and the range factor 2; fold-to-jam swings span the full payoff
+  interval). T4 includes a RED fixture pinning the naive bound
+  undercutting a measured positive-reach delta. Then
+  C = sum_{n in W} pi delta + sum_{n not in W} pi B >= e(sigma).
+  C <= 0.002 is SUFFICIENT for the frozen gate; C > 0.002 is
+  inconclusive, never a policy fail. EXPECTED LOOSENESS (review F2,
+  recorded honestly): root alone contributes up to R(root)/(990*BB) per
+  seat ~0.2 BB on the deep 99 BB anchor vs 0.002 (~0.01 BB even on the
+  shallow root), so a metadata-only structural certificate is expected
+  to read inconclusive, not pass; Path B's durable value is the exact
+  Lemma-1 node-level diagnostic allocation plus a conservative loose
+  screen. A tight bound is the Lemma-1 identity itself, not a cheaper
+  certificate. The forward reach pass yields both pi_s and S; no cap0
+  CFR and, in production shape, no reference CFV walk; the reference
+  tree validates B >= exact delta in bench only.
+
+- LEMMA 3 (foreign reach / zeroing is not conservative; the required
+  counterexample). Tampered weights rho != pi_sigma make
+  sum rho delta deviate without bound in either direction. Tiny control:
+  take exact pi, zero the reach of a positive-reach high-gap node -> the
+  weighted sum drops below exact e; the reach validator (recompute from
+  sigma, exact compare) must throw invalid_argument. A second control pins
+  the laundering trap: delta computed against the bounded menu alone is
+  residual (zero only at a within-game equilibrium); the component always maximizes over
+  the full reference menu and a gap table missing extension actions is
+  rejected.
+
+- STRICT APPLICABILITY CONDITIONS. (1) same D184 domain: 2-seat five-card
+  river root, MinAndCap, valid SubsetMap; (2) reach = evaluated sigma's own
+  per-combo forward reach, validator-recomputed with the evaluator's exact
+  snapshot multiplicative update (pi_child = saved*sigma, same op order,
+  bitwise match; no tolerance, which would admit weight-scaling attacks);
+  (3) gap max over the FULL reference menu incl. zero-mass extensions;
+  (4) a widened node is claimed only when edge_map has no -1, else reject;
+  (5) B >= delta nodewise for every positive-reach combo, checked against
+  exact delta in bench; (6) per-root outputs only, MAX stays external;
+  (7) identity holds algebraically for any fixed finite-iteration sigma
+  but certifies that policy's exploitability, not equilibrium quality;
+  (8) SNAPSHOT IMMUTABILITY: one avg_sigma table threads both the reach
+  pass and the gap pass (review F4; reach v1 + gaps v2 passes shape
+  checks but breaks the identity); (9) sum over MAPPED OWN-SEAT action
+  nodes only - extension nodes get no gap term because their option value
+  is already inside the anchor's full-menu max (adding one double counts);
+  a hybrid policy is admissible with its own reach while its support
+  stays inside the bounded menu.
+
+- PLANNED NATIVE TINY GATES (new bench TU reach_bound.{hpp,cpp} +
+  test_rfc0047_reach_bound.cpp; shallow 8-chip root from the D184 N4
+  fixture, real solves, no text matching): T1 cross-instrument identity
+  vs D184 union measure (both completion arms, 1e-12 BB); T2 per-node
+  delta >= 0, widened nodes have no extension edge; T3 per-seat telescope
+  against root BR-EV (1e-9 chips); T4 corrected R*S structural B >= exact
+  delta nodewise under BOTH completion arms (L1; bound arm-independent by
+  interval containment, both empirically pinned), C >= e, W=all ->
+  policy-only residual, W=none -> exact,
+  PLUS a RED fixture proving naive max-|payoff| undercuts a measured
+  positive-reach delta (review F1); R uses evaluator-consistent signed
+  payoffs (L2; negation swaps max/min, width invariant); T5 tampered/foreign reach rejected;
+  T6 widening claim with missing action rejected; T7 malformed
+  vectors/NaN/B<delta rejected; T8 zero-reach node enumerated with zero
+  contribution; T9 extension laundering trap via EXISTENCE SCAN (find a
+  zero-sigma-mass extension-anchored node with measured delta > 0, pin
+  bounded-only fake gap == 0 on the same node; explicit diagnostic if no
+  such node exists, deeper-stack root as parameterized fallback; review
+  F6); T10 determinism; T11 two-root weighted mean < MAX, component
+  refuses root weights; T12 node-level full-joint-reach cross-check:
+  independent forward walk over pi_s(n,i)*pi_opp(n,j) per combo pair,
+  equality asserted PER NODE not per seat (review F3, catches node-local
+  opponent-reach drops). RED first (test against declared API, observed
+  failing), then GREEN, then adjacent rfc0047 gates and the full
+  background ctest. U1/U2/U3 emitted via the existing
+  measure_grid_budget conventions; no manual long probe unless a bounded
+  need appears.
+
+- D192 IMPLEMENTATION (bench-only; D184 components byte-stable). New TU
+  reach_bound.{hpp,cpp}: ReachInstrument copies the Stage-2b walk
+  conventions (pool/showdown/fold/stake/snapshot scaling/completion arms)
+  and records per-mapped-own-seat-node continuation values, full-menu
+  delta, bounded-only gap, edge_map/widened, opponent reach sum S(n),
+  payoff interval R(n), and B=R*S. Public entries: measure_reach_bound,
+  reach_bound_from_snapshot (single immutable snapshot threaded through
+  both passes), recompute_forward_reach + validate_supplied_reach
+  (bitwise, same snapshot op order), verify_custom_bounds,
+  selective_certificate (claims fail on non-mapped/extension nodes),
+  exact_diagnostic_certificate (the tight Lemma-1 allocation),
+  aggregate_roots_max / refuse_root_weights, and the retained-invalid
+  naive_max_abs_payoff_bounds RED helper. Native test
+  test_rfc0047_reach_bound T1-T12 all behavioral; RED observed first
+  (stub runtime_error, exit 134), then GREEN.
+- KEY CORRECTION DURING GREEN: the BR-walk pi[viewer] vector is
+  COUNTERFACTUAL (own action masses are never applied, stays 1 along own
+  paths) and is correct only inside continuation values. The telescope's
+  outer weight must be the seat's FULL forward reach (product of own
+  action masses); records therefore keep the walk-time opponent reach for
+  S(n) but fill own_reach from the independent forward propagation that
+  T12 also uses. Before the fix seat-1 terms double-counted own policy
+  paths (per-seat root BR-EV matched, node allocation did not); T1 now
+  closes to 1e-12 BB and T3 to a scale-relative ~1e-13 chip tolerance
+  (two independently coded FP walks). T8 uses a valid deterministic
+  snapshot row rather than perturbing the equilibrium policy, and node 0
+  selection uses a boolean flag (node index 0 collides with a zero
+  sentinel). T4 RED fixture confirmed: naive max-|payoff| undercuts a
+  measured positive-reach delta and verify_custom_bounds rejects it.
+  clang-format clean; union gate stays green. Full 15-test rfc0047
+  ctest closure and the independent implementation review run next.
+
+- D192 IMPLEMENTATION REVIEW APPROVED 2026-11-13 (agent
+  a56fda80e49e62818, third Path B round): no blocking/major/medium
+  findings. Counterfactual-vs-forward reach correction verified at
+  every entry point; L1 adopted (T12 now bitwise-pins opponent reach
+  and S per node, suite still green); L2 adopted (bounded_gap is the
+  local within-game NashConv residual, zero only at equilibrium, not
+  "tautologically zero"; RFC/tracker wording corrected); L3 verdict
+  recorded in RFC subsection H. Scope confirmed: two isolated bench
+  CMake hunks, no production surface, kIters=60 tiny root only, no
+  long scan. Residual risk stays the disclosed structural looseness.
+
+- PATH B REVIEW ROUND 1 (2026-11-13, agent a56fda80e49e62818): CHANGES
+  REQUESTED. Lemma 1 telescope and Lemma 3 foreign-reach/root-MAX
+  arguments sound; F1 BLOCKING structural bound invalid as drafted
+  (resolved by R*S above with all-1081 reach sum); F2 expected-looseness
+  honesty paragraph added; F3 T12 added; F4 preconditions 8-9 added;
+  F5 validator op-order specified; F6 T9 made an existence scan.
+  Re-review required before implementation.
+- PATH B REVIEW ROUND 2 (2026-11-13, same agent): APPROVED, no blocking/
+  major findings. Probe (a) R*S dominance holds under BrFavorable too:
+  completion arms only pick policies over existing edges; every subtree
+  policy payoff is a convex combination of descendant terminal payoffs,
+  so per-deal action differences stay within interval width R(n).
+  Probe (b) all-1081 S(n) well-defined everywhere: reach propagation is
+  dense/blocker-blind (blockers only in the showdown matrix); S=0 ->
+  delta=0 and B=0 with no division. Advisories adopted: L1 T4 runs both
+  arms; L2 signed-payoff convention documented; L3 verdict recorded in
+  RFC subsection H and here. Approval gates reach_bound.{hpp,cpp} +
+  T1-T12 implementation, RED first; no production surface.
