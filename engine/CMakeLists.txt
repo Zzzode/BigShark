@@ -697,6 +697,12 @@ target_link_libraries(bigshark-rfc0047-online-river PRIVATE bigshark_rfc0047_ben
 add_executable(bigshark-rfc0047-g6-report benchmarks/rfc0047/rfc0047_g6_report.cpp)
 target_link_libraries(bigshark-rfc0047-g6-report PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0047 S3/G6 TURN manual probe (NOT a CTest): real depth-limited turn solve
+# -> certified turn serve (point A) -> dual quality report end-to-end, filling
+# the gap where the turn assembler had only the synthetic CTest.
+add_executable(bigshark-rfc0047-turn-g6-report benchmarks/rfc0047/rfc0047_turn_g6_report.cpp)
+target_link_libraries(bigshark-rfc0047-turn-g6-report PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0047 S3/G5 manual cap-1 vs cap-0 menu-materiality probe (NOT a CTest).
 add_executable(bigshark-rfc0047-cap-materiality benchmarks/rfc0047/rfc0047_cap_materiality.cpp)
 target_link_libraries(bigshark-rfc0047-cap-materiality PRIVATE bigshark_rfc0047_bench)
