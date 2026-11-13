@@ -244,34 +244,53 @@ reach-weighted certification gate); both are out of scope here.
 4. Only after a design clears M within its stated envelope does a separate
    production addendum reach review.
 
-## Stage-1 Evidence (D176, implemented)
+## Stage-1 Evidence (D176, implemented; D179 unit correction)
 
 The rollout stage-1 spike is implemented as the benchmark-only
 `rfc0047-patha-grid-budget` census (commit d87248c; independent design review
 approved, native gate green). Solve-free public-tree measurements on the w1
-turn-rooted full trunk and one reached-river root, against TreeLimits
-(2,000,000 nodes / 1 GiB) and the 1,000,000-infoset envelope:
+turn-rooted full trunk and one reached-river root. A D179 independent review
+found and corrected an infoset-unit conflation in the original wording; the
+corrected three-unit reading (metered separately from stage 2, commit recorded
+in the stage-2 tracker entry) is:
 
-- Raise-cap widening on the full turn trunk is NOT artifact-feasible: cap >= 4
-  hits the 1 GiB byte cap (typed tree_resource_exhausted, fail-fast), and even
-  cap-1 exceeds 1 M infosets (4.27 M, reproducing the RFC 0046 full-range
-  footprint). On the reached-river subtree only caps <= 5 fit 1 M infosets, but
-  D164 showed caps <= 5 miss the 0.002 quality bar and cap-6 exceeds 1 M even
-  there, so the envelope and the quality bar do not intersect for raise-cap
-  widening.
-- Bet-sizing widening is the lower-cost lever. At cap=1 the wide grid is
-  7.07 M infosets / 11.8 MB versus cap-2's 56.4 M / 95 MB, and the coarse grid
-  reduces the turn trunk to 1.15 M infosets (only 15% over the envelope). The
-  coarse/near-1M sizing region is therefore where stage 2 should concentrate;
-  feasible builds cost single-digit milliseconds to ~20 ms, so build cost is
-  not the constraint.
-- The 1 M-infoset number is a menu-width-blind structural proxy (the census adds
-  mean/max actions-per-node columns for stage-2 byte costing); raised-srp
-  pot-8 relative inflation remains an unmeasured bounded residual.
+- U1 ONLINE RESIDENT (the unit the ResolveLimits 1,000,000-infoset peak gates):
+  turn trunk plus ONE reached river subtree. At identity cap-1 this is only
+  26,461 infosets on w1 (12,408 turn + 14,053 reached-river), ~38x INSIDE the
+  gate, matching tree_budget's conservative_sum exactly.
+- U2 OFFLINE BSNCV ARTIFACT ROWS: one per-combo value row per frontier leaf,
+  seat, and 1,081 combos (933,984 rows / ~37 MB for w1 cap-1); menu-width does
+  not change the per-row structure.
+- U3 WHOLE-TRUNK BUILD GRAND TOTAL (all 48 river fanouts summed, never
+  co-resident): the 4.27M figure is U3, bounded by the build TreeLimits
+  (2,000,000 nodes / 1 GiB), NOT compared to the online 1M peak. The earlier
+  text that called 4.27M a 1M-gate overrun and "coarse 1.15M 15% over" is
+  hereby RETRACTED as a U3-vs-U1 mislabel.
 
-Stage 1 thus closes the feasibility question with a negative raise-cap verdict
-and a positive sizing-grid lead. No production behavior changes; stage 2
-requires its own independently-approved addendum.
+Corrected stage-1 findings that stand:
+
+- Raise-cap widening on the full turn trunk hits the 1 GiB TreeLimits BYTE cap
+  at cap >= 4 (typed tree_resource_exhausted, fail-fast): a real U3 build
+  boundary. On the reached-river subtree (the correct U1 object) only caps <= 5
+  fit 1 M infosets, and D164 showed caps <= 5 miss the 0.002 quality bar while
+  cap-6 exceeds 1 M even there (2.08 M), so the online envelope and the quality
+  bar do not intersect for raise-cap widening.
+- Bet-sizing grids are structurally small (reached-river 7.6K-14K U1
+  infosets) and cheap to build, BUT a D179 prefix-compatibility canary proved
+  declared coarse/wide grids are not ordered prefixes of identity(0), so their
+  e_embed against the identity(0) reference is undefined under the frozen
+  formula (the embedding entry fails closed). Sizing-grid quality therefore
+  needs a new union-menu reference formula and its own addendum; it is a lead,
+  not a measured pass. Feasible builds cost single-digit to ~20 ms, so build
+  cost is not the constraint.
+- The infoset count is a menu-width-blind structural proxy; raised-srp pot-8
+  relative inflation remains an unmeasured bounded residual.
+
+Stage 1 therefore closes with: a negative raise-cap verdict under the correct
+units, a byte-cap build boundary, and a sizing-grid lead that requires a new
+reference construction before quality can be measured. No production behavior
+changes; stage 2/union-formula work requires its own independently-approved
+addendum.
 
 ## Rollback Plan
 

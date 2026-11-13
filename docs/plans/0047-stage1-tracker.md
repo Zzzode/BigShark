@@ -725,3 +725,1128 @@ RFCs 0041/0043/0045/0046).
   Deferred to S3/G5 (not claimed): online one-card R0<=0.002 (G5), the
   mount-time per-node (e_max,e_l2) contract, and six-fixture -> G4 census
   generalization. Commits 7b46071..73250c4 (14 G3 commits), local only.
+- **G5 cap-1-vs-cap-0 menu-materiality premise FAIL (2026-11-13, component
+  committed 7ea92b3).**
+  - Failing gate: the S3 acceptance criterion "cap-1-vs-cap-0 gap UCB <= 0.002
+    BB" (this section, G5). Measured seedlessly via the RFC 0046 partition
+    walker (cap-1 average policy embedded in the cap-0 tree with zero mass on
+    cap-0-only actions, one exact full-menu BR walk, no cap-0 equilibrium);
+    the seedless enumeration has no sampling half-width, so this is an exact
+    value, not a UCB.
+  - Measured evidence: pure menu term (e_embed minus the cap-1 policy's own
+    NashConv) over each stratum's deep check-to-river anchor root, 300-iter
+    cap-1, Uniform primary arm / BrFavorable upper bound, in BB:
+    w1 19.46/152.90; ahigh 19.42/154.05; paired 19.56/154.24; monotone
+    20.81/169.76; twotone 19.50/153.76; raised-srp 29.43/188.75. The cap-1
+    policy's own NashConv is 0.0098-0.0255 BB everywhere, an order of
+    magnitude below the menu term, and the menu term is iteration-stable from
+    300 to 2,000 cap-1 iterations (w1 19.46 -> 20.69) while cap-1 NashConv
+    converges to 0.0019, so the gap is the action abstraction, not solver
+    residual. Overrun is ~10^4x (Uniform) / ~10^5x (BrFavorable) versus
+    M = 0.002 BB; cap-0 trees carry 7,824-11,232 action nodes vs 10-12 under
+    cap-1 at 198 BB behind. Each stratum's full-leaf MAX includes this anchor,
+    so the per-stratum gate verdict is FAIL without the exhaustive batch.
+  - Affected milestone: M2. The RFC 0046 production blueprint (cap-1 turn trunk
+    + exact per-combo turn-rooted river endgame) assumes the bounded online
+    menu is immaterial; the G3 B0 ledger already allocates 8.72e-3 of the
+    0.010 BB B0 (turn gap 1.06e-3 + propagated envelope 5.66e-3 + R0 <= 2e-3),
+    so a 20+ BB menu term cannot be absorbed as an additional B0 line item -
+    the budget would be exceeded by ~3 orders of magnitude.
+  - Concrete alternative (requires a new RFC before any production change; not
+    authorized inside this bench-only task): (a) PRIMARY - widen the online
+    action menu (raise the per-street raise cap toward cap-0 on the binding
+    deep roots), re-run this same embedding measurement to locate the smallest
+    cap whose pure menu term <= 0.002 BB, and re-certify the G1 timing/RSS/
+    node envelope for the larger tree; (b) re-open the M2 quality contract to
+    carry an explicit, separately-bounded menu-error term with a larger total
+    B0, which changes the certified error guarantee and is therefore a contract
+    decision, not an implementation tweak. Option (b) is infeasible under the
+    current 0.010 BB B0, so menu widening (a) is the only path that preserves
+    the existing quality bar. The bench component, frozen formula, and 0.002 BB
+    gate remain in place to score whichever menu the follow-up RFC selects.
+  - Resource feasibility of widening (reconnaissance, public AbstractTree only,
+    reached-river anchor root; the online re-solve object, not the turn-rooted
+    48-way fanout): tree size grows smoothly with the raise cap and stays far
+    inside the G1 5M-node / 1 GiB envelope at every cap - cap-1 27 nodes /
+    19 KB, cap-2 99 / 77 KB, cap-3 315 / 187 KB, cap-4 957 / 622 KB, cap-5
+    2,631 / 1.5 MB, cap-6 5,769 / 3.0 MB, and the full cap-0 menu only 33,693
+    nodes / 23.7 MB (identical for the five limped strata; raised-srp is
+    smaller, 23,469 / 12.1 MB at cap-0). Memory is therefore NOT the binding
+    constraint; the open question is the smallest cap whose embedded pure menu
+    term falls to <= 0.002 BB and its CFR convergence/timing cost, which the
+    next cap-k embedding sweep must measure before a widening RFC can be
+    scoped. Next critical-path work item: parameterize the embedding entry over
+    the online cap, run the cap = 1..6 (toward cap-0) e_embed curve on the
+    binding anchors, and use the crossing point to draft the menu-widening RFC
+    (no production menu or contract change before that RFC is independently
+    approved).
+
+## S3 task 1 — online one-card river re-solve envelope (G5 serve point B)
+
+- Probe `rfc0047_online_river` (manual, measurement-only): per unique reachable
+  river subgame (frontier dedup, w1=240) x iteration checkpoint, records summed
+  NashConv BB (R0 candidate), max per-combo CFR residual |BR-CFV|/pot, wall ms,
+  action_nodes, getrusage peak RSS. Seedless.
+- w1 stride-20 smoke (~12 subgames x 7 checkpoints, single-thread),
+  `s3/online-river-w1-smoke.csv`. Findings:
+  1. R0 summed NashConv is REACHABLE: worst across subgames 4.56e-3 BB @1000,
+     2.01e-3 @2000, 8.77e-4 @4000, 4.18e-4 @8000 -> b_river ~3000-4000 gives
+     comfortable R0<0.002 margin.
+  2. G1 TIMING BLOCKS single-threaded: wall is ~28.9 ms/iter (250->7.4s,
+     2000->58-71s, 4000->142s); 10s p95 / 12s max cannot hold at the iterations
+     R0 needs. The river kernel is single-threaded; its O(kC^2) per-own-combo
+     terminal showdown fold (river_solver.cpp terminal_value) is the same
+     independent-row shape turn_solver already parallelizes -> S3 task 2 is
+     river-kernel fork-join parallelization with a bitwise-identity cross-
+     thread check (machine has 56 cores; target >=8-16x).
+  3. 1e-9 GATE CLARIFICATION: the RFC 1e-9 root-pot responder gate is NOT the
+     CFR per-combo convergence residual. resolver.hpp kCertPotTolerance=1e-9 is
+     a certifier NON-REGRESSION inequality BR_s(c) <= locked baseline
+     b_s(c) + 1e-9*pot (rfc0046/resolver component). The probe column was
+     renamed combo_resid_pot and is a convergence diagnostic only; the 1e-9
+     certifier belongs to the S3 certifier-integration task, not this probe.
+  4. RSS tiny (peak ~14 MB single subgame), action_nodes <= ~small; G1 RSS/nodes
+     envelopes are not at risk; only wall time is.
+
+## S3 task 2 — river kernel fork-join parallelization (G1 timing blocker)
+
+- Extracted the persistent worker Pool into shared `thread_pool.hpp`; turn_solver
+  now includes it (local copy removed; turn identity test still 3.6e-16).
+- RiverGame owns a Pool; the O(kC^2) per-own-combo terminal showdown fold
+  (terminal_value) and equilibrium_deal_matrix run as fork-join parallel_for
+  over own-combo rows (serial inner j-reduction) -> bitwise identical across
+  thread counts by construction. RiverSolveConfig gains `threads`.
+- Native ctest test_threading_bitwise_identical: serial vs 8-thread solve (60
+  iters, deal matrix on) must match NashConv, both root CFV vectors, and the
+  full deal matrix exactly. PASS.
+- online_river probe takes a THREADS arg; a serial-vs-16-thread speedup run on
+  w1 (stride 40, to 4000 iters) measures whether parallelization brings the
+  R0-feasible iteration count inside the G1 10s p95 envelope. Result pending.
+- T2 RESULT (w1 stride-40, `s3/online-river-t1.csv`, `-t16.csv`): 16-thread
+  speedup 8.4-9.1x (250 12.17s->1.16s, 1000 36.15->4.28s, 2000 72.15->8.63s,
+  4000 162.9->17.88s). Amdahl serial fraction ~5.2%; 24/32 threads cap ~11-12x.
+  TENSION (16 threads only): 2000 iters fits the 10s p95 (8.63s) but its
+  worst sampled subgame R0 is 2.007e-3 (no margin, effectively AT the 0.002
+  gate); the R0-margin point 4000 iters (8.77e-4) takes 17.9s.
+- T2 RFC-GROUNDING CORRECTION (warm-start rejected before building): the G1
+  gate is explicitly R=30 COLD resolves per stratum (RFC Goals G1) and the
+  Non-Goals forbid relaxing the frozen 10s envelope. The 2026-11-04 S1 infoset
+  note reconciles the 88,642/116,748 figure in the G1 text: that is the OFFLINE
+  per-card aggregate across all 9/11 turn lines, "never resident online"; the
+  actual online object is the at-most-12-action-node x 1081 = 14,053-infoset
+  reached subtree (this probe measures exactly that: action_nodes 0/10/12).
+  RFC design is therefore a COLD exact solve of the small subtree via tree
+  size + parallelism, NOT a warm start. Warm-start would (a) not be credited by
+  the cold-resolve timing gate and (b) require the oracle to ship per-combo
+  river average-strategy tables, which is outside RFC 0047's turn-CV oracle and
+  is an architecture change needing a new RFC. Only 16 of 56 cores were used;
+  a 24/32/48/56-thread sweep (with 2500/3000/3500-iter operating points) decides
+  cold-start feasibility before any heavier change.
+- T2 KERNEL NOTE: cost is dominated by one kC^2=1.17M showdown matvec per
+  showdown leaf per traversal (tree itself is only ~12 nodes). terminal_value
+  opens a SEPARATE fork-join region (condvar barrier + per-task atomics) on
+  every leaf call, so the ~5% Amdahl serial floor is largely barrier/regret-
+  update overhead. A module-local fusion of the per-leaf parallel regions is the
+  fallback if the 56-core sweep still misses 10s; it preserves the serial
+  per-row reduction so bitwise identity holds. No shared/contract change.
+- T2 THREAD SWEEP (w1 stride-40, 6 sampled subgames, cold cumulative wall ms,
+  `s3/online-river-w1-t{24,32,48,56}.csv`; checkpoints now include 2500/3000/
+  3500). t=24 FINAL worst: 2000=8,628 / 2500=10,390 / 3000=12,283 / 3500=14,028 /
+  4000=16,497 ms. Effective Amdahl serial fraction DRIFTS UP with thread count:
+  fit s=0.050 at n=16 (sp 9.11x) but s=0.062 at n=24 (sp 9.87x) - not a fixed
+  serial fraction, evidence of per-region scheduling/sync overhead growing with
+  threads. Root cause in thread_pool.hpp: every parallel_for region dispatches
+  kC=1081 single-row tasks, each with two contended atomic fetch_add ops (next_
+  and done_) on shared cache lines, plus a condvar barrier; river opens a region
+  per showdown leaf per traversal (~tens of regions/iteration). Extrapolation
+  with s~0.06 caps speedup near 13x -> 4000 iters ~12.5-13s even at 56 cores; the
+  10s budget tops out near ~3200 iters, where the 12-sample smoke R0 (~1.25e-3)
+  leaves no robust margin once the full 240-subgame census worst is counted.
+  PLANNED MINIMAL FIX (module-local, bitwise-preserving): chunked dispatch in
+  thread_pool.hpp - partition [0,n) into ~4*workers contiguous ranges so atomic
+  ops fall ~5x while each row still runs once with its serial inner reduction;
+  guarded by the existing turn 3.6e-16 identity and river threading bitwise
+  tests. Region fusion is the second step only if chunking is insufficient.
+- T2 TWO-CLASS SUBGAME STRUCTURE (t24 full 6-subgame sample, decides the
+  operating point). Reached river subgames split by action_node count:
+  * nodes=0 (direct showdown): NashConv exactly 0, trivial, ~1.1s/4000.
+  * nodes=10 (groups 0,40): R0-BINDING, slow to converge but fewer showdown
+    leaves -> shorter wall. Worst NashConv 1.93e-3 @2000, 1.21e-3 @3000,
+    8.61e-4 @4000; wall 13.6-14.1s @4000 (t24).
+  * nodes=12 (groups 80,120,160): TIMING-BINDING, more showdown leaves -> more
+    fork-join regions -> 16.0-16.5s @4000 (t24), but converges easily (worst
+    1.06e-3 @2000, 2.58e-4 @4000).
+  A single iteration budget must clear R0 on the nodes=10 class AND the 10s
+  wall on the nodes=12 class. Sampled worst NashConv rises with sample size
+  (stride-20 12-subgame 2.007e-3 @2000 > stride-40 6-subgame 1.93e-3), so the
+  full 240-subgame census order statistic will be higher; 2000 iters likely
+  breaches 0.002 census-wide, 3000-4000 is the robust range. A stride-1 census
+  at the CHOSEN single iteration count (not all checkpoints) is the R0 evidence
+  and is queued behind the thread sweep (no CPU oversubscription).
+  t24->t32 barely speeds the slowest nodes=12 subgame (its many small regions
+  pay the most per-region condvar/atomic cost), confirming more threads alone
+  cannot close the 12-node 10s gap; the chunked-dispatch Pool fix targets it.
+
+- T2 POOL DEADLOCK INCIDENT + CHUNKED EPOCH-BARRIER REWRITE (2026-11-09).
+  The 48-thread sweep probe (PID 2889514) hung at startup: all 49 threads in Sl
+  sleep, 48 workers at 0:00 CPU, main only 18s, /proc/io wchar=8, CSV 0 bytes
+  for ~8h; t56 never launched. Killed scan shell 2840971 first (no t56 spawn)
+  then the probe; t24/t32 CSVs and tracker evidence preserved.
+  ROOT CAUSE (old thread_pool.hpp): workers had NO epoch boundary sync. A
+  worker that finished drain but had not yet re-entered work_cv_.wait could see
+  the NEXT epoch (main only waited on done_==total_, not on workers parking),
+  then claim chunks against a reset next_/stale fn and range - a cross-epoch
+  generation race that permanently loses the done count at high region turnover
+  (48 threads). Single-index dispatch also paid 2 contended atomic ops per one
+  of 1081 rows per region.
+  FIX (module-local, thread_pool.hpp only; public parallel_for signature and
+  fork-join semantics unchanged): (a) contiguous CHUNK dispatch, chunks =
+  min(n, 4*workers), so atomic ops drop from 2n to ~2*chunks (~8*workers),
+  every index still runs exactly once with its serial inner reduction; (b) an
+  epoch BARRIER counter arrived_ - parallel_for returns only when
+  remaining_==0 AND arrived_==worker_count_, so no worker can touch the next
+  epoch's fn/range; main thread still helps drain and is excluded from arrived_.
+  Bitwise guards GREEN: test_rfc0047_river_solver (threads 1 vs 8 exact) RC=0;
+  test_rfc0047_turn_solver identity diff=3.608e-16 (unchanged), OK RC=0.
+  Same-caliber chunked sweep (w1 stride-40 to 4000, t24/32/48/56,
+  *-chunk.csv) re-measures wall and must reproduce the baseline NashConv column
+  bit-for-bit (deterministic); t48/t56 additionally confirm the hang is gone.
+
+- T2 CHUNKED-POOL SAME-CALIBER RESULT (2026-11-09, w1 stride-40, 6 subgames,
+  *-chunk.csv vs baseline; NashConv/pot/resid bitwise-identical on ALL 48 rows
+  at every thread count, RSS ~65 MiB << 1 GiB).
+  * t=24 (within one NUMA node, CPUs 0-27): chunk is 1.056-1.104x faster across
+    all checkpoints (4000: 16,497 -> 15,202 ms; 3000: 12,357 -> 11,266; 2000:
+    8,628 -> 7,972). This is the socket-local SWEET SPOT.
+  * t=32 (spans both sockets, >28 cores): long runs ~1.00x (neutral after
+    amortization); short runs (250-1000) show a one-time first-epoch barrier +
+    cross-NUMA wakeup penalty (0.45-0.56x on the ~1-2s runs), sensitive to
+    instantaneous tenant contention.
+  * t=48/56: REGRESS (4000: 24.1s / 28.8s). Machine is 2 sockets x 28 physical
+    cores, NO hyperthreading, dual NUMA (node0 0-27 / node1 28-55); the a0_
+    showdown matrix and scratch are allocated socket-local, so >28 threads pay
+    remote-memory latency on every matvec, plus oversubscription. A separate
+    tenant's `zomc` job (14+ processes at 100% CPU across both sockets, load
+    avg 18-21) and a Loom-repo agent further contend; absolute t48/t56 numbers
+    are contaminated and these configs are non-viable regardless.
+  VERDICT: chunked dispatch is NECESSARY (fixes the cross-epoch deadlock; +8-10%
+  at the viable socket-local point; no viable-config regression) but NOT
+  SUFFICIENT for G1. Even the best config (t24) cannot run the R0-robust counts
+  inside 10s: 2000=7.97s (6-sample R0 1.93e-3, no census margin), 3000=11.27s,
+  4000=15.2s. R0 curve on the 6-sample passes >=2000 (3000=1.21e-3, 4000=8.61e-4)
+  but the full 240-subgame census order statistic is still pending and will
+  raise the worst. Next lever is river_solver REGION FUSION (one fork-join per
+  traversal batching all showdown-leaf matvecs instead of one barrier per leaf)
+  to remove the strict-barrier straggler cost and lift parallel efficiency
+  toward the ~16-24x needed; module-local, per-row serial reduction retained so
+  bitwise identity holds. BLOCKER for absolute G1 timing: the frozen-machine
+  R=30 distribution cannot be validly measured while tenant zomc load holds
+  ~18-21 cores; timing evidence must wait for a quiescent box. No warm-start,
+  no CFR-kernel change, nothing pushed.
+
+- T2 REGION FUSION + CONTROLLED-WINDOW NOTE (2026-11-10). Implemented river
+  region fusion (river_solver.cpp only): each CFR traversal is now explicit
+  reach-propagation -> ONE fused fork-join over all showdown-leaf matvecs ->
+  bottom-up RM+/linear-average backprop; old recursive cfr() deleted; eval()
+  retained (its terminal_value made serial; only post-solve walks use it).
+  Public solver/Pool interfaces unchanged; per-row serial reductions and exact
+  operation order preserved for bitwise identity. Clean idle chunk baseline
+  captured at load ~1 (*-chunk-idle.csv): t24 4000=14,857ms / 3000=11,144 /
+  2000=7,433; t32 idle is slower than t24 (16,445 @4000), confirming the
+  cross-NUMA penalty persists on an idle box and t24 (one socket) is the sweet
+  spot. Required fusion gain to clear 10s: >=1.49x at 4000 or >=1.11x at 3000.
+  Mid-sweep the co-tenant zomc job restarted (7+ procs at 100% CPU plus
+  blender/python; load back to ~32), so t48/t56 idle-baseline rows and the
+  fusion timing A/B are annotated with load; the clean chunk-idle t24/t32
+  anchor is preserved. Bitwise tests are load-independent and gate first.
+
+- T2 FUSION A/B RESULT (2026-11-10; fusion vs chunk-idle baseline; NashConv
+  bitwise-identical, re-verified at probe level). Bitwise gates GREEN:
+  test_rfc0047_river_solver all checks RC=0; test_rfc0047_turn_solver identity
+  diff=3.608e-16 (identical), OK RC=0.
+  FUSION FLIPS THE SWEET SPOT. With one barrier per traversal instead of one
+  per showdown leaf, cross-NUMA per-barrier cost becomes negligible and each
+  fused row task does S matvecs reusing one a0_ row (cache-friendly), so more
+  cores now help: fusion t32 is ~17% FASTER than fusion t24 (ratio 0.83), the
+  reverse of the chunk kernel. Loaded (~9-14 busy cores/28) fusion worst wall:
+  * t24: 3000=8,762 / 3500=10,203 / 4000=11,704 ms (1.26-1.31x vs chunk-IDLE).
+  * t32: 2000=4,928 / 3000=7,246 / 3500=8,447 / 4000=9,727 ms.
+  So even under contention t32-fusion puts 4000 iters (6-sample R0 8.61e-4,
+  comfortable margin) at ~9.73s and 3500 (R0 1.01e-3) at 8.45s. These are
+  loaded LOWER bounds, not the G1 evidence: authoritative p95 needs the idle
+  R=30 (stride-8, 30 subgames, HF type-1 nearest-rank = 29th ordered) run,
+  followed by the full 240-subgame R0 census in the same idle window.
+
+- T2 FUSION R=30 MILESTONE (2026-11-10, `s3/online-river-w1-r30-t48-fusion.csv`,
+  30 stride-8 subgames x 8 cold-resolve checkpoints, t48 fusion; HF type-1
+  nearest-rank p50=15th / p95=29th / max=30th). RUN UNDER LOAD (load 8->22,
+  co-tenant zomc returned mid-run), so timing is a CONSERVATIVE LOWER-HEADROOM
+  bound, not the clean G1 evidence; the idle re-run is still required.
+  TIMING (ms), all under 10s p95 / 12s max even loaded:
+    iter   p50    p95    max
+    2000  4171   4273   4288
+    2500  5167   5267   5307
+    3000  6135   6240   6360
+    3500  7139   7318   7339
+    4000  8115   8232   8263
+  R0 (30-subgame WORST, stronger than the 6-sample): 2000=2.2478e-03 FAIL
+  (order statistic breaches 0.002, as predicted), 2500=1.9142e-03,
+  3000=1.7829e-03, 3500=1.4949e-03, 4000=1.2252e-03 PASS. R0 binds on the
+  nodes=10 class (4000: 1.225e-3); nodes=12 is timing-binding (max 8,263ms)
+  but easy to converge (R0 5.72e-4); nodes=0 R0=0. RSS peak 297.7 MiB << 1 GiB;
+  action_nodes max 12 << 5M.
+  OPERATING POINT: 4000 iters @ t48 fusion clears BOTH gates with margin even
+  under contention (R0 1.23e-3 vs 0.002; p95 8.23s/max 8.26s vs 10s/12s). t32 is
+  the single-socket fallback. Remaining for G1/G5 closure: (1) clean IDLE R=30
+  re-run (wait for quiescent box) for formal p95; (2) full 240-subgame R0
+  census at 4000 iters in the same idle window (R30->R240 will raise worst,
+  expect still <0.002 given the 0.77e-3 headroom); (3) local commit with CMake
+  hunk isolation; nothing pushed; no warm-start/CFR-kernel change.
+
+- T2 CLEAN IDLE R=30 + LOCAL COMMIT (2026-11-10). Isolated S3 commit 1d768f8
+  (7 files, CMake +6 lines only via single-hunk index patch; 9 cross-RFC CMake
+  hunks and all other dirty files excluded; not pushed). Bitwise gates re-green
+  pre-commit (river exact; turn identity 3.608e-16 unchanged).
+  CLEAN R=30 (stride-8, 30 subgames, t48 fusion, idle box, HF type-1 nearest-
+  rank p50=15th/p95=29th/max=30th; NashConv byte-identical to the loaded run,
+  confirming determinism). Wall ms:
+    iter   p50    p95    max    mean | worst R0 (30)
+    2000  4167  4999  9723   3695  | 2.2478e-3 FAIL
+    3000  6137  7287  7410   5136  | 1.7829e-3 PASS
+    3500  7145  8556  8559   5959  | 1.4949e-3 PASS
+    4000  8148  9748  9792   6801  | 1.2252e-3 PASS
+  FAT-TAIL FINDING: idle p95/max are HIGHER than the earlier loaded run (4000:
+  9748 vs 8232) - not load, but transient OS scheduler jitter. The 12-node wall
+  is bimodal: a tight ~8.3s steady cluster plus occasional ~9.7s stragglers; the
+  straggler subgame changes between checkpoints (group 48 spikes at 2000,
+  groups 176/184 at 4000), so it is not subgame-specific. CV ~0.38. The fused
+  single barrier per traversal (8000 barriers over a 4000-iter solve) means one
+  descheduled thread stalls all 48 workers; on a shared box this inflates the
+  tail. G1 as defined still PASSES at 4000 (p95 9748 < 10000, max 9792 < 12000)
+  but with only ~2.5% p95 headroom. 3500 iters has robust margin on BOTH gates
+  (p95 8556 / R0 1.49e-3) and is the fallback operating point; the full 240-
+  subgame census (running) supplies both the R240 R0 worst and a 240-sample
+  tail to decide 3500 vs 4000 and whether thread pinning / a lower thread count
+  is needed for tail stability. RSS 297.7 MiB, max action_nodes 12.
+
+- T2 R240 CENSUS PAUSED ON TENANT CONTENTION (2026-11-10, per D-127 >8 rule).
+  14/240 subgames completed before co-tenant zomc (15+ procs) + blender pushed
+  load to ~32 (oversubscription: 48 probe threads + ~16 tenant cores on 56).
+  Probe stopped; 14 rows preserved as *-PARTIAL-LOAD.csv with timing quarantined
+  and R0 retained (NashConv is deterministic and load-independent, so the R0
+  values are valid; only wall_ms is contaminated). Partial R0 worst rises with
+  sample size as the order statistic predicts: 8.61e-4 -> 9.72e-4 -> 1.1556e-3
+  across the 14 subgames (all nodes=10, the R0-binding class). This is consistent
+  with the R=30 worst 1.2252e-3 but does NOT establish the R240 bound; the full
+  stride-1 census must finish in a clean window to certify worst R0 < 0.002.
+  NEXT-IDLE-WINDOW ACTIONS: (1) re-run full R240 at 4000 (single-checkpoint arg
+  added, ~30 min); (2) re-measure a clean tail and choose the operating point -
+  candidates to stabilize the fat tail are 3500 iters (p95 8.56s / R0 1.49e-3,
+  margin on both), a single-socket t24 run, or CPU affinity to cut migration;
+  (3) only then finalize G1 p95. Nothing pushed; commit 1d768f8 is the sole S3
+  commit and stays local.
+
+- T2 R240 RESUMABLE CHECKPOINT ORCHESTRATOR (2026-11-11, D-127 shard). The 21.5h
+  premise of one long idle window was falsified (136 starts, 0 completes, median
+  probe life ~80s, longest 260s; rm-restarts only ever covered groups 0-37).
+  Replaced with /tmp/bigshark-orch/s3_resume.sh (local tooling, no solver/R0/
+  shared-area change):
+  * Durable store s3/r240-done.csv, one row per completed group; 137 salvaged
+    PARTIALs deduped into groups 0-37 (repeats bit-identical -> safe), archived
+    under s3/salvaged-partials/. Probe gained GROUP_START/GROUP_END window args.
+  * BATCH=8 sized from measured ~6.7s median / 7.5s p95 per-group wall => ~56-60s
+    clean, inside the ~80s median survival window.
+  * Monotonic: always resume at smallest missing group index; salvage() appends
+    only groups not already in the store; merged result equals one stride-1 run
+    (NashConv deterministic). load>8 (5-min avg) watchdog unchanged: kill,
+    salvage fflush'd rows, wait, resume.
+  RESUME SELF-CHECK PASS: static next_group=38 (skips 0-37); dynamic first batch
+  [38,46) completed clean in ~60s, store 38->46 contiguous no gaps; a later
+  load>8 watchdog interrupt salvaged +1 partial group correctly (6 watchdog
+  events handled, no lost/duplicate groups). Running to 240; interim worst R0
+  over groups 0-54 = 1.2252e-3 PASS. Final 240-group worst R0 recorded on
+  completion in s3/r240-summary.txt.
+
+- T2 R240 FULL CENSUS CLOSED (2026-11-11, s3/r240-done.csv + r240-summary.txt).
+  All 240 unique reached river subgames (stride-1, 4000 iters, t48 fusion,
+  single-checkpoint): 240 rows / 240 unique groups / 0 missing / 0 duplicate,
+  contiguous 0..239. Worst summed NashConv R0 = 1.2252e-3 BB (group 29),
+  GATE 0.002 PASS with 0.7748e-3 (~39%) headroom. The R240 worst equals the
+  earlier R=30 worst, so the 30-sample had already captured the global binding
+  subgame. Determinism cross-validated: the 30 stride-8 groups match the clean
+  R30 run bit-for-bit in a separate process invocation. Resource envelope over
+  all 240: peak RSS 56.2 MiB << 1 GiB, max action_nodes 12 << 5M.
+  Run endured a contended box (85 min wall, 78 load>8 watchdog pauses, only 5
+  fully clean batches, 83 salvage events) yet lost no progress because each
+  completed group is checkpointed; 0/240 completed rows exceeded 10s, but this
+  mixed-condition wall is NOT used to certify p95. Timing/fat-tail operating-
+  point calibration (3500 vs 4000, t24 vs t48, taskset pinning) still needs a
+  contiguous idle window; existing clean R30 already gives 3500-iter p95=8.56s
+  (R0 1.49e-3) vs 4000-iter p95=9.75s (R0 1.2252e-3).
+
+## S3 task 3 — native G5 serve-point-B certified river entry (1e-9 + fail-closed)
+
+- Goal (D-136 next native gate): a real in-process TYPED call entry that runs
+  the exact one-card river re-solve and certifies the per-combo responder
+  non-regression inequality BR_s(c) <= locked b_s(c) + 1e-9*root_pot on BOTH
+  seats, returning Certified only on full pass and failing closed otherwise
+  (never promoting an uncertified strategy). "Online" = in-runtime call, not
+  deployment. Native CTest, minimal fixture RED then GREEN.
+- Owning module: engine/benchmarks/rfc0047 (bigshark_rfc0047_bench), the same
+  Stage-1 scope as every RFC 0047 component. Does NOT cross the rfc0047 link
+  guard into bigshark_resolver; composition-root promotion is a separate later
+  gate needing its own authorization (no new product direction here).
+- Certification mirrors resolver.hpp MarginRecord: slack = BR - baseline -
+  tol*pot, pass iff slack <= 0. BR is the kernel's independently-walked
+  eval(br=true) value (reads only the average strategy, never regret/sum
+  tables), the rfc0047 analogue of the independently-written certifier.
+  Production tolerance constant kServeCertPotTolerance = 1e-9 (the deliberate
+  predeclared kill gate; the 1e-6 instrument tolerance must NOT be the default).
+- New files: river_serve.hpp/.cpp + tests/test_rfc0047_river_serve.cpp. CMake
+  adds one lib-source hunk and one test-target hunk, isolated from the 9
+  cross-RFC hunks. Fixtures: invalid input; certified against own locked BR;
+  fail-closed on a tightened baseline; 1e-9-vs-1e-6 binding-gate proof;
+  bitwise determinism; action_nodes <= 12 envelope.
+- Remaining G5 after this: turn serve point A, cap-1/cap-0 UCB <= 0.002,
+  six-strata Gate-2 re-test, G6 dual reporting, composition-root promotion.
+
+- T3 G5 SERVE-POINT-B NATIVE ENTRY CLOSED (2026-11-12, commit 2968640).
+  New typed in-process entry bs::rfc0047::serve_river_certified
+  (river_serve.hpp/.cpp, bigshark_rfc0047_bench; stays inside the rfc0047 link
+  guard, no bigshark_resolver change). Contract: exact seedless river re-solve
+  then per-combo responder non-regression BR_s(c) <= b_s(c) + tol*root_pot on
+  BOTH seats, BR from the independent eval(br=true) walk (no CFR-table reads),
+  slack form identical to resolver.hpp MarginRecord. Production tolerance
+  kServeCertPotTolerance=1e-9 (the predeclared kill gate; 1e-6 is an explicit
+  instrument-only override). Certified only on full pass; any violation ->
+  CertificationRejected with margin records (never promoted from approximate);
+  bad baseline size/negative tolerance/non-positive pot -> InvalidInput.
+  RED-first native CTest test_rfc0047_river_serve (5 fixtures): invalid input;
+  own-BR certified + bitwise determinism; tightened-baseline fail-closed;
+  1e-9 rejects a 5e-8*pot gap that 1e-6 accepts (binding gate); action_nodes
+  <=12 envelope. RED = undefined reference pre-impl; GREEN all checks RC=0.
+  Full rfc0047 ctest subset 9/9 PASS (link_isolation, board/tree/oracle codec,
+  river_solver bitwise, river_serve, frontier, margin_identity 8.6s, turn
+  identity 3.608e-16). CMake change isolated to one lib-source hunk + one
+  test-target hunk; the 9 cross-RFC hunks stay uncommitted.
+  G5 REMAINING (not claimed here): turn serve point A (-x root with oracle-
+  bounded frontier leaves); cap-1/cap-0 menu materiality UCB <= 0.002; six-
+  strata Gate-2 re-test (30 cold resolves each); G6 dual reporting; the idle-
+  window fat-tail operating-point calibration; and the separately-authorized
+  composition-root promotion of this entry into bigshark_resolver.
+
+- T3 INDEPENDENT REVIEW ROUND 1 -> CHANGES REQUESTED (2026-11-12, non-author
+  agent). Certification math (slack sign, seat pairing, chip units, independent
+  BR walk, binding 1e-9 gate, link guard, determinism, no scope creep) verified
+  correct. Four hardening findings, all local (no math/architecture change):
+  Major-1 NaN/Inf could fail-open to Certified (NaN compares false in every
+  inequality); Major-2 kernel std::invalid_argument on a malformed GameDef
+  escaped the documented no-throw API and validation ran after the solve;
+  Minor-1 worst_slack seeded at 0 so never reported the true negative margin;
+  Minor-2 InvalidInput fixtures covered only baseline size.
+  FIXES (working tree, re-review open): isfinite guards on tolerance/pot/both
+  baselines/both BR vectors, all validation moved before the solve, kernel
+  throw caught and mapped to InvalidInput, worst_slack seeded at -infinity
+  (certified fixture now asserts the exact -1e-9*pot margin), three new
+  fixtures (non-finite rejection, request bounds, malformed-def no-throw).
+  Native test now 8 fixtures, all checks RC=0; link_isolation + river_solver
+  bitwise regression 2/2 PASS. Commit deferred until the re-review verdict.
+
+- T3 REVIEW ROUND 2 -> APPROVED (2026-11-12). All four round-1 findings closed
+  and one optional residual (tolerance-product overflow) hardened; the reviewer
+  re-verified binary-vs-source freshness, the fail-closed exhaustiveness, exact
+  -1e-9*pot margin assertion, no new fail-open path, unchanged slack math and
+  1e-9 default, link guard, and no scope creep. Verdict APPROVED with no
+  blocking/major items. Hardening committed as 2c1bfc6 (3 files, +174/-13;
+  native test 5 -> 9 fixtures). Final full rfc0047 ctest on the hardened bytes:
+  9/9 PASS (link_isolation, board/tree/oracle-codec, river_solver bitwise
+  117s, river_serve 166s, frontier, margin_identity 8.2s, turn identity
+  3.608e-16 at 536s). check-docs 490 files pass. Serve-point-B G5 native gate is
+  CLOSED and independently approved; only the separately-authorized G5 items in
+  the prior entry (turn serve point A, cap-1/cap-0 UCB, six-strata Gate-2, G6,
+  fat-tail calibration, composition-root promotion) remain open.
+
+## S3 task 4 — native G5 serve-point-A certified turn entry (1e-9 + B0 + fail-closed)
+
+- Goal (D-140): typed in-process turn serve entry certifying the depth-limited
+  turn gadget at its responder root, RFC 0047 G5 lines 158-174. Two independent
+  predicates, both required: (A) per-combo responder non-regression
+  BR_s(c) <= b_turn_s(c) + 1e-9*root_pot on BOTH seats at the TURN root, with
+  b_turn from a SEALED reference (never the same solve as the oracle);
+  (B) whole-strategy B0 hybrid NashConv, local bound = finite turn gap + G3
+  reach-propagated oracle error (an external BOUNDED input, not self-computed)
+  + river R0 term <= B0=0.010 BB, alongside the empirical independent-walker
+  hybrid (turn_hybrid_nash_conv). Frontier leaves stay bounded inputs.
+- Reuse only: solve_turn_subgame, turn_hybrid_nash_conv, turn_leaf_gap_weights,
+  the existing independent evaluate(br=true) walker (newly exported as
+  per-combo root BR/CFV, mirroring RiverSolveResult). No new shared abstraction,
+  no bigshark_resolver/composition-root change, no public contract change.
+- Fail closed: missing/non-finite/out-of-bounds baseline or leaf river-NC,
+  missing/negative G3 propagated bound (CoverageMiss), malformed GameDef, or a
+  B0 overshoot -> never promoted from approximate. Existing identity <=1e-7,
+  reach seat diff <=1e-10, mass <=1+1e-9 stay in test_rfc0047_turn_solver and
+  are NOT re-claimed as this new gate.
+- New files turn_serve.hpp/.cpp + tests/test_rfc0047_turn_serve.cpp; two
+  isolated CMake hunks. Bounded RED->GREEN native fixture; independent review
+  in-session. Remaining G5 after: cap-1/cap-0 UCB<=0.002, six-strata Gate-2,
+  G6 reporting, fat-tail calibration, composition-root promotion.
+
+- T4 RED/GREEN EVIDENCE BOUNDARY (honest, per D-140 correction). The
+  serve_turn_certified entry is new in this milestone and absent from every
+  prior commit, so a behavioral RED "on the baseline" is not definable (the
+  symbol did not exist); no source was temporarily removed and no compile/link
+  failure is presented as a behavioral RED. The first REAL runtime failure was
+  an incorrect test assumption, not an entry bug: the B0-threshold fixture
+  expected a 40-iteration turn solve to fit B0=0.010 BB, but the measured turn
+  gap at short iters is ~0.07 BB (turn-120 ~0.064 / turn-4000 ~5.2e-4 per the
+  S2 curve), so the entry correctly REJECTS it. Fixed the fixture to size a
+  custom budget to the measured bound for the two-way threshold test and to
+  assert the production-default verdict as measured, never assumed. The sealed
+  b_turn is a separate solve object supplied externally (the entry cannot
+  derive it from its own solve); the independent empirical HybridNashConv is
+  reported alongside the local B0 bound (G6 dual). Consolidated the test to one
+  shared sealed solve plus 6 entry calls (from ~17 turn solves) to bound ctest
+  time. Runtime PASS/FAIL and exact component magnitudes are recorded below.
+
+- T4 POINT-A GREEN + NATIVE EVIDENCE (2026-11-12). Entry serve_turn_certified
+  (turn_serve.hpp/.cpp) plus additive TurnSolveResult root per-combo BR/CFV
+  exports (turn_solver +41 lines, reusing the independent evaluate walker; no
+  existing CFR/hybrid math changed). Native test_rfc0047_turn_serve (5 fixture
+  groups, 4-thread bitwise-identical solves) all checks RC=0, wall 444.8s under
+  ctest. Observed B0 components on the short 40-iteration solve (printed as
+  evidence, not hidden): turn_gap=2.290114e-01, river=2.311124e-01,
+  local_bound=4.601238e-01 BB vs B0=1.0e-02 -> production verdict correctly
+  REJECT (honest: a short non-converged solve is not B0-certifiable); the
+  two-way threshold is proven with a custom budget sized to the measured bound
+  (g3=0 passes, g3=2e-6 over the 1e-6 room fails). Responder gate certifies the
+  externally supplied sealed root BR at exact -1e-9*pot margin and is
+  deterministic; tightened margin fails closed with records; negative G3 ->
+  CoverageMiss; NaN/Inf/wrong-size/zero-pot/malformed-def -> InvalidInput
+  without throwing. Full rfc0047 ctest 10/10 PASS (link_isolation, river_solver
+  bitwise 128.8s, river_serve 178.4s, turn_serve 444.8s, frontier,
+  margin_identity 17.6s, turn_solver identity 3.608e-16 at 553.7s). Independent
+  non-author review launched in-session; verdict and any hardening recorded on
+  return; commit deferred until APPROVED. Remaining G5 unchanged: cap-1/cap-0
+  UCB<=0.002, six-strata Gate-2, G6, fat-tail calibration, composition-root.
+
+- T4 INDEPENDENT REVIEW ROUND 1 -> CHANGES REQUESTED (2026-11-12, non-author
+  agent; no blocking). Contracts 1-4 math/units/non-self-oracle/link-guard all
+  PASS and the evidence-boundary treatment judged honest/acceptable. Findings:
+  Major-1 a negative leaf river NashConv (an out-of-range bounded input) was
+  only finite-checked, so it could shrink the B0 river term into a false
+  Certified; Minor-1 the no-throw header promise was broader than the
+  invalid_argument-only catch (resource/overflow errors should propagate);
+  Minor-2 exact-span length checks ran after the solve; Minor-3 missing
+  negative-NC / tolerance-overflow / b0<=0 fixtures.
+  FIXES (no certification math changed): pre-solve non-negativity guard on every
+  leaf river NC -> InvalidInput; exact kTurnC/leaves length and tol*pot overflow
+  checks moved before the solve; header narrowed to state invalid_argument maps
+  to InvalidInput while tree_resource_exhausted/bad_alloc propagate; added the
+  three fixtures. Re-review open; commit deferred until APPROVED.
+
+- T4 POINT-A CLOSED + REVIEW ROUND 2 APPROVED (2026-11-12, commit 5f0c409).
+  Re-review confirmed all four round-1 findings closed with no new fail-open
+  path and zero certification-math change; the negative-river-NC forged-Cert
+  exploit is structurally unreachable (pre-solve reject), turn_solver export
+  stays +41/-0 additive, link guard and G5 contracts 1-4 hold, evidence
+  boundary accepted. Hardened scoped test all checks RC=0 (~6 min, 4-thread
+  bitwise-identical; B0 components unchanged). Committed 6 files (turn_serve
+  x2, turn_solver additive x2, native test, two isolated CMake hunks); the 9
+  cross-RFC CMake hunks and all other dirty files stay uncommitted. G5 serve
+  points A and B now both have native in-process certified entries with
+  independent approval. REMAINING G5/M2 KRs (not claimed): cap-1/cap-0 menu
+  materiality UCB <= 0.002 BB; six-strata Gate-2 re-test (30 cold resolves
+  each); G6 dual-reporting wire-up; fat-tail operating-point calibration (idle
+  window); production-budget end-to-end Certified convergence evidence (needs
+  convergence-depth turn solves, not the short control-flow fixtures here);
+  composition-root promotion into bigshark_resolver (separate authorization).
+
+## S3 task 5 — G6 dual quality reporting bench wiring (RFC 0039 D1)
+
+- Source audit first: both serve entries were consumed only by native tests; no
+  bench harness produced a G6 record, and no C++ dual-report type existed (real
+  gap, no duplicate). Reused vocabulary already in tools/rfc/rfc0047-gates.ts G2
+  and rfc0047_oracle_build: within-instrument CERT summed-NashConv bar 0.005 BB,
+  exact-hole QUAL bar 0.03 BB; seedless exact kernel has within==exact by
+  construction; composed M2 uses the serve-point gate (river R0 0.002 / turn
+  B0 0.010).
+- Minimal additive layer, no new serve API/math: quality_report.hpp/.cpp
+  QualityDualReport + river_quality_report/turn_quality_report pure assemblers
+  over the existing RiverServeResult/TurnServeResult (within-instrument NC,
+  independent exact/hybrid gap, composed M2 delta, gate, status). Always fully
+  populated even on a rejected serve (anti-laundering); non-finite ->
+  invalid_argument. Added TurnServeResult::b0_bb so the report records the
+  effective budget (custom-budget tests do not leak the production constant).
+- Fast native CTest test_rfc0047_quality_report (synthetic results, no solver):
+  river within==exact identity and all three bars; turn three distinct measures
+  with a non-Certified anti-laundering row; non-finite rejection; constant
+  agreement. Manual bench bigshark-rfc0047-g6-report wires a real river serve to
+  a per-subgame G6 CSV (both columns every row). Review in-session.
+
+- T5 G6 INDEPENDENT REVIEW -> APPROVED (2026-11-12, non-author; no blocking/major).
+  All G6 dual-report contract checks pass: both predicates always populated
+  (anti-laundering), bars/units match rfc0047_gates.ts (CERT 0.005/QUAL 0.03/
+  R0 0.002/B0 0.010, *_bb only), river within==exact and turn three distinct
+  measures, pure assembly with no serve API/math change (only additive
+  TurnServeResult::b0_bb), manual probe does not self-oracle (sealed margin
+  supplied externally), link guard and scope hold. Reviewer ran full rfc0047
+  ctest 11/11 (1091s). Three non-blocking minors fixed: turn_serve.hpp comment
+  alignment (clang-format), explicit <string> IWYU in quality_report.cpp, and a
+  symmetric river-side non-Certified anti-laundering fixture (now both seats
+  cover the rejected-still-populated case). g6 probe CSV scratch git-ignored.
+  Post-fix final rfc0047 ctest re-run is the closure gate; commit follows on
+  11/11 green with three isolated CMake hunks (lib source, manual g6 target,
+  quality CTest), the 9 cross-RFC hunks and other dirty files untouched.
+
+- T5 G6 CLOSED (2026-11-13, commit e95e4aa; 8 files, CMake 3 isolated hunks).
+  Post-fix full rfc0047 ctest 11/11 PASS (quality_report 0.00s, river_solver
+  124.9s, river_serve 169.4s, turn_serve 351.5s, frontier, margin_identity
+  8.4s, turn_solver identity 3.608e-16 at 497.8s, link_isolation). check-docs
+  497 files pass. The 9 cross-RFC CMake hunks and all 27 modified / 191
+  untracked unrelated files remain uncommitted. Serve points A and B plus G6
+  dual reporting now have native in-process entries with independent approval.
+  REMAINING G5/M2 KRs: cap-1/cap-0 menu materiality UCB <= 0.002 BB; six-strata
+  Gate-2 (30 cold resolves each); fat-tail operating-point calibration;
+  production-budget end-to-end Certified convergence (needs convergence-depth
+  turn solves); composition-root promotion into bigshark_resolver (separate
+  authorization); a turn-side manual G6 probe (turn assembler currently covered
+  by the synthetic CTest only).
+
+## S3 task 6 — cap-1 vs cap-0 menu materiality (G5), native source + feasibility
+
+- Semantics from source (engine/include/bs/abstraction.hpp:274): cap = max full
+  raises per street; 0 means NO cap (exact full menu = cap-0 reference), 1 is
+  the bounded online menu. GameDef/strata already accept cap 0/1/2; the two
+  solvers hard-coded identity(1). rfc0046 G3 census established the FLOP-rooted
+  cap-0 tree is >100M nodes / 55 GiB (infeasible); rfc0047 is turn/reached-river.
+- Additive change only: RiverSolveConfig::action_cap (default 1) threaded into
+  RiverGame's ActionAbstraction::identity(cap); all existing call sites keep
+  cap 1 so bitwise output is unchanged. test_rfc0047_river_solver still all
+  checks pass after the change (default-cap regression green).
+- Native tree feasibility (bigshark-rfc0047-cap-materiality treesize, w1):
+    turn-rooted cap0 = RESOURCE_EXHAUSTED at the 1 GiB TreeLimits byte cap;
+    turn-rooted cap1 = 10,923 nodes;
+    reached-river (one five-card board, the actual online re-solve object)
+      cap0 = 33,693 total / 11,232 action nodes (FEASIBLE, under the 1M
+      infoset / 5M-node envelope), cap1 = 27 nodes / 10 action nodes.
+  => only the reached-river cap-0 reference is a candidate; turn-rooted cap0 is
+     structurally unavailable, consistent with RFC 0046.
+- Solve check (w1 first reached subgame, 100 iters t16, ~9.4 min wall): cap0
+  NC=0.4900 BB, cap1 NC=0.0862 BB — both far from converged at 100 iters; the
+  cap-0 exact reference needs a convergence curve before any 0.002 BB claim
+  (running). Action has default operator== (heads_up.hpp), so a public action-
+  path key for cap1->cap0 policy embedding is constructible.
+- Method note (RFC 0046 Gate 3 / partition_walker, read for pattern only, no
+  dependency on the untracked rfc0046 module): the binding measure is the cap-1
+  policy EMBEDDED in the cap-0 game (cap-0-only branches take zero probability,
+  exact BR still allowed) -> its exploitability minus the cap-0 equilibrium's
+  own NashConv, UCB <= 0.002 BB. Comparing the two separate equilibria's own
+  NashConv is NOT the gate (both converge toward zero trivially). The
+  embedding-BR evaluator is the next native component; no cap result is being
+  hard-claimed before convergence + that walk exist.
+
+- T6 EMBEDDING DESIGN (pre-implementation review gate). cap0 equilibrium cost
+  curve (w1 reached river): NC 0.655/0.490/0.211 BB at 50/100/200 iters over
+  11,232 action nodes (~T^-0.55); reaching 0.002 needs thousands of iters/hours,
+  so a converged cap0 equilibrium cannot be a prerequisite. Adopt RFC 0046
+  partition-walker method instead: embed cap1 average policy into the cap0 tree
+  (public action-path map via Action operator==; cap0-only raises get prob 0),
+  then ONE exact BR traversal over the full cap0 menu (no cap0 CFR). Proposed
+  conservative binding e_embed = summed-seat (BR-V) in cap0 game; since
+  e_embed = menu_error + cap1 residual and the RFC-literal gap is e_embed -
+  NC_cap0 with NC_cap0 >= 0, certifying e_embed <= 0.002 suffices without a
+  cap0 equilibrium. Design in cap_embedding.hpp; independent math/architecture
+  review opened before implementation. No duplicate jobs: cap curve processes
+  confirmed zero residue; curve kept as cost evidence only.
+
+- T6 PRE-IMPL MATH/ARCH REVIEW -> CHANGES NEEDED then formula FROZEN (2026-11-13).
+  Review CONFIRMED the conservative binding and the single-walk BR approach;
+  two spec gaps now closed in cap_embedding.hpp:
+  (1) Opponent completion on cap-0-only extension subtrees: primary Uniform
+      (rfc0046 precedent, non-anticipatory/combo-independent) + a BrFavorable
+      robustness arm that bounds e_embed over ANY completion; unmapped count is
+      EV-walk-only (BR entering extensions is expected, not a failure).
+  (2) Dedicated lightweight fixed-policy evaluator over the cap-0 AbstractTree
+      (board a0_/fold/stake + paired-DFS map + depth scratch, tens of MB); a
+      cap-0 RiverGame is forbidden (full regret layout ~1.4 GB, breaks the 1 GiB
+      envelope). Mapping is paired DFS from roots (flat Action lookup banned:
+      Check/Call/Fold share target_total 0), with ordered-prefix + suffix-all-
+      aggressive invariants that throw on violation.
+  Frozen gate: e_embed = summed-seat exact (BR-V) of the embedded cap-1 policy
+  in the cap-0 game, per-stratum MAX over all reached river roots, <= 0.002 BB;
+  seedless so it is an exact value not a UCB; no cap-0 equilibrium / NC_cap0
+  needed (subtracting NC_cap0 would be anti-conservative). Formula fixed before
+  gate data. Native tests T1-T6 per review (mapping micro-fixture, fail-closed,
+  cap0==cap1 normalization identity, distribution/BR invariants, determinism,
+  completion/gate direction).
+
+- T6 IMPLEMENTED + native gate green (2026-11-13). Components, all bench-only:
+  cap_embedding.{hpp,cpp} (paired-DFS map_cap1_to_cap0; dedicated lightweight
+  fixed-policy EmbeddedGame over the cap-0 AbstractTree, no cap-0 RiverGame/CFR;
+  measure_cap_materiality / measure_stratum_cap_materiality; diagnostic
+  embed_root_values), river_solver additive RiverSolveResult.avg_sigma snapshot
+  (build_sigma already ran post-solve; no kernel numeric path changed), probe
+  modes embed / embed-gate in rfc0047_cap_materiality.cpp, and
+  test_rfc0047_cap_embedding (8 fixtures). Two implementation defects caught in
+  RED: (a) arm dispatch hard-coded the BR-favorable max for BOTH completions so
+  Uniform == BrFavorable bit-for-bit - fixed so Uniform plays 1/A via the
+  kernel-identical snapshot reach scaling inside extension subtrees;
+  (b) evaluator correctness proven independently by embed_root_values: the EV
+  walk never enters a zero-mass extension, and its raw root values match the
+  cap-1 kernel root CFV x 990 to < 1e-6 for every combo/seat (both arms).
+  Determinism serial vs t8 bitwise; rfc0047_river_solver stays bitwise green.
+
+- T6 FIRST GATE DATA -> cap-1 menu FAILS the 0.002 BB materiality bar on the
+  deep w1 check-to-river root (single root, both arms; NOT yet the per-stratum
+  max over all 432-528 leaves). Frozen decomposition e_embed = e_G1 + pure menu
+  term, measured:
+    300 iters: cap1 NC 0.02395 BB; Uniform e_embed 19.4822 (menu 19.4582);
+               BrFavorable e_embed 152.9223 (menu 152.8983).
+   2000 iters: cap1 NC 0.00193 BB; Uniform e_embed 20.6878 (menu 20.6859);
+               BrFavorable e_embed 156.8507 (menu 156.8488).
+  The pure menu term is STABLE as the cap-1 policy converges (e_G1 -> 0.0019),
+  so the failure is the menu restriction itself, not solver residual: ~20 BB
+  under the non-anticipatory Uniform completion and ~157 BB under the
+  BrFavorable upper bound, 4-5 orders of magnitude over M = 0.002 BB with
+  11,232 cap-0 vs 10 cap-1 action nodes (198 BB behind, pot 4). Gate was never
+  relaxed. Remaining evidence: the full per-stratum MAX batch (all frontier
+  leaves; shallower post-bet roots have smaller cap0 trees and may be less
+  severe, but this root alone fails by ~10^4x) and independent non-author
+  review before the isolated local commit.
+
+- T6 INDEPENDENT REVIEW APPROVED + hardened, committed locally 7ea92b3
+  (2026-11-13). Non-author review returned APPROVED with no blocking findings;
+  three Low hardening items were applied before commit:
+  (1) pair_dfs now throws invalid_argument on a paired node-kind divergence
+      (covered by a new turn-rooted vs river-rooted cross-shape fixture);
+  (3) the EV walk throws logic_error if it ever reaches an unmapped extension
+      node (fail-closed, replacing the prior silent 1/A completion); the
+      unmapped_ev_reachable_nodes=0 field is thus runtime-enforced, not merely
+      asserted;
+  (4) EmbeddedGame borrows the cap-0 AbstractTree built once in prepare_embed
+      instead of rebuilding it (probe output is bit-identical after the change).
+  Informational items (hand-built micro-game oracle, direct negative
+  distribution-throw tests) recorded as future hardening; not required because
+  the public bench API does not inject avg_sigma and the EV<->kernel-CFV oracle
+  already pins terminal/map correctness. Test count rose to 9 fixtures, all
+  green; rfc0047_river_solver bitwise regression green; check-docs green.
+  Commit is strictly bench-only (7 files; engine/CMakeLists.txt carries only
+  the three isolated cap hunks, the nine cross-RFC hunks and all other
+  worktree changes untouched); no upstream, not pushed.
+
+- T6 SIX-STRATUM ANCHOR SCOPE decision. The full per-stratum MAX batch
+  (embed-gate over all 432-528 frontier leaves per stratum) is a multi-hour
+  offline run whose marginal value is low once the gate is already a decisive
+  FAIL: every stratum's MAX includes its own deep check-to-river anchor root,
+  and the w1 anchor alone exceeds M by ~10^4x. A proportionate six-stratum
+  anchor sweep (one embed probe per stratum, ~300-iter cap1, both arms) is run
+  instead to establish the FAIL verdict across every frozen stratum; the
+  exhaustive MAX remains available via embed-gate if an exact binding worst
+  value is later needed for the M2 ledger.
+
+- T6 SIX-STRATUM ANCHOR SCOPE RESULT -> all six strata FAIL M (2026-11-13).
+  One embed probe per frozen stratum (300-iter cap1, both completion arms);
+  pure menu term = e_embed - cap1 NashConv, all values in BB, gate M = 0.002:
+    stratum                 cap0/cap1 nodes  cap1 NC   Uniform e  BrFav e
+    w1                      11232/10         0.02395   19.4822    152.9223
+    unpaired-rainbow-ahigh 11232/10         0.02554   19.4486    154.0793
+    paired                  11232/10         0.02412   19.5817    154.2606
+    monotone                11232/10         0.00975   20.8220    169.7682
+    unpaired-twotone        11232/10         0.02360   19.5265    153.7816
+    raised-srp               7824/12         0.01437   29.4414    188.7606
+  Every stratum exceeds M by roughly 10^4x under Uniform (the primary arm) and
+  ~10^5x under the BrFavorable upper bound; the cap-1 policy's own NashConv is
+  already an order of magnitude below the menu term everywhere, so the binding
+  error is the action abstraction, not solver residual. raised-srp is the worst
+  anchor despite the smaller cap-0 tree. Because each stratum's full-leaf MAX
+  includes its own anchor root, the per-stratum gate verdict is FAIL without
+  needing the exhaustive multi-hour batch. The bounded cap-1 menu therefore
+  cannot be certified as menu-immaterial at 100 BB; this is a Stage-1 finding
+  for the M2 design (a wider online menu or an explicit menu-error term in the
+  B0 ledger), not something the bench component can relax. Component, formula,
+  and native gate remain as committed in 7ea92b3; the 0.002 BB bar is unchanged.
+
+- T6 CLOSURE VERIFICATION (2026-11-13). Full rfc0047 ctest suite 12/12 green
+  under the release preset (1,260 s total), including rfc0047_link_isolation,
+  the rfc0047_river_solver bitwise regression (confirming the additive
+  avg_sigma/action_cap changes move no kernel numerics), all five serve/quality
+  fixtures, and the new 9-fixture rfc0047_cap_embedding. check-docs green.
+  Format applied per-file with clang-format (the repository-wide format target
+  would touch the many unrelated cross-RFC worktree changes and is intentionally
+  not run). No production resolver, composition root, public include, protocol,
+  or persisted format changed; no push (branch has no upstream).
+
+## S3 task 6b — D164 bounded cap-k parameterization and widening curve
+
+- D164 SCOPE (TechLead round 367, handoff msg_d711d8c6cc9c). Bench-only, same
+  scope guards as T6: engine/benchmarks/rfc0047 + native tests/CMake + this
+  tracker. Parameterize the online raise cap k (identity(k), k >= 1) and measure
+  the SAME frozen e_embed(k) curve on a single bounded anchor root under a
+  comparable solve config, both completion arms, with online NC / pure menu
+  term / nodes / wall / CPU / RSS. Production default stays cap-1; the 0.002 BB
+  bar, B0/G1, independent gates, external oracle/ABI/resolver contracts, and the
+  CPU/timeout/training budgets are unchanged. Single-instance bounded probes
+  only; no full-stratum or 432-528-root blind sweep; a single-root crossing is a
+  candidate, never a global MAX/Certified/M2 pass.
+
+- D164 IMPLEMENTED (uncommitted working change). cap_embedding.{hpp,cpp}
+  generalized from hard-coded cap-1 to online_cap: map_bounded_to_cap0 (renamed
+  from map_cap1_to_cap0), measure_cap_materiality / measure_stratum /
+  embed_root_values now take std::uint8_t online_cap; cap 0 is rejected with
+  invalid_argument (the cap-0 equilibrium stays out of scope). CapMateriality
+  gains online_cap and renames cap1_* -> online_* (bench-only, no production
+  field). Probe gains capcurve and per-cap wall/cpu/rss_peak/rss_current
+  columns; embed/embed-gate take a CAP positional. Native test expanded to 15
+  fixtures (cap-1 AND cap-2 sigma/map/dominance/EV-oracle/determinism, a new
+  cap-widening monotonicity fixture c2.online_nodes > c1 and e_embed(c2) <
+  e_embed(c1), and the cap-0 fail-closed case); all green (~558 s). Also fixed a
+  pre-existing bench-only memory leak so in-process cap sweeps stay bounded:
+  RiverGame now frees reg_/sum_/sigma_ in a destructor and build_sigma releases
+  the previous snapshot (reg_/sum_ allocated once; no double-free); the
+  rfc0047_river_solver bitwise regression stays green, confirming no numeric
+  change. No CMake hunk needed (no new files).
+
+- D164 cap1..6 CURVE, w1 deep check-to-river anchor, 300 cap-k iterations,
+  t16, Uniform primary arm (e_embed = online NC + pure menu term, BB):
+    cap online_nodes online_NC e_embed  pure_menu wall_ms  rss_peak_kb
+    1   10           0.02395    19.4822   19.4582    ~40000   30460
+    2   34           0.12661    3.4023    3.2757     22054    30460
+    3   106          0.09159    0.9970    0.9054     29938    34876
+    4   320          0.11082    0.2596    0.1488     53674    63428
+    5   878          0.07066    0.1089    0.0383    113493   163608
+    6   1924         0.12671    0.1289    0.00217   304047   351316
+  BrFavorable stays a large upper bound throughout (cap-6 0.7414 BB). The pure
+  menu term falls ~4-6x per added raise and only REACHES the 0.002 bar at cap-6
+  (0.00217, 8% over), but cap-6 already violates the G1 online envelope by
+  ~30x on wall (304 s for 300 iters vs the 10 s p95) and its online NC is 0.127
+  (unconverged; the 300-iter NC floor dominates e_embed for cap >= 3).
+
+- D164 cap-6 1000-ITER CONVERGENCE PROBE -> the 300-iter near-crossing was a
+  non-converged transient, NOT a pass (w1 anchor, t16):
+    cap-6 iters  online_NC  e_embed  pure_menu  wall_ms   rss_peak_kb
+    300          0.12671    0.1289   0.00217    304047    351316
+    1000         0.06821    0.0743   0.00610    700438    351236
+  As the policy converges the online NC falls but the pure-menu term RISES
+  (0.0022 -> 0.0061, now 3x over M): the frozen identity holds for any policy,
+  but its two terms re-split as sigma_k moves, and the 300-iter value mixed a
+  weak policy's own NC into almost the entire gap. At 1,000 iters cap-6 still
+  has e_embed 0.0743 BB (37x over M), an online NC 34x over M converging only at
+  ~T^-0.52 (300->1000 gave just 1.86x NC reduction), and a 700 s wall (70x the
+  G1 10 s p95) at 351 MB. Extrapolating the T^-0.52 slope, driving the cap-6 NC
+  to 0.002 needs order 10^5-10^6 iterations - days of solve - so no bounded cap
+  reaches a CERTIFIED e_embed <= 0.002 inside any online-feasible budget on this
+  deep root.
+
+- D164 DECISIVE VERDICT (for RFC 0048). Simple uniform menu widening cannot
+  satisfy G5 inside G1 at the deep 198-chip (99 BB, big_blind=2) check-to-river
+  anchor: the caps whose structural menu restriction approaches M (cap >= 5-6)
+  have trees too large to converge within the 10 s/1 GiB/5M-node online
+  envelope, while the caps that converge fast enough online (cap 1-2) carry a
+  3-19 BB menu error. This is a
+  measured quality-vs-latency conflict, not a solver bug (the EV<->kernel-CFV
+  oracle is <1e-6 at both cap-1 and cap-2; seedless determinism holds). Options
+  for the follow-up RFC, none authorized as a production change by D164:
+  (a) move the wider-menu equilibrium OFFLINE (pre-solve/blueprint the deep
+      roots instead of online re-solving) - changes the online/ offline split;
+  (b) selective/reach-aware widening (widen only high-reach betting nodes) -
+      requires a new reach-weighted gate, the current one is exact per-root MAX;
+  (c) re-open the M2 quality contract with an explicit bounded menu-error term -
+      explicitly NOT chosen, D164 forbids lowering/re-opening the quality bar,
+      and B0=0.010 BB cannot absorb a >=0.006 BB term alongside the existing
+      8.72e-3 G3+R0 allocation. RFC 0048 must present this evidence and select a
+  path under independent approval; the bench component and 0.002 BB bar remain
+  unchanged to score it. Single-root results stay candidates, not a global MAX.
+
+- D164 CLOSURE + RFC 0048 ACCEPTED (2026-11-13). Two independent non-author
+  reviews, both Approved by distinct agents: the D164 code review
+  (parameterization + leak fix; three Low items applied) and the RFC 0048
+  approval-agent review (four Low findings F1-F4 all resolved). Local commits
+  on the unpushed branch: f74f4e4 (parameterized cap-k measurement + bounded
+  leak fix + 15-fixture native test), 1955f4d (RFC 0048 draft), 0cc463c
+  (RFC 0048 Accepted decision record). F1 corrected the depth descriptor to
+  198 chips = 99 BB (big_blind=2); no BB gate value changes. Full rfc0047
+  ctest 12/12 green under release (1,723 s), including rfc0047_link_isolation,
+  the rfc0047_river_solver bitwise regression (leak fix numerics-neutral), and
+  rfc0047_cap_embedding (576 s, 15 fixtures). check-rfcs (48) and check-docs
+  (502) green. No production menu/resolver/contract/artifact change; the 0.002
+  BB bar, B0, G1, and all external contracts are unchanged; no CMake hunk was
+  needed. The G5 cap-1/cap-0 materiality KR is therefore closed as a measured
+  premise FAIL routed to an Accepted direction RFC, not a passed gate. The
+  next independent reachable KR is the turn-side manual G6 probe (the turn
+  quality assembler currently has only the synthetic CTest, not a real
+  serve->dual-report end-to-end run); the remaining M2 certification KRs
+  (Gate-2, fat-tail, end-to-end Certified, composition-root promotion) stay
+  blocked on a future Path A/B addendum and are not unblocked by D164.
+
+- T7 TURN-SIDE MANUAL G6 PROBE closed (2026-11-13, commit adf5984; independent
+  non-author review APPROVED, one Low + two Info all dispositioned). New
+  bench-only manual binary bigshark-rfc0047-turn-g6-report (NOT a CTest) drives
+  the real frontier -> 240 grouped exact river continuations -> sealed turn
+  reference -> external responder margin -> serve_turn_certified ->
+  turn_quality_report pipeline, emitting one always-populated 22-column G6 row
+  (within-instrument CERT + exact-hand QUAL + composed M2/B0 ledger, no
+  laundering). Review Low (nested N x N thread oversubscription) fixed: per-
+  group river solves now run serial inside the outer group-worker pool, matching
+  the native turn_serve fixture; numerics are thread-count invariant. No
+  production/contract change; one isolated CMake hunk; link isolation intact.
+  Evidence (w1, sealed margin = same-policy root BR, external G3 input):
+    100/100 iters, G3=0:       status CertificationRejected; responder PASS;
+      within NC 0.0769 (CERT fail), exact hybrid 0.1172 (QUAL fail),
+      local_bound 0.1172 > B0 0.010; 85.7 s; peak RSS 2.95 GB.
+    1000/1000 iters, G3=0.00566: responder PASS; within NC 0.00373 (CERT PASS),
+      exact hybrid 0.00571 (QUAL PASS), but B0 ledger turn_gap 0.00373 +
+      river_term 0.00198 + G3 0.00566 = local_bound 0.01137 > B0 0.010, so the
+      composed M2 gate still REJECTS (13.7% over) even though both quality
+      predicates pass - the G3 propagated envelope is the dominant term and the
+      anti-laundering dual report makes that visible in one row; 711 s;
+      2.96 GB. The 1000-iter wall/RSS came from the pre-oversubscription-fix
+      binary; the numeric fields are unaffected and a post-fix 60/60 smoke
+      re-confirmed the full pipeline (exit 0). The ~2.95 GB RSS is the 240
+      retained river deal matrices (~2.24 GB at 1081^2 x 8 B), not a leak.
+  REMAINING reachable KR after this: none that is independently completable
+  inside the current measurement authorization. Gate-2 (30 cold resolves x six
+  strata), fat-tail calibration, end-to-end Certified convergence, and
+  composition-root promotion all depend on a future RFC 0048 Path A/B addendum
+  (the G5 menu gate is a measured premise FAIL, so a cap-1 end-to-end
+  Certified cannot be produced); composition-root promotion additionally
+  requires its own explicit authorization.
+
+## RFC 0048 Path A Stage 1 — offline wide-menu / bet-sizing grid feasibility (D176)
+
+- D176 AUTHORIZATION (TechLead round 386, handoff msg_d1fa3d593b63). Bench-only
+  reversible spike; no production resolver/composition-root/oracle/API/contract
+  and no quality/budget gate change; no push/merge/publish/deploy/spend/delete
+  or worker start-stop; keep the 217 cross-RFC dirty items. Bounded single-
+  instance fail-fast runs; NO extra training/equilibrium long curve or full-tree
+  scan budget. Deliver exact node/bytes and build CPU/RSS/wall plus a feasibility
+  upper bound, using EXISTING RFC grid enumeration representative instances.
+  In-session self-review + independent math/arch review before implementation.
+
+- STAGE-1 ADDENDUM DESIGN (self-reviewed, pre-implementation). Two independent
+  widening levers, both already expressible through the existing
+  ActionAbstraction API (no new abstraction invented):
+  Lever 1 RAISE CAP: identity(k) for k=1..6 and k=0 (uncapped), default pot
+  fractions (bets 1/3,3/4,3/2; raises 1/2,1) with MinAndCap cover seeds.
+  Lever 2 BET-SIZING GRID: ActionAbstraction::declared(schedule, MinAndCap,
+  cap=1) over three representative schedules built only from existing Fraction/
+  StreetSizes primitives - coarse (bets {1/2}, raises {1/1}; the stage6
+  coarse_action precedent), identity (default schedule), wide (bets
+  {1/4,1/2,3/4,1,3/2}, raises {1/2,1,2}).
+  Roots: w1 turn-rooted (make_stratum_def; the offline trunk, known to EXHAUST
+  the 1 GiB TreeLimits at cap-0) and one w1 reached-river frontier leaf (the
+  per-card offline/online object; cap-0 is only 33,693 nodes / 23.7 MB).
+  Per instance record total/action nodes (turn vs river split),
+  accounted_bytes, dense infoset estimate with the SAME convention as
+  tree_budget (river action*1081+1081; turn action*1128+1128 via
+  live_combo_count), build wall/cpu ms and getrusage peak/current RSS, and a
+  typed feasibility verdict against TreeLimits (2,000,000 nodes / 1 GiB) and
+  the 1,000,000-infoset artifact envelope. tree_resource_exhausted is caught
+  and emitted as a BOUNDARY row so one oversized config never aborts the sweep
+  (negative size/cost conclusions are first-class outputs).
+  NEW bench probe rfc0047_patha_grid_budget (manual, NOT a CTest) + small native
+  test test_rfc0047_patha_grid_budget (tree builds only, no solve, fast):
+  (T1) cross-construction size identity identity(1) == declared(default,
+  MinAndCap, 1); (T2) determinism - repeat build gives identical nodes/bytes;
+  (T3) grid ordering coarse <= identity <= wide on the same root/cap;
+  (T4) cap monotonicity - identity(k) nodes non-decreasing in k, cap-0 largest;
+  (T5) resource verdict - a known small instance is under both envelopes and an
+  exhausted config yields tree_resource_exhausted not a crash; (T6) fail-close -
+  an invalid Fraction (zero denominator) throws at abstraction construction.
+  No equilibrium is run in stage 1; build cost is the tree-construction cost,
+  which is the actual artifact-envelope feasibility gate.
+
+- STAGE-1 INDEPENDENT DESIGN REVIEW -> APPROVED with required conditions
+  (2026-11-13, agent a3f1a288ff083710b; no redesign). Dispositions absorbed into
+  the implementation:
+  F1 Major: make_stratum_def/make_river_root_def reject cap>2, so each GameDef
+    is built ONCE with fixed literal cap 1 and the real cap k is carried only by
+    ActionAbstraction::identity(k)/declared(...,k) (the D164 pattern); the
+    GameDef does not gate tree building.
+  F2: grid node ordering uses WEAK <= only (fraction sets are NOT nested;
+    monotone-clamp refinement, not subset), with >=1 strict inequality per
+    fixture so it cannot pass vacuously.
+  F3: only tree_resource_exhausted is caught -> BOUNDARY row recording what();
+    invalid_argument/bad_alloc/overflow_error propagate (config/env/arithmetic
+    faults must never masquerade as an envelope boundary).
+  F4: the ctest forces exhaustion deterministically with a tiny
+    TreeLimits{max_nodes=100}, never a 1 GiB build (precedent
+    test_abstract_tree_fidelity).
+  F5: T1 compares tree_shape_digest + size + accounted_bytes, NOT action_id
+    (identity vs declared ids legitimately differ while trees are identical).
+  F8: add mean/max actions-per-action-node columns; the 1M-infoset figure is
+    documented as a structural proxy (menu-width-blind), with turn/river
+    infoset components reported separately and the identity(1) row pinned to
+    the existing measure_tree_budget w1 convention.
+  Plus: SizeSchedule is default-constructed then only the Flop/Turn/River
+  streets overridden (reduced() eagerly validates all four); ru_maxrss is a
+  process high-water mark, so the feasibility verdict uses deterministic
+  nodes/bytes/infosets only; raised-srp pot-8 relative inflation is a recorded
+  unmeasured residual. Matrix bounded at 20 solve-free builds.
+
+- STAGE-1 CENSUS RESULT (D176, w1, solve-free, bigshark-rfc0047-patha-grid-
+  budget; probe rc=0, 20 builds fail-fast). Structural counts are the
+  deterministic gate; wall/RSS are environmental. F8 convention pin: turn
+  infosets 12,408 matches measure_tree_budget(w1,1) exactly; the whole-trunk
+  conservative sum 4,268,305 reproduces RFC 0046's documented 4.27-5.62M
+  full-range footprint (different aggregate from tree_budget's per-card 89,723).
+  >> D179 UNIT-CORRECTION (independent review aee31581abed02b2f): the "OVER 1M"
+     infoset labels in the table and verdicts (1)/(3) below are RETRACTED. The
+     4.27M/1.15M/7.07M figures are U3 whole-trunk BUILD grand totals (all 48
+     river fanouts, never co-resident) and must not be compared to the online
+     ResolveLimits 1,000,000-infoset peak, which gates U1 = turn trunk + ONE
+     reached subtree = 26,461 infosets at cap1 (well inside 1M). U3 is still
+     bounded by the TreeLimits node/byte build caps. The byte-cap and the
+     reached-river cap6/cap0 over-1M rows below remain valid (correct units).
+     Read the table's infoset columns as U3 build totals, not envelope verdicts.
+  RAISE-CAP lever, TURN-ROOTED full trunk (nodes / MB / U3 build infosets):
+    cap1  10,923 nodes,  5.98 MB,  4.27M U3 (U1 online resident only 26,461)
+    cap2  153,267,      95.2 MB,  56.4M U3
+    cap3  1,152,843,   760 MB,    419M U3 (near byte cap)
+    cap4  RESOURCE_EXHAUSTED byte cap (1 GiB); cap5/cap6/cap0 same boundary,
+          each fail-fast ~1.4 s then sweep continues, peak RSS 758 MB.
+  RAISE-CAP lever, REACHED-RIVER single subtree (the online/ per-card object,
+  here U1 == the subtree's own infosets):
+    cap1..5 fit 1 GiB AND 1M infoset (cap5 2,631 nodes / 1.5 MB / 0.95M);
+    cap6 5,769 nodes / 3.0 MB / 2.08M infosets OVER 1M;
+    cap0 33,693 / 23.7 MB / 12.1M infosets OVER 1M.
+  SIZING-GRID lever at cap=1, turn trunk (nodes / MB / U3 build infosets):
+    coarse   2,847 / 1.49 MB / 1.15M U3 (NOT an envelope overrun post-D179)
+    identity 10,923 / 5.98 MB / 4.27M U3
+    wide     18,417 / 11.8 MB / 7.07M U3 (1.66x identity; still byte-feasible)
+    reached-river grids all tiny (7.6K-14K U1 infosets), all envelopes pass.
+  FEASIBILITY VERDICTS (revised under the corrected units):
+  (1) The 1 GiB TreeLimits BYTE cap binds the full TURN trunk build at raise
+      cap >= 4 (valid U3 build boundary). The prior "1M infoset exceeded at
+      cap-1 full trunk" claim is retracted: online U1 is only 26,461. A full
+      turn-rooted equilibrium is still not the chosen design, but on build
+      cost/depth grounds, not the (misapplied) online infoset gate.
+  (2) On the reached-river object only caps <= 5 fit 1M infoset, but D164
+      already showed caps <= 5 miss the 0.002 quality bar and cap-6 (which
+      approaches it) exceeds 1M even on the single subtree; the envelope and the
+      quality bar therefore do not intersect for raise-cap widening.
+  (3) Bet-sizing widening is structurally cheaper than raise-cap widening, BUT
+      the D179 prefix canary proved coarse/wide declared grids are not ordered
+      prefixes of identity(0), so their e_embed against identity(0) is undefined
+      under the frozen formula (map fails closed). It remains a lead requiring a
+      new union-menu reference formula (separate addendum), not a measured pass.
+      Build cost is negligible for every feasible instance (turn cap1 7 ms;
+      reached-river
+      sub-30 ms); only boundary builds reach ~1.4 s / 758 MB.
+  Residual (bounded, not expanded): raised-srp pot-8 relative grid inflation
+  unmeasured; infoset count is menu-width-blind (mean/max actions/node columns
+  added for stage-2 byte costing); no equilibrium was run by design.
+
+## RFC 0048 Path A Stage 2 — in-budget candidate metering fix and quality chain (D179)
+
+- D179 AUTHORIZATION (TechLead round 389, handoff msg_be3bd1ab78d9). Bench-only;
+  keep cap1 / e_embed<=0.002 / B0=0.010 / G1 and all existing resource/time
+  budgets; reuse only the already-authorized consumable offline measurement
+  budget and existing bounded native entries; single-instance fail-fast; no new
+  training/equilibrium/full-tree-scan budget, no parallel duplicate curves, no
+  gate lowering or synthetic/old-menu pass; protect the 217 cross-RFC dirty
+  items; no push/merge/publish/deploy/delete/worker start-stop.
+
+- STAGE-2 ADDENDUM DESIGN (self-reviewed, pre-implementation). Source audit of
+  the actual budget/count definitions found a stage-1 UNIT CONFLATION that must
+  be corrected before any candidate is called feasible:
+  Unit U1 ONLINE RESIDENT (gated by ResolveLimits max_information_sets=1e6,
+    engine/include/bs/resolver.hpp:185; ContinuationBudget mirrors it for ONE
+    inner nested solve): the turn trunk plus ONE reached river subtree, i.e.
+    tree_budget's conservative_online_sum = turn_infosets +
+    reached_river_infosets_max (w1 identity cap1 = 12,408 + 14,053 = 26,461).
+  Unit U2 OFFLINE BSNCV ARTIFACT ROWS (cv_oracle.hpp OracleRow; builder emits
+    frontier_leaves x 2 seats x 1081 combos, one CV double + error per row;
+    rfc0047_oracle_build.cpp:294-313): a per-combo value table whose row count
+    is menu-WIDTH-independent (width changes only the number of turn betting
+    lines/frontier leaves, not the per-combo row). w1 cap1 = 432x2x1081.
+  Unit U3 WHOLE-TRUNK BUILD GRAND TOTAL (all 48 river fanouts summed): never
+    resident together; RFC 0047 solves per-river, so it is not an online-peak
+    envelope unit but IS bounded by the build TreeLimits node/byte caps. The
+    stage-1 patha conservative_infoset_sum (4.27M at cap1) is U3 and must not be
+    compared to the 1M online gate.
+  Consequence: against the correct U1 unit every turn trunk in the stage-1
+  matrix is far inside 1M (the online river subtree is the binding part, and
+  D164's reached-river cap6=2.08M over-1M conclusion already uses the correct
+  single-subtree unit and stands). The stage-1 "coarse turn trunk 1.15M over
+  1M" verdict was a U3-vs-U1 mislabel and is withdrawn.
+  IMPLEMENTATION QUEUE (bounded, directed; no 20-instance rerun):
+  Q1 Correct the meter: patha_grid_budget emits U1 (turn + reached-max), U2
+     (leaf x 2 x 1081 row estimate), and U3 (labeled build grand total) as
+     distinct fields, each mapped to its own envelope; boundary rows keep
+     bytes=0 and are structurally incapable of a feasible verdict (native
+     fixture pins this so a placeholder can never read as a success).
+  Q2 Native fixtures (no solve): meter-caliber identity against
+     measure_tree_budget(w1,1) for U1; determinism; grid weak ordering with a
+     strict step; tight-limit resource rejection; U1/U2/U3 non-equivalence.
+  Q3 Generalize the embedding quality entry to accept an explicit
+     ActionAbstraction (not just identity(k)), then run bounded single-instance
+     e_embed on the REACHED-RIVER coarse/identity/wide grid candidates at cap1
+     under the same D164 iteration budget - the one promising combination
+     (sizing grid) never quality-measured. Report e_embed/pure-menu/NC honestly;
+     a reached-river grid is <15K U1 infosets so it is in-budget to measure.
+  STOP/REPORT conditions: if a candidate cannot reach a runnable in-budget
+  quality entry, emit exact cost/gap and release; never claim M2 from counts,
+  normal probe exit, or near-1M proximity. New-candidate all-root/production-G1
+  results are explicitly UNVALIDATED unless measured.
+
+- STAGE-2 INDEPENDENT REVIEW -> CHANGES REQUESTED (agent aee31581abed02b2f;
+  F1 independently reproduced in-session). Dispositions:
+  F1 BLOCKING confirmed: declared coarse/wide grids are NOT ordered prefixes of
+    identity(0). On the w1 reached-river root, cap0 menu is
+    Check/Bet2/Bet3/Bet6/Bet198; coarse = Check/Bet2/Bet198 (interior sizes
+    dropped -> pair_dfs prefix mismatch at index 2); wide adds Bet4 (6 vs 5
+    actions -> bounded menu exceeds cap-0). map_bounded_to_cap0 correctly throws
+    invalid_argument for both; only the identity grid embeds. Therefore grid
+    e_embed against identity(0) is structurally undefined under the frozen
+    formula, NOT a failed measurement. Q3 is RESCOPED: (a) add a native canary
+    pinning identity-accepted / coarse+wide-rejected as a typed result; (b) do
+    NOT build a union-menu reference or re-derive the embedding identity - that
+    is a new frozen formula requiring its own RFC 0048 addendum, outside D179.
+    The bench-local explicit-Abstraction entry on the solver remains a valid
+    mechanical change but has no embeddable non-identity consumer yet, so it is
+    deferred until such an addendum (no speculative abstraction added).
+  F2 retract the mislabel in BOTH the accepted RFC 0048 Stage-1 Evidence and
+    the tracker stage-1 table inline; keep the valid cap>=4 1 GiB byte boundary
+    (U3 build) and the reached-river cap6/cap0 over-1M U1 rejections.
+  F3 retire GridBudget.under_1m_infoset (the U3-vs-1M conflated boolean); map
+    U1 -> ResolveLimits 1M infoset/5M nodes/1 GiB online peak; U3 -> TreeLimits
+    2M nodes/1 GiB build only; U2 -> G4 census as rows x 40 B/row (no 1M-row
+    artifact gate exists).
+  F4 reword: U3 IS bounded by build byte/node limits, just not an online-peak
+    infoset unit.
+  F5 pin U2 by root kind (turn: chance_nodes x48 x2 x1081; reached-river no
+    chance: 2x1081=2162) and port tree_budget's chance-child walk to compute the
+    reached-max single subtree for U1; pin constants U1 w1=26,461 and
+    analytic U2=933,984 in the native fixture.
+  F6 add the F1 prefix canary and a pin that every boundary row has bytes==0 and
+    all envelope verdicts false.
+  F7 coarser menus remove options, so a larger restriction term is the expected
+    direction against any valid reference (no ordering theorem for non-nested
+    menus); even a favorable coarse result is a different AbstractionId and
+    cannot replace cap-1 without re-running G2/G3/B0 - menu-reshaping evidence,
+    not a Path A pass.
+  REVISED stage-2 deliverable (in-scope, bounded, no new formula/training):
+  meter rewrite to distinct U1/U2/U3 with correct envelopes + native calibration
+  + the embedding prefix canary + doc retractions. The grid-quality question is
+  closed for D179 as "not expressible under the frozen identity(0) reference",
+  with the union-reference formula named as the next addendum's explicit input.
+
+- STAGE-2 IMPLEMENTED + native gate green (D179, bench-only). Meter rewritten
+  into distinct U1/U2/U3 with correct envelopes; the conflated
+  under_1m_infoset/conservative_infoset_sum fields are retired.
+  patha_grid_budget now: U1 = turn infosets + largest single reached-river
+  subtree (chance-child walk ported from tree_budget), gated by the 1M online
+  peak; U2 = BSNCV OracleRow count (turn: chance_nodes*48*2*1081; reached-river:
+  2*1081) x sizeof(OracleRow), G4 storage unit, no 1M-row gate; U3 = all-48
+  build grand total gated only by TreeLimits node/byte. Boundary rows keep
+  bytes=0 and all envelope verdicts false (regression-pinned).
+  Native test expanded to 8 fixtures incl. F1 embedding prefix canary
+  (identity grid maps to cap0; coarse/wide throw invalid_argument), F5
+  calibration pin (U1 w1=26,461 == tree_budget conservative_sum; U2=933,984),
+  F6 boundary all-false pin, and U1/U2/U3 non-equivalence. Probe re-run confirms
+  corrected rows: turn cap1 U1 26,461 (under_1m=true), U2 933,984/37,359,360 B,
+  U3 4,268,305 (labeled build total); reached-river cap1 U1 11,891, U2 2,162.
+  Q3 grid-quality chain is closed for D179 as structurally undefined under the
+  frozen identity(0) reference (F1), NOT a failed measurement; the union-menu
+  reference formula is the explicit next-addendum input. No solver/abstraction
+  generalization was added (no speculative consumer); no training budget used.
