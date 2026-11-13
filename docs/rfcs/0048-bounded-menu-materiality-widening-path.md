@@ -1,7 +1,7 @@
 ---
 rfc: "0048"
 subject: "Bounded Action-Menu Materiality and the Certified Menu-Widening Path"
-status: "Draft"
+status: "Accepted"
 authors: "Claude (zzzode agent session)"
 created: "2026-11-13"
 updated: "2026-11-13"
@@ -76,7 +76,9 @@ e_embed(k) = e_Gk(sigma_k) + pure_menu_term(k),   both terms >= 0
 where `e_Gk` is the bounded policy's own exact NashConv and the pure menu term
 is the additional best-response value unlocked only by cap-0-only actions.
 
-D164 cap-k curve, w1 deep check-to-river anchor (198 BB behind, pot 4),
+D164 cap-k curve, w1 deep check-to-river anchor (198 chips = 99 BB behind at
+big_blind = 2; pot 4 chips = 2 BB; all table values below are BB after the
+kernel's big-blind normalization, so no gate number changes),
 300 cap-k iterations, 16 threads, Uniform primary arm, BB:
 
 | cap | online nodes | online NC | e_embed | pure menu | wall (ms) | RSS peak (KB) |
@@ -103,11 +105,20 @@ Verified facts:
    as the policy's own NashConv falls and the structural restriction is exposed.
 2. The online NashConv converges slowly (~T^-0.52; 300->1000 iterations gave
    only 1.86x reduction). At cap-6 the 1000-iteration NC is still 0.0682 BB,
-   34x over M; reaching 0.002 by extrapolation needs order 10^5-10^6 iterations.
+   34x over M; reaching 0.002 by extrapolation needs order 10^5-10^6
+   iterations. This iteration estimate is a NECESSARY-NOT-SUFFICIENT, if
+   anything optimistic lower bound: even if the NC reached 0.002, the pure-menu
+   structural floor observed at cap-6 (0.0061 and non-decreasing across the only
+   two observations) would keep e_embed = NC + pure-menu above M on its own.
 3. Cost already violates G1 at cap-6: 700 s wall for 1000 iterations (70x the
-   10 s p95), 351 MB RSS. The caps whose structural menu term approaches M
-   (cap >= 5) cannot be converged online; the caps that converge fast enough
-   (cap 1-2) carry a 3-19 BB menu error.
+   10 s p95), 351 MB RSS. The binding G1 dimensions here are wall time and
+   convergence, NOT memory or node count (351 MB << 1 GiB; 1,924 online nodes
+   << 5 M). Note the capcurve rss_peak_kb is a process-level getrusage
+   high-water mark across an in-process multi-cap sweep; clean per-cap RSS uses
+   a single-cap `embed` process, and either way RSS is non-binding. The caps
+   whose structural menu term approaches M (cap >= 5) cannot be converged
+   online; the caps that converge fast enough (cap 1-2) carry a 3-19 BB menu
+   error.
 4. Correctness is independent of the convergence issue: the embedded EV root
    values match the bounded kernel's own CFV x 990 to < 1e-6 at both cap-1 and
    cap-2; serial/threaded results are bitwise identical; the 15-fixture native
@@ -147,6 +158,12 @@ the same embedding measurement, now scored offline without a latency constraint.
   codec, online resolver read-only consumption.
 - Open design item: artifact size and build cost for wide-menu deep roots, and
   how the offline wide reference composes with the RFC 0047 turn-CV oracle.
+- The Path A stage-1 spike must not anchor on raise-count alone: it also
+  evaluates an alternative BET-SIZING abstraction (a different pot-fraction
+  grid rather than more raises per street), which could recover the missing
+  strategic value at lower tree depth than a wider raise cap. Both raise-cap
+  widening and sizing-grid redesign are scored with the same embedding
+  measurement before either is selected.
 
 ### Path B (secondary candidate): reach-aware selective widening
 
@@ -219,8 +236,9 @@ reach-weighted certification gate); both are out of scope here.
 ## Rollout Plan
 
 1. Accept this RFC on the measured evidence (no code promotion).
-2. Path A stage 1: offline wide-menu deep-root feasibility spike (size/build
-   cost), stop if it exceeds the artifact envelope.
+2. Path A stage 1: offline deep-root feasibility spike covering BOTH a wider
+   raise cap and an alternative bet-sizing (pot-fraction) grid, measuring
+   size/build cost; stop if both exceed the artifact envelope.
 3. Path A stage 2 or Path B spike: produce a design whose embedding measurement
    clears M on the binding anchor; stop and re-plan if it cannot.
 4. Only after a design clears M within its stated envelope does a separate
@@ -236,7 +254,10 @@ revertible.
 ## Open Questions
 
 - Is Path A (offline wide blueprint) feasible within the artifact envelope for
-  the deep 100 BB roots, and how does it compose with the turn-CV oracle?
+  the deep 99 BB (198-chip) roots, and how does it compose with the turn-CV
+  oracle?
+- Does a wider raise cap or a redesigned bet-sizing (pot-fraction) grid reach M
+  at the lower artifact cost in the Path A stage-1 spike?
 - Can a reach-weighted gate (Path B) be derived with a certified bound that the
   existing exact-MAX gate cannot?
 - Do any shallower frontier roots clear M at a small cap, changing where
@@ -253,4 +274,41 @@ revertible.
 
 ## Decision
 
-Pending independent approval-agent review.
+Accepted 2026-11-13 by an independent non-author approval agent in one review
+round (verdict Approved; four non-blocking Low findings F1-F4, all resolved in
+this revision before recording the decision).
+
+```text
+Author agent: Claude (zzzode agent session)
+Approved by: independent approval agent a23f1202442be9357
+             (auto_model/alwaysday1_max; non-author; separate launch; distinct
+             from the D164 code-review agent)
+Decision date: 2026-11-13
+Review outcome: Approved
+Reviewed scope: the full RFC, the committed D164 measurement component
+(engine/benchmarks/rfc0047/cap_embedding.*, rfc0047_cap_materiality.cpp),
+the 15-fixture native test, commits 7ea92b3 and f74f4e4, and the cap1..6 /
+cap-6 convergence evidence in docs/plans/0047-stage1-tracker.md; the rfc0047
+configure-time link guard and commit scope were independently confirmed to
+keep production isolated; check-rfcs (48) and check-docs (502) green.
+Review summary: the central conclusion (no bounded cap reaches certified
+e_embed <= 0.002 BB inside G1) reproduces from the committed data and code;
+the T^-0.52 extrapolation is appropriately hedged; Path A/B are credible and
+Path C is arithmetically impossible (0.00872 + 0.00610 = 0.01482 > B0);
+the 0.002 BB bar is never relaxed and the RFC stays measurement-only.
+Finding dispositions:
+  F1 unit mislabel "198 BB" corrected to 198 chips = 99 BB (big_blind=2);
+     no BB gate value changes (kernel normalizes by big_blind);
+  F2 RSS caveat added - rss_peak is a process-level high-water mark and RSS/
+     nodes are non-binding; wall time and convergence are the binding G1
+     dimensions;
+  F3 alternative bet-sizing (pot-fraction) grid named explicitly inside the
+     Path A stage-1 spike rather than anchoring on raise-count alone;
+  F4 the 10^5-10^6 iteration extrapolation is stated as a
+     necessary-not-sufficient lower bound because the cap-6 pure-menu
+     structural floor (0.0061) alone keeps e_embed above M.
+Authorization scope: this acceptance validates the recorded evidence and the
+Path A/B direction only. It authorizes NO production menu, resolver, contract,
+or artifact change; each Path A/B implementation requires its own later
+independently-approved addendum, and any spend retains its separate approval.
+```
