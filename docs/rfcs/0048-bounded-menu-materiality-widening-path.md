@@ -1158,6 +1158,208 @@ flag noted; and the uniform-average candidate was rejected on the
 measured anchor (bounded NashConv 0.0746 BB versus the linear control
 0.0276 BB). No G5 or M2 verdict changes.
 
+## Per-Node Mixed-Menu Addendum (D202)
+
+The Path A closure showed the menu restriction bites at root-level
+nodes, but the production `ActionAbstraction` has no per-node seam.
+This addendum authorizes the minimal bench-only mechanism that makes a
+heterogeneous per-node menu real and solvable without changing any
+production class, schema, protocol, or flag.
+
+### A. Why an edge mask rather than a new tree
+
+`AbstractTree` is immutable and constructible only from a
+`GameDef` plus a uniform per-street `ActionAbstraction`; its
+no-build constructor and builder are private to the tree library. A
+pruned tree or a node-dependent abstraction therefore cannot be built
+in bench without modifying production code. The minimal correct
+composition is an edge mask over an existing reference tree: nodes,
+edges, and terminal payloads are unchanged, while the candidate
+policy's per-node allowed action set varies. The fold and stake
+ledgers, the blocker showdown matrix, snapshot reach scaling, and the
+scratch pool are reused as data and conventions; the CFR traversal
+itself cannot be injected into the TU-private river solver, so the new
+bench translation unit contains a self-contained parallel
+mixed-menu solver with compact allowed-slot storage and a per-node
+reference-edge-to-slot map — the same parallel-instrument precedent as
+the union, reach-bound, and restricted instruments. No production,
+ABI, or public-API edit is required or forced.
+
+### B. Mask validity and the information boundary
+
+A mask selects, per public action node, a subset of the reference
+edges the candidate policy may use. It is accepted only when: every
+allowed edge exists in the frozen reference (menus never grow); every
+mapped action node retains at least one allowed edge; the mask is a
+function of public node identity alone and never of hole cards or
+combo index — the mask structure has no combo dimension, and tree
+nodes are the engine's infoset units (distinct public DFS histories
+are distinct nodes with no engine-level equivalence class);
+legality-derived passive edges (fold, check, call) are never
+removable, so a suppressed reference edge can only be aggressive; and
+the resource hard caps are checked before allocation. Because no
+second tree exists, the subset map cannot be produced by
+`map_bounded_subset`; a standalone `validate_mask_subset_map` runs the
+identical kind, duplicate-match, passive-extension, and non-empty
+checks and fails closed on any violation, plus two single-tree
+branches: every map index must be in range with the node map an
+identity bijection over the mask-row node set (the analog of the
+unavailable same-game-definition check), and every allowed edge's
+child must carry a mask row (allowed-edge child closedness, the
+analog of recursive paired-tree descent). The mask constrains only
+the candidate. Reference best-response maximization keeps the full
+menu, including edges the candidate cannot play, so opponent
+deviation and extension option value stay measurable and nothing is
+deleted from the reference domain.
+
+### C. Solver and embedding
+
+The mixed-menu solver runs CFR+ over the reference tree structure
+with per-node regret, average, and policy storage sized to the allowed
+slot subset; every policy operation ranges over exactly the allowed
+slots — the RM+ uniform fallback is `1/|allowed(n)|` and identical for
+all 1,081 combos, regret accumulation and clipping and average-sum
+accumulation touch allowed slots only, and traversal never descends a
+disallowed edge. Each node has a fixed actor, so the mask restricts
+only that seat's choices and no probability mass can leak through a
+removed edge; the standard RM+ regret bounds apply unchanged to this
+restricted extensive-form game. The solver owns a best-response walk
+over allowed edges (the restricted-instrument pattern) that produces
+the masked game's own bounded NashConv; the reference evaluator is
+never reused for that quantity. Its snapshot is re-expanded into full
+reference-width rows with exact zero bits on disallowed edges —
+compact slot storage is expanded before any union or reach-bound
+evaluator indexes it, and zero-reach nodes retain normalized fallback
+rows — which yields a mask-derived subset map (`edge_map[n][a] = a`
+when allowed, else `-1`, identity node map) consumable by the existing
+evaluators without new math. The single-tree evaluator wiring is
+pinned: the existing snapshot entry points receive the reference tree
+as both the reference and the bounded-tree argument, together with the
+identity node map, the reference-width re-expanded rows, and the mask
+edge map; the bounded menu width then equals the reference width and
+disallowed edges return zero before indexing, so no parallel evaluator
+is introduced. The Path B Lemma-1 identity and the Path
+A residual/menu decomposition apply unchanged. The zero menu-gap
+condition is a subtree property, not a local-menu property:
+`menu_gap(n) == 0` holds only when no reachable same-seat mapped
+action node in n's whole subtree carries a suppressed edge
+(`subtree_is_extension_free`); a node whose local mask equals the full
+reference menu can still measure a positive gap, and the pre-selected
+root-only candidate is exactly such a node. Certificates from any
+earlier policy never transfer to the mixed policy, which is solved and
+evaluated from scratch.
+
+### D. Candidate, gates, and budget
+
+The single pre-selected candidate is root-only widening on the
+enumerable shallow root: the root receives the full cap-0 menu and
+every deeper node keeps the coarse cap-1 menu, directly testing the
+Path A finding that the removable value concentrates at root-level
+restricted nodes. Native gates cover: mask validation including the
+passive-edge ban; the standalone subset-map validator with every
+rejection branch, including identity-bijection/index-range and
+allowed-edge child-closedness; snapshot legality with exact zero mass
+on disallowed edges and normalized fallback rows; a pre-solve
+structural check that each non-root node's allowed reference-edge set
+equals the coarse node's action set one-to-one (empirical
+zero-pattern equality across separately solved games is not
+asserted), plus overall distinctness from both the coarse and
+full-cap-0 policies by content hash and per-combo L1, where all
+numeric comparison lives; the external root-CFV oracle over the
+pinned single-tree evaluator wiring; full-menu best-response
+preservation alongside the solver's own allowed-edge NashConv walk;
+structural info-set consistency and bitwise reach conservation; the
+corrected subtree-extension-free gap identity evaluated per seat,
+including a positive root gap and a pinned zero gap at a genuinely
+extension-free terminal-side node under the established 1e-9 chip
+cross-walk tolerance; determinism; and resource fail-close as typed
+propagation of reference-construction exhaustion plus a nodewise
+storage bound. The
+bounded w1 300-iteration anchor is used only after the tiny gates
+pass, under the existing per-run single-instance authorization. Its
+resource class is pre-declared: the solve runs over the full cap-0
+reference tree (11,232 action nodes, 33,693 total nodes, 23.7 MiB at
+w1) and is expected to take on the order of thirty minutes rather
+than the roughly twenty-second bounded-anchor class, with resident
+memory bounded by the reference envelope; any result remains
+exploratory unless it meets the frozen 0.002 BB target under the
+original target definition.
+
+### E. Scope and review record
+
+The work stays inside `bigshark_rfc0047_bench` with no production,
+ABI, proto, persisted-format, or CLI change, no new framework or
+external dependency, no full-root sweep, and no iteration increase.
+The independent review rounds and verdicts are recorded here before
+closure.
+
+```text
+Addendum D202 review round 1 — 2026-11-14
+Reviewer: independent session agent a56fda80e49e62818 (non-author)
+Verdict: Changes Requested
+Findings:
+  F1 (blocking): the "full local menu => zero menu gap" gate repeated
+    the D195 local-vs-subtree error; menu gap is zero only when the
+    whole mapped same-seat subtree is extension-free.
+  F2 (medium): numeric policy identity with the coarse solution at
+    non-root nodes is false — the widened root changes descendant
+    reach flows; only support/zero-pattern locality is assertable.
+  F3 (blocking-adjacent): a hand-built mask map bypassed the
+    kind/duplicate/passive invariants and the design lacked a
+    reference-width re-expansion contract; passive-edge removal must
+    be banned and a standalone validator specified.
+  F4 (low-medium): the masked game needs its own allowed-edge BR walk
+    for bounded NashConv; the full-tree anchor wall/RSS class was not
+    pre-declared; the resource gate cannot rely on mask-driven
+    TreeLimits exhaustion.
+Dispositions: all four incorporated in this revision (subtree M8,
+  support-locality M4, passive ban plus validate_mask_subset_map plus
+  re-expansion contract, internal BR walk, pre-declared order-30-minute
+  anchor, typed-propagation resource gate); parallel-solver wording in
+  section A corrected to distinguish reused data from copied traversal.
+
+Addendum D202 review round 2 — 2026-11-14
+Reviewer: the same independent session agent a56fda80e49e62818
+Verdict: Approved; no further design review round required.
+Low precision items, all incorporated before implementation:
+  L1: non-root locality is a pre-solve structural allowed-set check,
+    not empirical per-edge positivity equality (separate solves can
+    place exactly zero mass where another places positive mass).
+  L2: the single-tree evaluator wiring is pinned in the oracle gate —
+    reference tree passed as both arguments, identity node map,
+    reference-width re-expanded rows, mask edge map; a parallel
+    evaluator is forbidden.
+  L3: the standalone validator explicitly enumerates the
+    identity-bijection/index-range and allowed-edge child-closedness
+    rejection branches.
+  L4: extension-freedom in the subtree gap identity is evaluated per
+    seat, and the zero-gap pin uses the established 1e-9 chip
+    cross-walk tolerance rather than bit-exact comparison.
+
+Addendum D202 implementation review — 2026-11-14
+Reviewer: the same independent session agent a56fda80e49e62818
+Verdict: Approved; no blocking, major, or medium findings.
+Scope confirmed: two new bench translation units plus two additive
+CMake hunks inside the rfc0047 guarded library; zero diff to frozen
+instruments and every production surface. The corrected gap walk is
+the standard NashConv best-response recurrence (own nodes return the
+per-combo BR max while accumulating full-forward-reach times local
+gap; opponent nodes play the average policy), and the permanent M3b
+all-true-mask gate reproduces the river kernel's average policy and
+NashConv bitwise, independently certifying the slot-based CFR+ and
+the telescope.
+Low observations, both addressed before closure:
+  L1: off-closure reach rows exist only for cross-instrument table
+    shape and are never consumed; a code comment now states this
+    explicitly.
+  L2: M3b now runs on two distinct fixtures (8-chip and 20-chip roots)
+    so the kernel equivalence cannot be edge-specific.
+Residual risk is confined to the bench exploratory tier: the optional
+w1 anchor remains an order-30-minute full-reference solve with no
+certificate transfer, and any G5 claim still requires the frozen
+0.002 BB target on the re-solved mixed policy.
+```
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the

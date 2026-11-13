@@ -2529,3 +2529,251 @@ RFCs 0041/0043/0045/0046).
   future-exact option, deferred); L3 verdict recorded here and in RFC
   subsection D. Frozen solver/union/cap TUs zero diff; reach_bound change
   purely additive; three isolated CMake hunks.
+
+## Per-node mixed-menu tiny mechanism (D202)
+
+- D202 AUTHORIZATION. TL extends bench owning scope to the previously
+  forbidden per-node heterogeneous menu / selective widening, built ONLY
+  from existing tree/solver/game primitives. Production
+  ActionAbstraction public API, persisted schemas, external protocols,
+  production flags are NOT changed; cap0 reference, cap1 default,
+  0.002/B0/G1, the 300-iter/single-instance resource basis, and root
+  weights/target/conservatism are frozen. One pre-selected candidate, no
+  full-root scan, no grid sweep, no iteration increase, no cumulative
+  pool. Any non-cap1 candidate menu stays bench/exploratory labeled.
+
+- STRUCTURAL FACT (pre-implementation survey; review round 1 corrected).
+  AbstractTree is immutable and constructible only from (GameDef,
+  ActionAbstraction); the private no_build ctor and builder internals are
+  not bench-reachable, and ActionAbstraction carries only per-street
+  uniform schedule+cap+seeds, so a pruned-tree or per-node abstraction
+  cannot be materialized without a production change. The minimal
+  bench-correct composition is therefore NOT a new tree but an EDGE MASK
+  over an existing reference tree: all nodes/terminals/edges stay, and
+  only the candidate policy's per-node allowed action set changes.
+  Honesty correction from independent review: the terminal/stake
+  ledgers, the a0 showdown matrix, snapshot reach scaling, and the
+  vector pool are reused as DATA and conventions, but the CFR traversal
+  cannot be injected into the anonymous-namespace RiverGame (its
+  layout/traversal/snapshot loops are TU-private) — the new TU contains
+  a self-contained parallel MixedMenuSolver with compact allowed-slot
+  storage and a per-node reference-edge-to-slot map, the same precedent
+  as UnionGame / ReachInstrument / RestrictedInstrument. No production,
+  ABI, or public-API edit is required or forced.
+
+- MECHANISM (new bench TU mixed_menu.{hpp,cpp}, no production edit).
+  MixedMenuMask: one vector<bool> per action node over the REFERENCE
+  tree's edge indices; allowed(n,a) => the candidate may use reference
+  edge a at node n. Validation (fail-closed invalid_argument):
+   (1) only removal: every allowed edge is an existing reference edge,
+       no menu ever grows beyond the frozen cap0 reference;
+   (2) non-empty: every mapped action node keeps >=1 allowed edge;
+   (3) public-information consistency: the mask is a function of public
+       node identity only, never of hole cards/combos — the structure
+       holds one mask row per public node and has no combo dimension
+       (tree nodes ARE the engine infoset units: distinct public DFS
+       histories get distinct nodes, and the engine has no infoset
+       equivalence class across nodes);
+   (4) reference integrity: opponent deviation edges are NEVER removed
+       from the reference — the mask constrains only the candidate
+       policy, while BR continues to maximize over the full reference
+       menu, so opponent exploitation stays measurable;
+   (5) passive-edge ban (review F3): legality-derived passive edges
+       (Fold/Check/Call, i.e. non-aggressive actions) are never
+       removable; a -1 entry on a passive edge is rejected as state
+       drift, identical to the D184 map_bounded_subset precondition;
+   (6) hard caps: node/action/byte TreeLimits checked before allocation,
+       tree_resource_exhausted propagated, never an OOM wait.
+  Because no second AbstractTree exists, map_bounded_subset cannot be
+  called directly; the TU instead provides standalone
+  validate_mask_subset_map(reference, map) running the IDENTICAL
+  kind/duplicate/passive-extension/non-empty checks, and M2 exercises it
+  including each rejection branch. Single-tree-specific checks are
+  named explicitly (review L3): (a) every edge_map index is in range
+  and node_map is the identity bijection over the mask-row node set
+  (the analog of the impossible same_game_def check); (b)
+  allowed-edge child closedness — every allowed edge's child node
+  carries a mask row, throwing if an allowed edge reaches a row-less
+  child (the analog of pair_subset_dfs recursive pairing).
+  MixedMenuSolver: CFR+ over the reference tree STRUCTURE with regret/
+  sum/sigma allocated per node over the ALLOWED slot subset only (slot
+  storage plus a per-node reference-edge->slot map). Every policy
+  operation ranges over exactly the allowed slots: RM+ uniform fallback
+  is 1/|allowed(n)| (public, identical across all 1,081 combos),
+  regret accumulation and negative clipping, average-sum accumulation,
+  and traversal never descend a disallowed edge. The fixed node actor
+  means the mask restricts only that seat's choices; both seats'
+  self-play policies normalize over the node's allowed set, so no
+  probability mass can leak through a removed edge and the RM+ regret
+  bounds apply unchanged. Disallowed subtrees are retained solely as
+  reference-BR territory. The solver owns its own BR walk OVER ALLOWED
+  EDGES (RestrictedInstrument pattern) to produce the masked game's
+  bounded_nash_conv_bb; the reference evaluator is never reused for the
+  masked game's own NashConv.
+  Re-expansion contract (review F3): emitted snapshot rows are full
+  REFERENCE-width with exact zero bits on disallowed edges; compact slot
+  storage is expanded BEFORE any union/reach evaluator call (those
+  index avg_sigma through edge_map), and zero-reach nodes retain
+  normalized fallback rows so validate_snapshot passes over the
+  identity-mapped node set. The mask-derived SubsetMap is
+  edge_map[n][a] = a when allowed else -1, node_map identity. No new
+  math: the D192 Lemma-1 and D195 restricted/menu decomposition apply
+  unchanged. CORRECTED zero-gap condition (review F1): menu_gap(n)==0
+  is a SUBTREE property — it holds only when no reachable same-seat
+  mapped action node in n's whole subtree carries a -1 edge
+  (subtree_is_extension_free); a node whose LOCAL mask equals the full
+  reference menu can still have positive menu_gap, and the root-only
+  candidate is exactly such a node.
+
+- PRE-SELECTED CANDIDATE (one). On the tiny 8-chip root: ROOT-ONLY
+  widening — the root node gets the full cap0 menu (5 edges), every
+  deeper node keeps the original coarse cap1 menu. This directly tests
+  the D195 diagnostic that ~96-100% of removable menu value sits at
+  root-level restricted nodes, at the smallest enumerable scale.
+
+- NATIVE TINY GATES (new test_rfc0047_mixed_menu.cpp, RED first, real
+  solves, no text matching):
+  M1 mask validation: over-size/empty/public-violation/unknown-edge/
+     passive-removal masks rejected; a valid mask builds;
+  M2 structural nesting: validate_mask_subset_map runs the identical
+     D184 kind/duplicate/passive-extension/non-empty checks on the
+     mask-derived SubsetMap, including every rejection branch;
+  M3 policy legality: snapshot rows finite, non-negative, normalized to
+     1 over ALLOWED edges with exact zeros on disallowed reference edges
+     (reference-width re-expanded rows; zero-reach fallback rows
+     normalized);
+  M4 support locality and distinctness (review F2/L1; numeric policy
+     identity and empirical positivity equality are NOT asserted — the
+     widened root changes descendant reach flows and RM+ trajectories,
+     so an edge may carry exactly zero average mass in one policy and
+     positive mass in the other): (a) a PRE-SOLVE structural check that
+     the mask's allowed reference-edge set at each non-root node equals
+     the coarse tree node's action set 1:1 (mask equivalence; no
+     playable action appears or disappears), and both policies carry
+     exact zeros on disallowed reference edges; (b) the mixed policy is
+     distinct from BOTH coarse and full-cap0 overall, via content hash
+     plus per-combo L1 — all numeric comparison lives here;
+  M5 external EV/BR oracle: existing reach_bound/root-values entry
+     reproduces solver root CFV x990 <=1e-6 for the mixed policy.
+     Evaluator adapter wiring is pinned (review L2) — with no second
+     tree, root_values_from_snapshot / validate_snapshot receive the
+     REFERENCE tree as BOTH the reference and bounded argument, the
+     identity node_map, reference-width re-expanded rows, and the mask
+     edge_map; then nb==n, the bounded menu width equals the reference
+     width, and disallowed edges return zero before indexing. No
+     parallel evaluator may be invented, and M5 asserts this exact
+     wiring yields the 1e-6 CFV match;
+  M6 full-menu BR preservation: the evaluator's BR still maximizes over
+     disallowed reference edges (a disallowed edge carrying positive BR
+     option value yields a positive measured menu_gap — the laundering
+     trap stays closed); the solver's own masked-game BR walk, by
+     contrast, maximizes only over allowed edges and its telescope
+     equals the masked bounded NashConv;
+  M7 info-set/reach conservation: structural assertion that the mask is
+     indexed by public node only with no combo dimension; bitwise
+     forward-reach validation, zero-reach nodes enumerated not deleted,
+     root total reach 1.0;
+  M8 subtree gap identity (review F1/L4; replaces the false local-menu
+     identity): (i) at the fully-widened root the edge_map contains no
+     -1 locally AND subtree_is_extension_free(root, seat) is FALSE for
+     EACH seat evaluated separately (actors alternate; one seat's
+     subtree could conceivably be extension-free even if the other is
+     not) — deeper same-seat cap-1 nodes keep extension edges; (ii) an
+     existence scan finds a POSITIVE root menu_gap (diagnostic with the
+     T9 no-extension fallback convention); (iii) zero menu_gap is
+     pinned only at a genuinely extension-free node, reusing the T13
+     fixture's known extension-free nodes near all-in terminals, under
+     the established cross-walk CHIP tolerance 1e-9 (not bit-exact:
+     delta and the restricted gap come from independent walks);
+  M9 determinism: repeat solves bitwise identical;
+  M10 fail-closed resource (review F4 reword): a mask is a trivial
+     vector<bool> and cannot itself exhaust TreeLimits; the REFERENCE
+     tree construction propagates tree_resource_exhausted as a typed
+     error, and masked storage is bounded nodewise by the reference menu
+     widths so it cannot exceed the reference envelope — the gate
+     asserts typed propagation of reference-construction failure plus
+     the nodewise storage bound, not mask-driven exhaustion.
+  The w1 300-iter anchor is consumed ONLY if M1-M10 pass; otherwise the
+  tiny failure is retained and no anchor budget is spent.
+
+- ANCHOR DECISION RULE (pre-declared). If tiny gates pass, run the same
+  root-only mask on the w1 reached-river fixture at the existing 300
+  iter/single-instance basis via the existing probe shape, emitting
+  identity/hash, bounded NC, e_embed under BOTH completion arms, exact
+  residual/menu split, U1/U2/U3, wall/CPU, RSS. Pre-declared resource
+  class (review F4): the anchor runs CFR over the FULL cap0 reference
+  tree (w1: 11,232 action / 33,693 total nodes, 23.7 MiB) for 300
+  iterations — a new wall-time class versus prior bounded solves;
+  extrapolating D164's cap-6 304 s/300 iters at 1,924 action nodes gives
+  an order-30-minute expectation, NOT the ~20 s bounded-anchor class;
+  RSS stays bounded by the reference envelope (~tens of MiB plus
+  combo-sized ledgers). The run remains covered by the per-run
+  single-instance PROCESS authorization (D164 capcurve precedent), and
+  is not started until tiny gates pass. Acceptance remains exploratory:
+  a G5-quality claim requires the frozen 0.002 bar under the original
+  target definition; anything else is mechanism evidence. The old
+  sigma's reach/residual certificates are never applied to the mixed
+  policy — it is re-solved and re-evaluated from scratch.
+
+- REVIEW RECORD. Round 1 (2026-11-14, independent session agent
+  a56fda80e49e62818): CHANGES REQUESTED. F1 blocking — M8/local
+  full-menu zero-gap claim repeated the D195 local-vs-subtree error;
+  F2 — M4 numeric policy identity across games is false; F3 —
+  hand-built mask map bypassed passive/duplicate/kind checks and lacked
+  a re-expansion contract; F4 — masked game needs its own allowed-edge
+  BR walk, anchor wall/RSS class undeclared, M10 asserted impossible
+  mask-driven exhaustion. All four dispositions are incorporated above
+  (parallel-solver honesty correction, passive ban +
+  validate_mask_subset_map + reference-width re-expansion, subtree
+  M8, support-locality M4, internal BR walk, pre-declared ~30 min
+  anchor, typed-propagation M10).
+  Round 2 (2026-11-14, same reviewer): APPROVED — no further design
+  review round required. Four LOW precision items, all incorporated
+  before RED work: L1 — M4(a) reframed as a pre-solve structural
+  allowed-set check rather than empirical zero-pattern equality;
+  L2 — M5 pins the single-tree evaluator wiring (reference tree passed
+  as both arguments, identity node_map, reference-width rows, mask
+  edge_map) and forbids a parallel evaluator; L3 — the standalone
+  validator explicitly enumerates identity-bijection/index-range and
+  allowed-edge child-closedness rejection branches; L4 — M8 evaluates
+  extension-freedom per seat and states the 1e-9 cross-walk chip
+  tolerance. Implementation proceeds RED-first on
+  mixed_menu.{hpp,cpp} and test_rfc0047_mixed_menu.cpp.
+  Implementation review (2026-11-14, same reviewer): APPROVED with no
+  blocking/major/medium findings. Confirmed the corrected gap walk is
+  the standard NashConv BR recurrence, slot RM+ has no reach-leak, the
+  closure/kNoNode semantics preserve the D184 invariant, the single-tree
+  evaluator wiring needs no parallel evaluator, and the scope is two new
+  bench TUs plus two additive CMake hunks with zero production or
+  frozen-TU diff. Two LOW observations addressed before closure: L1 —
+  off-closure reach rows documented as shape-only, never consumed;
+  L2 — M3b kernel-equivalence gate now runs on both the 8-chip and
+  20-chip fixtures. Residual risk is empirical game outcome at the
+  optional w1 anchor, not mechanism correctness.
+
+- IMPLEMENTATION RECORD (2026-11-14). Built bench-only
+  engine/benchmarks/rfc0047/mixed_menu.{hpp,cpp} and native
+  test_rfc0047_mixed_menu.cpp behind the rfc0047 guard; two additive
+  engine/CMakeLists.txt hunks (one library source, one ctest target).
+  No production, ABI, proto, schema, CLI, or ActionAbstraction change.
+  MixedMenuGame is a self-contained slot-based CFR+ sibling of RiverGame
+  (terminal/stake/a0/pool conventions reused; traversal copied and
+  adapted), with compact allowed-slot reg/sum/sigma, per-node
+  reference-edge->slot map, RM+ 1/|allowed| fallback, linear t average,
+  and reference-width re-expanded snapshot rows with exact zero bits on
+  suppressed edges. RED first (logic_error stub), then GREEN.
+  One real defect found and fixed during bring-up: the initial
+  allowed-only gap walk RETURNED the sigma-policy value at own nodes, so
+  deeper own-node deviations were played by policy instead of best
+  response and the NashConv telescope undercounted (all-true mask diff
+  ~3.8e2 chips vs the kernel root total). The walk now returns the
+  best-response value at every own node while accumulating
+  full_forward_reach*(best-policy) locally — the standard NashConv BR
+  form. Permanent gate M3b proves an all-allowed mask reproduces the
+  identity(0) river kernel's average policy and NashConv BITWISE, which
+  independently certifies both the CFR dynamics and the corrected
+  telescope. Gates M1-M10 + M3b all pass on the 8-chip tiny root (M8 uses
+  the T9 8->20 chip deeper-stack fallback convention). Independent
+  implementation review APPROVED (no blocking/major/medium; two LOW
+  addressed: shape-only off-closure reach comment, M3b second fixture);
+  full rfc0047 ctest regression result recorded below.
