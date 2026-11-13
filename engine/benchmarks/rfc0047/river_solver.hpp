@@ -15,8 +15,10 @@
 // Benchmark-only under the rfc0047 link guard.
 #pragma once
 
+#include <bs/abstraction.hpp>
 #include <bs/game_definition.hpp>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -41,6 +43,14 @@ struct RiverSolveConfig {
   // cap-0 reference used only by the menu-materiality measurement). The
   // seedless solve stays exact for whichever menu is selected.
   std::uint8_t action_cap = 1;
+  // RFC 0048 Stage-2b (D184): optional explicit menu. When set, the solver
+  // builds THIS abstraction and action_cap is ignored at tree construction;
+  // the embedding caller passes the same object to the solver and the
+  // separately built bounded AbstractTree so avg_sigma node indexing aligns.
+  // Nullopt is the single construction site for identity(action_cap), which
+  // keeps every existing numeric path bitwise unchanged (the seedless kernel
+  // layout and RM+ fallback depend only on the tree).
+  std::optional<bs::abstraction::ActionAbstraction> action_abstraction;
 };
 
 struct ComboNashConv {

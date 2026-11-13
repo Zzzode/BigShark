@@ -37,16 +37,22 @@ constexpr double kNorm = static_cast<double>(kC) * kCompat;
 // pool and in-place opponent-reach scaling (zero heap allocation in the loop).
 class RiverGame {
  public:
-  explicit RiverGame(const GameDef& d, std::size_t threads, std::uint8_t action_cap) : def_(d) {
+  explicit RiverGame(
+      const GameDef& d, std::size_t threads, std::uint8_t action_cap,
+      const std::optional<bs::abstraction::ActionAbstraction>& explicit_action = std::nullopt)
+      : def_(d) {
     if (def_.player_count != 2 || def_.board_size != 5 || def_.terminal != TerminalDepth::River)
       throw std::invalid_argument("river_solver: needs a 2-seat five-card river-root def");
     workers_ = std::make_unique<Pool>(threads);
     std::array<int, 5> bd{};
     for (int i = 0; i < 5; ++i)
       bd[i] = def_.board[i];
-    // action_cap = max raises per street; 0 means no cap (the exact cap-0 menu).
-    tree_ =
-        std::make_unique<AbstractTree>(d, bs::abstraction::ActionAbstraction::identity(action_cap));
+    // Single menu construction site: an explicit declared/grid abstraction is
+    // the RFC 0048 Stage-2b union-reference path; nullopt reproduces the
+    // identity(action_cap) tree every existing numeric path already solves.
+    const bs::abstraction::ActionAbstraction action =
+        explicit_action.value_or(bs::abstraction::ActionAbstraction::identity(action_cap));
+    tree_ = std::make_unique<AbstractTree>(d, action);
     holdings_.resize(kC);
     for (std::uint32_t x = 0; x < kC; ++x)
       holdings_[x] = holding_for_dense(std::span<const int>(bd.data(), 5), x);
@@ -542,7 +548,7 @@ class RiverGame {
 
 RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
                                      std::span<const std::uint64_t> checkpoints) {
-  RiverGame game(cfg.def, cfg.threads, cfg.action_cap);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction);
   RiverSolveResult out;
   out.iterations = cfg.iterations;
   out.action_nodes = game.action_node_count();
@@ -575,7 +581,7 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
 
 ComboNashConv river_combo_values(const RiverSolveConfig& cfg, std::uint64_t iterations,
                                  bool linear_averaging) {
-  RiverGame game(cfg.def, cfg.threads, cfg.action_cap);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction);
   for (std::uint64_t t = 1; t <= iterations; ++t)
     game.iterate_weighted(linear_averaging ? static_cast<double>(t) : 1.0);
   // RiverGame::ComboValues is exposed by the same deterministic eval walks;

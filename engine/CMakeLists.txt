@@ -654,6 +654,8 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/river_serve.cpp
   benchmarks/rfc0047/cap_embedding.cpp
   benchmarks/rfc0047/patha_grid_budget.cpp
+  benchmarks/rfc0047/union_menu.cpp
+  benchmarks/rfc0047/union_embedding.cpp
   benchmarks/rfc0047/turn_solver.cpp
   benchmarks/rfc0047/turn_serve.cpp
 )
@@ -713,6 +715,13 @@ target_link_libraries(bigshark-rfc0047-cap-materiality PRIVATE bigshark_rfc0047_
 add_executable(bigshark-rfc0047-patha-grid-budget
   benchmarks/rfc0047/rfc0047_patha_grid_budget.cpp)
 target_link_libraries(bigshark-rfc0047-patha-grid-budget PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0048 Path A Stage 2b (D184) manual single-instance union-menu
+# materiality probe (NOT a CTest): candidate-domain quality/cost rows with
+# U1/U2/U3 units, mechanical union-candidate labels, and RSS metering.
+add_executable(bigshark-rfc0047-union-materiality
+  benchmarks/rfc0047/rfc0047_union_materiality.cpp)
+target_link_libraries(bigshark-rfc0047-union-materiality PRIVATE bigshark_rfc0047_bench)
 
 
 # RFC 0036 stage 0: node/byte table and per-node/per-iteration cost
@@ -1284,6 +1293,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_patha_grid_budget tests/test_rfc0047_patha_grid_budget.cpp)
   target_link_libraries(test_rfc0047_patha_grid_budget PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_patha_grid_budget COMMAND test_rfc0047_patha_grid_budget)
+
+  add_executable(test_rfc0047_union_embedding tests/test_rfc0047_union_embedding.cpp)
+  target_link_libraries(test_rfc0047_union_embedding PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_union_embedding COMMAND test_rfc0047_union_embedding)
 
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
