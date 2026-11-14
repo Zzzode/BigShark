@@ -1119,6 +1119,112 @@ std::optional<ScoredRecord> score_witness_record(const AbstractTree& reference,
   return scored;
 }
 
+// D227 shared helper: build the global eligible record list (one entry per
+// distinct acting-seat node), ordered by (node_score descending, reference
+// node ascending). D225 and D227 must call this with identical arguments so
+// their first pick is structurally the same witness.
+std::vector<ScoredRecord> collect_eligible_records(const AbstractTree& reference,
+                                                   const MixedMenuMask& baseline,
+                                                   const ReachBoundResult& evidence) {
+  std::vector<ScoredRecord> eligible;
+  for (std::size_t seat = 0; seat < 2; ++seat)
+    for (const NodeGapRecord& record : evidence.records[seat]) {
+      std::optional<ScoredRecord> scored = score_witness_record(reference, baseline, record, seat);
+      if (scored.has_value())
+        eligible.push_back(*scored);
+    }
+  std::sort(eligible.begin(), eligible.end(), [](const ScoredRecord& x, const ScoredRecord& y) {
+    if (x.node_score != y.node_score)
+      return x.node_score > y.node_score;
+    return x.record->reference_node < y.record->reference_node;
+  });
+  return eligible;
+}
+
+struct ChosenEdge {
+  long edge = -1;
+  double score = 0.0;
+};
+
+// D227 shared helper: the frozen edge argmax over a record's suppressed
+// aggressive edges, using the canonical reach-weighted Q reduction and a
+// strict-greater comparison that preserves the smallest-index tie. Returns
+// edge == -1 when no edge clears the floor (or none exists).
+ChosenEdge choose_record_edge(const NodeGapRecord& record) {
+  const std::size_t width = record.edge_map.size();
+  ChosenEdge chosen;
+  for (std::size_t a = 0; a < width; ++a) {
+    if (record.edge_map[a] != -1)
+      continue;  // suppressed edges only.
+    std::vector<double> edge_terms;
+    edge_terms.reserve(kC);
+    for (std::uint32_t i = 0; i < kC; ++i) {
+      if (record.own_reach[i] <= 0.0)
+        continue;
+      double bounded_best = -std::numeric_limits<double>::infinity();
+      for (std::size_t b = 0; b < width; ++b)
+        if (record.edge_map[b] != -1)
+          bounded_best = std::max(bounded_best, record.continuation[i * width + b]);
+      const double excess = record.continuation[i * width + a] - bounded_best;
+      edge_terms.push_back(record.own_reach[i] * std::max(0.0, excess));
+    }
+    const double edge_score = canonical_reduction(std::move(edge_terms));
+    if (chosen.edge == -1 || edge_score > chosen.score) {
+      chosen.edge = static_cast<long>(a);
+      chosen.score = edge_score;
+    }
+  }
+  if (chosen.edge != -1 && chosen.score <= kWitnessFloor)
+    return ChosenEdge{};  // floor failure: no edge.
+  return chosen;
+}
+
+// D227 shared helper: validate a proposed (node, edge) against a mask row and
+// the reference tree. Throws invalid_argument on every malformed coordinate.
+void validate_witness_coordinate(const AbstractTree& reference, const MixedMenuMask& mask,
+                                 std::size_t node, std::size_t edge) {
+  if (node >= reference.size() || !reference.node(node).is_action())
+    throw std::invalid_argument("mixed_menu: witness node index is not an action node");
+  const TreeNode& tree_node = reference.node(node);
+  if (edge >= tree_node.actions.size())
+    throw std::invalid_argument("mixed_menu: witness edge index is out of range");
+  if (!is_aggressive(tree_node.actions[edge].type))
+    throw std::invalid_argument("mixed_menu: witness edge must be aggressive");
+  if (mask.allowed[node].size() != tree_node.actions.size() || mask.allowed[node][edge])
+    throw std::invalid_argument("mixed_menu: witness edge is already allowed in the mask");
+}
+
+// D227 shared helper: flip one suppressed aggressive edge on a mask copy and
+// run the root-DFS sparse-minimal closure, filling every newly reachable
+// all-false row with all passive edges plus at most the first aggressive
+// edge. Tree DFS indexing guarantees parents precede children. The input
+// mask is never mutated; validate_mask gates the returned copy.
+MixedMenuMask flip_and_close(const AbstractTree& reference, MixedMenuMask mask, std::size_t node,
+                             std::size_t edge) {
+  mask.allowed[node][edge] = true;
+  std::vector<bool> reachable(reference.size(), false);
+  const std::size_t root = reference.root_index();
+  reachable[root] = true;
+  for (std::size_t k = 0; k < reference.size(); ++k) {
+    if (!reachable[k] || !reference.node(k).is_action())
+      continue;
+    const TreeNode& current = reference.node(k);
+    const bool row_empty =
+        std::none_of(mask.allowed[k].begin(), mask.allowed[k].end(), [](bool x) { return x; });
+    if (row_empty) {
+      const long first_aggressive = first_aggressive_choice(current);
+      for (std::size_t x = 0; x < current.actions.size(); ++x)
+        if (!is_aggressive(current.actions[x].type) || static_cast<long>(x) == first_aggressive)
+          mask.allowed[k][x] = true;
+    }
+    for (std::size_t x = 0; x < current.children.size(); ++x)
+      if (mask.allowed[k][x])
+        reachable[current.children[x]] = true;
+  }
+  validate_mask(reference, mask);
+  return mask;
+}
+
 }  // namespace
 
 void RefinementBudget::charge() {
@@ -1136,64 +1242,23 @@ WitnessSelection select_witness_augmentation(const AbstractTree& reference,
   out.bounded_shape_digest = evidence.bounded_shape_digest;
   out.reference_shape_digest = evidence.reference_shape_digest;
 
-  // Single global scan across both seats (Low-1): every action node has
-  // exactly one acting-seat record, so reference nodes never double-count.
-  std::vector<ScoredRecord> eligible;
-  for (std::size_t seat = 0; seat < 2; ++seat)
-    for (const NodeGapRecord& record : evidence.records[seat]) {
-      std::optional<ScoredRecord> scored = score_witness_record(reference, baseline, record, seat);
-      if (scored.has_value())
-        eligible.push_back(*scored);
-    }
+  // Shared D225/D227 eligible scan; a single global (score desc, node asc)
+  // order means the front entry is the deterministic witness.
+  const std::vector<ScoredRecord> eligible =
+      collect_eligible_records(reference, baseline, evidence);
   if (eligible.empty())
     return out;  // kNoCandidate.
-
-  // Explicit (score descending, reference node ascending) key; no dependence
-  // on record insertion or seat ordering.
-  std::sort(eligible.begin(), eligible.end(), [](const ScoredRecord& x, const ScoredRecord& y) {
-    if (x.node_score != y.node_score)
-      return x.node_score > y.node_score;
-    return x.record->reference_node < y.record->reference_node;
-  });
   const ScoredRecord& pick = eligible.front();
   const NodeGapRecord& record = *pick.record;
-  const std::size_t n = record.reference_node;
-  const TreeNode& node = reference.node(n);
-  const std::size_t width = node.actions.size();
-
-  // Edge argmax over suppressed aggressive edges with the same canonical
-  // reduction; exact ties resolve to the smallest edge index.
-  long chosen_edge = -1;
-  double chosen_score = 0.0;
-  for (std::size_t a = 0; a < width; ++a) {
-    if (record.edge_map[a] != -1)
-      continue;  // suppressed edges only.
-    std::vector<double> edge_terms;
-    edge_terms.reserve(kC);
-    for (std::uint32_t i = 0; i < kC; ++i) {
-      if (record.own_reach[i] <= 0.0)
-        continue;
-      double bounded_best = -std::numeric_limits<double>::infinity();
-      for (std::size_t b = 0; b < width; ++b)
-        if (record.edge_map[b] != -1)
-          bounded_best = std::max(bounded_best, record.continuation[i * width + b]);
-      const double excess = record.continuation[i * width + a] - bounded_best;
-      edge_terms.push_back(record.own_reach[i] * std::max(0.0, excess));
-    }
-    const double edge_score = canonical_reduction(std::move(edge_terms));
-    if (chosen_edge == -1 || edge_score > chosen_score) {
-      chosen_edge = static_cast<long>(a);
-      chosen_score = edge_score;
-    }
-  }
-  if (chosen_edge == -1 || chosen_score <= kWitnessFloor)
+  const ChosenEdge chosen = choose_record_edge(record);
+  if (chosen.edge == -1)
     return out;  // Low-3: terminate kNoCandidate, no second-node fallback.
 
   out.status = WitnessStatus::kSelected;
-  out.node = n;
-  out.edge = static_cast<std::size_t>(chosen_edge);
+  out.node = record.reference_node;
+  out.edge = static_cast<std::size_t>(chosen.edge);
   out.node_score = pick.node_score;
-  out.edge_score = chosen_score;
+  out.edge_score = chosen.score;
   return out;
 }
 
@@ -1202,45 +1267,84 @@ MixedMenuMask apply_witness_augmentation(const AbstractTree& reference,
                                          const WitnessSelection& selection) {
   if (selection.status == WitnessStatus::kNoCandidate)
     return baseline;
-  const std::size_t n = selection.node;
-  const std::size_t a = selection.edge;
-  if (n >= reference.size() || !reference.node(n).is_action())
-    throw std::invalid_argument("mixed_menu: witness node index is not an action node");
-  const TreeNode& node = reference.node(n);
-  if (a >= node.actions.size())
-    throw std::invalid_argument("mixed_menu: witness edge index is out of range");
-  if (!is_aggressive(node.actions[a].type))
-    throw std::invalid_argument("mixed_menu: witness edge must be aggressive");
-  if (baseline.allowed[n].size() != node.actions.size() || baseline.allowed[n][a])
-    throw std::invalid_argument("mixed_menu: witness edge is already allowed in the baseline mask");
+  validate_witness_coordinate(reference, baseline, selection.node, selection.edge);
+  return flip_and_close(reference, baseline, selection.node, selection.edge);
+}
 
-  MixedMenuMask augmented = baseline;
-  augmented.allowed[n][a] = true;
+// D227: deterministic two-public-node combination on the frozen evidence.
+CombinationSelection select_combination_augmentation(const AbstractTree& reference,
+                                                     const MixedMenuMask& baseline,
+                                                     const ReachBoundResult& evidence) {
+  CombinationSelection out;
+  out.bounded_abstraction_digest = evidence.bounded_abstraction_digest;
+  out.reference_abstraction_digest = evidence.reference_abstraction_digest;
+  out.bounded_shape_digest = evidence.bounded_shape_digest;
+  out.reference_shape_digest = evidence.reference_shape_digest;
 
-  // Root-DFS closure: a node made reachable through the witness whose row is
-  // still all-false receives the D208 sparse minimal legal menu. Tree DFS
-  // indexing guarantees every parent is visited before its children.
-  std::vector<bool> reachable(reference.size(), false);
-  const std::size_t root = reference.root_index();
-  reachable[root] = true;
-  for (std::size_t k = 0; k < reference.size(); ++k) {
-    if (!reachable[k] || !reference.node(k).is_action())
-      continue;
-    const TreeNode& current = reference.node(k);
-    const bool row_empty = std::none_of(augmented.allowed[k].begin(), augmented.allowed[k].end(),
-                                        [](bool x) { return x; });
-    if (row_empty) {
-      const long first_aggressive = first_aggressive_choice(current);
-      for (std::size_t x = 0; x < current.actions.size(); ++x)
-        if (!is_aggressive(current.actions[x].type) || static_cast<long>(x) == first_aggressive)
-          augmented.allowed[k][x] = true;
-    }
-    for (std::size_t x = 0; x < current.children.size(); ++x)
-      if (augmented.allowed[k][x])
-        reachable[current.children[x]] = true;
+  // Same eligible scan as D225; distinct reference nodes by construction.
+  const std::vector<ScoredRecord> eligible =
+      collect_eligible_records(reference, baseline, evidence);
+  out.eligible_count = eligible.size();
+  if (eligible.empty())
+    return out;  // kNoCandidate, count 0 explains the reason.
+  if (eligible.size() == 1) {
+    out.status = CombinationStatus::kSingleEligible;  // single-edge stays D225.
+    return out;
   }
-  validate_mask(reference, augmented);
-  return augmented;
+
+  const ScoredRecord& pick1 = eligible[0];
+  const ScoredRecord& pick2 = eligible[1];
+  const NodeGapRecord& rec1 = *pick1.record;
+  const NodeGapRecord& rec2 = *pick2.record;
+  const ChosenEdge edge1 = choose_record_edge(rec1);
+  const ChosenEdge edge2 = choose_record_edge(rec2);
+  if (edge1.edge == -1 || edge2.edge == -1)
+    return out;  // edge-floor no-candidate; count >=2 distinguishes it (P3b).
+
+  // First edge + closure on a copy; the caller's baseline is never mutated.
+  const std::size_t n1 = rec1.reference_node;
+  const std::size_t a1 = static_cast<std::size_t>(edge1.edge);
+  MixedMenuMask after_first = flip_and_close(reference, baseline, n1, a1);
+
+  const std::size_t n2 = rec2.reference_node;
+  const std::size_t a2 = static_cast<std::size_t>(edge2.edge);
+  // Containment: the second edge is already legal after the first closure, so
+  // the combination adds no independent choice. Structurally unreachable on
+  // natural sealed evidence; reachable only via apply-layer coordinate
+  // injection in tests.
+  if (after_first.allowed[n2][a2]) {
+    out.status = CombinationStatus::kContained;
+    return out;
+  }
+  // The post-closure coordinate must still describe a suppressed aggressive
+  // edge; a failure here indicates corruption (apply-layer only on natural
+  // evidence) and leaves the baseline untouched because nothing was returned.
+  validate_witness_coordinate(reference, after_first, n2, a2);
+
+  out.status = CombinationStatus::kCombined;
+  out.node1 = n1;
+  out.edge1 = a1;
+  out.node1_score = pick1.node_score;
+  out.edge1_score = edge1.score;
+  out.node2 = n2;
+  out.edge2 = a2;
+  out.node2_score = pick2.node_score;
+  out.edge2_score = edge2.score;
+  return out;
+}
+
+MixedMenuMask apply_combination_augmentation(const AbstractTree& reference,
+                                             const MixedMenuMask& baseline,
+                                             const CombinationSelection& selection) {
+  if (selection.status != CombinationStatus::kCombined)
+    return baseline;  // every non-combined typed result is an untouched no-op.
+  // Validate before mutating any copy so an out-of-range or passive coordinate
+  // throws invalid_argument rather than indexing out of bounds; the caller's
+  // baseline stays bitwise identical because validation precedes the copies.
+  validate_witness_coordinate(reference, baseline, selection.node1, selection.edge1);
+  MixedMenuMask after_first = flip_and_close(reference, baseline, selection.node1, selection.edge1);
+  validate_witness_coordinate(reference, after_first, selection.node2, selection.edge2);
+  return flip_and_close(reference, std::move(after_first), selection.node2, selection.edge2);
 }
 
 }  // namespace bs::rfc0047

@@ -205,6 +205,57 @@ MixedMenuMask apply_witness_augmentation(const bs::tree::AbstractTree& reference
                                          const MixedMenuMask& baseline,
                                          const WitnessSelection& selection);
 
+// RFC 0048 D227: deterministic two-public-node combination over the SAME
+// sealed baseline mask and SAME sealed evidence as the D225 selector. The
+// "two" is a fixed constant; there is no k-node parameterization. Both
+// candidates come from the frozen evidence, and a post-flip mask is never
+// treated as certified by the old evidence. Bench-visible, not production.
+enum class CombinationStatus {
+  kNoCandidate,     // fewer than two usable edges (count/scores explain why)
+  kSingleEligible,  // exactly one eligible node; the single-edge case stays D225
+  kContained,       // second edge already legal after the first closure
+  kCombined         // two distinct nodes, one suppressed aggressive edge each
+};
+
+struct CombinationSelection {
+  CombinationStatus status = CombinationStatus::kNoCandidate;
+  // First witness (reproduces the D225 selection when kCombined).
+  std::size_t node1 = 0;
+  std::size_t edge1 = 0;
+  double node1_score = 0.0;
+  double edge1_score = 0.0;
+  // Second witness on a distinct reference node; valid only when kCombined.
+  std::size_t node2 = 0;
+  std::size_t edge2 = 0;
+  double node2_score = 0.0;
+  double edge2_score = 0.0;
+  // Observability (pre-registration P3b): the eligible-node count is present
+  // on every path so no-candidate reasons stay distinguishable.
+  std::size_t eligible_count = 0;
+  // Evidence provenance copied verbatim from the sealed ReachBoundResult.
+  std::uint64_t bounded_abstraction_digest = 0;
+  std::uint64_t reference_abstraction_digest = 0;
+  std::uint64_t bounded_shape_digest = 0;
+  std::uint64_t reference_shape_digest = 0;
+};
+
+// Select at most two distinct-node witnesses from the sealed evidence.
+// Throws std::invalid_argument on malformed records or evidence/mask
+// disagreement; returns a typed non-combined status (never a partial result)
+// when fewer than two usable edges exist. Repeated and combo-row-permuted
+// calls return the bitwise identical result.
+CombinationSelection select_combination_augmentation(const bs::tree::AbstractTree& reference,
+                                                     const MixedMenuMask& baseline,
+                                                     const ReachBoundResult& evidence);
+
+// Apply a combination: non-kCombined statuses return an untouched baseline
+// copy; kCombined flips both edges through the shared closure and validates
+// the result. Throws std::invalid_argument on an illegal coordinate while the
+// caller's baseline stays bitwise identical (all edits are on copies).
+MixedMenuMask apply_combination_augmentation(const bs::tree::AbstractTree& reference,
+                                             const MixedMenuMask& baseline,
+                                             const CombinationSelection& selection);
+
 struct MixedMenuSolveResult {
   // Standard river result fields; avg_sigma rows are full REFERENCE-width
   // with exact zero bits on suppressed edges (empty at non-action and
