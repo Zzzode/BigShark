@@ -17,6 +17,7 @@
 namespace bs::rfc0047 {
 
 using bs::abstraction::ActionAbstraction;
+using bs::poker::Action;
 using bs::poker::ActionType;
 using bs::poker::GameDef;
 using bs::poker::TerminalDepth;
@@ -49,6 +50,200 @@ std::vector<bool> reachable_closure(const AbstractTree& tree,
         reachable[kids[a]] = true;
   }
   return reachable;
+}
+
+}  // namespace
+
+// Deployment-observable public betting state at every node, reconstructed from
+// the root GameDef and the parent-chain incoming actions. Single river street
+// only (TerminalDepth::River): street commitments never reset and
+// close_street/refund never occur inside a replayed river path. The root pot
+// is dead money, so the invariant pot == root_pot + street_committed[0] +
+// street_committed[1] holds at the root and after every replayed action.
+std::vector<PublicState> replay_public_states(const AbstractTree& reference) {
+  const GameDef& def = reference.def();
+  // Explicit street-start contract: the replay seeds fresh zero commitments,
+  // so a mid-street root whose GameDef already carries street_committed (a
+  // live subgame resolver root facing a wager) is rejected up front rather
+  // than failing opaquely at the first child's pot invariant.
+  for (std::size_t p = 0; p < def.player_count; ++p)
+    if (def.street_committed[p] != 0)
+      throw std::invalid_argument(
+          "mixed_menu: public-state replay requires a street-start root (zero street_committed)");
+  std::vector<PublicState> states(reference.size());
+  const std::size_t root = reference.root_index();
+  // The river betting street starts at zero: def.pot is the root dead money and
+  // def.contributions already sit inside it, so street commitments are fresh.
+  states[root].pot = def.pot;
+  // DFS order indexes every parent before its children.
+  for (std::size_t n = 0; n < reference.size(); ++n) {
+    if (n == root)
+      continue;
+    const TreeNode& node = reference.node(n);
+    PublicState s = states[node.parent];
+    // The mover of incoming_action is the PARENT node's actor (the seat that
+    // acted to create this child), not node.actor, which is the next player to
+    // act and is kNoNode on terminal branches. River trees have no chance
+    // nodes, so every non-root node has an action-node parent with a valid seat.
+    const std::size_t actor = reference.node(node.parent).actor;
+    const Action& a = node.incoming_action;
+    if (a.type == ActionType::Call) {
+      const std::uint64_t high = std::max(s.street_committed[0], s.street_committed[1]);
+      const std::uint64_t due = high - s.street_committed[actor];
+      const std::uint64_t remaining = def.stacks[actor] - s.street_committed[actor];
+      const std::uint64_t paid = std::min(due, remaining);  // exact for short all-in calls
+      s.street_committed[actor] += paid;
+      s.pot += paid;
+    } else if (is_aggressive(a.type)) {
+      // target_total is the street-cumulative total; payment is its increment.
+      const std::uint64_t paid = a.target_total - s.street_committed[actor];
+      s.street_committed[actor] = a.target_total;
+      s.pot += paid;
+    }  // Fold and Check change nothing.
+    // NDEBUG-independent invariant: live pot is the root dead money plus every
+    // fresh street payment, at action and terminal nodes alike.
+    const std::uint64_t street_sum = s.street_committed[0] + s.street_committed[1];
+    if (s.pot != def.pot + street_sum)
+      throw std::logic_error("mixed_menu: public-state replay broke the pot/street invariant");
+    states[n] = s;
+  }
+  return states;
+}
+
+// Pure nearest-target comparator over additional-payment values: pick the
+// legal aggressive action whose additional payment is closest to the pot-sized
+// ideal; an exact equidistant pair resolves to the smaller target (the lower
+// sorted index). Exposed as a free function so the tie-break is unit-testable
+// with synthetic inputs (review F4). Returns -1 when no aggressive edge exists.
+long nearest_aggressive_choice(const TreeNode& node, std::uint64_t ideal_additional,
+                               std::uint64_t street_base) {
+  long chosen = -1;
+  std::uint64_t best_distance = 0;
+  for (std::size_t a = 0; a < node.actions.size(); ++a) {
+    if (!is_aggressive(node.actions[a].type))
+      continue;
+    // additional payment = literal street target_total minus the actor's
+    // street-base commitment; the subtraction is a node-constant across
+    // candidate actions, so argmin matches the literal-target comparison.
+    const std::uint64_t additional = node.actions[a].target_total - street_base;
+    const std::uint64_t distance = additional >= ideal_additional ? additional - ideal_additional
+                                                                  : ideal_additional - additional;
+    if (chosen == -1 || distance < best_distance) {
+      chosen = static_cast<long>(a);
+      best_distance = distance;
+    }
+  }
+  return chosen;
+}
+
+namespace {
+
+// D208 chooser: retain the sorted-first aggressive edge; ignores pot/due.
+// Returns the edge index, or -1 when the node has no legal aggressive action.
+long first_aggressive_choice(const TreeNode& node) {
+  for (std::size_t a = 0; a < node.actions.size(); ++a)
+    if (is_aggressive(node.actions[a].type))
+      return static_cast<long>(a);
+  return -1;
+}
+
+// D217 chooser: pick the existing aggressive action nearest the canonical
+// pot-sized target. The street_base offset keeps the comparison in
+// additional-payment space; it is a node-constant and cannot change the
+// argmin versus literal target_total.
+long pot_fraction_choice(const TreeNode& node, const PublicState& state) {
+  const std::size_t actor = node.actor;
+  const std::uint64_t high = std::max(state.street_committed[0], state.street_committed[1]);
+  const std::uint64_t due = high - state.street_committed[actor];
+  const std::uint64_t ideal_additional = due == 0 ? state.pot : state.pot + 2 * due;
+  // street_committed already starts at zero for the river street, so it is
+  // directly the base for additional payment against target_total.
+  return nearest_aggressive_choice(node, ideal_additional, state.street_committed[actor]);
+}
+
+// Shared sparse-mask builder for the D208/D217 single-factor arms. W selection
+// (public depth + deterministic DFS order), full reference menu on W, coarse
+// subset on other coarse-mapped nodes, and on a reference-only node all
+// passive edges plus the single aggressive edge returned by the chooser. The
+// chooser is the ONLY factor that differs between arms.
+template <typename Chooser>
+MixedMenuMask build_sparse_mask(const AbstractTree& reference, const SubsetMap& base,
+                                std::size_t widened_budget, Chooser choose_aggressive) {
+  if (widened_budget == 0)
+    throw std::invalid_argument("mixed_menu: widened budget must be positive");
+  const std::size_t root = reference.root_index();
+
+  std::vector<std::size_t> eligible;
+  for (std::size_t n = 0; n < reference.size(); ++n) {
+    if (!reference.node(n).is_action() || base.node_map[n] == SubsetMap::kNoNode)
+      continue;
+    const bool has_suppressed = std::any_of(base.edge_map[n].begin(), base.edge_map[n].end(),
+                                            [](int edge) { return edge == -1; });
+    if (has_suppressed)
+      eligible.push_back(n);
+  }
+  const bool root_eligible = std::find(eligible.begin(), eligible.end(), root) != eligible.end();
+  if (!root_eligible)
+    throw std::invalid_argument(
+        "mixed_menu: root has no suppressed edge; the root-first widening precondition is unmet");
+
+  auto public_depth = [&](std::size_t n) {
+    std::size_t depth = 0;
+    while (n != root) {
+      ++depth;
+      n = reference.node(n).parent;
+    }
+    return depth;
+  };
+  std::sort(eligible.begin(), eligible.end(), [&](std::size_t x, std::size_t y) {
+    const std::size_t dx = public_depth(x);
+    const std::size_t dy = public_depth(y);
+    if (dx != dy)
+      return dx < dy;
+    return x < y;
+  });
+  const std::size_t take = std::min(widened_budget, eligible.size());
+  std::vector<bool> widened(reference.size(), false);
+  for (std::size_t k = 0; k < take; ++k)
+    widened[eligible[k]] = true;
+
+  const std::vector<PublicState> states = replay_public_states(reference);
+  MixedMenuMask mask;
+  mask.allowed.assign(reference.size(), {});
+  for (std::size_t n = 0; n < reference.size(); ++n)
+    if (reference.node(n).is_action())
+      mask.allowed[n].assign(reference.node(n).actions.size(), false);
+
+  std::vector<bool> reachable(reference.size(), false);
+  reachable[root] = true;
+  for (std::size_t n = 0; n < reference.size(); ++n) {
+    if (!reachable[n] || !reference.node(n).is_action())
+      continue;
+    const TreeNode& node = reference.node(n);
+    std::vector<bool> row(node.actions.size(), false);
+    if (widened[n]) {
+      std::fill(row.begin(), row.end(), true);
+    } else if (base.node_map[n] != SubsetMap::kNoNode) {
+      for (std::size_t a = 0; a < node.actions.size(); ++a)
+        row[a] = base.edge_map[n][a] != -1;
+    } else {
+      // Reference-only node opened through a widened ancestor: retain every
+      // passive legality edge and the one aggressive edge the chooser picks.
+      const long chosen = choose_aggressive(node, states[n]);
+      for (std::size_t a = 0; a < node.actions.size(); ++a) {
+        if (!is_aggressive(node.actions[a].type))
+          row[a] = true;
+        else if (static_cast<long>(a) == chosen)
+          row[a] = true;
+      }
+    }
+    mask.allowed[n] = std::move(row);
+    for (std::size_t a = 0; a < node.children.size(); ++a)
+      if (mask.allowed[n][a])
+        reachable[node.children[a]] = true;
+  }
+  validate_mask(reference, mask);
+  return mask;
 }
 
 // Self-contained CFR+ solver of the restricted extensive-form game an edge
@@ -768,96 +963,26 @@ MixedMenuSolveResult solve_mixed_menu(const GameDef& def, const ActionAbstractio
   return out;
 }
 
-// D208: deterministic public-depth-ordered sparse multi-layer widening.
+// D208: deterministic public-depth-ordered sparse multi-layer widening. The
+// restricted-node aggressive choice is the sorted first aggressive edge; all W
+// selection and closure machinery is shared via build_sparse_mask.
 MixedMenuMask make_sparse_multilayer_mask(const AbstractTree& reference, const AbstractTree& coarse,
                                           std::size_t widened_budget) {
-  if (widened_budget == 0)
-    throw std::invalid_argument("mixed_menu: widened budget must be positive");
   const SubsetMap base = map_bounded_subset(reference, coarse);
-  const std::size_t root = reference.root_index();
+  return build_sparse_mask(
+      reference, base, widened_budget,
+      [](const TreeNode& node, const PublicState&) { return first_aggressive_choice(node); });
+}
 
-  // Eligible = coarse-mapped action nodes that still carry a suppressed edge.
-  std::vector<std::size_t> eligible;
-  for (std::size_t n = 0; n < reference.size(); ++n) {
-    if (!reference.node(n).is_action() || base.node_map[n] == SubsetMap::kNoNode)
-      continue;
-    const bool has_suppressed = std::any_of(base.edge_map[n].begin(), base.edge_map[n].end(),
-                                            [](int edge) { return edge == -1; });
-    if (has_suppressed)
-      eligible.push_back(n);
-  }
-  // Eligible-count zero is equivalent to the root having no suppressed edge,
-  // since an eligible root alone makes the count positive.
-  const bool root_eligible = std::find(eligible.begin(), eligible.end(), root) != eligible.end();
-  if (!root_eligible)
-    throw std::invalid_argument(
-        "mixed_menu: root has no suppressed edge; the root-first widening precondition is unmet");
-
-  // Public betting depth from the parent chain; deterministic DFS index is the
-  // intra-depth tie-break (the deployable semantic key is the incoming-action
-  // path tuple; the index only reproduces it on this fixed build).
-  auto public_depth = [&](std::size_t n) {
-    std::size_t depth = 0;
-    while (n != root) {
-      ++depth;
-      n = reference.node(n).parent;
-    }
-    return depth;
-  };
-  std::sort(eligible.begin(), eligible.end(), [&](std::size_t x, std::size_t y) {
-    const std::size_t dx = public_depth(x);
-    const std::size_t dy = public_depth(y);
-    if (dx != dy)
-      return dx < dy;
-    return x < y;
-  });
-  // Over-budget clamps to the eligible count; no padding beyond real nodes.
-  const std::size_t take = std::min(widened_budget, eligible.size());
-  std::vector<bool> widened(reference.size(), false);
-  for (std::size_t k = 0; k < take; ++k)
-    widened[eligible[k]] = true;
-
-  MixedMenuMask mask;
-  mask.allowed.assign(reference.size(), {});
-  for (std::size_t n = 0; n < reference.size(); ++n)
-    if (reference.node(n).is_action())
-      mask.allowed[n].assign(reference.node(n).actions.size(), false);
-
-  std::vector<bool> reachable(reference.size(), false);
-  reachable[root] = true;
-  for (std::size_t n = 0; n < reference.size(); ++n) {
-    if (!reachable[n] || !reference.node(n).is_action())
-      continue;
-    const TreeNode& node = reference.node(n);
-    std::vector<bool> row(node.actions.size(), false);
-    if (widened[n]) {
-      // The paid widening: full reference menu.
-      std::fill(row.begin(), row.end(), true);
-    } else if (base.node_map[n] != SubsetMap::kNoNode) {
-      // An ordinary coarse-mapped node keeps exactly its coarse edge subset.
-      for (std::size_t a = 0; a < node.actions.size(); ++a)
-        row[a] = base.edge_map[n][a] != -1;
-    } else {
-      // A reference-only node opened through a widened ancestor: the sparse
-      // minimal legal menu = every passive edge plus the first aggressive
-      // edge (if one exists). Always non-empty; passive edges never removed.
-      bool first_aggressive_taken = false;
-      for (std::size_t a = 0; a < node.actions.size(); ++a) {
-        if (!is_aggressive(node.actions[a].type)) {
-          row[a] = true;
-        } else if (!first_aggressive_taken) {
-          row[a] = true;
-          first_aggressive_taken = true;
-        }
-      }
-    }
-    mask.allowed[n] = std::move(row);
-    for (std::size_t a = 0; a < node.children.size(); ++a)
-      if (mask.allowed[n][a])
-        reachable[node.children[a]] = true;
-  }
-  validate_mask(reference, mask);
-  return mask;
+// D217: identical W machinery; only the restricted-node chooser changes to a
+// canonical pot-sized nearest-legal selection over existing reference actions.
+MixedMenuMask make_pot_fraction_mask(const AbstractTree& reference, const AbstractTree& coarse,
+                                     std::size_t widened_budget) {
+  const SubsetMap base = map_bounded_subset(reference, coarse);
+  return build_sparse_mask(reference, base, widened_budget,
+                           [](const TreeNode& node, const PublicState& state) {
+                             return pot_fraction_choice(node, state);
+                           });
 }
 
 }  // namespace bs::rfc0047

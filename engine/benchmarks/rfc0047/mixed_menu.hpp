@@ -26,6 +26,36 @@
 
 namespace bs::rfc0047 {
 
+// Deployment-observable public betting state reconstructed from the root
+// GameDef and the public parent-chain action history (D217). On a
+// river-rooted tree the root pot is dead money and the river betting street
+// starts at zero, so street_committed is the fresh per-street cumulative
+// investment rather than the gross contribution already sitting in the pot.
+struct PublicState {
+  std::uint64_t pot = 0;  // live pot including the root dead money
+  std::array<std::uint64_t, 2> street_committed{0, 0};
+};
+
+// Reconstruct pot and per-seat street commitment at every node by replaying
+// the incoming actions along each parent chain. Single river street only; the
+// mover is the parent node's actor and short all-in calls are clamped to the
+// remaining stack. The root must be a street-start root (every
+// def.street_committed zero); a mid-street root fails loud with
+// std::invalid_argument. NDEBUG-independent: throws std::logic_error if the
+// invariant pot == root_pot + street_committed[0] + street_committed[1] ever
+// breaks. Fold rows keep the pre-refund gross pot: the production
+// unmatched-bet refund is a terminal settlement, and choosers consume
+// action-node states only, where no refund has occurred.
+std::vector<PublicState> replay_public_states(const bs::tree::AbstractTree& reference);
+
+// Pick the legal aggressive edge whose additional street payment
+// (target_total - current street commitment) is nearest ideal_additional; an
+// exact equidistant pair resolves to the smaller target (lower sorted index).
+// Returns -1 when the node has no aggressive action. Bench-visible so the
+// tie-break is unit-testable with synthetic inputs.
+long nearest_aggressive_choice(const bs::tree::TreeNode& node, std::uint64_t ideal_additional,
+                               std::uint64_t street_base);
+
 // One allowed-edge row per reference tree node. Rows are empty exactly at
 // non-action nodes; an action row always spans the node's full reference
 // menu (entries are moot but present at mask-unreachable nodes). The
@@ -88,6 +118,18 @@ MixedMenuMask make_root_only_widening_mask(const bs::tree::AbstractTree& referen
 MixedMenuMask make_sparse_multilayer_mask(const bs::tree::AbstractTree& reference,
                                           const bs::tree::AbstractTree& coarse,
                                           std::size_t widened_budget);
+
+// RFC 0048 D217: single-factor pot-fraction arm. The widened set W, budget,
+// ordering, coarse retention, and closure are identical to make_sparse_multilayer_mask;
+// the only difference is the aggressive choice at reference-only restricted
+// nodes, which is the existing legal reference action nearest a canonical
+// pot-sized target (fraction 1.0) instead of the sorted first aggressive edge.
+// Pot and call due are reconstructed from public history; no action amount is
+// synthesized and every passive legality edge is retained. Same preconditions
+// and fail-closed behavior as the D208 builder.
+MixedMenuMask make_pot_fraction_mask(const bs::tree::AbstractTree& reference,
+                                     const bs::tree::AbstractTree& coarse,
+                                     std::size_t widened_budget);
 
 struct MixedMenuSolveResult {
   // Standard river result fields; avg_sigma rows are full REFERENCE-width
