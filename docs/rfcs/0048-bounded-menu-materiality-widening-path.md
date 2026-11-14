@@ -1680,6 +1680,90 @@ parameterization. The same tiny fixture, iteration budget, and frozen
 domains apply, with no large-root traversal, census, training, long
 anchor, root scan, or sweep.
 
+## Counterfactual Attribution and Candidate Admission Addendum (D233)
+
+This addendum adds a pure, zero-solve attribution and admission layer over
+candidates already sealed by the D208/D225/D227 work. It performs no CFR,
+solve, re-solve, or BR walk and its API cannot even express one: each
+candidate is represented by a derive-only `SealedCandidateTerms` projection
+carrying raw exact/bounded scalars, the four abstraction/shape digests,
+normalization, completion arm, policy-hash provenance, and a mask hash,
+together with its mask. The component binds each candidate to its own menu,
+policy, reach, full cap-0 BR, normalization, completion arm, and source
+identity.
+
+Two quantities are separated by TYPE and must never be conflated. The
+within-candidate fixed-policy pure menu term (exact exploitability minus
+bounded NashConv) is clean per candidate because the policy-weighted value
+cancels in the gap identity. ACROSS candidates it is not a pure menu or edge
+effect: each candidate's reach and continuation belong to a different
+independently re-solved policy, so a cross-candidate difference mixes a menu
+change with policy re-convergence and its sign is unconstrained — the D227
+ledger already shows a strict menu superset with a higher pure menu term,
+which is impossible under a fixed policy. These cross-candidate values are
+therefore reported as sign-unconstrained observed menu-omission changes, not
+causal edge benefits. The bounded NashConv of each candidate is the outcome
+of a distinct re-solved policy and is exposed only through a
+`PolicyNashConvValue` type with no arithmetic or difference accessor, listed
+side by side and never attributed to an edge or ordering.
+
+The four u64 digests collapse pairwise in the mixed-menu wiring (bounded and
+reference share one tree, and the tree/action digests exclude board, blinds,
+stakes, and payoff), so same-source identity is a layered conjunction rather
+than a digest check: equal digests with per-node mask width and label strings
+(G1a, a dimensional check only), a `game_def_digest` that is pairwise equal
+and equal to a digest recomputed over the supplied root definition using the
+exact `same_game_def` field set (G1b, which alone detects a cross-board
+same-shape-tree mispair), equal normalization and completion arm (G1c), and a
+recomputed mask hash — node index plus each row's width and one byte per cell,
+a fully frozen serialization independent of the vector<bool> packed layout —
+equal to the term's stored mask hash so a term cannot be paired with a
+different mask (G1d). Any layer mismatch is typed incomparable with a
+distinct reason rather than repaired by guessing or reusing another mask's
+certificate; the policy hash is provenance only and never required equal
+across the genuinely different policies. The derive-only constructor copies
+fields and subtracts exact-minus-bounded without validating, so NaN and
+negative terms remain constructible and all finite/non-negativity judgments
+occur at a single admission gate that returns typed reports rather than
+throwing.
+
+Structural admission is atomic and read-only: the single-edge mask must be a
+strict superset of the baseline with exactly one scored reachable-row flip,
+the combination a strict superset of the single mask with two distinct node
+coordinates, closure rows must equal the sparse-minimal first-aggressive menu,
+passive edges must remain allowed, every term must be finite with a
+non-negative menu term, and duplicate nodes, removed bits, suppressed passive
+edges, count violations, inactive selections, and unreachable coordinates are
+typed rejections under a fixed short-circuit gate order. Because the function
+accepts only const references, returns a value, and stores no mask pointer, a
+rejected or successful call cannot mutate any input mask; native tests assert
+element-wise mask equality before and after each call. Non-additivity is
+enforced by construction (the report has no additive combined-gain field and
+its constructor takes only raw per-candidate scalars), verified behaviorally
+rather than by source matching. The native suite builds every mask with the
+zero-solve builders and supplies synthetic terms, so it runs without any CFR
+iteration; the frozen cap-0/cap-1 domains, 0.002 BB gate, B0, G1, and
+production boundaries are unchanged and the output remains supporting
+evidence with no M2/G5 implication.
+
+### Implementation evidence (D233)
+
+Implemented under the rfc0047 link guard in
+`engine/benchmarks/rfc0047/mixed_menu.{hpp,cpp}` with the native suite
+`engine/tests/test_rfc0047_attribution.cpp` (frozen gates T1-T13 plus two
+post-implementation-review arms covering `kLabelMismatch` and the
+zero-policy-hash presence rejection). The suite contains no solver, BR,
+budget, or evidence symbol: masks come from the zero-solve sparse-mask and
+witness apply builders with structurally injected coordinates and all
+sealed terms are synthetic. One independent post-implementation review
+(round 4) returned Approved with no blocker or major; its findings and
+dispositions are recorded in `docs/plans/0047-stage1-tracker.md`. The
+implemented gate sequence is G1a-G1d, then A1, A2, A6, A3/A4, A5, because
+the A6 liveness reasons are unreachable under a literal A3-first ordering.
+No production surface, protocol, persisted format, cap-0/cap-1 domain, or
+compute budget changed; this remains supporting evidence with no M2/G5
+pass claim.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the

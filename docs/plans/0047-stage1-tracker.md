@@ -3879,3 +3879,322 @@ RFCs 0041/0043/0045/0046).
   cross-RFC work, while D227 stages only its own single test-registration
   hunk. This does not touch any committed file (D217/D225 commits are
   intact).
+
+## M2 comparable counterfactual attribution and candidate admission (D233)
+
+- D233 OBJECTIVE. A pure in-memory, zero-solve bench component that binds
+  three ALREADY-sealed candidates (the D208 baseline, the D225 single-edge
+  candidate, and the D227 two-node combination) to their own menu, policy,
+  reach, full-cap-0 BR, normalization, completion arm, and source identity,
+  then (a) admits or atomically rejects the bundle at the existing selection
+  boundary and (b) keeps a within-candidate fixed-policy MENU OMISSION term
+  separate from each re-solved policy's final bounded NashConv, which is not
+  attributable to an edge or ordering. It adds no CFR, solve, re-solve,
+  large-tree BR, census, sweep, or compute budget: the API cannot even
+  express a solve (it takes no RiverSolveResult, RefinementBudget, iteration
+  count, or thread count), and every input is a field projection of an
+  existing sealed artifact. No external/public contract; everything stays in
+  bs::rfc0047 under the link guard.
+
+- PRE-REGISTRATION (revised after review rounds 1-2; frozen before code).
+  Sealed projection (zero compute, derive-only construction).
+   (I1) SealedCandidateTerms is constructible only from raw exact and
+       bounded BB scalars plus identity fields; pure_menu_term_bb is a
+       PRIVATE derived value (exact - bounded), so a caller cannot inject a
+       pre-summed term. The constructor performs ONLY the field copies and
+       that one subtraction and NEVER validates or throws on content: NaN
+       propagates through the subtraction as NaN, so malformed objects remain
+       constructible and all finite/non-negativity judgments are the sole
+       responsibility of A5 (review round-2 R2). It carries: the four
+       ReachBoundResult digests; a game_def_digest (see I2); bb_normalization
+       and the completion arm copied verbatim; the per-candidate policy_hash
+       from hash_average_snapshot as snapshot provenance ONLY, checked for
+       presence/non-zero but never required equal across candidates (the
+       policies genuinely differ); a mask_hash (see I3) binding the term
+       tuple to its exact mask; and reference_label/m2_marking strings.
+   (I2) game_def_digest is an FNV-1a 64-bit hash whose input field set is
+       bound, and kept in sync by a native test, to the exact comparison set
+       of same_game_def (game_definition.cpp:275-296): player_count, button,
+       big_blind, ante, pot, preflop, variant, terminal, last_full_raise,
+       raises_this_street, board_size and the board cards, and per-seat
+       stacks/contributions/blinds_posted/folded/street_committed/raise_rights.
+       This closes the cross-board same-shape-tree hole the four tree digests
+       cannot see (review round-2 R1).
+   (I3) hash_mask serialization is fully frozen because vector<bool> has no
+       portable data() (review round-2 L1): for each node in index order hash
+       sizeof(node-index) bytes, then for each row hash its width as a
+       size_t followed by one 0/1 byte per cell in cell order; empty rows
+       contribute their width (zero cells). This is process-independent and
+       binds node position and every mask bit.
+  Two quantities, kept apart by TYPE, not just naming.
+   (Q1) WITHIN-candidate fixed-policy menu omission: pure_menu_term_bb =
+       exact - bounded, clean because record_node's delta and bounded_gap
+       subtract the same policy_value and the telescope and NC share one
+       snapshot and one bb_normalization. This term is well defined per
+       candidate. ACROSS candidates it is NOT a pure menu/edge effect: each
+       candidate's reach and continuation come from a different
+       independently re-solved policy sigma_k, so a cross-candidate
+       difference mixes menu change with policy re-convergence and its sign
+       is unconstrained (D227 already measured combined 0.74568646 > single
+       0.74330806 although combined is a strict menu superset — impossible
+       under a fixed policy, proving the policy-confounding channel is real).
+       The report's two marginals are therefore named
+       observed_menu_omission_change and carry an explicit non-attributable
+       invariant; they are descriptive and sign-unconstrained, never a menu
+       or edge causal effect.
+   (Q2) Re-solved policy final NC is exposed as a distinct type
+       PolicyNashConvValue with NO arithmetic operators and NO difference
+       accessor; the report only holds the three values side by side in a
+       std::array and permits explicit raw-value extraction for printing.
+       There is no constexpr bool marker (an unconsumed bool cannot stop
+       misuse, review M1): the non-attributable property is unrepresentable
+       rather than commented.
+  Layered same-source identity gate (typed, short-circuit, before any
+  admission arithmetic; review B2). The four u64 digests collapse pairwise in
+  the mixed-menu wiring (bounded and reference are the same tree, and
+  reach_bound's tree/action digests exclude board, blinds, stacks, and
+  terminal payoff), so they alone cannot establish same-source. Identity is
+  therefore the conjunction of:
+   (G1a) reference tree identity AND dimensional check only: all four
+       digests equal, and every mask has the same row count and per-node
+       width as the single supplied reference (a dimensional mismatch ->
+       kMaskWidthMismatch); the reference_label/m2_marking of the three terms
+       must be equal by CONTENT comparison (the ReachBoundResult fields are
+       const char*, so pointer equality would falsely reject distinct arrays
+       carrying the same text, review round-3 C2). Content validation is
+       deferred to A1 so a failure never carries two reasons (round-2 L2).
+   (G1b) GameDef identity: the three terms' game_def_digest values are
+       pairwise equal AND equal a digest recomputed over the supplied root
+       GameDef with the I2 same_game_def-bound field set; any inequality ->
+       kGameDefMismatch. This is a real per-candidate field, so it detects
+       a cross-board same-shape-tree term mispair that G1a/G1c/G1d cannot.
+   (G1c) normalization and arm identity: bb_normalization and the completion
+       arm are equal across all three terms; mismatch ->
+       kNormalizationMismatch or kCompletionArmMismatch (the arm changes the
+       exact BR walk and is not recorded in ReachBoundResult, so it is an
+       explicit sealed field).
+   (G1d) term-mask binding: recomputing hash_mask (I3) over each supplied
+       mask must equal the term's stored mask_hash, closing the term/mask
+       swap hole (a single candidate's scalars paired with another mask);
+       mismatch -> kTermMaskBindingMismatch. policy_hash is checked for
+       presence/non-zero only, never cross-candidate equality.
+  Structural admission gate (atomic, read-only; runs only after G1 passes).
+   (A1) validate_mask CONTENT check (dimensional issues were resolved in
+       G1a): passive-never-suppressed and non-empty reachable row rules. A
+       validator failure is caught and mapped to the typed reason
+       kMaskContentInvalid carrying the validator's original message; it
+       cannot escape as an exception (allocation errors may still
+       propagate, review round-2 L6).
+   (A2) Strict superset: single.allowed >= baseline.allowed and
+       combined.allowed >= single.allowed element-wise; a removed or
+       false-flipped bit -> kNotStrictSuperset.
+   (A3) Exact scored-flip shape on baseline-reachable rows: single vs
+       baseline is exactly the one selection coordinate; combined vs
+       baseline is exactly the two distinct combination coordinates. Both
+       scored coordinates must lie inside the baseline closure; every other
+       changed row is a previously unreachable closure row and must equal the
+       sparse-minimal menu (all passive plus at most the
+       first_aggressive_choice edge). Violations ->
+       kSingleEdgeCountViolation / kCombinedNodeCountViolation.
+   (A4) combination.node1 != node2 -> else kDuplicateNode.
+   (A5) The SOLE content-validation point for the sealed scalars: every
+       numeric term isfinite else kMissingOrNonFiniteTerm, and each pure
+       menu >= -1e-12 else kNegativeMenuTerm (the negative case detects a
+       foreign-snapshot/arm pairing the digests cannot see). Because the I1
+       constructor does not validate, malformed terms reach here and the
+       typed reports are genuinely reachable (review round-2 R2).
+   (A6) Selection liveness: a non-active selection status (not kSelected /
+       kCombined) -> kSelectionNotActive; a coordinate on a baseline-
+       unreachable row -> kCoordinateUnreachable. Both are reachable only via
+       injected synthetic inputs, never from the real selectors.
+   (A7) Atomicity by type: the entry point takes const references, returns a
+       value report, stores no mask pointer/reference, and never calls a
+       mutating builder (flip/apply). Native tests deep-copy each mask and
+       require element-wise equality (including row count and width) before
+       and after every rejected AND every successful call.
+  Report (valid only on kComparable; value type, no mask references).
+   (R1) Three pure menu terms and the two sign-unconstrained
+       observed_menu_omission_change marginals, each labeled
+       non-edge-attributable.
+   (R2) Three PolicyNashConvValue NCs, list-only, no subtraction accessor.
+   (R3) No additive combined-gain field exists by construction: the only
+       constructor takes raw per-candidate scalars and the type exposes no
+       summation of a single-edge change with any second-edge quantity;
+       combined numbers are reported standalone. This is verified
+       behaviorally (T8), not by source-text matching.
+  Gate ordering is fixed: G1a -> G1b -> G1c -> G1d -> A1 -> A2 -> A6 ->
+  A3/A4 -> A5 -> report. The A6 liveness predicates (empty scored set,
+  off-closure coordinate) are evaluated BEFORE the A3/A4 shape checks: under
+  a literal A3-first order both A6 reasons would be unreachable because the
+  shape check rejects an empty or mismatched coordinate set first, whereas
+  frozen gates T11/T12 require kSelectionNotActive and
+  kCoordinateUnreachable to be genuinely reachable. Real selector output can
+  never trip A6 (selectors only emit reachable, in-range, non-empty
+  coordinates), so the reordering affects synthetic injections only and no
+  other frozen reason changes. The enum is consumed under -Werror=switch so
+  every reason is exhaustive. FNV collision probability 2^-64 per hash is
+  accepted and documented.
+  Budget and boundary.
+   (B1) No solve token, no RefinementBudget member, no solver/BR call; the
+       suite builds masks with the zero-solve sparse/witness builders and
+       supplies synthetic terms, so it runs with zero CFR iterations. Frozen
+       cap0/cap1, 0.002, B0=0.010, G1, root weights, threads, and the
+       production funding boundary are unchanged.
+
+- NATIVE GATES (new engine/tests/test_rfc0047_attribution.cpp, RED first,
+  real behavior only, no source-text/log matching, zero solver use).
+  T1 same-source positive: an admissible bundle passing G1a-d returns
+     kComparable and the menu marginals equal hand-computed term
+     differences within 1e-12; success-path mask invariance also asserted.
+  T2 digest mismatch -> kIncomparableSource/kDigestMismatch, no report fields.
+  T3 mask-width mismatch -> kMaskWidthMismatch, and a swapped term/mask pair
+     is caught by the G1d mask_hash binding (kTermMaskBindingMismatch).
+  T4 duplicate node -> kDuplicateNode.
+  T5 not-superset (dropped bit) -> kNotStrictSuperset; a suppressed passive
+     edge -> validate_mask content failure mapped to kMaskContentInvalid.
+  T6 NaN/inf term reaches A5 through the non-validating I1 constructor and
+     returns kMissingOrNonFiniteTerm as a report (no exception).
+  T7 edge/node-count violations -> kSingleEdgeCountViolation /
+     kCombinedNodeCountViolation.
+  T8 non-additivity behaviorally: the report's standalone values equal the
+     inputs element-wise and the only derived numeric differences are the two
+     labeled menu marginals; PolicyNashConvValue values can be extracted for
+     printing but not subtracted.
+  T9 atomicity: deep-copied masks are element-wise identical before/after
+     one rejection gate and the successful T1 call. Per-gate snapshots
+     across every rejection arm are subsumed by the A7 type-system
+     guarantee: the entry point takes const references, returns a value
+     report storing no mask pointer or reference, and calls no mutating
+     builder, so input mutation is unrepresentable rather than merely
+     untested (post-implementation review F2 disposition).
+  T10 normalization/completion-arm mismatch -> kNormalizationMismatch /
+     kCompletionArmMismatch; a game_def_digest unequal to the recomputed root
+     digest -> kGameDefMismatch.
+  T11 coordinate-role conflict (review round-3 N1, method A): keep the mask
+     chain B,S,C in place so A2 passes, but inject the two-coordinate
+     CombinationSelection into the SINGLE slot. The single-slot A3 check then
+     finds two scored flips where exactly one is required and deterministically
+     returns kSingleEdgeCountViolation; a full slot swap would instead stop at
+     A2 with kNotStrictSuperset and is not used because it cannot reach A3.
+  T12 a negative pure-menu term reaches A5 via the non-validating constructor
+     and returns kNegativeMenuTerm; selection liveness and unreachable-
+     coordinate reasons -> kSelectionNotActive / kCoordinateUnreachable.
+  T13 field-set sync as a RUNTIME mutation matrix (no source-text matching):
+     from a base GameDef, build one single-field mutant per identity field in
+     the same_game_def comparison set and assert both
+     same_game_def(base, mutant) == false and
+     game_def_digest(base) != game_def_digest(mutant), exercising the real
+     public predicate and hasher; any non-identity GameDef field gets a
+     negative arm where both stay unchanged. Coverage depends on maintaining
+     the exhaustive mutator list alongside same_game_def (a documented
+     maintenance discipline, not a compile-time guarantee).
+  All masks in T1-T13 are produced without any solve; terms are synthetic.
+
+- FAILURE DISCIPLINE. If source identity is insufficient the component
+  reports typed incomparability rather than estimating a residual; it never
+  promotes an old mask's certificate, sums joint gains, or presents a local
+  witness menu improvement as an NC benefit. Admission is structural legality
+  only, never an endorsement or ranking; menu marginal signs are
+  unconstrained and not monotone with NC; every row inherits the
+  supporting-evidence-not-m2-g5-pass marking. No M2/G5 claim, no budget
+  expansion.
+
+- D233 REVIEW ROUND 1 (independent non-author agent, pre-implementation):
+  verdict Changes Requested; the within-candidate gap identity, zero-solve
+  feasibility, and bench isolation were verified, but two load-bearing
+  claims were falsified against the code and all findings are resolved in
+  the revised pre-registration before any code (failure discipline).
+  B1 (resolved): cross-candidate pure-menu differences are policy-confounded,
+  not pure menu/edge effects; marginals renamed
+  observed_menu_omission_change with a sign-unconstrained non-attributable
+  invariant, and the D227 sign-reversal ledger is cited as proof.
+  B2 (resolved): the four digests pairwise collapse in the mixed-menu wiring
+  and omit board/blinds/payoff; identity is now the layered G1a-d
+  conjunction (tree/digests, same_game_def, normalization+arm, recomputed
+  mask-hash binding), with policy_hash as provenance-only.
+  M1 (resolved): PolicyNashConvValue is an arithmetic-free type instead of a
+  decorative bool constant. M2 (resolved): T8 is a behavioral
+  element-wise/derived-field gate, not a source-text absence assertion.
+  M3 (resolved): added normalization/arm, role-permutation, and
+  non-negativity integrity gates and reasons. M4 (resolved): fixed
+  G1->A1..A7 short-circuit order, exception-to-report mapping, and the
+  kCoordinateUnreachable/kSelectionNotActive reasons. Minor m1-m5 adopted:
+  element-wise (not "bytewise") mask comparison plus success-path
+  invariance, label/marking provenance, value-only reports with no mutating
+  builder, explicit closure sparse-minimal wording, and retention of the 1e-12
+  tolerance. Documented residual: 2^-64 FNV collision per hash.
+
+- D233 REVIEW ROUND 2 (same independent agent, narrowed re-review): verdict
+  Changes Requested with two majors, both pre-registration-only and resolved
+  before code.
+  R1 (resolved): G1b was a dangling check because SealedCandidateTerms
+  carried no GameDef identity. Added I2 game_def_digest (FNV-1a over the
+  exact same_game_def field set, kept in sync by native gate T13) and made
+  G1b require pairwise equality plus equality with a digest recomputed over
+  the supplied root def -> kGameDefMismatch, closing the cross-board
+  same-shape-tree hole.
+  R2 (resolved): the validating constructor contradicted A5 and made T6/T12
+  unreachable. The I1 constructor now only copies and subtracts (NaN
+  propagates), and A5 is the single finite/non-negativity validation point
+  returning typed reports.
+  L1 (resolved): I3 freezes the hash_mask serialization (node index, row
+  width, one byte per cell) so it is independent of vector<bool> packing.
+  L2 (resolved): G1a is dimensional only; A1 handles content via the new
+  kMaskContentInvalid reason carrying the validator message. L3 (resolved):
+  T8's non-behavioral parenthetical removed. L4 (resolved): policy_hash
+  checked presence/non-zero; label/marking equality added to G1a. L5
+  (resolved): T11 names kSingleEdgeCountViolation as the deterministic
+  permutation reason. L6 (resolved): kMaskContentInvalid gives the content
+  failure an exhaustive enum reason.
+
+- D233 REVIEW ROUND 3 (same agent, diff-only re-review): one major found and
+  resolved; nine of ten round-2 items were already closed.
+  N1 (resolved, method A): the original T11 full slot-swap cannot reach A3
+  because under the frozen A2->A3 order a swapped (B,C,S) chain fails A2 with
+  kNotStrictSuperset first. T11 now keeps B,S,C in place and injects the
+  two-coordinate CombinationSelection into the single slot, so A2 passes and
+  A3 deterministically returns kSingleEdgeCountViolation; T9's atomicity
+  enumeration now includes T11.
+  C1 (resolved): T13 is specified as a runtime single-field mutation matrix
+  over the same_game_def identity set asserting both the predicate and the
+  digest flip, with a negative arm for non-identity fields; the sync is stated
+  honestly as mutator-list maintenance discipline, not a compile-time
+  guarantee (no source-text matching).
+  C2 (resolved): the same_game_def citation is corrected to lines 275-296,
+  and G1a label/marking equality is specified as content comparison because
+  the stored fields are const char* pointers.
+
+- D233 REVIEW ROUND 4 (independent non-author agent, post-implementation
+  diff review against the frozen pre-registration): verdict Approved, no
+  blocker or major. All 11 review items pass with file:line evidence:
+  gate ordering and single-reason short-circuit, exact same_game_def-bound
+  hash field sets and frozen I3 mask serialization, arithmetic-free
+  PolicyNashConvValue, non-validating constructor with A5 as the sole
+  finite/non-negativity point, genuine zero-solve (zero solver/evidence
+  symbols in the suite), non-vacuous T1-T13, const-ref atomicity, bench
+  scope (three files plus one isolated CMake hunk), and FNV/sort/closure
+  correctness. Findings and dispositions:
+  F1 (resolved, docs): the frozen ordering sentence said A1..A7; amended
+     above to the implemented and test-forced sequence
+     G1a-G1d -> A1 -> A2 -> A6 -> A3/A4 -> A5 with the unreachability
+     rationale. No component code change.
+  F2 (resolved, docs): per-gate T9 snapshots are recorded above as
+     subsumed by the A7 type-system guarantee; the dedicated T9 keeps one
+     rejection plus one success deep-equality check.
+  F3 (resolved, tests): two implemented G1a branches previously without a
+     native gate now have synthetic arms in
+     engine/tests/test_rfc0047_attribution.cpp: kLabelMismatch via a
+     different reference-label text on an otherwise identical candidate,
+     and the zero-policy-hash presence arm -> kDigestMismatch (the frozen
+     enum has no dedicated provenance reason).
+  F4 (informational, no action): pure_menu_term_bb is a public accessor
+     rather than a stored private member while preserving the
+     no-pre-summed-term invariant; the -Werror=switch exhaustiveness claim
+     is by construction until a switch consumer is added; exact
+     sparse-minimal row equality is stricter than "at most first
+     aggressive" but matches real flip_and_close output; T2's zeroed
+     report fields follow structurally from the failure constructor.
+  Accepted residuals unchanged: 2^-64 FNV collision per hash,
+  platform/endianness-specific sizeof serialization under the frozen I3
+  convention (same precedent as policy_hash.cpp), and T13 mutator-list
+  maintenance discipline (GameDef currently has no uncovered field).
