@@ -768,4 +768,96 @@ MixedMenuSolveResult solve_mixed_menu(const GameDef& def, const ActionAbstractio
   return out;
 }
 
+// D208: deterministic public-depth-ordered sparse multi-layer widening.
+MixedMenuMask make_sparse_multilayer_mask(const AbstractTree& reference, const AbstractTree& coarse,
+                                          std::size_t widened_budget) {
+  if (widened_budget == 0)
+    throw std::invalid_argument("mixed_menu: widened budget must be positive");
+  const SubsetMap base = map_bounded_subset(reference, coarse);
+  const std::size_t root = reference.root_index();
+
+  // Eligible = coarse-mapped action nodes that still carry a suppressed edge.
+  std::vector<std::size_t> eligible;
+  for (std::size_t n = 0; n < reference.size(); ++n) {
+    if (!reference.node(n).is_action() || base.node_map[n] == SubsetMap::kNoNode)
+      continue;
+    const bool has_suppressed = std::any_of(base.edge_map[n].begin(), base.edge_map[n].end(),
+                                            [](int edge) { return edge == -1; });
+    if (has_suppressed)
+      eligible.push_back(n);
+  }
+  // Eligible-count zero is equivalent to the root having no suppressed edge,
+  // since an eligible root alone makes the count positive.
+  const bool root_eligible = std::find(eligible.begin(), eligible.end(), root) != eligible.end();
+  if (!root_eligible)
+    throw std::invalid_argument(
+        "mixed_menu: root has no suppressed edge; the root-first widening precondition is unmet");
+
+  // Public betting depth from the parent chain; deterministic DFS index is the
+  // intra-depth tie-break (the deployable semantic key is the incoming-action
+  // path tuple; the index only reproduces it on this fixed build).
+  auto public_depth = [&](std::size_t n) {
+    std::size_t depth = 0;
+    while (n != root) {
+      ++depth;
+      n = reference.node(n).parent;
+    }
+    return depth;
+  };
+  std::sort(eligible.begin(), eligible.end(), [&](std::size_t x, std::size_t y) {
+    const std::size_t dx = public_depth(x);
+    const std::size_t dy = public_depth(y);
+    if (dx != dy)
+      return dx < dy;
+    return x < y;
+  });
+  // Over-budget clamps to the eligible count; no padding beyond real nodes.
+  const std::size_t take = std::min(widened_budget, eligible.size());
+  std::vector<bool> widened(reference.size(), false);
+  for (std::size_t k = 0; k < take; ++k)
+    widened[eligible[k]] = true;
+
+  MixedMenuMask mask;
+  mask.allowed.assign(reference.size(), {});
+  for (std::size_t n = 0; n < reference.size(); ++n)
+    if (reference.node(n).is_action())
+      mask.allowed[n].assign(reference.node(n).actions.size(), false);
+
+  std::vector<bool> reachable(reference.size(), false);
+  reachable[root] = true;
+  for (std::size_t n = 0; n < reference.size(); ++n) {
+    if (!reachable[n] || !reference.node(n).is_action())
+      continue;
+    const TreeNode& node = reference.node(n);
+    std::vector<bool> row(node.actions.size(), false);
+    if (widened[n]) {
+      // The paid widening: full reference menu.
+      std::fill(row.begin(), row.end(), true);
+    } else if (base.node_map[n] != SubsetMap::kNoNode) {
+      // An ordinary coarse-mapped node keeps exactly its coarse edge subset.
+      for (std::size_t a = 0; a < node.actions.size(); ++a)
+        row[a] = base.edge_map[n][a] != -1;
+    } else {
+      // A reference-only node opened through a widened ancestor: the sparse
+      // minimal legal menu = every passive edge plus the first aggressive
+      // edge (if one exists). Always non-empty; passive edges never removed.
+      bool first_aggressive_taken = false;
+      for (std::size_t a = 0; a < node.actions.size(); ++a) {
+        if (!is_aggressive(node.actions[a].type)) {
+          row[a] = true;
+        } else if (!first_aggressive_taken) {
+          row[a] = true;
+          first_aggressive_taken = true;
+        }
+      }
+    }
+    mask.allowed[n] = std::move(row);
+    for (std::size_t a = 0; a < node.children.size(); ++a)
+      if (mask.allowed[n][a])
+        reachable[node.children[a]] = true;
+  }
+  validate_mask(reference, mask);
+  return mask;
+}
+
 }  // namespace bs::rfc0047

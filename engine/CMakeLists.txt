@@ -1332,6 +1332,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_rfc0047_mixed_menu PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_mixed_menu COMMAND test_rfc0047_mixed_menu)
 
+  add_executable(test_rfc0047_sparse_multilayer tests/test_rfc0047_sparse_multilayer.cpp)
+  target_link_libraries(test_rfc0047_sparse_multilayer PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_sparse_multilayer COMMAND test_rfc0047_sparse_multilayer)
+
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
   add_test(NAME sixmax_hand_ledger COMMAND test_sixmax_hand_ledger)

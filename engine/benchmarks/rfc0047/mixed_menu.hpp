@@ -71,6 +71,24 @@ SubsetMap mask_to_subset_map(const bs::tree::AbstractTree& reference, const Mixe
 MixedMenuMask make_root_only_widening_mask(const bs::tree::AbstractTree& reference,
                                            const bs::tree::AbstractTree& coarse);
 
+// RFC 0048 D208: sparse multi-layer widening under a deterministic public
+// selection rule. Up to widened_budget coarse-mapped action nodes that still
+// carry a suppressed edge are widened to the full reference menu, ordered by
+// public betting depth with a DFS-index intra-depth tie-break (the root is
+// always first); every other coarse-mapped node keeps its coarse edges, and a
+// reference-only node reached through an opened edge gets the sparse minimal
+// legal menu (all passive edges plus the single first aggressive edge when one
+// exists). The result is a legal mask consumable by mask_to_subset_map and
+// solve_mixed_menu unchanged.
+//
+// Fails closed with std::invalid_argument when widened_budget is non-positive,
+// when the root itself has no suppressed edge (the root-first precondition is
+// unmeetable), or the derived mask fails validate_mask. An over-large budget
+// clamps to the number of eligible suppressed nodes rather than padding.
+MixedMenuMask make_sparse_multilayer_mask(const bs::tree::AbstractTree& reference,
+                                          const bs::tree::AbstractTree& coarse,
+                                          std::size_t widened_budget);
+
 struct MixedMenuSolveResult {
   // Standard river result fields; avg_sigma rows are full REFERENCE-width
   // with exact zero bits on suppressed edges (empty at non-action and
