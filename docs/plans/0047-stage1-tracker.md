@@ -2833,3 +2833,177 @@ RFCs 0041/0043/0045/0046).
   boundary. The single layout hunk is held uncommitted until the formal
   300-iteration anchor returns numeric parity, then lands as its own
   isolated perf commit with the resource-prose correction.
+
+## Sparse multi-layer menu isolation (D208)
+
+- D208 OBJECTIVE. Isolate the DEEP abstraction (menu) error from the
+  solver UPDATE error on a real tiny native instance, and deliver a
+  reproducible bench-only offline SPARSE MULTI-LAYER menu/action
+  selection mechanism — not a survey. Reuse the D202 MixedMenuGame
+  solver unchanged: it already solves any legal mask, so D208 adds a
+  mask-SELECTION primitive plus native gates, owning only
+  engine/benchmarks/rfc0047 primitives. No new long anchor (the 50.2 min
+  w1 run stays a one-off), no full-root sweep, no grid matrix, no 1e5
+  solve; the feedback loop stays on the 8/20-chip tiny fixtures at
+  kIters=60.
+
+- WHY D202 ROOT-ONLY WAS INSUFFICIENT (measured). Root widening removed
+  only 25.3% of the Uniform pure menu term because widening the root
+  OPENS reference-only subtrees, and D202 gave every opened node the
+  full cap-0 menu, so fresh restricted nodes appear one layer down; the
+  dominant menu mass stays in still-restricted deeper subtrees (the D195
+  subtree conclusion on an actually-widened tree). D208 attacks those
+  deeper nodes directly but sparsely.
+
+- MECHANISM (new builder in mixed_menu.{hpp,cpp}; solver untouched).
+  make_sparse_multilayer_mask(reference, coarse, widened_budget B):
+   (1) selection rule W is public/deterministic and deployment
+       observable: among coarse-mapped action nodes that still carry a
+       suppressed edge, take up to B in (public action depth asc, DFS
+       index asc) order, always including the root. The semantic
+       deployment key is the parent-chain tuple of incoming_action
+       values (a pure public-history path, trivially reconstructible at
+       serve time); the DFS node index is only a reproducible bench
+       tie-break inside one public depth, never an infoset key, and the
+       menu never depends on hole cards, combo, or unobservable reach;
+   (2) a node in W gets the FULL reference cap-0 menu (the paid
+       widening); every other coarse-mapped node keeps its coarse edge
+       subset;
+   (3) a reference-only node reached through an opened edge gets the
+       SPARSE minimal legal menu = all passive (legality) edges plus the
+       single first aggressive edge when one exists — replacing D202's
+       full-menu cascade, so growth is bounded and passive edges are
+       never removed (the D184 invariant holds). This minimal set is
+       always non-empty at source (due==0 gives Check; due>0 gives
+       Fold+Call; aggressive rights are simply absent on the no-raise
+       early returns), and "first aggressive" is the sorted smallest
+       legal target;
+   (4) the mapped set is the root DFS closure; mask_to_subset_map and
+       validate_mask_subset_map run unchanged, giving a kNoNode
+       suppressed subtree and an exact D192/D195 telescope.
+  Builder preconditions (review F3), fail-closed invalid_argument:
+   - B >= 1; B==0 (or any non-positive budget) throws;
+   - when B exceeds the count of eligible suppressed coarse nodes, the
+       budget clamps to that count rather than over-reading or padding;
+   - if the root itself has no suppressed edge (an already-full-menu
+       fixture) the "always include root" precondition cannot be met, so
+       the builder throws rather than silently emitting an identity mask.
+  Eligible-count zero is logically equivalent to this root case: if the
+  root has a suppressed edge it is itself eligible, so the count is >=1;
+  no separate zero-eligible branch exists (review F2).
+  B maps directly to an action-node/infoset budget; fail-closed typing
+  stays with tree_resource_exhausted (M10). Note (review F4): a sparse
+  B=1 game is NOT identical to the D202 root-only game — only the
+  WIDENED SET is root-only; the opened reference-only subtrees use the
+  sparse minimal menu instead of D202's full cascade.
+
+- ERROR ISOLATION. Against the SAME frozen cap0 reference,
+  reach_bound_from_snapshot splits exact exploitability into
+  bounded_nash_conv_bb (solver UPDATE error, the restricted game's own
+  g_g telescope) and pure_menu_term_bb (abstraction/menu error). The
+  improvement claim is made ONLY on the pure menu term (the comparable
+  fixed-reference quantity); bounded NC across different restricted
+  games has no monotonicity theorem (D195) and is reported separately,
+  never as "better NC". No NC is compared across different reference
+  domains, and no reference deviation action is deleted (the BR walk
+  keeps the full menu). There is likewise NO cross-mask monotonicity
+  theorem for the pure menu term: widening re-solves the policy and the
+  D164 evidence shows the term can move the "wrong" way as mass
+  re-splits. A smaller B>=2 pure menu term is therefore an EMPIRICAL
+  hypothesis on the fixed fixture, asserted as a loud observed-outcome
+  gate (not a structural invariant); a refutation is retained as red
+  evidence and triggers the FAILURE DISCIPLINE mechanism switch rather
+  than test erosion.
+
+- NATIVE TINY GATES (new test_rfc0047_sparse_multilayer.cpp, RED first).
+  S1 RED existence: with budget B=1 (widened set root-only) a deeper
+      restricted node n* has a positive menu_gap (the observable deep
+      deviation under the full reference BR).
+  S2 selection legality and preconditions: W is deterministic,
+      root-first, never selects by private state, and fits the declared
+      tiny envelope; the builder rejects non-positive budgets (B < 1)
+      explicitly — B==0 or a negative budget throws invalid_argument, an
+      over-large B clamps to the eligible count without padding, and a
+      root with no suppressed edge throws (review F3). The "spans >=2
+      public depths when B>=2" clause is an OBSERVED property with the
+      8->20-chip fallback (multiple eligible nodes may share one depth on
+      a small fixture), not a structural precondition.
+  S3 sparse cascade, split by guarantee strength (review F2):
+      structurally assert subset inclusion — every edge the sparse mask
+      reaches is reachable under the D202 full-cascade mask on the same
+      fixture (the minimal menu is a subset of the full cap-0 menu); and
+      empirically pin a STRICTLY smaller reachable action-node count
+      than the explicitly-constructed D202 mask, with the 8->20-chip
+      fallback, since strictness needs a reachable node with >=2
+      aggressive edges and does not hold on a degenerate all-in-only
+      tree. Opened reference-only nodes carry the minimal legal menu
+      (all passive + <=1 aggressive).
+  S4 policy legality + exact zeros (reuse M3 conditions).
+  S5 full-menu BR preservation + positive option still measurable (M6);
+      no reference deviation action is deleted and the BR keeps the full
+      cap-0 menu.
+  S6 bitwise reach conservation + root mass 1 (M7).
+  S7 ERROR ISOLATION (empirical, review F1): on the fixed fixture the
+      B>=2 sparse mask's pure_menu_term_bb against the SAME frozen cap-0
+      reference is observed strictly below the B=1 mask's term (loud
+      observed-outcome gate, not a monotonicity theorem — the term can
+      move either way when the policy re-splits); each mask's
+      bounded_nash_conv_bb is reported independently with no cross-game
+      NC comparison; the subtree extension-free zero-gap pin (M8) still
+      holds. A refutation is kept as red evidence and triggers the
+      FAILURE DISCIPLINE switch.
+  S8 determinism and all-true kernel equivalence stay green (M3b/M9).
+  S9 typed resource fail-close and nodewise storage bound (M10).
+
+- FAILURE DISCIPLINE. If a counterexample refutes sparse multi-layer
+  widening on the tiny fixture, retain the red evidence and reason and
+  switch to another authorized reachable small mechanism (Path A/B or
+  grid/turn-CV) rather than parking on an unreachable report. The
+  frozen 0.002/B0/G1/cap0/cap1/budgets are unchanged; every row stays
+  exploratory/supporting evidence and can never be reported as M2/G5.
+
+- D208 IMPLEMENTATION RECORD (2026-11-14). Added
+  make_sparse_multilayer_mask to mixed_menu.{hpp,cpp} (the D202 solver,
+  evaluator, and validators are unchanged) and native
+  test_rfc0047_sparse_multilayer.cpp with gates S1-S9; one additive
+  CMake ctest target. RED first (logic_error stub), then GREEN.
+  RED->GREEN corrected one test-design flaw (the builder itself was
+  always correct, confirmed by an isolated per-budget probe): the first
+  S3 tried to assert the sparse closure was nested in the D202 root
+  mask and built an invalid "full menu over the sparse region" mask
+  (marking sparse-reachable nodes all-true opens edges to nodes left
+  all-false, so validate_mask's closure saw a reachable empty node).
+  The corrected S3 uses the always-legal all-true cap-0 reference mask
+  and asserts edge-wise subset inclusion (every sparse-allowed edge is a
+  real reference edge), plus minimal-menu legality at opened
+  reference-only nodes (all passive retained, <=1 aggressive) and the
+  nodewise storage bound. The sparse B=2 mask is not nested in D202's
+  root mask: it reaches 16 action nodes vs 12 because it widens a deeper
+  node D202 leaves coarse (observed, not a guarantee).
+  TINY RESULT (8-chip root, 60 iterations, Uniform arm, same cap-0
+  reference): pure menu term B=1 1.49051376 BB -> B=2 1.15447102 BB, a
+  22.5% reduction in the MENU/abstraction error from widening one
+  deeper public node; bounded NashConv (the solver UPDATE error) is
+  reported independently per mask (B=1 0.01567429, B=2 0.01824050 BB)
+  with no cross-game ordering. This is the requested native isolation:
+  a small, reproducible selection rule measurably reduces the menu
+  component on a real fixture while the two error terms stay separated.
+  All outputs stay exploratory; no long anchor, sweep, or matrix was run
+  and nothing is reported as an M2/G5 pass.
+
+- D208 IMPLEMENTATION REVIEW (2026-11-14, same independent reviewer):
+  APPROVED with no blocking/major/medium findings. Confirmed the builder
+  is correct and minimal (one appended free function; the D202 solver,
+  evaluators, and validators are unchanged), the corrected edge-wise S3
+  is the right structural assertion, passive/non-empty/determinism are
+  guaranteed at source and re-pinned by the validator, and the S7
+  error-isolation framing has no erosion path. Four LOW items all closed
+  before commit: F1 — replaced the tautological clamp test with an
+  independent eligible-count check proving std::min clamps to exactly
+  the eligible node count; F2 — added the root-with-no-suppressed-edge
+  rejection case (reference-as-coarse identity map); F3 — turned S1's
+  fallback message into a real parameterized 8->20-chip retry matching
+  T9/M8; F4 — restored the trailing newline and ran the format target.
+  Hardened S1-S9 stay green; full rfc0047 regression is the separate
+  cross-component check. All D208 output is bench-only exploratory
+  evidence with no M2/G5 implication.

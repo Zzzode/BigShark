@@ -1432,6 +1432,59 @@ Anchor verdict: mechanism valid (25.3% Uniform menu-term reduction),
   NashConv 1.33x worse), exploratory evidence only.
 ```
 
+## Sparse Multi-Layer Menu Addendum (D208)
+
+The D202 root-only candidate left most of the pure menu term in
+still-restricted deeper subtrees because widening opens reference-only
+subtrees that were given the full cap-0 menu. This addendum adds a
+bench-only sparse multi-layer selection mechanism that widens deeper
+nodes directly while bounding growth; it reuses the D202 solver,
+evaluator, and validators unchanged and introduces only a mask-selection
+builder plus native gates.
+
+The selection set `W` is chosen deterministically from coarse-mapped
+action nodes that still carry a suppressed edge, ordered by public
+betting depth with a DFS-index tie-break (the deployable semantic key
+is the parent-chain tuple of `incoming_action` public-history values).
+Nodes in `W` receive the full reference menu; other coarse-mapped nodes
+keep their coarse edges; reference-only nodes opened through a widened
+edge receive the sparse minimal legal menu — all passive legality edges
+plus at most the single first aggressive edge — which is always
+non-empty at source and never removes a passive edge. The mapped set
+remains the root DFS closure over allowed edges, so the D192/D195
+telescopes stay exact. Builder preconditions fail closed: the budget `B`
+must be positive, an over-large budget clamps to the eligible node
+count, and a root with no suppressed edge is rejected.
+
+The menu error and the solver update error are isolated through the same
+fixed-reference decomposition: the cross-mask comparison is made only on
+the pure menu term against the identical frozen cap-0 reference, while
+each restricted game's bounded NashConv is reported separately because no
+cross-game monotonicity exists. A strictly smaller pure menu term under a
+larger budget is an empirical observed-outcome property of the fixed
+tiny fixture, not a structural theorem; a refutation is retained as red
+evidence and the work switches to another authorized small mechanism.
+No production class, schema, protocol, CLI, or long anchor is added, and
+the work stays on the 8/20-chip fixtures at the frozen iteration budget.
+
+### Measured tiny-fixture isolation (8-chip root, 60 iterations)
+
+The native S1-S9 suite is GREEN. On the fixed cap-0 reference the pure
+menu term (the abstraction/menu error) falls from 1.49051376 BB at
+budget B=1 to 1.15447102 BB at B=2, a 22.5% reduction produced by
+widening one deeper public node, while the bounded NashConv (the solver
+update error) is reported independently per restricted game
+(0.01567429 BB at B=1 versus 0.01824050 BB at B=2) with no cross-game
+ordering asserted — the two error components are thus separated on a
+real instance rather than only argued. The sparse B=2 mask is not nested
+in the D202 root-only mask (it reaches 16 versus 12 action nodes because
+it widens a deeper node D202 leaves coarse), so the structural guarantee
+is edge-wise subset inclusion against the full cap-0 menu, not closure
+nesting. The builder preconditions (positive budget, over-budget clamp,
+root-with-no-suppressed-edge rejection) are each exercised by a
+non-tautological gate, and every result stays exploratory with no
+M2/G5 implication.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the
