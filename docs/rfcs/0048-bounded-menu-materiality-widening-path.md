@@ -1536,6 +1536,89 @@ work moves to another same-domain, same-budget small mechanism rather
 than relaxing the gate. The work remains bench-only exploratory
 evidence with no M2/G5 implication.
 
+## Counterexample-Driven Witness Augmentation Addendum (D225)
+
+This addendum adds a data-driven counterpart to the two fixed-rule
+selectors (D208 first-aggressive, D217 pot-nearest). Instead of a
+formula chosen before any evidence is seen, the D225 selector consumes
+SEALED per-node best-response evidence — the `ReachBoundResult` of a
+frozen baseline snapshot — and deterministically converts it into
+exactly one public-node, one-edge augmentation of the existing cap-0
+reference menu, then builds a legal mask and, only inside the verified
+tiny cumulative budget, performs one fresh same-source re-solve. It
+adds no solver, BR walk, action amount, or reference domain: every
+numeric quantity it reads already exists in the sealed records, while
+the action-kind classification and mask consistency checks read the
+immutable reference tree and baseline mask, which are in-memory
+zero-solve operations rather than new evidence, and the output is a
+single public `(node, edge)` pair plus a mask.
+
+The sealed `NodeGapRecord` already exposes, per mapped own-seat node
+and combo, the BR-walk continuation value of every reference action
+(`continuation[i*A+a]`), the full-menu gap `delta`, and the
+bounded-menu gap `bounded_gap`. Because both gaps subtract the same
+policy-weighted value, their per-combo difference
+`delta - bounded_gap = max_a C(i,a) - max_{bounded} C(i,a)` is exactly
+the pure menu option value with the bounded-policy residual
+cancelled; the total `delta` is never treated as removable menu
+benefit. The selector scores a restricted node by the own-reach
+weighted sum of this nonnegative option value over the combos that
+reach it, picks the highest-scoring node with a smallest-index
+deterministic tie-break, and within that node scores each suppressed
+aggressive edge by the same reach-weighted excess over the bounded
+best, picking the argmax with a smaller-edge-index tie-break. All
+aggregation happens offline over the full legal combo set to choose
+one public menu: the `MixedMenuMask` has no combo dimension, so the
+runtime menu cannot depend on hole cards or opponent hidden info, and
+combo-row permutation of the evidence leaves the witness unchanged.
+That invariance is structural rather than probabilistic: every weighted
+sum is a canonical reduction that materializes its product terms,
+guards them with an `isfinite` check, sorts the terms by numeric value,
+and sums them in that fixed order, so any combo-row permutation reduces
+to the identical ordered sequence and the identical IEEE-754 rounded
+result. Node and edge selection are single global scans with
+score-descending then index-ascending keys, so exact ties cannot be
+hijacked by seat or iteration ordering. A record row with no bounded
+edge, a non-finite term, or an edge map inconsistent with the mask fails
+closed with `std::invalid_argument`; the all-suppressed state is
+unreachable on genuine sealed evidence but is guarded because a
+hand-built validation record can construct it.
+
+The augmentation flips exactly the one scored suppressed aggressive
+edge to allowed and re-runs the root-DFS closure; nodes newly opened
+behind it receive the D208 sparse minimal legal menu (all passive
+edges plus the first aggressive edge), which is deterministic legality
+filling rather than a second candidate. No-candidate evidence,
+illegal inputs, and evidence/mask disagreement fail closed with typed
+results or `std::invalid_argument`; a cumulative monotone-only
+refinement budget gates every real solve and throws a typed
+exhaustion error before any solver call, while selection and
+augmentation themselves cost no solve token. The conditional
+re-solve is a fresh CFR+ run computing its own regret, average,
+reach, full cap-0 BR, NashConv, pure menu term, and e_embed; nothing
+is inherited from the baseline snapshot's reach or certificates, no
+monotonicity is assumed, and any worsening is reported as measured.
+
+The same tiny 8-chip fixture, 60-iteration budget, and frozen
+cap-0/cap-1 domains apply, with no large-root BR, full-combo census,
+training, long anchor, root scan, or sweep. If the sealed records
+cannot locate a positive-score edge, a minimal explicitly-constructed
+counterexample record set may validate the mechanism under a clear
+mechanism-validation label; the constructed set must contain a node
+with passive edges and at least two aggressive edges, a paired mask
+suppressing the target edge, and a complete NodeGapRecord (positive
+own reach, continuation where the suppressed edge beats the bounded
+best for a reached combo, mask-identical edge map, identity-consistent
+gaps), and it runs the same legality, permutation, and identity
+cross-check gates as real evidence. A real large-root witness is never
+fabricated. The augmentation's diff has an asserted three-layer
+structure: among baseline-reachable nodes exactly the one scored
+witness bit flips, all other flips are on previously unreachable
+nodes, and every such row is exactly the D208 sparse-minimal menu. The
+output is bench-only exploratory supporting evidence with no M2/G5
+implication, and a refutation is retained as red evidence under the
+existing FAILURE DISCIPLINE.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the

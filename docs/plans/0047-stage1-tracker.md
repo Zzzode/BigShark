@@ -3258,3 +3258,349 @@ RFCs 0041/0043/0045/0046).
   build_sparse_mask path, and rfc0047_pot_fraction additionally
   exercises the new P2b mid-street invalid_argument contract, so the
   F1 fix has instrument-level, not merely code-level, closure.
+
+## Counterexample-driven single-edge witness augmentation (D225)
+
+- D225 OBJECTIVE. A bench-only deterministic selector that turns SEALED
+  per-node best-response evidence (the ReachBoundResult produced from a
+  frozen baseline snapshot) into exactly one public-node, one-edge menu
+  augmentation over the immutable cap-0 reference, then builds a legal
+  mask and — only inside the verified tiny cumulative budget — performs
+  one fresh same-source re-solve with its own reach/BR/decomposition.
+  It is the data-driven successor to the two fixed-rule arms: D208 picks
+  the sorted first aggressive edge, D217 picks the pot-nearest edge by a
+  pre-registered formula, while D225 picks the edge the sealed BR
+  evidence says carries menu option value. No fixed rule, no sweep, one
+  candidate per fixture.
+
+- PRE-REGISTRATION (frozen before any implementation or run).
+  Frozen inputs and identity.
+   (F1) Fixture: the same 8-chip river-root tiny fixture as D208/D217
+       (stacks {8,8}, pot 4, gross contributions {2,2} already dead
+       money, board 2c 3d 7h Js 9c, coarse Coarse cap-1 grid, reference
+       identity(0), 60 seedless CFR+ iterations, 1 thread).
+   (F2) Baseline mask m0 = make_sparse_multilayer_mask(ref, coarse, 2)
+       (the D208 first-aggressive arm). Frozen snapshot
+       sigma0 = solve_mixed_menu(def, identity(0), m0, 60, 1). Sealed
+       evidence E = reach_bound_from_snapshot(def, sigma0.river, ref,
+       ref, mask_to_subset_map(ref, m0), Uniform). E carries four
+       abstraction/shape digests that the selection result records for
+       provenance; the selector never re-solves and never walks the BR
+       tree itself.
+  Public-node qualification. A mapped action node n is eligible iff
+   (Q1) E contains a NodeGapRecord keyed by n for its acting seat (each
+       action node has exactly one acting-seat record),
+   (Q2) the record edge_map contains at least one -1 entry whose
+       reference action is aggressive (a suppressed legal aggressive
+       edge; passive edges can never be suppressed),
+   (Q3) the node score defined below is strictly positive above a fixed
+       1e-12-chip FP floor.
+  Legal combo set and normalization.
+   (L1) L(n) = the combos i with own_reach[i] > 0 in the sealed record,
+       i.e. the combos for which sigma0 actually reaches n as the acting
+       seat. Weight w_i = own_reach[i] taken verbatim from E; no
+       recomputation, no renormalization (all rankings are invariant to
+       a common positive scale, and the raw chip scale stays comparable
+       to the D192/D195 telescope ledger). Opponent reach is not used:
+       it belongs to the structural certificate, not menu option value.
+  Single (n,a) scoring (policy residual excluded by construction).
+   (S1) Per combo i let A be the node menu width and C(i,a) =
+       continuation[i*A+a]. Bounded best
+       C*_b(i) = max over edges with edge_map[a] != -1 of C(i,a).
+       Option value v(i) = max(0, max_a C(i,a) - C*_b(i)). The selector
+       computes C*_b, v, and every edge score directly from
+       continuation; the stored identity
+       delta[i] - bounded_gap[i] = max_a C(i,a) - C*_b(i) (the
+       policy-weighted value cancels algebraically because record_node
+       subtracts the same stored policy_value) is used only as a
+       cross-check: |(delta-bounded_gap) - (max C - C*_b)| <= 1e-9
+       chips per combo, matching the existing kChipTol scale, since
+       floating reassociation preserves sign but not bit equality. The
+       selector never treats total delta as removable menu benefit.
+   (S2) Node score S(n) = canonical reduction of the terms
+       {w_i * v(i) : i in L(n)}. CANONICAL REDUCTION (review round-1
+       Major-1): materialize every product term, reject the record with
+       std::invalid_argument if any term or weight is non-finite
+       (an isfinite guard that also protects the later sort's strict
+       weak order), then std::sort the terms by numeric value and sum
+       them sequentially in that fixed order. Sorting makes the reduced
+       multiset and hence the rounded sum identical under any combo-row
+       permutation, so permutation invariance holds bitwise rather than
+       probabilistically; cost is at most 1081 elements per node.
+   (S3) Node pick via ONE global scan over every record across both
+       seats with the key (S(n) descending, reference_node ascending);
+       nested per-seat loops are forbidden so an exact score tie cannot
+       be hijacked by seat ordering (review Low-1). n* is the first
+       key; only nodes passing Q1-Q3 enter the scan.
+   (S4) Edge score at n* for each suppressed aggressive edge a uses the
+       same canonical reduction over
+       {w_i * max(0, C(i,a) - C*_b(i)) : i in L(n*)}. Edge pick
+       a* = argmax Q(a); exact ties resolve to the smallest edge index
+       (menus are sorted ascending with distinct targets, so this is
+       the smaller target_total). Witness requires Q(a*) > 1e-12;
+       otherwise the result is kNoCandidate and the selector terminates
+       immediately WITHOUT falling back to a second-best node or edge
+       (review Low-3; one candidate per fixture per T1).
+  Determinism and private-info boundary.
+   (D1) All scores use the canonical sorted reduction with index-only
+       node/edge tie-breaks; no RNG, no per-combo output. The result is
+       one public (n*,a*), independent of hole-card order: permuting the
+       combo rows of a copied evidence object produces the identical
+       ordered term sequences and therefore the bitwise identical
+       witness (this is structural under IEEE-754 default rounding, the
+       same premise the existing bitwise reach contract already relies
+       on). Runtime menus stay a function of public node identity alone
+       (the existing MixedMenuMask has no combo dimension).
+  Stopping condition.
+   (T1) Exactly one refinement per fixture: one node, one edge, one
+       candidate. No re-scoring after augmentation, no second node, no
+       fraction/budget/root sweep.
+  Augmentation and closure.
+   (A1) m1 starts as a copy of m0 with allowed[n*][a*] flipped to true
+       after validating n* is an action node, a* is in range,
+       aggressive, and currently suppressed.
+   (A2) Root-DFS closure: an action node newly made reachable whose row
+       is still all-false receives the D208 sparse minimal legal menu
+       (all passive edges plus the first aggressive edge via the shared
+       first_aggressive_choice; passive-only when none exists). This is
+       deterministic legality filling, not a second scored selection.
+       The m0->m1 diff therefore has a mandatory three-layer structure
+       (gated explicitly in W2/W4): (i) among nodes reachable in m0 the
+       only flipped bit is the single witness (n*,a*); (ii) every other
+       flipped bit sits on a node unreachable in m0; (iii) each such
+       newly-reachable row equals exactly the sparse-minimal rule (all
+       passive edges plus at most the first aggressive edge). The scored
+       witness edge count is exactly one even though closure flips
+       additional mechanical bits.
+   (A3) m1 passes validate_mask, mask_to_subset_map, and
+       validate_mask_subset_map unchanged.
+  No-candidate and fail-close contracts.
+   (E1) No suppressed aggressive edge, or no positive score:
+       WitnessStatus::kNoCandidate; no augmentation is attempted.
+   (E2) Invalid node/edge index, a passive witness edge, an
+       already-allowed witness edge, or a sealed record row with zero
+       non-suppressed (bounded) edges — the state that would make
+       C*_b negative infinity and propagate inf into the scores —
+       throws std::invalid_argument. A record whose edge_map disagrees
+       with the mask at the chosen node also throws invalid_argument
+       (sealed evidence/mask inconsistency). The zero-bounded-edge case
+       is unreachable on genuine sealed evidence (validate_mask
+       guarantees a non-empty reachable row) but can occur inside a
+       hand-built Fb record, so it is an explicit enumerated guard
+       (review Medium-3).
+   (E3) A cumulative RefinementBudget charges only real solves;
+       selection and augmentation cost zero tokens. A charge with no
+       remaining token throws the typed witness_budget_exhausted
+       BEFORE any solver call; the budget is monotone-decreasing and
+       exposes no reset.
+  Conditional re-solve path (only with verified tiny balance).
+   (R1) Charge one token, then sigma1 = solve_mixed_menu(def,
+       identity(0), m1, 60, 1): a fresh CFR+ run with its own regret,
+       average, and forward reach — sigma0 reach or certificates are
+       never reused. E1b = reach_bound_from_snapshot on sigma1 with the
+       m1 map: fresh full cap-0 BR, bounded NC, pure menu term,
+       e_embed, storage, wall, and RSS. Report m0 vs m1 side by side
+       with no monotonicity claim; any worsening is retained as
+       measured. The witness edge's average policy mass under sigma1 is
+       observed and reported (legality gated, not value gated).
+  Budget ledger (cumulative, no reset; unknown external balance = 0).
+   (B1) Selection/augmentation need no solve: at zero external balance
+       the selector, mask construction, and all legality/invariance
+       gates are still fully deliverable from sealed records. The
+       re-solve ledger is the explicit conditional path, charged
+       against the same tiny 60-iteration fixture budget class as the
+       D208/D217 native gates (one baseline solve + one candidate solve
+       + two snapshot BR walks, all on the 8-chip root). No large-root
+       BR, full-combo census, training, 1e5 solve, 300-iteration anchor,
+       or root scan is authorized.
+  Fallback if sealed records cannot locate an edge.
+   (Fb) If the sealed evidence yields kNoCandidate, a minimal fixture
+       may explicitly construct a verifiable counterexample record set;
+       it is labeled mechanism-validation evidence, never a real-root
+       witness, and no large-root witness is fabricated. The constructed
+       counterexample has a field-level contract (review Medium-1):
+        (a) a reference tree node whose menu contains the passive edges
+            plus at least two aggressive edges;
+        (b) a paired mask row in which the passive edges and the first
+            aggressive edge are allowed and the target aggressive edge
+            is suppressed;
+        (c) a NodeGapRecord with a 1081-wide own_reach carrying at least
+            one strictly positive entry, a 1081*A continuation in which
+            for some positive-reach combo the suppressed edge strictly
+            exceeds the bounded best, an edge_map bitwise identical to
+            the mask row, delta/bounded_gap consistent with the S1
+            identity, and widened == false;
+        (d) the full W2/W3/W4 gate set runs against it under the
+            mechanism-validation label, including the S1 identity
+            cross-check (review Low-5): recomputing
+            max_a C - C*_b from continuation must match
+            delta - bounded_gap within 1e-9 chips per combo.
+
+- NATIVE GATES (new engine/tests/test_rfc0047_witness_augment.cpp,
+  RED stub first, real behavior only, no source-text/log matching).
+  W1 witness existence RED: selection on the sealed 8-chip evidence
+      returns kSelected and a suppressed aggressive legal edge.
+  W2 behavioral distinction and diff classification: m1 differs from
+      m0, and the diff obeys the A2 three-layer contract — among
+      m0-reachable nodes exactly the one scored flip (n*,a*) changes,
+      every other changed bit is on an m0-unreachable node, and each
+      such row is exactly the sparse-minimal menu; m1 also differs from
+      the D217 pot mask as a whole because n* is coarse-mapped and D217
+      leaves its suppressed coarse edge untouched. The witness edge was
+      suppressed in m0.
+  W3 determinism and private-combo permutation invariance: repeated
+      selections are bitwise identical, and a combo-row-permuted copy of
+      the sealed records (own_reach, delta, bounded_gap, continuation
+      permuted together) yields the same (n*,a*), guaranteed by the
+      canonical sorted reduction.
+  W4 legality: in-range aggressive previously-suppressed edge, every
+      passive edge retained, validate_mask and subset-map validators
+      green, scored witness edge count exactly one per the A2
+      classification.
+  W4b identity cross-check (review Low-5): for every scanned record the
+      per-combo option value recomputed from continuation
+      (max_a C - C*_b) matches stored delta - bounded_gap within 1e-9
+      chips; the same check runs on any Fb constructed record.
+  W5 no-candidate typed no-op: full-menu evidence (no suppressed edge)
+      returns kNoCandidate and leaves the mask untouched.
+  W6 fail-close: bad node/edge index, passive witness, already-allowed
+      witness, evidence/mask disagreement throw invalid_argument;
+      constructed-record rows also cover the S2 non-finite-term guard
+      and the E2 zero-bounded-edge guard (each asserted with
+      invalid_argument); an exhausted budget throws
+      witness_budget_exhausted before a solve.
+  W7 closure and kernel regression: the m1 mapped set is its allowed
+      DFS closure; augmenting an all-true mask cannot produce a
+      candidate (no-op path), preserving the M3b all-true kernel
+      equivalence established by the mixed-menu suite.
+  W8 conditional re-solve (balance present): sigma1 forward reach
+      validates bitwise for both seats via validate_supplied_reach,
+      all ledger quantities finite, witness-edge mass reported; the m1
+      map and snapshot are consumed by the unchanged reach-bound
+      instrument.
+  W9 budget semantics: one shared monotone budget across
+      baseline/select/validate/retry, zero-cost selection asserted (no
+      token charged), exhaustion typed and pre-solve.
+
+- FAILURE DISCIPLINE. If the selector is refuted (no positive-score
+  witness on the tiny fixture and the constructed fallback is also
+  rejected), retain the red evidence and stop the mechanism; do not
+  lower the 1e-12 floor, change the scoring, sweep parameters, or expand
+  the action domain. Frozen cap0/cap1, 0.002, B0=0.010, G1, root weights,
+  threads, the 60-iteration tiny budget, and the no-long-anchor
+  constraints are unchanged. Every row is labeled
+  supporting-evidence-not-m2-g5-pass; heuristic scores and old evidence
+  are never benefit or certification guarantees.
+
+- D225 REVIEW ROUND 1 (independent non-author agent, separate launch,
+  pre-implementation): verdict Changes Requested. The central
+  delta-minus-bounded-gap identity, closure legality, one-record-per-node
+  structure, zero-balance deliverable, and re-solve independence were all
+  verified against the code; four blocking/major-or-medium findings
+  plus five lows required pre-registration revision before
+  implementation (failure discipline forbids changing the scoring after
+  a run):
+  Major-1 (fixed in text): plain sequential summation cannot
+  structurally guarantee bitwise permutation invariance. Adopted the
+  recommended canonical reduction (materialize terms, isfinite guard,
+  std::sort by value, fixed-order sum) in S2/S4 and D1; W3 now asserts a
+  structural property.
+  Medium-1 (fixed): Fb now has a field-level constructed-record contract
+  (a)-(d) including the identity cross-check.
+  Medium-2 (fixed): W2/W4 now assert the A2 three-layer diff
+  classification (one scored flip among m0-reachable nodes; other flips
+  only on m0-unreachable rows; each exactly sparse-minimal).
+  Medium-3 (fixed): a record row with zero bounded edges is an explicit
+  invalid_argument case in E2.
+  Low-1 (fixed): S3 is one global scan keyed (score desc, node asc), no
+  nested per-seat loops. Low-2 (fixed): C*_b/v/Q are computed from
+  continuation; delta-bounded_gap is a 1e-9 cross-check only. Low-3
+  (fixed): S4 kNoCandidate terminates with no second-node fallback.
+  Low-4 (fixed): RFC wording no longer claims tree/mask reads come from
+  the records alone. Low-5 (fixed): new W4b identity cross-check gate
+  for real and Fb records.
+  Accepted residual risks (kept in the ledger): option values inherit
+  the Uniform completion arm; single-edge greedy Q has no optimality
+  claim; W1 remains empirical and may force the Fb path; cross-platform
+  bitwise equality rests on the same IEEE-754 premise as the existing
+  reach contract; re-solve worsening is retained as measured.
+
+- D225 IMPLEMENTATION RECORD (2026-11-14). After review round-2 closure,
+  implemented the witness selector in mixed_menu.{hpp,cpp} (same
+  translation unit, reusing the anonymous-namespace is_aggressive and
+  first_aggressive_choice helpers plus the existing validators) and the
+  native suite engine/tests/test_rfc0047_witness_augment.cpp, with one
+  BUILD_TESTING CMake hunk. RED was observed first: the stub selector
+  returned kNoCandidate and W1 failed at its kSelected assertion; the
+  real implementation then turned every gate GREEN. New bench-visible
+  surface: RefinementBudget (monotone-only solve tokens, typed
+  witness_budget_exhausted distinct from invalid_argument),
+  WitnessSelection (with the four sealed digests for provenance),
+  select_witness_augmentation, and apply_witness_augmentation. The
+  selector performs no solve and no BR walk; canonical sorted
+  reductions, the global (score desc, node asc) scan, the 1e-9
+  identity cross-check, and the 1e-12 floor follow the frozen
+  pre-registration exactly.
+  VALID TINY LEDGER (8-chip river root, 60 seedless iterations, budget
+  class identical to D208/D217; release; deterministic across repeated
+  runs to the printed digits). The sealed D208 evidence selects public
+  node 48, reference edge 2 (a suppressed aggressive action), with
+  node_score 1176155.38345900 and edge_score 1147791.32305174 raw
+  reach-weighted option units. After the single-edge augmentation and a
+  FRESH re-solve (its own regret, average, forward reach, validated
+  bitwise for both seats, and a fresh full cap-0 reach-bound pass):
+  pure menu term 1.15447102 -> 0.74330806 BB (-35.6%, the abstraction
+  component) versus only -0.54% for the D217 fixed pot rule on the same
+  baseline, while bounded NashConv moves 0.01824050 -> 0.02718028
+  (worse; no cross-game monotonicity claim, retained as measured). The
+  witness edge gains real average-policy mass under sigma1
+  (witness_mass 308.477329 summed over the 1081 combos), confirming the
+  new edge is legal and reachable rather than a zero-probability
+  placeholder. Suite wall about 7.5 s end to end, RSS peak about
+  14.4 MiB; one baseline solve + one candidate solve + two snapshot BR
+  walks, no extra solve for selection itself.
+  Interpretation stays strictly exploratory: the score is a heuristic
+  witness derived from sealed Uniform-completion evidence, not a benefit
+  or certification guarantee; the mechanism validates that
+  counterexample-driven per-edge selection can target menu error far
+  more sharply than either fixed rule at the same W, while the bounded
+  NC worsening re-confirms the D195/D198/D202/D217 conclusion that
+  menu and solver-update errors move independently and the binding wall
+  remains policy convergence. No M2/G5 claim; no long anchor, sweep,
+  large-root BR, census, or training was run; cap0/cap1, 0.002,
+  B0=0.010, G1, root weights, threads, and the 60-iteration tiny budget
+  are unchanged. The Fb constructed-record path was not needed because
+  genuine sealed evidence produced a positive witness; its field
+  contract remains registered for a future no-candidate fixture.
+
+- D225 IMPLEMENTATION REVIEW (round 3, same independent agent, static):
+  verdict Approved, no blocking/major/medium. The implementation matches
+  the frozen pre-registration on every rule (canonical reduction, global
+  score-desc/node-asc scan, floor placement, no fallback, sparse-minimal
+  closure, W4b identity as a cross-check only); ScoredRecord pointers
+  stay within the unmutated const evidence; the permutation gate has
+  real discriminating power (naive summation would break bitwise
+  equality under the 137i+29 bijection on 1081=23*47 combos); selection
+  has no hidden solve/BR; scope is bench-only with no M2/G5 overreach and
+  the m0 ledger matches the D208 B=2 figures bit-for-bit. Five Low
+  hardening findings, all adopted before closure:
+  Low-1: the zero-bounded-edge guard is now evaluated from edge_map
+  alone BEFORE the mask-agreement and passive-edge checks, so an
+  all-suppressed constructed record reaches its own diagnosis instead
+  of the agreement branch.
+  Low-2: a W6 gate now corrupts delta at a positive-reach combo and
+  asserts the W4b identity guard throws; the L(n) scope (zero-reach
+  combos skipped, never scored) is documented at the check.
+  Low-3: W2 layer (iii) now pins the single allowed aggressive edge of
+  each newly-opened row to the exported first_aggressive_choice output
+  (promoted to external linkage, same body as the D208 chooser) rather
+  than re-implementing the comparison.
+  Low-4: negative own_reach now throws invalid_argument explicitly
+  (defense in depth; upstream reach validation already forbids it), with
+  a W6 constructed-record gate.
+  Low-5: the already-allowed-edge W6 case scans for a genuine allowed
+  aggressive node and CHECK-fails rather than silently falling back to a
+  passive index.
+  After these changes the W1-W9 suite is green again and the happy-path
+  ledger is byte-identical (node 48, edge 2, pure menu 0.74330806 BB),
+  confirming the hardening changed only malformed-input and test paths.
