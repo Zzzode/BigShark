@@ -1485,6 +1485,57 @@ root-with-no-suppressed-edge rejection) are each exercised by a
 non-tautological gate, and every result stays exploratory with no
 M2/G5 implication.
 
+## Pot-Fraction Menu Selection Addendum (D217)
+
+This addendum replaces only the aggressive-edge choice at the restricted
+reference-only nodes of the D208 sparse construction; the widened set W,
+its budget, its public-depth/DFS ordering, the frozen cap-0 reference,
+the solver, and the D192/D195 decomposition are unchanged, and the
+common W machinery is shared by construction through a chooser callable
+so the two arms differ by exactly one factor.
+
+The canonical pre-registered rule is pot-sized (fraction 1.0). Pot and
+call due are reconstructed from deployment-observable public history.
+On the single river street the betting street starts fresh: the root pot
+`def.pot` is dead money (the root `def.contributions` already sit inside
+it), so per-seat `street_committed` starts at zero rather than from the
+gross blind contributions. Replay the parent-chain `incoming_action`
+events with the mover taken from the parent node's actor; call payment
+is `min(due, def.stacks[actor] - street_committed[actor])` where
+`due = max(street_committed) - street_committed[actor]`, so short all-in
+calls stay exact without an equal-stack assumption, and every replay
+step checks `pot == def.pot + street_committed[0] +
+street_committed[1]` through an NDEBUG-independent throw. The replay
+contract requires a street-start root and fails loud with
+`std::invalid_argument` when the `GameDef` already carries nonzero
+`street_committed` (a live mid-street resolver root), since its fresh
+zero-commitment seeding cannot represent a wager already on the table.
+Fold rows keep the pre-refund gross pot because the production
+unmatched-bet refund is a terminal settlement and choosers consume
+action-node states only, where no refund has occurred. At a
+zero-due node the ideal pot-sized additional payment is the pot; facing
+a bet it is `pot + 2*due`. These are additional-payment quantities;
+converting to a literal street `target_total` adds a node-constant
+street-base offset that leaves the nearest-legal argmin and the
+equidistance tie-break invariant, so the selector compares in
+additional-payment space and never asserts equality with a literal
+target. The selector then chooses the existing legal aggressive
+reference action nearest the ideal, breaking exact equidistance toward
+the smaller target; it never synthesizes an amount, keeps every passive
+legality edge, and falls back to passive-only where no aggressive action
+is legal. The choice depends only on public pot, due, and menu, so it is
+identical across all combos at an infoset.
+
+The same tiny fixtures and iteration budget apply, with no fraction
+sweep, new grid, long anchor, or action-domain change. Improvement is
+attributed only to the restricted-node aggressive factor against the
+D208 first-aggressive baseline at identical W; cross-game NashConv has
+no monotonicity guarantee and is reported separately. A refutation is
+retained as red evidence under the existing FAILURE DISCIPLINE and the
+work moves to another same-domain, same-budget small mechanism rather
+than relaxing the gate. The work remains bench-only exploratory
+evidence with no M2/G5 implication.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the

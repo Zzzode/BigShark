@@ -3007,3 +3007,254 @@ RFCs 0041/0043/0045/0046).
   Hardened S1-S9 stay green; full rfc0047 regression is the separate
   cross-component check. All D208 output is bench-only exploratory
   evidence with no M2/G5 implication.
+
+## Pot-fraction menu selection within the reference action domain (D217)
+
+- D217 OBJECTIVE. A pre-registered canonical POT-FRACTION action selector
+  that picks an existing frozen cap-0 aggressive action at the restricted
+  reference-only nodes, replacing D208's fixed first-aggressive choice,
+  while reusing the D208 MixedMenuGame builder/solver, the same W rule,
+  the frozen cap-0 full BR, and the D192/D195 error decomposition.
+  Bench-only; no new public ActionAbstraction API, no synthesized bet/
+  raise amount, no reference game-tree/root/stake change, no sweep. One
+  fixed fraction and one tiny budget this milestone.
+
+- PRE-REGISTERED RULES (fixed before any run; reviewed independently).
+  Canonical fraction f = 1.0 (pot-sized). All quantities are
+  deployment-observable public state reconstructed from the parent-chain
+  incoming_action history and the GameDef root — no hole cards, opponent
+  reach, or hidden history.
+  CORRECTION 2026-11-14 (post review round 1, before any valid ledger):
+  the first formulation credited the gross root blind contributions
+  (def.contributions, which are already dead money inside def.pot) as the
+  per-seat starting commitment. On a river-rooted tree the betting street
+  starts fresh, so the correct state is street-cumulative: street_committed
+  starts at zero and pot starts at def.pot. No run result informed this
+  correction; the fraction, budget, ordering, and every gate are unchanged.
+   (1) Pot reconstruction (single river street; TerminalDepth::River,
+       five board cards, so street commitments never reset and
+       close_street/refund_unmatched cannot occur inside a replayed river
+       path). Start pot = def.pot and street_committed[seat] = 0. Replay
+       each public action root->node with the mover taken from the PARENT
+       node's actor (the seat that acted to create the child; node.actor is
+       the next player and is kNoNode on terminals — review F1):
+       Fold/Check change nothing; Call adds call_paid = min(due,
+       def.stacks[actor] - street_committed[actor]) where due =
+       max(street_committed) - street_committed[actor], and the min-clamp
+       makes a short all-in call exact for arbitrary starting stacks;
+       Bet/Raise with street-cumulative target_total T adds
+       (T - street_committed[actor]) to pot and sets
+       street_committed[actor] = T, matching HeadsUpState
+       paid = target_total - street_committed (heads_up.cpp:220). After
+       EVERY replay step check the invariant
+       pot == def.pot + street_committed[0] + street_committed[1] via an
+       NDEBUG-independent throw (review F3; a cassert disappears under
+       -DNDEBUG). Fold rows keep the pre-refund gross pot: the production
+       unmatched-bet refund is a terminal settlement and choosers consume
+       action-node states only, where no refund has occurred. This uses
+       only public history, not the solve-only detail projection header.
+   (2) Due at the node: due = max(street_committed) -
+       street_committed[actor]; zero means a betting (not calling) node.
+       A structural cross-check (review F2, now executed against the real
+       replay outputs at every mapped node) must agree with the real menu:
+       due>0 implies Fold/Call present and no Check; due==0 implies no
+       Fold/Call (the iff in the positive direction, since a zero-due node
+       may check through with no Bet offered).
+   (3) Pot-sized IDEAL ADDITIONAL PAYMENT (not a literal street
+       target_total). due==0 (a bet): ideal additional = pot, and the
+       actor's street commitment is zero on every river due==0 node (a
+       call ends the river street, so no round reopens with money
+       outstanding). due>0 (a raise): ideal additional = pot + 2*due (call
+       due, then raise the post-call pot pot+due; facing bet B into pot P
+       this is P+3B). The selector works in additional-payment space and
+       never asserts equality with a literal target_total.
+   (4) Selection: among the node's EXISTING legal aggressive reference
+       actions (Bet when due==0, Raise when due>0) choose the one
+       minimizing |additional_payment(action) - ideal_additional| where
+       additional_payment = action.target_total - street_committed[actor];
+       the street-base offset is a node-constant across the candidate
+       actions, so the argmin matches comparing literal target_total.
+       Equidistant tie-break is deterministic toward the SMALLER
+       target_total (the menu is sorted ascending with distinct totals, so
+       this is the lower index), pinned by a synthetic-node unit test on
+       the production comparator itself (review F4; the earlier test
+       exercised a re-implemented copy). The nearest-legal rule is
+       self-bounding to the legal set — no amount is synthesized. When no
+       aggressive action is legal, keep the legal passive edges only.
+       Every passive legality edge is always retained (the D184/D202
+       invariant), and non-selected aggressive edges map to suppressed (-1)
+       reference edges.
+  The menu depends only on the public node (pot/due/legal menu), so it is
+  identical for every combo at that infoset.
+
+- SINGLE-FACTOR ARM. The widened set W, its budget, and its (public depth,
+  DFS index) rule are byte-identical to D208; W nodes keep the full
+  reference menu and coarse-mapped non-W nodes keep their coarse subset.
+  The ONLY changed factor is the aggressive choice at reference-only
+  (kNoNode) restricted nodes: D208 first-aggressive -> D217
+  pot-fraction-nearest. Any reach difference caused by the different
+  chosen edge is a natural consequence and is reported as a separate
+  observed quantity, not folded into the selection rule. Changing W would
+  be a separately named arm, not done here. Review F4 enforces this by
+  construction: the eligible enumeration, (depth,DFS) sort, W widening,
+  and root-DFS closure are factored into ONE shared helper parameterized
+  by a chooser(reference,node,pot,due) callable that returns the chosen
+  aggressive edge index (or none); D208 passes the first-aggressive
+  chooser and D217 the pot-nearest chooser, so the common machinery cannot
+  drift and P7's same-input ledger has a structural basis.
+
+- NATIVE TINY GATES (new test_rfc0047_pot_fraction.cpp, RED first).
+  P1 RED distinctness: on the same real reference situation the
+      pot-fraction selector returns a legal aggressive reference action
+      whose target_total differs from the first aggressive edge at least
+      once (8-chip, 20-chip fallback; same fixed fraction, no budget
+      reset).
+  P2 in-domain legality: every selected action is an existing reference
+      node.actions entry (no synthesized amount), all passive edges
+      retained, suppression is aggressive-only, rows non-empty; the
+      derived mask passes validate_mask and validate_mask_subset_map.
+      Consumes the actual replay_public_states outputs (review F2) at
+      every mapped node: the pot invariant
+      pot == def.pot + street_committed[0] + street_committed[1] holds
+      including at terminals (the F1 OOB site), and the reconstructed due
+      classification matches the materialized menu (due>0 implies
+      Fold/Call with no Check; due==0 implies no Fold/Call), and every
+      selected aggressive edge has the type the classification predicts.
+      The at-most-one-aggressive rule is scoped to reference-only nodes
+      (base kNoNode), matching D208 S3 (review round-2 Low-1).
+  P2b street-start contract (review round-2 Low-2): a settlement-valid
+      mid-street root whose GameDef carries nonzero street_committed is
+      rejected by replay_public_states with std::invalid_argument before
+      any replay step.
+  P3 public-only/determinism: repeated builds are bitwise identical; the
+      selector reads only pot/due/menu, never combo; same infoset -> same
+      menu. Plus the tie-break unit test on the production comparator
+      itself (review F4): feed nearest_aggressive_choice synthetic
+      (ideal, legal-target) inputs including an exact equidistant pair
+      and assert the lower target total wins, so the comparator is pinned
+      even if no natural tiny node is equidistant.
+  P4 policy legality with exact zero bits on non-selected edges (M3).
+  P5 full cap-0 BR preservation with positive option still measurable
+      (M6); the reference BR walk keeps every deviation action.
+  P6 bitwise reach-EV conservation and root mass 1 (M7).
+  P7 same-input error ledger vs the D208 first-aggressive baseline at the
+      IDENTICAL W/budget/tie-break family: NC, pure_menu_term, e_embed
+      under both arms, node/edge counts, wall and peak RSS; the only
+      attributed difference is the restricted-node aggressive factor.
+      No cross-game NC monotonicity claim; improvement is attributed to a
+      specific component and any solver-error offset is reported.
+  P8 determinism + all-true kernel equivalence inherited (M3b/M9).
+  P9 typed resource fail-close and nodewise storage bound (M10).
+
+- FAILURE DISCIPLINE. If the fixed pot-sized rule is refuted on both tiny
+  fixtures (no distinct legal aggressive action, or no menu-term
+  improvement), retain the red counterexample and switch to another
+  reachable same-domain/same-budget small selector or a shallow frontier
+  mechanism; do not lower the gate, change the fraction, reset the budget,
+  or open a new action domain / Path-A blueprint / Path-B certificate.
+  Frozen cap0/cap1, 0.002, B0=0.010, G1, root weights, threads, and the
+  60-iteration tiny budget are unchanged; no 300-iter/50-min anchor.
+
+- D217 IMPLEMENTATION RECORD (2026-11-14). Refactored the D208 builder into
+  a chooser-parameterized shared build_sparse_mask (eligible enumeration,
+  public-depth/DFS sort, W widening, root-DFS closure, and validation
+  shared by construction per review F4); D208 now passes the
+  first-aggressive chooser through that shared helper. The refactor itself
+  is behavior-preserving: on an identical mask input the seedless solver
+  produces identical outputs and the D208 S1-S9 suite stays green as the
+  regression guard. Separately, the D208 arm differs from the D202
+  root-only arm by construction (16 vs 12 reachable nodes; pure menu
+  1.49051376 -> 1.15447102 BB; same bounded NC) — those figures compare the
+  two arms, not the code before and after the refactor. Added
+  replay_public_states (public-history street-cumulative pot/due, the
+  short-all-in min-clamp, an explicit street-start root precondition, and
+  an NDEBUG-independent per-step pot invariant),
+  nearest_aggressive_choice (additional-payment argmin with
+  lower-target equidistance, unit-tested on the production comparator
+  itself per F4), pot_fraction_choice (canonical f=1.0), and
+  make_pot_fraction_mask; new native
+  test_rfc0047_pot_fraction.cpp P1-P9, RED stub first then GREEN.
+  REVIEW ROUND 1 (agent a56fda80e49e62818) found a blocking chain:
+  F1 the replay credited node.actor (the next player, kNoNode on
+  terminals) as the mover instead of the parent node's actor, causing an
+  out-of-bounds std::array write at every terminal whose corrupted state
+  was simply never consumed; F2 the P2 gate never invoked the replay;
+  F3 the invariant was a cassert compiled out under -DNDEBUG; F4 the
+  tie-break test exercised a re-implemented copy of the comparator.
+  Root-cause analysis past F1 exposed the deeper gross-vs-street
+  conflation described in the correction block above: the replay seeded
+  street commitments from def.contributions (dead money already inside
+  def.pot), which on a river-rooted street misreads every
+  street-cumulative target_total. All four findings plus the street model
+  are fixed in this revision; the pre-fix ledger (20-chip node 132,
+  pure menu 2.96632063 -> 2.88701315, bounded NC 0.02477526 ->
+  0.02208551) is INVALID and superseded — it was produced by the broken
+  replay and no node-132 split exists under the corrected model.
+  VALID LEDGER (corrected replay; release; seedless; 60 iterations;
+  budget 2; identical W by construction). The first mask split is on the
+  8-chip fixture itself at node 27, no 20-chip fallback needed. At node
+  27 the replay reports pot=7, due=3 (the actor faces a 3-chip bet into
+  the 4-chip root pot), so the pot-sized ideal additional is
+  7 + 2*3 = 13; the 8-chip stack behind caps the legal raise-to domain
+  at targets {6, 8} (additional payments 6 and 8 from a zero street
+  base), and the nearest-legal rule self-bounds to target 8
+  (distances 7 vs 5) where the first-aggressive arm keeps target 6. No
+  amount is synthesized: an ideal above the legal maximum simply resolves
+  to the largest legal action by the pre-registered argmin. The
+  same-input ledger at identical W shows the pot-fraction factor reduces
+  the pure menu term 1.15447102 -> 1.14819095 BB (-0.54%, the abstraction
+  component) while bounded NashConv moves 0.01824050 -> 0.03203123
+  (worse, as expected for a different restricted game at the same tiny
+  iteration budget; reported with no cross-game monotonicity claim — the
+  two components are independently measured and the menu-term reduction
+  is the single-factor attribution). Release P1-P9 plus the D208/D202
+  suites are green; the ASan/UBSan instrument run is recorded separately
+  below once complete (review round-2 Medium-1). The cap-0
+  tree/oracle/domain are unchanged, and every gate stays exploratory
+  with no M2/G5 claim; no long anchor, sweep, or fraction matrix was run.
+
+- D217 REVIEW ROUND 2 (2026-11-14, independent non-author agent, separate
+  launch): verdict Approved. F1-F4 were verified fixed at the code level
+  and all seven math challenges passed re-derivation (pot-sized ideal
+  P+2B; node-27 arithmetic; unsigned underflow ruled out by production
+  legality; strict-less equidistance; single-factor integrity; P2
+  directional implications and structural XOR; D208 behavior
+  preservation). One evidence gate and three Low findings:
+  Medium-1 (evidence, not a code defect): the F1 array OOB needs an
+  ASan/UBSan clean run of the three mask suites for instrument-level
+  closure; a release pass cannot substitute. The run is executed against
+  the final source and its result recorded in the ASAN EVIDENCE block
+  below before this milestone closes.
+  Low-1 (fixed): P2's at-most-one-aggressive check was scoped by "edge_map
+  contains -1", which also catches coarse-mapped nodes allowed several
+  coarse aggressive edges. Now scoped to reference-only nodes
+  (base.node_map[n] == kNoNode), aligned with the D208 S3 gate.
+  Low-2 (fixed): the replay's street-start assumption was implicit. It is
+  now an explicit fail-loud contract — replay_public_states throws
+  std::invalid_argument when any def.street_committed is nonzero — with
+  the header documenting the precondition; new native gate P2b builds a
+  settlement-valid mid-street root (contributions {4,2}, pot 6, stacks
+  {6,8}, street_committed {2,0}, live raise rights) and asserts the
+  rejection. The guard's exception type distinguishes it from the later
+  pot-invariant logic_error, so the gate exercises the new contract.
+  Low-3 (fixed): the implementation record no longer brackets D202-vs-D208
+  arm figures (16 vs 12 nodes; 1.4905 -> 1.1545) inside the
+  refactor-preservation sentence; the refactor claim and the arm
+  comparison are now stated separately.
+
+- D217 ASAN EVIDENCE (2026-11-14; closes review round-2 Medium-1). Built
+  with the asan preset (BIGSHARK_ENABLE_SANITIZERS=ON, AddressSanitizer
+  plus UndefinedBehaviorSanitizer) from the final source including the
+  Low-1/Low-2/P2b changes and the comment-only label corrections, then
+  run through ctest --preset asan with
+  ASAN_OPTIONS=halt_on_error=1 and
+  UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1:
+    rfc0047_mixed_menu ....... Passed (1277.18 s)
+    rfc0047_sparse_multilayer  Passed (405.38 s)
+    rfc0047_pot_fraction ...... Passed (348.68 s)
+  100% tests passed out of 3, no sanitizer diagnostic or abort. The
+  instrument run traverses replay_public_states at every terminal (the
+  original F1 out-of-bounds site) in all three suites via the shared
+  build_sparse_mask path, and rfc0047_pot_fraction additionally
+  exercises the new P2b mid-street invalid_argument contract, so the
+  F1 fix has instrument-level, not merely code-level, closure.
