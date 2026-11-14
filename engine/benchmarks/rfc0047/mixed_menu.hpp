@@ -19,8 +19,11 @@
 #include <bs/game_definition.hpp>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
+#include <string>
 #include <vector>
 
+#include "reach_bound.hpp"
 #include "river_solver.hpp"
 #include "union_menu.hpp"
 
@@ -55,6 +58,11 @@ std::vector<PublicState> replay_public_states(const bs::tree::AbstractTree& refe
 // tie-break is unit-testable with synthetic inputs.
 long nearest_aggressive_choice(const bs::tree::TreeNode& node, std::uint64_t ideal_additional,
                                std::uint64_t street_base);
+
+// The D208/D225 sparse-minimal chooser: the sorted index of the first legal
+// aggressive edge, or -1 when the node has no aggressive action. Bench-visible
+// so closure tests can pin the exact edge rather than re-implement the rule.
+long first_aggressive_choice(const bs::tree::TreeNode& node);
 
 // One allowed-edge row per reference tree node. Rows are empty exactly at
 // non-action nodes; an action row always spans the node's full reference
@@ -130,6 +138,72 @@ MixedMenuMask make_sparse_multilayer_mask(const bs::tree::AbstractTree& referenc
 MixedMenuMask make_pot_fraction_mask(const bs::tree::AbstractTree& reference,
                                      const bs::tree::AbstractTree& coarse,
                                      std::size_t widened_budget);
+
+// RFC 0048 D225: counterexample-driven single-edge witness augmentation.
+// The selector turns SEALED per-node best-response evidence (the
+// ReachBoundResult of a frozen baseline snapshot) into exactly one public
+// (node, edge) augmentation over the immutable cap-0 reference. It never
+// solves or walks a BR tree itself: every numeric input comes from the
+// sealed records, while the reference tree and baseline mask are read
+// in-memory for legality classification. Bench-visible, not production.
+
+// Distinct from std::invalid_argument so an exhausted cumulative budget is
+// not misclassified as malformed sealed evidence (mirrors the
+// tree_resource_exhausted typed-error convention).
+class witness_budget_exhausted : public std::runtime_error {
+ public:
+  explicit witness_budget_exhausted(const std::string& what) : std::runtime_error(what) {}
+};
+
+// Cumulative monotone-only budget for real solves. Selection and mask
+// augmentation never charge a token; a charge with no remaining token
+// throws witness_budget_exhausted BEFORE any solver call. There is no
+// reset: baseline, selection, validation, and a retry share one ledger.
+class RefinementBudget {
+ public:
+  explicit RefinementBudget(std::size_t solve_tokens) : remaining_(solve_tokens) {}
+  void charge();
+  std::size_t remaining() const noexcept { return remaining_; }
+
+ private:
+  std::size_t remaining_;
+};
+
+enum class WitnessStatus { kSelected, kNoCandidate };
+
+struct WitnessSelection {
+  WitnessStatus status = WitnessStatus::kNoCandidate;
+  // Valid only when status == kSelected: the reference node and the single
+  // suppressed aggressive reference edge chosen.
+  std::size_t node = 0;
+  std::size_t edge = 0;
+  double node_score = 0.0;  // canonical reach-weighted node option value
+  double edge_score = 0.0;  // canonical reach-weighted chosen-edge score
+  // Evidence provenance copied verbatim from the sealed ReachBoundResult so
+  // a selection can never be silently paired with a different abstraction.
+  std::uint64_t bounded_abstraction_digest = 0;
+  std::uint64_t reference_abstraction_digest = 0;
+  std::uint64_t bounded_shape_digest = 0;
+  std::uint64_t reference_shape_digest = 0;
+};
+
+// Deterministically select at most one witness (node, edge) from the sealed
+// evidence. Throws std::invalid_argument on malformed records, evidence/mask
+// disagreement, a zero-bounded-edge row, or a non-finite scoring term;
+// returns kNoCandidate when no eligible node or edge clears the fixed floor.
+// Repeated calls and combo-row-permuted evidence copies return the bitwise
+// identical result (canonical sorted reduction).
+WitnessSelection select_witness_augmentation(const bs::tree::AbstractTree& reference,
+                                             const MixedMenuMask& baseline,
+                                             const ReachBoundResult& evidence);
+
+// Apply a selection to the baseline mask: kNoCandidate returns an untouched
+// copy; kSelected flips the one scored suppressed aggressive edge and fills
+// every newly reachable all-false row with the D208 sparse minimal legal
+// menu, then validates. Throws std::invalid_argument on an illegal witness.
+MixedMenuMask apply_witness_augmentation(const bs::tree::AbstractTree& reference,
+                                         const MixedMenuMask& baseline,
+                                         const WitnessSelection& selection);
 
 struct MixedMenuSolveResult {
   // Standard river result fields; avg_sigma rows are full REFERENCE-width
