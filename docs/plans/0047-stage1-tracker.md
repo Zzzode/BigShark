@@ -3604,3 +3604,278 @@ RFCs 0041/0043/0045/0046).
   After these changes the W1-W9 suite is green again and the happy-path
   ledger is byte-identical (node 48, edge 2, pure menu 0.74330806 BB),
   confirming the hardening changed only malformed-input and test paths.
+
+## Two-public-node combination qualification on frozen evidence (D227)
+
+- D227 OBJECTIVE. A bench-only deterministic TWO-NODE combination selector
+  over the SAME sealed D208 baseline mask m0 and the SAME sealed
+  ReachBoundResult E used by D225. From the frozen evidence it chooses at
+  most two DISTINCT public nodes, each contributing one legal missing
+  aggressive reference edge, and constructs one combined mask through the
+  existing flip-and-closure machinery. The goal is combination legality,
+  determinism, and verifiable extension — NOT a quality claim. Both
+  candidates come from the frozen baseline evidence; the post-first-edge
+  mask is never re-certified from stale evidence, old scores are never
+  summed into a new certificate, and no independence or NashConv
+  monotonicity claim is made.
+
+- PRE-REGISTRATION (frozen before any implementation or run).
+  Frozen inputs and identity.
+   (F1) Identical to D225: the 8-chip river-root fixture, m0 =
+       make_sparse_multilayer_mask(ref, coarse, 2), the seedless
+       60-iteration sigma0, and E = reach_bound_from_snapshot on m0 with
+       its four abstraction/shape digests. No new solve, BR walk, or tree
+       build occurs during selection.
+  Eligible list (reused, not redefined).
+   (P1) The selector builds the SAME eligible list as D225 from E:
+       per-record validation (E2 guards, W4b 1e-9 identity cross-check,
+       L(n) own_reach>0 filter, non-finite and negative-reach rejection),
+       canonical sorted node scores, one global scan keyed
+       (node_score descending, reference_node ascending), 1e-12 floor.
+       One acting-seat record exists per action node, so two list entries
+       always denote distinct reference nodes.
+  Cardinality outcomes (typed, no silent fallback).
+   (P2) Zero eligible records -> CombinationStatus::kNoCandidate.
+       Exactly one -> kSingleEligible: the single-edge case is already
+       owned by D225, so D227 does not re-emit it; this is a typed no-op,
+       not a parameter change or a second attempt.
+   (P3) At least two -> take r1 = eligible[0] and r2 = eligible[1].
+       r1 reproduces the D225 witness exactly (same node, edge, and
+       scores), which the native suite pins; BOTH r1 and r2 run the SAME
+       frozen edge argmax (canonical reach-weighted Q over suppressed
+       aggressive edges, strict-greater comparison so the smallest edge
+       index wins an exact tie, 1e-12 floor). For a node with suppressed
+       edge count A (menu width at most 32), S(n)/A <= max_a Q(a) <= S(n),
+       so an r1 edge-floor failure is possible only inside the narrow band
+       S(n) in (1e-12, 32e-12); any edge-floor failure for either node is
+       handled by the same floor branch as kNoCandidate with no pair
+       emitted, no second-node substitution, and no rescan (review Low-2,
+       Low-A).
+   (P3b) Observability (review Low-1): the selection result carries the
+       eligible-node count and, when present, r1/r2 edge scores even on
+       the kNoCandidate and kSingleEligible paths, so "no eligible node"
+       is distinguishable from "second node's best edge below the floor"
+       without an unregistered probe; the native suite prints these once.
+  First-edge closure and the containment consistency check.
+   (P4) On a COPY of m0, flip r1's edge and run the unchanged root-DFS
+       sparse-minimal closure to obtain trial mask m1. E leaves the
+       caller's mask untouched on every path.
+   (P5) Containment check (apply-layer defense in depth; review
+       Medium-1): if m1.allowed[n2][a2] is already true, the second edge
+       adds no independent choice -> kContained, a typed no-op returning
+       the original m0 unchanged. On a genuine unique-parent river tree
+       every record node is m0-reachable with a non-empty row (record_node
+       runs only on mapped nodes and validate_mask guarantees a non-empty
+       reachable row), the first closure only fills still-all-false rows,
+       so n2's row is bitwise unchanged and natural sealed evidence can
+       NEVER reach containment. The branch is therefore intentionally
+       unreachable on the evidence-driven selection path; its only
+       coverage is an apply-layer injection of hand-built coordinates
+       under a mechanism-validation label, plus a negative gate asserting
+       the natural sealed run is not contained.
+   (P6) Otherwise validate (n2,a2) against m1 (action node, in-range,
+       aggressive, currently suppressed). A failure is
+       std::invalid_argument indicating evidence/mask corruption; like
+       containment this post-closure failure is not reachable from
+       genuine sealed evidence (the row cannot change) and is covered by
+       injected coordinates, never by forging a large-root witness. The
+       exception propagates while m0 stays bitwise identical because all
+       edits live on copies. Then flip (n2,a2) on a copy of m1, run the
+       closure a second time, and validate_mask; the result is
+       kCombined with both coordinates and scores recorded.
+   (P6b) Two-scored-flip minimization (review Medium-2): the combined
+       diff has an asserted classification — among m0-reachable rows
+       exactly the two flips (n1,a1) and (n2,a2), every other changed
+       bit sits on an m0-unreachable row, and each such row is exactly
+       sparse-minimal (all passive edges plus at most one aggressive edge
+       that must equal the exported first_aggressive_choice output). The
+       validators alone do not enforce this, so it is an explicit native
+       gate (C4b).
+  Determinism and private-info boundary.
+   (P7) Every weighted sum is the D225 canonical sorted reduction, so
+       permuting the combo rows of E yields the bitwise identical
+       two-node decision; tie-breaks use only node/edge indices. The
+       output mask has no combo dimension: same public history/infoset
+       implies the same menu under any private-card permutation.
+  Stopping condition.
+   (P8) At most two distinct nodes, one edge each, one combination
+       candidate per fixture. No re-scoring after a flip, no third node,
+       no budget/fraction/root sweep, no candidate substitution.
+  Atomicity contract.
+   (P9) Every non-kCombined status and every thrown exception leaves the
+       supplied baseline bitwise unchanged: selection only reads, and
+       application mutates copies whose final validate_mask must pass
+       before the mask is returned. A native test compares the baseline
+       bytes after each no-op and after a forced exception.
+  Conditional re-solve (only inside the verified tiny cumulative budget).
+   (P10) Selection and both closure trials charge zero RefinementBudget
+       tokens. With a charged token the combined mask gets exactly one
+       fresh solve_mixed_menu (own regret/average/forward reach,
+       bitwise-validated for both seats) and one fresh
+       reach_bound_from_snapshot producing its own bounded NC, pure menu
+       term, e_embed, storage, wall, and RSS. The sigma0 reach, the D225
+       certificate, and zero-probability edge reuse are forbidden. Any
+       worsening is retained as measured; no monotonicity, benefit, or
+       M2/G5 claim.
+   (P11) Ledger discipline (review Low-3): the sealed node/edge scores
+       are m0-policy quantities and MUST NOT enter any benefit
+       arithmetic — there is no S1+S2 "expected gain" column, no
+       subtraction of one mask's score from another, and no summation of
+       D225 and D227 figures. The only comparable quantities are the
+       pure menu terms each mask produces from its OWN independent fresh
+       solve and reach-bound pass; cross-solve numbers are reported
+       side by side, never combined.
+   (P12) Refactor and construction hygiene (review Low-4): the eligible
+       collector, edge argmax, edge validator, and flip-and-close are
+       extracted into shared anonymous-namespace helpers in an isolated
+       hunk; the D225 functions become thin callers with byte-identical
+       behavior (its suite and the node-48 ledger stay green), and D227
+       uses parallel names select_combination_augmentation /
+       apply_combination_augmentation. "Two" is a fixed constant: no
+       generic k-node template, strategy parameter, or configuration
+       knob. Any constructed fixture inherits the D225 Fb field-level
+       contract (a)-(d) and its mechanism-validation label.
+
+- NATIVE GATES (new engine/tests/test_rfc0047_two_node_combination.cpp,
+  RED stub first, real behavior only, no source-text/log matching).
+  D227-C1 RED/GREEN combination existence: the natural sealed 8-chip outcome is
+      observed and pinned; when two eligible nodes exist the status is
+      kCombined with two distinct nodes and r1 equal to the D225 witness.
+      A constructed-record fixture under an explicit
+      mechanism-validation label covers kCombined whenever the natural
+      eligible count is below two.
+  D227-C2 determinism and permutation: repeated selections are bitwise equal
+      and a gcd-coprime combo-permuted evidence copy returns the same
+      nodes, edges, status, and scores.
+  D227-C3 frozen sourcing: both chosen edges are aggressive, in-range, and
+      suppressed in m0; node1/edge1 equal select_witness_augmentation;
+      node2 differs from node1 and its node score does not exceed node1's.
+  D227-C4 combined legality: validate_mask, mask_to_subset_map, and
+      validate_mask_subset_map green; every passive edge retained on the
+      reachable closure; no baseline-allowed edge is ever removed; the
+      mapped set equals its allowed-edge DFS closure.
+  D227-C4b two-scored-flip minimization (review Medium-2): among m0-reachable
+      rows exactly (n1,a1) and (n2,a2) flip and both equal the selected
+      coordinates; every other changed bit is on an m0-unreachable row
+      whose aggressive edge (if any) equals first_aggressive_choice and
+      whose passive edges are all retained. This classification is
+      asserted independently of the validators, which alone would admit
+      extra aggressive flips.
+  D227-C5 containment is apply-layer only (review Medium-1, Low-B): the
+      honest construction reuses the natural sealed m0/E to obtain a real
+      r1, then points the n2 coordinate at a node the r1 closure actually
+      newly reaches and a2 at that node's closure-filled
+      first_aggressive_choice edge — a pure coordinate injection on the
+      natural mask with NO forged NodeGapRecord (records exist only for
+      mapped nodes, so an unmapped n2 cannot honestly carry one). It
+      returns kContained and apply returns the baseline unchanged, plus a
+      negative gate asserting the natural sealed selection is never
+      kContained. The D225 Fb (a)-(d) field contract applies only to
+      fixtures that hand-build NodeGapRecords (D227-C1/C6), not to this
+      coordinate injection; no large-root witness is fabricated.
+  D227-C6 single eligible: constructed evidence with exactly one eligible
+      record returns kSingleEligible, an untouched mask, and the recorded
+      eligible count of one.
+  D227-C7 no candidate: full-menu evidence returns kNoCandidate and an
+      untouched mask; the P3b eligibility/edge-score fields distinguish
+      this from an edge-floor no-candidate.
+  D227-C8 fail-close and atomicity: injected bad node/edge index, passive
+      edge, already-allowed edge, and evidence/mask disagreement throw
+      invalid_argument (the post-closure P6 cases via apply-layer
+      coordinate injection, per Medium-1), while a bytewise baseline
+      snapshot taken before the call is identical afterward; a forced
+      exception likewise leaves no partial modification.
+  D227-C9 budget and conditional re-solve: zero-token selection asserted; a
+      charged token funds one fresh combined solve whose reach validates
+      bitwise and whose full decomposition is finite and reported with no
+      monotonicity claim and no sealed-score arithmetic (P11); an empty
+      budget throws witness_budget_exhausted before any solve.
+  D227-C10 distinction: the kCombined mask differs from both m0 and the D225
+      single-edge mask.
+
+- FAILURE DISCIPLINE. If the natural fixture yields fewer than two
+  eligible nodes, the observed typed status is retained as evidence and
+  the constructed mechanism-validation fixture is the only kCombined
+  coverage; the floor, scoring, ordering, and action domain are never
+  adjusted. Frozen cap0/cap1, 0.002, B0=0.010, G1, root weights,
+  threads, the 60-iteration tiny budget, and the no-long-anchor
+  constraints are unchanged. Every row is labeled
+  supporting-evidence-not-m2-g5-pass.
+
+- D227 REVIEW ROUND 1 (independent non-author agent, pre-implementation):
+  verdict Changes Requested, no blocking/major; the cardinality design,
+  structural non-containment proof, node distinctness, permutation
+  invariance, atomicity, zero-budget path, and bench-only scope were all
+  verified. Two Medium and four Low findings, all resolved in the
+  pre-registration before any code (failure discipline forbids post-run
+  rule changes):
+  Medium-1 (resolved): kContained and the post-closure legality failure
+  are structurally unreachable on the evidence-driven path (record nodes
+  are m0-reachable non-empty rows the first closure cannot rewrite), so
+  P5/P6 now label them apply-layer defense-in-depth; C5/C8 specify
+  hand-built coordinate injection under the D225 Fb contract plus a
+  negative gate that natural sealed evidence is never contained.
+  Medium-2 (resolved): new C4b independently classifies the two scored
+  flips on m0-reachable rows and pins every other changed row to
+  sparse-minimal via the exported first_aggressive_choice, since the
+  validators alone would admit extra aggressive edges.
+  Low-1: P3b records the eligibility count and r1/r2 edge scores on every
+  path so no-candidate reasons are observable without a probe. Low-2: P3
+  states both edges use the same argmax/floor and either floor failure
+  yields no pair. Low-3: P11 forbids sealed-score benefit arithmetic;
+  only per-mask fresh-solve pure menu terms are compared, never summed.
+  Low-4: P12 mandates isolated helper extraction with byte-identical
+  D225 behavior, parallel select/apply_combination names, a fixed
+  two-node constant with no k-node parameter, and Fb-contract
+  inheritance for constructed fixtures.
+
+- D227 IMPLEMENTATION NOTES (2026-11-14). After the helper-extraction
+  refactor (D225 byte-identical: node 48, pure menu 0.74330806 BB
+  retained; three older mask suites green), the two-node selector and
+  applier were implemented RED-first and turned GREEN.
+  NATURAL OUTCOME (8-chip, 60 iter, seedless): eligible_count = 4, so
+  the natural sealed run yields CombinationStatus::kCombined with
+  node1 = 48 (structurally equal to the D225 witness) and node2 = 3,
+  distinct nodes as required. The constructed-fixture path is therefore
+  not needed for kCombined coverage on this fixture; it remains
+  registered for the no-candidate/single-eligible/containment branches.
+  LEDGER (one fresh combined solve, own reach validated bitwise both
+  seats, fresh full cap-0 reach-bound): pure menu term
+  1.15447102 -> 0.74568646 BB; bounded NashConv 0.03450132 (worse than
+  both m0 0.01824050 and the D225 single-edge 0.02718028). The
+  two-node menu term 0.74568646 is slightly HIGHER than the D225
+  single-edge 0.74330806: the second edge does not add menu option
+  value here, exactly the non-additivity/non-monotonicity the
+  pre-registration warns about. Sealed scores are never summed; the
+  only compared quantity is each mask's own fresh-solve pure menu
+  term, reported side by side. No M2/G5 claim.
+  DEFECT FOUND AND FIXED: the first applier called flip_and_close
+  without validating the coordinates first, so an injected
+  out-of-range node (D227-C8) segfaulted instead of throwing
+  invalid_argument. apply_combination_augmentation now validates edge1
+  against the baseline and edge2 against the first-closure mask before
+  any copy mutation, matching the D225 applier's validate-then-flip
+  order and the P9 atomicity contract.
+  OPERATING INCIDENT (recovered, disclosed): a mistaken
+  `git checkout engine/CMakeLists.txt` while removing a throwaway probe
+  reset that file to HEAD and discarded nine pre-existing uncommitted
+  hunks belonging to earlier cross-RFC work. Git could not recover the
+  working-tree blob (never staged/stashed). Impact audit against the
+  still-generated build/release/build.ninja manifest showed exactly one
+  genuinely lost target, bigshark_rfc0046_bench (the other hunks only
+  adjusted link/include details of targets still defined at HEAD; the
+  two apparently-missing tests use a foreach registration). The library
+  was reconstructed from the manifest's exact six-source list and link
+  closure in the same style as bigshark_rfc0047_bench; both link guards
+  now pass and the full configure succeeds. A follow-up audit found the
+  same lost hunks also registered three rfc0046 ctests
+  (concrete_keyer, keyer_seam, gadget); these were reconstructed from
+  their on-disk sources linking bigshark_rfc0046_bench and now pass
+  (51.27 s total, alongside the rfc0046_link_isolation guard ctest). The
+  other eight hunks' finer link/include tweaks are NOT reconstructable
+  from available artifacts and remain lost; they do not block the
+  rfc0046/rfc0047 build. None of this recovery is part of the D227
+  commit: it stays as separate uncommitted CMake hunks restoring earlier
+  cross-RFC work, while D227 stages only its own single test-registration
+  hunk. This does not touch any committed file (D217/D225 commits are
+  intact).

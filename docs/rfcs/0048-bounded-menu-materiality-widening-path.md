@@ -1619,6 +1619,67 @@ output is bench-only exploratory supporting evidence with no M2/G5
 implication, and a refutation is retained as red evidence under the
 existing FAILURE DISCIPLINE.
 
+## Two-Node Combination Qualification Addendum (D227)
+
+This addendum extends the D225 single-edge witness into a deterministic
+two-public-node combination while reusing the same sealed baseline mask,
+the same sealed `ReachBoundResult`, the same canonical scoring, and the
+same flip-and-closure machinery. It adds no solver, BR walk, action
+amount, reference domain, or public surface: both candidates are read
+from the frozen baseline evidence, and the post-first-edge mask is never
+presented as certified by the old evidence.
+
+The selector builds the identical D225 eligible list (global
+score-descending/node-ascending scan over canonical reach-weighted pure
+menu option values) and takes its first two distinct records; the first
+reproduces the D225 witness exactly and the second supplies one
+suppressed aggressive edge on a different node. Cardinality is typed
+with no silent fallback: zero eligible nodes is `kNoCandidate`, exactly
+one is `kSingleEligible` (the single-edge case remains owned by D225),
+and a chosen edge that fails the fixed per-edge floor is `kNoCandidate`
+rather than a rescan; the result also carries the eligibility count and
+edge scores so the two no-candidate reasons stay observable. After
+applying the first edge and its sparse-minimal closure on a copy, a
+containment consistency check tests whether the second edge is already
+legal: if so the result is `kContained` and the original baseline is
+returned unchanged, since the combination would add no independent
+choice. On a genuine unique-parent river tree every record node is
+baseline-reachable with a non-empty row and the closure only fills
+still-all-false rows, so containment and the post-closure legality
+failure are structurally unreachable on the evidence-driven selection
+path; both exist as apply-layer defense-in-depth covered solely by
+hand-built coordinate injection under a mechanism-validation label plus a
+negative gate on the natural sealed run, never by fabricating a
+large-root witness. The containment test is a pure coordinate injection
+on the natural mask — it reuses the real first-edge closure and points
+the second coordinate at a node that closure newly reaches, without
+forging a NodeGapRecord for an unmapped node; the D225 Fb record-level
+contract applies only to fixtures that hand-build records. The combined
+diff is independently classified:
+exactly the two scored flips may occur on baseline-reachable rows, while
+every other changed bit lies on a previously unreachable row whose
+single aggressive edge equals the exported first-aggressive chooser.
+
+All weighted sums use the D225 canonical sorted reduction, making the
+two-node decision bitwise invariant under combo-row permutation, and the
+mask has no combo dimension so an infoset keeps one menu across private
+histories. Selection and closure trials charge no solve token; every
+non-combined status and every thrown exception leaves the supplied
+baseline bitwise identical because edits occur only on copies validated
+before return. A charged budget may fund exactly one fresh combined
+solve computing its own regret, average, reach, full cap-0 BR, NashConv,
+pure menu term, e_embed, and resource use; reuse of the baseline
+snapshot's reach or certificate, and any monotonicity or M2/G5 claim, is
+forbidden, and worsening is retained as measured. Sealed scores never
+enter benefit arithmetic — there is no summed or subtracted expected
+gain, and only per-mask fresh-solve pure menu terms are compared side by
+side. The collector, edge argmax, validator, and closure are shared
+helpers with the D225 path, whose behavior and ledger stay
+byte-identical; "two" is a fixed constant, with no generic k-node
+parameterization. The same tiny fixture, iteration budget, and frozen
+domains apply, with no large-root traversal, census, training, long
+anchor, root scan, or sweep.
+
 ## Rollback Plan
 
 This RFC ships no production behavior, so rollback is confined to abandoning the
