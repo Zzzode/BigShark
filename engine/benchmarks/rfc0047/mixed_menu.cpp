@@ -1347,4 +1347,301 @@ MixedMenuMask apply_combination_augmentation(const AbstractTree& reference,
   return flip_and_close(reference, std::move(after_first), selection.node2, selection.edge2);
 }
 
+// D233: FNV-1a 64-bit hashing and the comparable counterfactual attribution
+// gate. Everything below is pure in-memory: no solver, BR walk, budget, or
+// iteration count is reachable from this API.
+namespace {
+constexpr std::uint64_t kD233FnvOffsetBasis = 0xcbf29ce484222325ULL;
+constexpr std::uint64_t kD233FnvPrime = 0x100000001b3ULL;
+constexpr double kMenuTermFloor = -1e-12;
+
+void d233_hash_bytes(std::uint64_t& state, const void* data, std::size_t bytes) {
+  const auto* p = static_cast<const unsigned char*>(data);
+  for (std::size_t k = 0; k < bytes; ++k) {
+    state ^= static_cast<std::uint64_t>(p[k]);
+    state *= kD233FnvPrime;
+  }
+}
+
+template <class T>
+void d233_hash_value(std::uint64_t& state, const T& value) {
+  d233_hash_bytes(state, &value, sizeof(T));
+}
+
+// Sparse-minimal legality of one row: every passive edge allowed and at most
+// the single first aggressive edge (mirrors flip_and_close exactly).
+bool row_is_sparse_minimal(const TreeNode& node, const std::vector<bool>& row) {
+  const long first_aggressive = first_aggressive_choice(node);
+  for (std::size_t a = 0; a < node.actions.size(); ++a) {
+    const bool expected =
+        !is_aggressive(node.actions[a].type) || static_cast<long>(a) == first_aggressive;
+    if (row[a] != expected)
+      return false;
+  }
+  return true;
+}
+
+AttributionReport attribution_failure(AttributionStatus status, AttributionReason reason) {
+  AttributionReport report;
+  report.status = status;
+  report.reason = reason;
+  return report;
+}
+}  // namespace
+
+std::uint64_t hash_game_def(const GameDef& def) {
+  // Field set is bound to same_game_def (game_definition.cpp) and kept in sync
+  // by native gate T13's mutation matrix.
+  std::uint64_t h = kD233FnvOffsetBasis;
+  d233_hash_value(h, def.player_count);
+  d233_hash_value(h, def.button);
+  d233_hash_value(h, def.big_blind);
+  d233_hash_value(h, def.ante);
+  d233_hash_value(h, def.pot);
+  d233_hash_value(h, def.preflop);
+  d233_hash_value(h, def.variant);
+  d233_hash_value(h, def.terminal);
+  d233_hash_value(h, def.last_full_raise);
+  d233_hash_value(h, def.raises_this_street);
+  d233_hash_value(h, def.board_size);
+  for (std::uint8_t i = 0; i < def.board_size; ++i)
+    d233_hash_value(h, def.board[i]);
+  for (std::size_t p = 0; p < def.player_count; ++p) {
+    d233_hash_value(h, def.stacks[p]);
+    d233_hash_value(h, def.contributions[p]);
+    d233_hash_value(h, def.blinds_posted[p]);
+    d233_hash_value(h, def.folded[p]);
+    d233_hash_value(h, def.street_committed[p]);
+    d233_hash_value(h, def.raise_rights[p]);
+  }
+  return h;
+}
+
+std::uint64_t hash_mask(const AbstractTree& reference, const MixedMenuMask& mask) {
+  // Frozen serialization (I3): for each node in index order hash sizeof(node
+  // index) bytes, then per row its width as a size_t followed by one 0/1 byte
+  // per cell in cell order; empty rows contribute their width (zero cells).
+  // Independent of vector<bool> packing; distinct node counts already produce
+  // distinct frame streams, so no separate length suffix is needed.
+  (void)reference;  // dimensional agreement with the tree is enforced by G1a.
+  std::uint64_t h = kD233FnvOffsetBasis;
+  for (std::size_t n = 0; n < mask.allowed.size(); ++n) {
+    d233_hash_value(h, n);
+    const std::size_t width = mask.allowed[n].size();
+    d233_hash_value(h, width);
+    for (std::size_t a = 0; a < width; ++a) {
+      const unsigned char cell = mask.allowed[n][a] ? 1U : 0U;
+      d233_hash_value(h, cell);
+    }
+  }
+  return h;
+}
+
+SealedCandidateTerms::SealedCandidateTerms(
+    const GameDef& def, std::array<std::uint64_t, 4> tree_digests, const char* reference_label,
+    const char* m2_marking, std::uint64_t mask_hash, std::uint64_t policy_hash,
+    double bb_normalization, CapExtensionCompletion completion_arm, double exact_exploitability_bb,
+    double bounded_nash_conv_bb)
+    : game_def_digest_(hash_game_def(def)),
+      tree_digests_(std::move(tree_digests)),
+      reference_label_(reference_label == nullptr ? std::string{} : std::string(reference_label)),
+      m2_marking_(m2_marking == nullptr ? std::string{} : std::string(m2_marking)),
+      mask_hash_(mask_hash),
+      policy_hash_(policy_hash),
+      bb_normalization_(bb_normalization),
+      completion_arm_(completion_arm),
+      exact_bb_(exact_exploitability_bb),
+      bounded_bb_(bounded_nash_conv_bb) {}
+
+AttributionReport attribute_candidate_bundle(const AbstractTree& reference, const GameDef& root_def,
+                                             const CandidateBundleEntry& baseline,
+                                             const CandidateBundleEntry& single,
+                                             const CandidateBundleEntry& combined) {
+  const std::array<const CandidateBundleEntry*, 3> entries = {&baseline, &single, &combined};
+
+  // G1a: reference-tree identity, dimensions, digest/label provenance, and the
+  // presence-only policy hash (policies genuinely differ, never compared).
+  for (const CandidateBundleEntry* entry : entries) {
+    if (entry->mask.allowed.size() != reference.size())
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kMaskWidthMismatch);
+    for (std::size_t n = 0; n < reference.size(); ++n) {
+      const TreeNode& node = reference.node(n);
+      const std::vector<bool>& row = entry->mask.allowed[n];
+      if (node.is_action()) {
+        if (row.size() != node.actions.size())
+          return attribution_failure(AttributionStatus::kIncomparableSource,
+                                     AttributionReason::kMaskWidthMismatch);
+      } else if (!row.empty()) {
+        return attribution_failure(AttributionStatus::kIncomparableSource,
+                                   AttributionReason::kMaskWidthMismatch);
+      }
+    }
+    if (entry->terms.policy_hash() == 0)
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kDigestMismatch);
+  }
+  for (std::size_t k = 1; k < entries.size(); ++k) {
+    if (entries[k]->terms.tree_digests() != entries[0]->terms.tree_digests())
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kDigestMismatch);
+    if (entries[k]->terms.reference_label() != entries[0]->terms.reference_label() ||
+        entries[k]->terms.m2_marking() != entries[0]->terms.m2_marking())
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kLabelMismatch);
+  }
+
+  // G1b: GameDef identity against the recomputed root digest (pairwise equality
+  // follows because every term must equal the same root value).
+  const std::uint64_t root_digest = hash_game_def(root_def);
+  for (const CandidateBundleEntry* entry : entries)
+    if (entry->terms.game_def_digest() != root_digest)
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kGameDefMismatch);
+
+  // G1c: normalization and completion-arm identity.
+  for (std::size_t k = 1; k < entries.size(); ++k) {
+    if (entries[k]->terms.bb_normalization() != entries[0]->terms.bb_normalization())
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kNormalizationMismatch);
+    if (entries[k]->terms.completion_arm() != entries[0]->terms.completion_arm())
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kCompletionArmMismatch);
+  }
+
+  // G1d: term/mask binding via recomputed mask hashes.
+  for (const CandidateBundleEntry* entry : entries)
+    if (hash_mask(reference, entry->mask) != entry->terms.mask_hash())
+      return attribution_failure(AttributionStatus::kIncomparableSource,
+                                 AttributionReason::kTermMaskBindingMismatch);
+
+  // A1: mask content validation (dimensional issues were resolved in G1a).
+  for (const CandidateBundleEntry* entry : entries) {
+    try {
+      validate_mask(reference, entry->mask);
+    } catch (const std::invalid_argument&) {
+      return attribution_failure(AttributionStatus::kInadmissibleCandidate,
+                                 AttributionReason::kMaskContentInvalid);
+    }
+  }
+
+  // A2: strict superset chain, element-wise.
+  for (std::size_t n = 0; n < reference.size(); ++n) {
+    for (std::size_t a = 0; a < baseline.mask.allowed[n].size(); ++a) {
+      if (baseline.mask.allowed[n][a] && !single.mask.allowed[n][a])
+        return attribution_failure(AttributionStatus::kInadmissibleCandidate,
+                                   AttributionReason::kNotStrictSuperset);
+      if (single.mask.allowed[n][a] && !combined.mask.allowed[n][a])
+        return attribution_failure(AttributionStatus::kInadmissibleCandidate,
+                                   AttributionReason::kNotStrictSuperset);
+    }
+  }
+
+  const std::vector<bool> reach0 = reachable_closure(reference, baseline.mask.allowed);
+  const std::vector<bool> reach1 = reachable_closure(reference, single.mask.allowed);
+  const std::vector<bool> reach2 = reachable_closure(reference, combined.mask.allowed);
+
+  // A6 liveness predicates gate the A3 shape check: an empty scored set is an
+  // inactive selection, and every scored coordinate must sit on a
+  // baseline-reachable action row.
+  const auto liveness_failure = [&](const CandidateBundleEntry& entry) -> AttributionReason {
+    if (entry.scored.empty())
+      return AttributionReason::kSelectionNotActive;
+    for (const MaskCoordinate& coordinate : entry.scored) {
+      if (coordinate.node >= reference.size() || !reference.node(coordinate.node).is_action() ||
+          !reach0[coordinate.node])
+        return AttributionReason::kCoordinateUnreachable;
+      if (coordinate.edge >= reference.node(coordinate.node).actions.size())
+        return AttributionReason::kCoordinateUnreachable;
+    }
+    return AttributionReason::kNone;
+  };
+  for (const CandidateBundleEntry* entry : entries) {
+    if (entry == &baseline)
+      continue;  // the baseline carries no selection coordinates.
+    const AttributionReason liveness = liveness_failure(*entry);
+    if (liveness != AttributionReason::kNone)
+      return attribution_failure(AttributionStatus::kInadmissibleCandidate, liveness);
+  }
+
+  // A3/A4: exact scored-flip shape. On baseline-reachable rows the flips must
+  // equal the scored coordinate set; every other changed row is a newly
+  // reachable closure row and must be sparse-minimal.
+  const auto shape_failure = [&](const CandidateBundleEntry& entry, AttributionReason count_reason,
+                                 const std::vector<bool>& candidate_reach) -> AttributionReason {
+    const bool is_combined_slot = (&entry == &combined);
+    const std::size_t expected_count = is_combined_slot ? 2U : 1U;
+    if (entry.scored.size() != expected_count)
+      return count_reason;
+    if (is_combined_slot && entry.scored[0].node == entry.scored[1].node)
+      return AttributionReason::kDuplicateNode;
+    std::vector<MaskCoordinate> observed;
+    for (std::size_t n = 0; n < reference.size(); ++n) {
+      if (!reference.node(n).is_action())
+        continue;
+      const TreeNode& node = reference.node(n);
+      for (std::size_t a = 0; a < node.actions.size(); ++a) {
+        if (entry.mask.allowed[n][a] == baseline.mask.allowed[n][a])
+          continue;
+        if (reach0[n])
+          observed.push_back({n, a});
+        else if (!candidate_reach[n])
+          return count_reason;  // a diff on a row reachable in neither mask.
+        else if (!row_is_sparse_minimal(node, entry.mask.allowed[n]))
+          return count_reason;
+      }
+    }
+    if (observed.size() != expected_count)
+      return count_reason;
+    std::vector<MaskCoordinate> expected = entry.scored;
+    std::sort(expected.begin(), expected.end(),
+              [](const MaskCoordinate& x, const MaskCoordinate& y) {
+                return x.node != y.node ? x.node < y.node : x.edge < y.edge;
+              });
+    std::sort(observed.begin(), observed.end(),
+              [](const MaskCoordinate& x, const MaskCoordinate& y) {
+                return x.node != y.node ? x.node < y.node : x.edge < y.edge;
+              });
+    for (std::size_t k = 0; k < expected_count; ++k)
+      if (expected[k].node != observed[k].node || expected[k].edge != observed[k].edge)
+        return count_reason;
+    return AttributionReason::kNone;
+  };
+  AttributionReason single_reason =
+      shape_failure(single, AttributionReason::kSingleEdgeCountViolation, reach1);
+  if (single_reason != AttributionReason::kNone)
+    return attribution_failure(AttributionStatus::kInadmissibleCandidate, single_reason);
+  AttributionReason combined_reason =
+      shape_failure(combined, AttributionReason::kCombinedNodeCountViolation, reach2);
+  if (combined_reason != AttributionReason::kNone)
+    return attribution_failure(AttributionStatus::kInadmissibleCandidate, combined_reason);
+
+  // A5: sole content-validation point for the sealed scalars.
+  for (const CandidateBundleEntry* entry : entries) {
+    if (!std::isfinite(entry->terms.exact_exploitability_bb()) ||
+        !std::isfinite(entry->terms.bounded_nash_conv_bb_raw()) ||
+        !std::isfinite(entry->terms.pure_menu_term_bb()))
+      return attribution_failure(AttributionStatus::kInadmissibleCandidate,
+                                 AttributionReason::kMissingOrNonFiniteTerm);
+    if (entry->terms.pure_menu_term_bb() < kMenuTermFloor)
+      return attribution_failure(AttributionStatus::kInadmissibleCandidate,
+                                 AttributionReason::kNegativeMenuTerm);
+  }
+
+  AttributionReport report;
+  report.status = AttributionStatus::kComparable;
+  report.reason = AttributionReason::kNone;
+  report.pure_menu_baseline = baseline.terms.pure_menu_term_bb();
+  report.pure_menu_single = single.terms.pure_menu_term_bb();
+  report.pure_menu_combined = combined.terms.pure_menu_term_bb();
+  // Sign-unconstrained observed changes; descriptive only, never edge effects.
+  report.observed_menu_omission_baseline_to_single =
+      report.pure_menu_single - report.pure_menu_baseline;
+  report.observed_menu_omission_single_to_combined =
+      report.pure_menu_combined - report.pure_menu_single;
+  report.bounded_nash_conv = {baseline.terms.bounded_nash_conv(), single.terms.bounded_nash_conv(),
+                              combined.terms.bounded_nash_conv()};
+  return report;
+}
+
 }  // namespace bs::rfc0047

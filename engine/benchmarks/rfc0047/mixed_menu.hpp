@@ -256,6 +256,137 @@ MixedMenuMask apply_combination_augmentation(const bs::tree::AbstractTree& refer
                                              const MixedMenuMask& baseline,
                                              const CombinationSelection& selection);
 
+// RFC 0048 D233: comparable counterfactual attribution and candidate admission.
+// Pure in-memory, zero-solve: the entry point accepts no RiverSolveResult,
+// RefinementBudget, iteration count, or thread count, so a CFR/BR computation
+// is not expressible through this API. Bench-visible, not production.
+
+// A bounded NashConv value of a re-solved policy. Deliberately has no
+// arithmetic or comparison operators: a difference between two of these mixes
+// a menu change with policy re-convergence and must never be attributed to an
+// edge or ordering. Only the raw value is extractable, for reporting.
+class PolicyNashConvValue {
+ public:
+  PolicyNashConvValue() = default;
+  explicit PolicyNashConvValue(double value) : value_(value) {}
+  double raw() const noexcept { return value_; }
+
+ private:
+  double value_ = 0.0;
+};
+
+// A scored mask coordinate independent of the single-edge selector types, so
+// the admission API can describe a one- or two-coordinate candidate without
+// being forced into a fixed selector output shape (review round-3 note 2).
+struct MaskCoordinate {
+  std::size_t node = 0;
+  std::size_t edge = 0;
+};
+
+enum class AttributionStatus { kComparable, kIncomparableSource, kInadmissibleCandidate };
+
+// Exhaustive reason enum; consumers switch under -Werror=switch.
+enum class AttributionReason {
+  kNone,
+  kDigestMismatch,
+  kMaskWidthMismatch,
+  kGameDefMismatch,
+  kNormalizationMismatch,
+  kCompletionArmMismatch,
+  kTermMaskBindingMismatch,
+  kLabelMismatch,
+  kMaskContentInvalid,
+  kNotStrictSuperset,
+  kSingleEdgeCountViolation,
+  kCombinedNodeCountViolation,
+  kDuplicateNode,
+  kMissingOrNonFiniteTerm,
+  kNegativeMenuTerm,
+  kSelectionNotActive,
+  kCoordinateUnreachable
+};
+
+// Field projection of one sealed candidate. Constructible without any solver
+// or tree access; the constructor only copies and subtracts, so NaN and
+// negative terms remain representable and are rejected later by the admission
+// gate rather than here.
+class SealedCandidateTerms {
+ public:
+  SealedCandidateTerms() = default;
+  SealedCandidateTerms(const bs::poker::GameDef& def, std::array<std::uint64_t, 4> tree_digests,
+                       const char* reference_label, const char* m2_marking, std::uint64_t mask_hash,
+                       std::uint64_t policy_hash, double bb_normalization,
+                       bs::rfc0047::CapExtensionCompletion completion_arm,
+                       double exact_exploitability_bb, double bounded_nash_conv_bb);
+
+  std::uint64_t game_def_digest() const noexcept { return game_def_digest_; }
+  const std::array<std::uint64_t, 4>& tree_digests() const noexcept { return tree_digests_; }
+  std::uint64_t mask_hash() const noexcept { return mask_hash_; }
+  std::uint64_t policy_hash() const noexcept { return policy_hash_; }
+  double bb_normalization() const noexcept { return bb_normalization_; }
+  bs::rfc0047::CapExtensionCompletion completion_arm() const noexcept { return completion_arm_; }
+  double exact_exploitability_bb() const noexcept { return exact_bb_; }
+  double bounded_nash_conv_bb_raw() const noexcept { return bounded_bb_; }
+  double pure_menu_term_bb() const noexcept { return exact_bb_ - bounded_bb_; }
+  PolicyNashConvValue bounded_nash_conv() const noexcept {
+    return PolicyNashConvValue(bounded_bb_);
+  }
+  const std::string& reference_label() const noexcept { return reference_label_; }
+  const std::string& m2_marking() const noexcept { return m2_marking_; }
+
+ private:
+  std::uint64_t game_def_digest_ = 0;
+  std::array<std::uint64_t, 4> tree_digests_{};
+  std::string reference_label_;
+  std::string m2_marking_;
+  std::uint64_t mask_hash_ = 0;
+  std::uint64_t policy_hash_ = 0;
+  double bb_normalization_ = 0.0;
+  bs::rfc0047::CapExtensionCompletion completion_arm_ =
+      bs::rfc0047::CapExtensionCompletion::Uniform;
+  double exact_bb_ = 0.0;
+  double bounded_bb_ = 0.0;
+};
+
+// One candidate slot: its mask, the scored coordinates it claims on
+// baseline-reachable rows, and its sealed terms.
+struct CandidateBundleEntry {
+  MixedMenuMask mask;
+  std::vector<MaskCoordinate> scored;
+  SealedCandidateTerms terms;
+};
+
+struct AttributionReport {
+  AttributionStatus status = AttributionStatus::kIncomparableSource;
+  AttributionReason reason = AttributionReason::kNone;
+  // Populated only when status == kComparable.
+  double pure_menu_baseline = 0.0;
+  double pure_menu_single = 0.0;
+  double pure_menu_combined = 0.0;
+  // Sign-unconstrained observed changes, descriptive only, never edge effects.
+  double observed_menu_omission_baseline_to_single = 0.0;
+  double observed_menu_omission_single_to_combined = 0.0;
+  // List-only, non-subtractable policy NC values.
+  std::array<PolicyNashConvValue, 3> bounded_nash_conv{};
+};
+
+// FNV-1a over a GameDef using exactly the same_game_def identity field set.
+std::uint64_t hash_game_def(const bs::poker::GameDef& def);
+
+// FNV-1a over a mask with the frozen serialization: node index bytes, then per
+// row its width and one 0/1 byte per cell; independent of vector<bool> packing.
+std::uint64_t hash_mask(const bs::tree::AbstractTree& reference, const MixedMenuMask& mask);
+
+// Admit or reject the three-candidate bundle (baseline, single, combined).
+// Read-only over every entry: a rejected or successful call leaves all masks
+// bitwise unchanged, and the result is a value report. Throws only on
+// allocation failure; all domain failures are typed in the report.
+AttributionReport attribute_candidate_bundle(const bs::tree::AbstractTree& reference,
+                                             const bs::poker::GameDef& root_def,
+                                             const CandidateBundleEntry& baseline,
+                                             const CandidateBundleEntry& single,
+                                             const CandidateBundleEntry& combined);
+
 struct MixedMenuSolveResult {
   // Standard river result fields; avg_sigma rows are full REFERENCE-width
   // with exact zero bits on suppressed edges (empty at non-action and

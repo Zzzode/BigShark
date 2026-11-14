@@ -1348,6 +1348,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_rfc0047_two_node_combination PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_two_node_combination COMMAND test_rfc0047_two_node_combination)
 
+  add_executable(test_rfc0047_attribution tests/test_rfc0047_attribution.cpp)
+  target_link_libraries(test_rfc0047_attribution PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_attribution COMMAND test_rfc0047_attribution)
+
   add_executable(test_sixmax_hand_ledger tests/test_sixmax_hand_ledger.cpp)
   target_link_libraries(test_sixmax_hand_ledger PRIVATE bigshark_poker)
   add_test(NAME sixmax_hand_ledger COMMAND test_sixmax_hand_ledger)
