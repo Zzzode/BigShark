@@ -25,7 +25,7 @@
 
 namespace bs::rfc0047 {
 
-// The three representative sizing grids (Lever 2). All use CoverSeeds::
+// The representative sizing grids (Lever 2). All use CoverSeeds::
 // MinAndCap so they differ only in pot fractions and stay comparable to
 // identity; the raise cap is supplied separately (stage 1 fixes it at 1 to
 // isolate the sizing lever from the raise-count lever).
@@ -33,6 +33,7 @@ enum class SizingGrid {
   Coarse,    // bets {1/2}, raises {1/1} (fraction-schedule precedent)
   Identity,  // default_size_schedule (bets 1/3,3/4,3/2; raises 1/2,1)
   Wide,      // bets 1/4,1/2,3/4,1,3/2; raises 1/2,1,2
+  Fine,      // D249: bets 1/3,1/2,3/4; raises 1/2,1 (interleaved with Wide)
 };
 
 const char* sizing_grid_name(SizingGrid grid);

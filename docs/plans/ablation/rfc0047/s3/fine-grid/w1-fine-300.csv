@@ -1,0 +1,3 @@
+reference_label,m2_marking,grid,reference_kind,cap0_direct_map,averaging_mode,policy_hash,bounded_abstraction_digest,reference_abstraction_digest,mapped_action_nodes,bounded_nash_conv_bb,exact_exploitability_bb,pure_menu_term_bb,candidate_gate_pass,wall_ms,cpu_ms,rss_peak_kb,rss_current_kb,wall_budget_exceeded
+union-candidate,supporting-evidence-not-m2-g5-pass,fine,cap0,mapped,linear_average_control,14039491939889493618,18208931837625517127,12738560711762941148,8,0.02169211,31.41459051,31.39289840,0,6917.434,6917.392,46892,36960,0
+union-candidate,supporting-evidence-not-m2-g5-pass,fine,cap0,mapped,uniform_average_candidate,6215509784590393918,18208931837625517127,12738560711762941148,8,0.05977293,31.26688643,31.20711350,0,6876.773,6876.702,46892,36960,0

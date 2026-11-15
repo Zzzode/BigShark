@@ -738,6 +738,13 @@ add_executable(bigshark-rfc0047-averaging-probe
   benchmarks/rfc0047/rfc0047_averaging_probe.cpp)
 target_link_libraries(bigshark-rfc0047-averaging-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0048 D249 manual single-instance fine-grid anchor probe (NOT a CTest):
+# two 300-iter solves (uniform candidate + in-process linear control) with a
+# 120 s steady-clock tripwire and empirical cap0/union reference selection.
+add_executable(bigshark-rfc0047-fine-grid-probe
+  benchmarks/rfc0047/rfc0047_fine_grid_probe.cpp)
+target_link_libraries(bigshark-rfc0047-fine-grid-probe PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
@@ -1335,6 +1342,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_averaging tests/test_rfc0047_averaging.cpp)
   target_link_libraries(test_rfc0047_averaging PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_averaging COMMAND test_rfc0047_averaging)
+
+  add_executable(test_rfc0047_fine_grid tests/test_rfc0047_fine_grid.cpp)
+  target_link_libraries(test_rfc0047_fine_grid PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_fine_grid COMMAND test_rfc0047_fine_grid)
 
   add_executable(test_rfc0047_mixed_menu tests/test_rfc0047_mixed_menu.cpp)
   target_link_libraries(test_rfc0047_mixed_menu PRIVATE bigshark_rfc0047_bench)

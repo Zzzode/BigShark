@@ -28,6 +28,8 @@ const char* sizing_grid_name(SizingGrid grid) {
       return "identity";
     case SizingGrid::Wide:
       return "wide";
+    case SizingGrid::Fine:
+      return "fine";
   }
   return "unknown";
 }
@@ -47,6 +49,15 @@ ActionAbstraction make_grid_abstraction(SizingGrid grid, std::uint8_t raise_cap)
                                                      Fraction{1, 1}, Fraction{3, 2}};
       schedule[static_cast<std::size_t>(st)].raises = {Fraction{1, 2}, Fraction{1, 1},
                                                        Fraction{2, 1}};
+    }
+  } else if (grid == SizingGrid::Fine) {
+    // D249: five postflop points. The 1/2 bet is the new mid-pot target
+    // relative to Identity; the 1/3 bet keeps Fine interleaved with rather
+    // than nested in Wide. Preflop keeps the default blind-relative menu.
+    for (Street st : {Street::Flop, Street::Turn, Street::River}) {
+      schedule[static_cast<std::size_t>(st)].bets = {Fraction{1, 3}, Fraction{1, 2},
+                                                     Fraction{3, 4}};
+      schedule[static_cast<std::size_t>(st)].raises = {Fraction{1, 2}, Fraction{1, 1}};
     }
   }
   // Identity leaves the default schedule unchanged. MinAndCap keeps the grid
