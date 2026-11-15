@@ -4366,3 +4366,206 @@ RFCs 0041/0043/0045/0046).
   RiverGame and MixedMenuGame keep their raw-pointer designs and the
   equivalent theoretical ctor-throw gap as an explicitly separate, broader
   refactor candidate.
+
+## M2 compute-budget qualification reconstruction and bounded unblock request (D247)
+
+- PURPOSE. Reconstruct the original M2 compute authorization, spent, and
+  remaining qualification from sealed in-repo receipts only (tracker, RFC
+  0048, ablation CSVs); no private-directory scan, environment, credential,
+  or process-environment read; no new framework, public API, CFR, solve,
+  re-solve, BR, scan, or sweep. The D225-era "unknown cumulative budget is
+  admitted as zero" rule is reclassified below as a conservative in-code
+  RefinementBudget admission policy, not evidence of a human-approved zero
+  balance or an exhausted quota.
+
+- ORIGINAL AUTHORIZATION (source-verified, original units and clock kept).
+  TechLead D-067 (2026-11-04), recorded at the head of this tracker:
+  "FULL Stage-1 implementation, budget approved by the user, no spend cap;
+  measurement-only ... No push." The grant carries NO numeric cumulative
+  ceiling. Its operative constraints, added by later in-scope addenda
+  without resetting the grant, are: (a) the authorization unit is one
+  SINGLE-INSTANCE PROCESS, one process at a time, fail-fast (D164/D198/D202
+  ledger entries; a job may contain several solves, as the D164 cap curve
+  did); (b) the deep-anchor per-instance basis is 300 iterations and the
+  tiny structural-fixture basis is 60 iterations; (c) G1 resource gates are
+  the 10 s online p95 envelope, 5M-node U1 cap, and 1 GiB RSS; (d) this
+  tracker explicitly records "no cumulative training pool was ever defined"
+  (D198 budget-accounting entry), so no quota denominator exists from which
+  a numeric "remaining" could be subtracted. The D225/D227
+  RefinementBudget tokens are a per-component monotone solve ledger inside
+  the bench binary, not the D-067 grant: treating an unknown cumulative
+  total as zero was an admission rule for new witness solves, never a
+  statement that the user's authorization was spent or refused.
+
+- SEALED SPEND ON THE RFC 0048 MENU-MATERIALITY PATH (primary receipts;
+  every falsified and rejected run is counted, none is free). Wall-clock
+  and RSS are the original recorded units; rows without a precise receipt
+  are marked rather than estimated.
+   - D164 cap1..6 curve, w1 deep anchor, six 300-iter solves: per-run walls
+     ~40/22/30/54/113/304 s (sum ~563 s), RSS 30-351 MB (tracker ledger).
+   - D164 cap-6 1000-iter convergence probe that falsified the 300-iter
+     near-crossing: 700.4 s wall, 351 MB RSS.
+   - D184 Stage-2b union anchors, coarse and wide, 300 iter each: the
+     tracker ledger records total walls ~23.1 s (coarse) and ~35.5 s
+     (wide) with RSS peaks ~55 MiB and ~51 MiB; sealed CSVs under
+     s3/stage2b-union/ carry no evaluation column.
+   - D192 Path-B reach probes, coarse and wide, 300 iter: sealed CSVs
+     s3/pathb-reach/ record Uniform walls 23.08-23.21 s (coarse) and
+     35.51 s (wide) with Uniform RSS 50,804 KB (49.6 MiB) and 55,872 KB
+     (54.6 MiB); the br_favorable rows carry the higher RSS figures
+     58,220 KB (56.9 MiB) and 56,656 KB (55.3 MiB). The full class span
+     across both arms is 49.6-56.9 MiB.
+   - D195 root-menu restricted instruments, coarse and wide, 300 iter:
+     sealed CSVs s3/patha-rootmenu/ carry both completion arms. The
+     Uniform rows are the relevant ones for a Uniform-arm candidate:
+     coarse 23.10-23.14 s at 68,640-75,828 KB and wide 41.35 s at
+     80,788 KB (the class wall maximum); br_favorable rows span
+     24.50-35.66 s at 75,828-82,956 KB.
+   - D198 averaging switch: one process, two 300-iter solves (uniform
+     candidate plus in-process linear control). No process-total wall is
+     recorded; per-row receipts do exist in s3/averaging/
+     (w1-coarse-300.txt, 17.94-17.98 s per row, RSS 46,844 KB), so the
+     process total is left unasserted rather than estimated.
+   - D202 root-only mixed-menu widening, 300 iter: sealed CSV
+     s3/mixed-menu/w1-rootonly-300.txt records solve wall 3010.48 s,
+     CPU 3002.13 s, plus ~29.7-29.9 s/arm full-tree evaluation
+     (eval_wall_ms 29,694.900 and 29,933.628), RSS 730,508 KB
+     (713.4 MiB, inside the 1 GiB gate with ~30% headroom); the largest
+     single strategic solve in the path.
+   - D208/D217/D225/D227 tiny 8-chip 60-iter structural fixtures share one
+     fixture class; the D225-sealed representative runs about 7.5 s end
+     to end at 14.4 MiB peak with one baseline plus one candidate solve
+     and two snapshot BR walks (D208/D217/D227 reuse the class without
+     independent timing receipts). Selection and mask construction
+     charge zero solve tokens.
+  RFC 0047 S1-S3 harness and certification spend (G3/G5/G6, including the
+  4000-iter 1181 s/956 s probes and the 444.8 s T5 gate) belongs to the
+  independently accepted RFC 0047 milestones and is not re-summed here:
+  with no cumulative pool defined, cross-stage summation has no authorized
+  denominator and would manufacture a ledger that never existed.
+
+- REMAINING QUALIFICATION. Because the D-067 grant is no-spend-cap with
+  per-instance gates rather than a cumulative quota, it cannot be
+  numerically exhausted by the receipts above; per-instance authorization
+  remains structurally available, bounded by G1 and the 300/60-iteration
+  bases. Availability of a ceiling is therefore not the binding constraint.
+  The binding constraint is candidate readiness, audited next.
+
+- CANDIDATE READINESS AUDIT (every pre-registered item of the original
+  plan is executed and closed). D164 raise-cap curve: closed, no bounded
+  cap clears 0.002 inside G1. D184 coarse/wide union grids: closed, both
+  miss by about 1.1e4x at 300 iterations. D192 Path-B structural
+  certificate: closed, inconclusive by construction. D195 Path-A root
+  menu: closed INFEASIBLE - even perfect root widening leaves a 0.0276 BB
+  fixed-policy floor (13.8x over the bar) on measured configs. D198
+  uniform averaging: closed, rejected (NC 2.7x worse than linear).
+  D202/D208/D217/D225/D227 mixed-menu mechanisms: closed. On the deep
+  w1 anchor the D202 root-only widened game measures a 23.3058 BB pure
+  menu term (e_embed 23.34 BB); on the tiny 8-chip fixtures the shared
+  baseline is 1.4905 BB (D208 B=1) and the post-augmentation terms span
+  0.7433-1.1545 BB across D208 B=2, D217, D225, and D227, with
+  non-additivity proven (D227 combined 0.7457 > D225 single 0.7433) and
+  bounded NC worsening; the binding wall is T^-0.52 policy convergence,
+  not menus or storage.
+  The ONLY named unrun item in the approved record is RFC 0048's
+  conditional sentence "one additional existing-budget fine-grid anchor
+  is available cheaply if that risk needs another point." Audit result:
+  it is not an admissible candidate today. No Fine grid exists in code
+  (SizingGrid has only Coarse/Identity/Wide), no fraction schedule is
+  defined in any approved document, and no pre-registered stop threshold
+  exists for it. The sentence is a residual-risk option, not an
+  authorized spec. Per D247's branch rule, missing candidate stop
+  conditions mean NO new CFR/solve/re-solve/BR/scan/sweep is launched.
+
+- MINIMAL BOUNDED EXTERNAL UNBLOCK REQUEST (single candidate; costs
+  grounded in the sealed receipts above, no invented figures).
+  Candidate: ONE fine-grid reached-river anchor on the frozen w1 deep
+  check-to-river root, single process, existing union-menu
+  instrumentation, Uniform arm, no production or contract change.
+  Spec decision required before any run (this is the missing
+  pre-registration, offered as the unique bounded choice rather than a
+  sweep): the interpolation-in-granularity grid bets {1/3, 1/2, 3/4},
+  raises {1/2, 1} (three bet fractions like Identity, swapping 3/2 for
+  1/2; two raises like Coarse), one declared grid with no parameter
+  matrix.
+  Provable acceptance and stop conditions:
+   1. hard stop at 300 iterations (the existing per-instance basis);
+      pass only if the exact instrument measures e_embed <= 0.002 BB;
+   2. fail-fast typed tree_resource_exhausted on any U1 > 5M nodes,
+      U2/U3 byte cap, or RSS > 1 GiB breach;
+   3. one process, one root, one grid, one Uniform run; BrFavorable stays
+      a recorded robustness arm, not a second authorized process.
+  Ceilings from observed receipts: wall bounded by the 300-iter
+  reached-river bounded-instrument class whose measured Uniform maximum
+  is 41.35 s (D195 wide Uniform row, 41,350.042 ms), so a pre-registered
+  hard wall of 120 s is ~2.9x headroom and still far under the 10 min
+  scale; RSS hard cap 1 GiB against an observed ~81 MiB class peak
+  (80,788 KB Uniform / 82,956 KB br_favorable in the D195 CSVs). The
+  713 MiB D202 figure is a root-only-widened restricted game on the same
+  w1 reached-river root but outside the bounded union-menu
+  instrumentation class, so it is not used to size this anchor. CPU <=
+  wall on the serial instance; sample size one root-grid pair. Why the
+  existing grant cannot cover it without this request: executing an
+  undefined grid would break the pre-registration discipline every D-run
+  followed, and no approved document authorizes that fraction schedule
+  or its stop thresholds.
+  Evidence-based expectation, stated without running it: every measured
+  300-iter grid lands in the 0.0240-0.0276 BB residual band (12-14x over
+  the bar) and T^-0.52 places 0.002 at order 10^5-10^6 iterations, i.e.
+  days of solve and outside every per-instance G1 envelope; the anchor's
+  realistic value is closing the "unmeasured grid" residual risk with a
+  negative data point, not an M2 pass.
+
+- FULL ASAN CERTIFICATION, SEPARATE LEDGER. The ~3-hour heavy
+  turn_serve/turn_solver sanitizer rerun and the rfc0046_gadget 60 s
+  wall-budget item are verification/resource qualifications, not strategy
+  compute; they are never charged against the D-067 strategy grant or
+  counted as M2 progress and remain unexecuted pending their own
+  authorization. D239/D243 closed the leak and constructor-failure
+  ownership defects at the source with zero-solve native evidence.
+
+- M2 STATUS. No strategy validation was started under D247, so M2
+  advancement for this period is explicitly incomplete. The 0.002 BB gate
+  remains unmet on every measured configuration; cap0/cap1, B0=0.010,
+  G1, root weights, strategy/algorithm, and public contracts are
+  unchanged, and no push, Worker, funding, writer, or external commitment
+  was made. The next owner either approves the single fine-grid spec and
+  stop thresholds above (bounded ~120 s/1 GiB/one-process run with a
+  pre-registered negative-result expectation) or accepts the measured
+  evidence that no within-envelope menu path reaches M2 and routes the
+  effort to a finer-abstraction or offline-blueprint RFC, which the
+  RFC 0043/0044/0045 closures already indicate is the actual open frontier.
+
+- D247 INDEPENDENT LEDGER REVIEW ROUND 1: verdict Changes Requested; the
+  no-compute branch decision, candidate audit, and bounded-request
+  structure were accepted, but three receipt-integrity majors and four
+  minors were found and all corrected against primary CSVs before
+  re-review: (F1) the reached-river Uniform maximum is 41.35 s
+  (D195 wide Uniform 41,350.042 ms), not the br_favorable 35.66 s row;
+  hard-wall headroom restated as ~2.9x; (F2) the ~29.8 s/arm evaluation
+  moved from D184 to D202 (eval_wall_ms 29,694.900/29,933.628), D184
+  restated at ~23.1/35.5 s and ~51-55 MiB with no eval column; (F3) the
+  0.74-1.15 BB range re-scoped to tiny post-augmentation fixtures
+  (0.7433-1.1545 BB) with the 1.4905 BB tiny baseline and D202's
+  23.3058 BB deep-anchor term stated separately; (F4) D198 now cites the
+  existing per-row 17.94-17.98 s receipts and leaves only the
+  process-total unasserted; (F5) RSS unit corrected to ~81 MiB
+  (80,788/82,956 KB); (F6) D202 reworded as a root-only-widened
+  restricted game on the same w1 reached-river root outside the bounded
+  union-menu instrumentation class; (F7) the proposed grid is described
+  as an interpolation in menu granularity and the ~7.5 s figure is
+  labeled the D225-sealed class representative. No number was changed
+  without a primary-source check; the 120 s / 1 GiB / one-process bounds
+  and the no-compute decision are unchanged.
+
+- D247 INDEPENDENT LEDGER REVIEW ROUND 2 (narrowed re-review): verdict
+  Approved; all seven Round-1 findings verified resolved against primary
+  CSVs with independently recomputed arithmetic, and no new unsourced
+  numeric claim found. Two non-blocking row-attribution observations were
+  then corrected at source anyway: the D195 br_favorable wall range now
+  reads the complete 24.50-35.66 s (the wide 35,664.040 ms row was
+  missing from the prior upper bound), and the D192 Uniform RSS values
+  are stated separately (50,804/55,872 KB = 49.6/54.6 MiB) from the
+  br_favorable 58,220/56,656 KB rows, with the full class span corrected
+  to 49.6-56.9 MiB. Bounds, candidate spec, and the no-compute decision
+  remain unchanged; the work stays tracker-only.
