@@ -4569,3 +4569,202 @@ RFCs 0041/0043/0045/0046).
   br_favorable 58,220/56,656 KB rows, with the full class span corrected
   to 49.6-56.9 MiB. Bounds, candidate spec, and the no-compute decision
   remain unchanged; the work stays tracker-only.
+
+## Fine-grid single-anchor strategy candidate under the restored Stage-1 grant (D249)
+
+- AUTHORIZATION BASIS. D-067 remains in force ("FULL Stage-1, no spend
+  cap, measurement-only") with the RFC 0048 single-instance 300-iteration
+  unit; no cumulative pool exists, so this milestone invokes the original
+  grant rather than requesting new budget. One process, one anchor, one
+  pre-registered grid; no sweep, second root, new long anchor, 3 h ASan
+  rerun, or gadget change. cap0/cap1, 0.002 BB, B0=0.010, G1, and the
+  production contracts are frozen; a green anchor is supporting evidence,
+  not an M2/G5 pass.
+
+- CANDIDATE DEFINITION (fixed before code). A fourth SizingGrid value,
+  Fine, built through the existing production
+  ActionAbstraction::declared(SizeSchedule, CoverSeeds::MinAndCap, 1)
+  path with NO new mapping, rounding, or tie code: on Flop/Turn/River the
+  bets are {1/3, 1/2, 3/4} and the raises {1/2, 1}; the Preflop schedule
+  stays the default blind-relative menu. All legality, clamping, minimum,
+  and cap-seed semantics are inherited unchanged from the declared
+  builder, so the bench adds a schedule constant only.
+
+- MECHANISM AND NON-DUPLICATION CLAIM. The three closed grids differ in
+  composition, not just width: Coarse has 2 postflop points
+  ({1/2} bet, {1/1} raise), Identity 5 ({1/3,3/4,3/2} bets,
+  {1/2,1} raises), Wide 8 ({1/4,1/2,3/4,1,3/2} bets, {1/2,1,2}
+  raises). Fine has 5 points with a new set not equal to any prior grid:
+  relative to Identity it adds the 1/2 bet while dropping the 3/2 pot
+  bet and keeps the identical {1/2,1} raise set (the 1/2 raise already
+  exists in Identity, so only the bet is new). It is INTERLEAVED with
+  Wide at the fraction level, not a subset: Fine's 1/3 bet is absent
+  from Wide while its other fractions and both raises are Wide members.
+  The pre-registered hypothesis is a two-sided descriptive mechanism
+  test (no independent numeric threshold; only the terminal e_embed rule
+  verdicts): denser than Coarse should cut the pure menu term, while
+  the Fine tree's footprint relative to Identity is left as an N3
+  measured outcome rather than a premise, because both carry five
+  declared points and clamp collisions make the node count non-obvious.
+  It is not a re-weighting or re-run: the native gates must prove a
+  distinct abstraction digest, distinct node menus on the w1 anchor
+  tree, and a distinct freshly solved sigma'.
+
+- LEGAL DOMAIN BINDING, DETERMINED EMPIRICALLY. The Fine bounded tree is
+  tested against the frozen cap0 identity(0) reference with the existing
+  map_bounded_subset exact-Action edge mapper. If every Fine action has an
+  equal cap0 action the candidate is recorded cap0_subset/mapped; if the
+  builder's clamp produces a reference-foreign target the mapper must
+  typed-reject and the D184 union reference (make_union_abstraction with
+  identity(0)) becomes the measurement domain. The outcome is observed,
+  not assumed; passive-edge suppression and wider-than-reference rows
+  remain fail-closed invalid_argument either way.
+
+- ANCHOR IDENTITY AND TRAINING. The single anchor is the same w1 deep
+  check-to-river root used by D184/D192/D195/D198 (first frontier leaf of
+  the frozen w1 stratum, cap 1). One process performs exactly two
+  300-iteration river solves on the Fine abstraction at threads=1,
+  matching the D198 in-process convention: one linear-average control
+  (linear_averaging=true, the mode D198 proved superior) and one
+  uniform-average candidate (false). Each solve gets its own fresh
+  regret/average/forward-reach state; no snapshot or certificate is
+  reused. Distinctness is required: policy hashes must differ and the max
+  row L1 must be >= 1e-12.
+
+- EVALUATION AND PASS CONDITIONS. Each fresh snapshot is evaluated
+  independently through the existing reach_bound_from_snapshot
+  instrumentation against the bound reference (cap0 subset or union),
+  Uniform completion arm only (BrFavorable is not a second authorized
+  process), producing bounded_nash_conv_bb, exact_exploitability_bb,
+  pure_menu_term_bb, and e_embed with the frozen formulas. Pass requires
+  the Uniform candidate's e_embed <= 0.002 BB; every other outcome is a
+  recorded negative result with the original counter-evidence retained.
+  Hard stops, with enforcement stated precisely rather than implied:
+   1. exactly 300 iterations per solve, fixed in the solve config;
+   2. 120 s per-solve wall tripwire enforced by two layers: the manual
+      probe is invoked under the OS `timeout 120s ...` launcher (hard
+      process kill, distinct non-zero exit, no retry), and the probe
+      itself samples a steady-clock wall around each solve and emits a
+      typed `wall_budget_exceeded` CSV row then exits non-zero if the
+      measured wall crosses 120,000 ms. The river solver loop gains no
+      internal deadline field, so no solver contract changes;
+   3. tree construction passes an explicit TreeLimits{max_nodes
+      2,000,000, max_depth 256, max_bytes 1 GiB} (the enforced typed
+      tree_resource_exhausted bound), distinct from the G1 online
+      ResolveLimits envelope (5,000,000 nodes / 1,000,000 infosets)
+      which the reached-river anchor is measured against but not built
+      under;
+   4. the 1 GiB RSS figure is a MEASURED tripwire sampled via
+      getrusage/statm, not an enforced allocation cap; the enforced
+      memory bound is the TreeLimits 1 GiB byte cap. Observed class
+      peak is ~81 MiB, roughly 12x under the RSS tripwire.
+  An overrun or boundary retains its failure row and exits; it is never
+  converted into a pass, retried, or granted an increased limit.
+
+- NATIVE GATES (RED first, then owning GREEN; no substitute allocator or
+  text matching). A permanent ctest asserts: (N1) the Fine schedule
+  contents on all three postflop streets and the unchanged preflop menu;
+  (N2) Fine differs from Coarse, Identity, and Wide in abstraction digest
+  and in at least one node menu ON THE W1 ANCHOR TREE specifically (the
+  tiny 8-chip root can suffer clamp collisions that hide menu novelty);
+  (N3) deterministic tree construction with identical shape digests
+  across repeats, TreeLimits classification, and the Fine node/infoset
+  footprint recorded against Coarse/Identity/Wide as the measured
+  smaller-tree evidence (not a premise); (N4) the empirical
+  cap0-subset vs union-only mapping verdict with the mapper's typed
+  behavior; (N5) a tiny real 60-iteration Fine solve yields legal finite
+  sigmas, the linear/uniform pair is distinct by hash and L1, zero mass
+  is placed on every extension-only edge, and reach_bound returns finite
+  bounded NC and pure menu terms; (N6) Fine has no historical bitwise
+  anchor, so an in-process linear-vs-linear repeat (two independent
+  linear_averaging=true solves, fresh state each) must reproduce
+  identical snapshot hashes and bit-equal rows, the determinism
+  substitute for D198's historical comparison. The 300-iter anchor
+  itself stays a manual single-instance probe, not a ctest, exactly like
+  the D184/D198 probes.
+
+- LEDGER RULES. Every build, solve, and evaluation row records wall/CPU
+  ms and peak/current RSS in the existing CSV schema under
+  docs/plans/ablation/rfc0047/s3/fine-grid/; baseline, failure, and
+  verification spend use the same units. Because no cumulative pool was
+  ever defined, the ledger states "no cumulative ceiling" rather than
+  inventing a remaining balance. The ~3 h ASan certification and gadget
+  wall-budget items remain separate non-strategy ledgers.
+
+- D249 PRE-REGISTRATION REVIEW ROUND 1: verdict Changes Requested, no
+  blocker. Resolved before any implementation: (M1) the false "strict
+  fraction-subset of Wide" claim is corrected to "interleaved with Wide"
+  because Fine's 1/3 bet is not a Wide fraction; the 1/2 raise wording
+  is corrected (Identity already contains it) and the smaller-tree
+  claim is demoted to an N3 measured outcome; (M2) the 120 s bound now
+  has an explicit two-layer mechanism, an OS timeout launcher plus an
+  in-probe steady-clock typed wall_budget_exceeded row, with no solver
+  deadline-field change, and the enforced 2M-node/1-GiB TreeLimits is
+  separated from the measured G1 ResolveLimits 5M-node/1M-infoset
+  envelope while RSS is stated as a measured tripwire; (minors) N2 is
+  pinned to the w1 anchor tree where clamp collisions cannot hide menu
+  novelty, and N6 adds the in-process linear-vs-linear bitwise
+  determinism repeat as Fine has no historical anchor. Schedule
+  legality, bench-only enclosure, embedding honesty, two-solve
+  integrity, scope, and the native-gate structure were accepted.
+
+- D249 IMPLEMENTATION AND ANCHOR RESULT (single instance, no retry).
+  Code: one bench SizingGrid::Fine value and schedule branch in
+  patha_grid_budget.{hpp,cpp} (no production include/src change), the
+  native ctest test_rfc0047_fine_grid covering N1-N6, and the manual
+  bigshark-rfc0047-fine-grid-probe with the two-layer 120 s tripwire and
+  explicit TreeLimits{2M nodes, 256 depth, 1 GiB bytes}. N1 required a
+  frontier scan rather than a single leaf: on the smallest check-to-river
+  roots the fine fractions clamp onto minimum legal increments and
+  collapse to two bets, but 288 of 432 w1 leaves keep the three opening
+  bets distinct, so the gate verifies the schedule content on a separable
+  leaf while N2 pins menu novelty on the anchor tree. N4 empirically
+  returned cap0_direct_map=mapped: after builder clamping every Fine
+  action has an exact equal in identity(0), so despite the fraction-level
+  interleaving with Wide the bounded tree is a legal cap0 subset on this
+  anchor (8 mapped action nodes vs 10 for Identity).
+  Native gates: rfc0047_fine_grid green in ~6.4 s, including the N5
+  real 60-iter distinct linear/uniform solve (different hashes,
+  L1 >= 1e-12) and the N6 linear-vs-linear bitwise repeat.
+  Anchor receipt (docs/plans/ablation/rfc0047/s3/fine-grid/w1-fine-300.
+  csv; process wall 49.87 s under timeout 120s, two fresh 300-iter
+  threads=1 solves, per-solve wall 6.88-6.92 s, RSS peak 46,892 KB =
+  45.8 MiB, wall_budget_exceeded=0 on both rows, resource limits never
+  approached):
+   - linear_average_control: bounded NC 0.02169211, exact e_embed
+     31.41459051, pure menu 31.39289840 BB;
+   - uniform_average_candidate: bounded NC 0.05977293, exact e_embed
+     31.26688643, pure menu 31.20711350 BB;
+   - candidate_gate_pass=0 on both. The Uniform e_embed is 15,633x over
+     the 0.002 BB bar (linear 15,707x), and 99.81% of it is the pure menu
+     term. Versus the closed Coarse D184 anchor (e_embed 31.2449 BB) the
+     Fine grid changes the result by only +0.022 BB, i.e. no material
+     menu-value recovery; the linear bounded NC 0.0217 sits at the edge
+     of the measured 0.0240-0.0276 residual band while the uniform mode
+     is 2.76x worse, reproducing the D198 averaging conclusion.
+  VERDICT: pre-registered negative result confirmed with a genuinely new
+  abstraction, fresh distinct policies, and the frozen certification
+  formulas. A denser five-point grid does not recover the missing cap-0
+  menu value on the w1 anchor; the binding wall remains the ~31 BB
+  fixed-policy menu mass and the T^-0.52 policy tier, not grid point
+  count. No M2/G5 pass, no budget overrun, no retry; the result closes
+  the RFC 0048 "unmeasured grid" residual risk at this anchor. The ~3 h
+  ASan certification and gadget wall-budget items remain separate
+  non-strategy ledgers.
+
+- D249 IMPLEMENTATION REVIEW (independent, post-anchor): verdict Approved,
+  no blocker/major, four non-blocking observations. L1 (N1 only asserted
+  river bets behaviorally) was folded in before commit: N1 now asserts the
+  exact Fine bet/raise fraction vectors on all three postflop streets and
+  preflop equality with default_size_schedule through the public
+  ActionAbstraction::schedule() accessor, while retaining the production
+  chooser scan, which reports the strict three-fraction separable count as
+  288 of 432 w1 leaves (the earlier 336 figure came from a looser
+  at-least-three-bets diagnostic and is corrected here; neither count is a
+  pass gate, only the existence of at least one separable leaf is).
+  L2-L4 (machine-corroborated count now printed, bench-chooser wording,
+  manual-probe argv handling) are informational and do not change any
+  result. The grid-related regression set (fine_grid, patha_grid_budget,
+  union_embedding, averaging, union_materiality, mixed_menu,
+  cap_embedding) is 6/6 green over 821 s in release; no production,
+  contract, budget, or quality-bar change.
