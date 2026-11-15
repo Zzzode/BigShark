@@ -53,6 +53,20 @@ class TurnGame {
     layout();
   }
 
+  // Releases the per-node regret/sum tables. The class already owns
+  // non-copyable members (the worker Pool and the tree unique_ptr), so a
+  // destructor introduces no slicing or double-free risk. Without it every
+  // TurnGame leaks its layout() tables for the process lifetime, which
+  // LeakSanitizer reports on the repeated in-process turn solves used by the
+  // S3/G5 serve and G3 perturbation harness. Mirrors the RiverGame ownership
+  // cleanup; the CFR algorithm, policy output, and numerics are untouched.
+  ~TurnGame() {
+    for (std::vector<double>* p : reg_)
+      delete p;
+    for (std::vector<double>* p : sum_)
+      delete p;
+  }
+
   void clip_regrets() {
     for (std::size_t n = 0; n < tree_->size(); ++n)
       if (reg_[n] != nullptr)
@@ -942,6 +956,13 @@ TurnSolveResult solve_turn_subgame(const TurnSolveConfig& cfg) {
   out.nash_conv_chips = nc;
   out.nash_conv_bb = nc / bb;
   return out;
+}
+
+TurnGameLifecycleInfo turn_game_lifecycle_probe(const TurnSolveConfig& cfg) {
+  // Real constructor/destructor only: layout() allocates every per-node
+  // regret/sum table and the game is destroyed before any iteration runs.
+  TurnGame game(cfg);
+  return {game.tree_node_count(), game.turn_action_node_count()};
 }
 
 HybridNashConv turn_hybrid_nash_conv(const TurnSolveConfig& true_cfg,

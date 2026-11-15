@@ -139,4 +139,19 @@ std::vector<TurnLeafGapWeight> turn_leaf_gap_weights(
 
 TurnSolveResult solve_turn_subgame(const TurnSolveConfig& cfg);
 
+// RFC 0048 D239: zero-solve ownership lifecycle probe. Constructs the real
+// TurnGame through its full map_leaves/precompute_folds/layout allocation
+// path and destroys it immediately, without a single CFR iteration or
+// BR/eval walk, so LeakSanitizer can exercise the table ownership lifecycle
+// under the sanitizer preset without any solve budget. Leaf matrix contents
+// are never read during construction, so callers may supply a shared dummy
+// table; only non-null pointers are required. Bench-only under the link
+// guard; not a production entry point.
+struct TurnGameLifecycleInfo {
+  std::size_t tree_size = 0;
+  std::size_t turn_action_nodes = 0;
+};
+
+TurnGameLifecycleInfo turn_game_lifecycle_probe(const TurnSolveConfig& cfg);
+
 }  // namespace bs::rfc0047

@@ -1308,6 +1308,10 @@ if(BUILD_TESTING)
   target_link_libraries(test_rfc0047_turn_solver PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_turn_solver COMMAND test_rfc0047_turn_solver)
 
+  add_executable(test_rfc0047_turn_lifecycle tests/test_rfc0047_turn_lifecycle.cpp)
+  target_link_libraries(test_rfc0047_turn_lifecycle PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_turn_lifecycle COMMAND test_rfc0047_turn_lifecycle)
+
   add_executable(test_rfc0047_cap_embedding tests/test_rfc0047_cap_embedding.cpp)
   target_link_libraries(test_rfc0047_cap_embedding PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_cap_embedding COMMAND test_rfc0047_cap_embedding)
