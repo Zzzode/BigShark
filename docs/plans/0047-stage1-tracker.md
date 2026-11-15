@@ -4198,3 +4198,79 @@ RFCs 0041/0043/0045/0046).
   platform/endianness-specific sizeof serialization under the frozen I3
   convention (same precedent as policy_hash.cpp), and T13 mutator-list
   maintenance discipline (GameDef currently has no uncovered field).
+
+## TurnGame table-ownership leak closure under LSan (D239)
+
+- OBJECTIVE AND BOUNDARY. Close the LeakSanitizer lifecycle blocker from the
+  D233 ASan closure (RC8) without touching solver algorithm, policy, action
+  domain, public API, persisted format, or numeric semantics; no LSan
+  suppression, timeout extension, assertion deletion, test disable, or
+  quality-gate change. The gadget wall-budget failure stays an independent
+  open item and is not folded into this leak closure. No new CFR, solve,
+  re-solve, large-tree BR, root scan, sweep, or compute budget: the work is
+  a zero-solve ownership lifecycle exercise plus targeted gates only.
+
+- INDEPENDENT ROOT-CAUSE VERIFICATION (not taken from the prior owner
+  report). All 40 leak blocks in the original ASan log (20 Direct + 20
+  Indirect) name exactly two allocation sites, TurnGame::layout()
+  turn_solver.cpp:233-234, where reg_/sum_ (vectors of owning raw
+  vector<double>*) receive per-turn-action-node `new` tables. The TU had no
+  destructor and no matching delete anywhere; solve_turn_subgame creates the
+  TurnGame on the stack and every table leaked for process lifetime. Both
+  failing binaries (rfc0047_turn_serve, rfc0047_turn_solver) reach the
+  tables through this single path; turn_serve.cpp:73 calls
+  solve_turn_subgame. Full owning-member enumeration: only reg_/sum_ are
+  leaked owning raw pointers; tree_ and scratch_pool_ are unique_ptr-owned,
+  sigma_ and all other state are value containers, cfg_ is a reference and
+  Leaf::matrix/scratch_slots_ are non-owning observers. HybridWalker in the
+  same TU has no owning raw pointer. The sibling RiverGame destructor
+  (river_solver.cpp:83-90, added in D164 for the same leak class) and
+  MixedMenuGame destructor are the established repo precedent.
+
+- NATIVE RED FIXTURE (zero solve, real allocation path). New bench probe
+  turn_game_lifecycle_probe constructs the real TurnGame (full
+  map_leaves -> precompute_folds -> layout allocation path) and destroys it
+  with zero iterations; new engine/tests/test_rfc0047_turn_lifecycle.cpp
+  enumerates the w1 cap-1 frontiers (432 leaves, pure tree DFS walk) and
+  supplies one shared zero matrix, valid because construction only
+  null-checks and stores matrix pointers (dereference happens solely inside
+  walk/evaluate, never invoked). The test pins turn_action_nodes == 3610,
+  the exact object count in the original LSan receipt, and runs two
+  construct/destroy cycles. Under the ASan preset the pre-fix binary fails
+  RC=1 with "461935008 byte(s) leaked in 43320 allocation(s)" — a
+  byte-identical fingerprint to the original rfc0047_turn_solver failure —
+  and stacks lifecycle_probe -> TurnGame ctor -> layout():233/234. No
+  substitute allocator, source/text matching, or solver call is involved.
+
+- FIX AND GREEN. Add ~TurnGame() deleting every reg_ and sum_ pointer
+  (slots default to nullptr, so the loops are null-safe; each pointer is
+  owned once and deleted once). The class is non-copyable in practice:
+  Pool has deleted copy ops and the user-declared destructor suppresses
+  implicit moves; both construction sites are direct stack objects and no
+  table pointer ever escapes. fork-join Pool regions and the joining Pool
+  destructor guarantee no worker outlives the tables. Post-fix the same
+  ASan binary passes RC=0 with no LSan/UBSan output, wall 40.7 s; release
+  targeted gates rfc0047_turn_lifecycle, rfc0047_turn_solver, and
+  rfc0047_turn_serve pass. Numeric invariance: the diff is purely additive
+  (destructor plus probe); no CFR/RM+/sigma/reach/eval line changed.
+
+- INDEPENDENT MEMORY-SAFETY REVIEW: Approved, no blocker or major.
+  Completeness, double-free/UAF, numeric invariance, fixture honesty, scope,
+  and sibling-leak audit all pass with file:line evidence; every other
+  per-node raw new in rfc0047 (river_solver, mixed_menu) already has
+  matching cleanup. One minor, explicitly out of scope: if layout() throws
+  bad_alloc mid-loop the failed constructor's already-allocated tables
+  leak, a class-wide theoretical gap shared by RiverGame and MixedMenuGame;
+  any hardening should be one consistent unique_ptr-element refactor across
+  all three classes, not a local divergence.
+
+- REMAINING UNVERIFIED SCOPE (stated honestly). The lifecycle fixture
+  certifies the exact allocation stack and object identity named in both
+  original LSan receipts, but the full multi-hour rfc0047_turn_serve and
+  rfc0047_turn_solver ASan reruns were not re-executed (unauthorized ~3 h
+  re-solve budget); therefore the original ASan RC8 as a whole is not
+  claimed cleared, only its leak component with its root fixed and
+  natively reproduced GREEN at the source. rfc0046_gadget's 60 s
+  wall-budget timeout under sanitizer slowdown remains independently open
+  and is not a lifecycle defect. No M2/G5 or 0.002 BB implication; frozen
+  cap0/cap1, B0, G1, and production/thread/funding boundaries unchanged.
