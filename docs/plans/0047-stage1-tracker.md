@@ -4768,3 +4768,189 @@ RFCs 0041/0043/0045/0046).
   union_embedding, averaging, union_materiality, mixed_menu,
   cap_embedding) is 6/6 green over 821 s in release; no production,
   contract, budget, or quality-bar change.
+
+## Vanilla regret-matching policy-tier candidate on the frozen anchor (D251)
+
+- WHY THIS MECHANISM NEXT. D249 closed the grid-density axis: the ~31 BB
+  fixed-policy pure menu term and the T^-0.52 bounded-NC policy tier are
+  the two binding walls, and adding menu points does not move either.
+  D198 varied only the AVERAGING weight (linear t vs uniform 1.0) while
+  keeping RM+ regret clipping fixed. The orthogonal, still-untested lever
+  is the REGRET UPDATE RULE itself: RM+ clips every negative regret to
+  zero after each sweep, whereas vanilla regret matching keeps negative
+  regrets and only applies the positive part inside the strategy formula.
+  The turn solver already carries this switch (TurnSolveConfig::rm_plus)
+  and documents that vanilla RM "has a faster mixed-strategy tail"; the
+  river kernel currently hardwires clipping. This milestone tests whether
+  T^-0.52 is an RM+ clipping artifact on the heavily mixed river game.
+
+- SCOPE AND HONEST EXPECTATION. The regret rule cannot remove the
+  STRUCTURAL fixed-policy menu floor: the embedded cap-1 policy places
+  zero mass on cap-0-only edges, so the widened-node gap is absent from
+  every policy representable in the bounded menu and the pure-menu band
+  observed across policies is ~31.0-31.2 BB (~99.9% of e_embed). The
+  measured pure menu residual is not literally invariant, however: it is
+  an arithmetic residual (exact exploitability minus bounded NC) and both
+  operands weight gaps by sigma-dependent forward reach, so a different
+  convergence policy can move it marginally — the sealed D198 rows already
+  show 31.21728115 -> 31.02412861 BB (0.193 BB) from the averaging-weight
+  change alone. The ledger therefore records actual per-mode pure-menu
+  values rather than asserting zero movement. The structural floor keeps
+  e_embed <= 0.002 BB out of reach regardless, so no M2/G5 pass is
+  possible; the candidate characterizes the policy-tier wall: a real
+  vanilla NC improvement at identical 300 iterations would open headroom
+  inside the G1 online envelope, while a vanilla NC at or above the RM+
+  control proves the T^-0.52 wall is regret-rule-invariant at this anchor.
+  Either outcome is a valid, pre-registered result; no budget, threshold,
+  or gate changes.
+
+- CANDIDATE DEFINITION (fixed before code). Add one bench-visible field
+  bool rm_plus = true to RiverSolveConfig, mirroring the turn solver and
+  the existing additive optional fields (linear_averaging,
+  action_abstraction). RiverGame gains a matching default-true member
+  threaded through BOTH construction sites: solve_river_subgame and
+  river_combo_values (the latter has one native caller in
+  test_rfc0047_river_solver and keeps RM+ clipping via the default, so its
+  existing numbers stay byte-identical). RiverGame::iterate_weighted calls
+  clip_regrets() only when the member is true; the strategy formula rm()
+  already takes the positive part, so vanilla and RM+ differ solely by
+  post-update clipping, exactly as in the turn kernel. The rm_plus=true
+  default keeps every existing numeric path byte-identical. No production
+  interface, protocol, persisted format, solver traversal, or quality bar
+  changes.
+
+- CONTROLLED EXPERIMENT. Single process, single frozen w1 reached-river
+  root, Coarse cap-1 menu (the canonical baseline whose linear RM+
+  bounded NC is sealed at 0.02761552 BB, giving a built-in harness
+  cross-check), linear averaging held constant, threads=1, exactly two
+  fresh 300-iteration solves: an RM+ linear control (rm_plus=true) and a
+  vanilla-RM linear candidate (rm_plus=false). Same two-layer 120 s
+  tripwire, TreeLimits{2M nodes, 256 depth, 1 GiB}, measured RSS, and
+  empirical cap0-subset/union reference selection as D249. No sweep,
+  second root, retry, or budget increase.
+
+- PASS AND FALSIFICATION RULES.
+  Mechanism gates (native ctest, must all hold): rm_plus=true is bitwise
+  identical to the pre-change default (hash and NC); rm_plus=false yields
+  a distinct legal finite policy (different snapshot hash, max row L1 >=
+  1e-12, rows sum to 1); vanilla is deterministic across two fresh solves;
+  both modes evaluate to finite reach-bound results.
+  Anchor verdict (manual probe): record bounded NC, exact e_embed, pure
+  menu term, and policy hash per mode, plus the RELATIVE NC delta
+  (vanilla minus RM+ control divided by the control), so a hairline
+  deterministic "win" cannot be framed as envelope headroom without
+  magnitude context. A policy-tier improvement is declared only if the
+  vanilla bounded NC is strictly below the RM+ control; the size of any
+  improvement is reported, and an NC at or above the control is a negative
+  result for the regret-rule hypothesis. Neither verdict may be recorded
+  as an M2/G5 pass while the ~31 BB structural menu floor remains.
+
+- INFERENCE BOUND AND NON-GOAL. A 300-iteration null certifies only that
+  vanilla clipping-off COMBINED WITH LINEAR AVERAGING at this anchor does
+  not beat RM+. The fourth factorial cell (vanilla regrets + uniform
+  averaging, the textbook conventional pairing) is deliberately not run:
+  D198 measured the uniform arm 2.7x worse, and adding it would breach the
+  two-solve cap. It is recorded as an explicit non-goal, and the "faster
+  mixed-strategy tail" property is asymptotic, so a 300-iter null cannot
+  rule out a later crossover; the verdict stays scoped "at this anchor and
+  iteration count".
+
+- NATIVE GATES (RED first). A new test_rfc0047_rm_mode exercises the real
+  river kernel on the existing shallow 8-chip and w1 fixtures with no
+  substitute allocator or text matching: (R1) rm_plus=true matches the
+  pre-change default path bitwise (hash and NashConv, including the
+  river_combo_values entry point); (R2) rm_plus=false diverges with
+  L1 >= 1e-12 and a distinct hash; (R3) vanilla sigmas are finite
+  non-negative normalized rows; (R4) vanilla bitwise repeat stability;
+  (R5) finite reach-bound evaluation on both modes through the frozen
+  instrument; (R6) a BEHAVIORAL cross-kernel parity gate that runs both
+  the river and turn solvers in their default and skip-clipping modes and
+  asserts default-hash stability plus false-mode divergence in each — no
+  source-text inspection. The 300-iter anchor stays a manual non-ctest
+  probe.
+
+- LEDGER. Rows reuse the D249 CSV schema under
+  docs/plans/ablation/rfc0047/s3/rm-mode/ with wall/CPU/RSS per solve and
+  no cumulative ceiling (none was ever defined). The ~3 h ASan and gadget
+  wall-budget items remain separate non-strategy ledgers.
+
+- D251 PRE-REGISTRATION REVIEW ROUND 1: verdict Changes Requested, no
+  blocker; all findings resolved before implementation. (F1, major) the
+  categorical "pure menu term never changes" claim was mathematically
+  overstated: the residual is sigma-weighted and the sealed D198 rows
+  already show a 0.193 BB move (31.21728115 -> 31.02412861), so the text
+  now distinguishes the immovable structural zero-mass menu floor
+  (~31.0-31.2 BB band, ~99.9% of e_embed) from marginal measured
+  residual movement and requires actual per-mode values in the ledger;
+  (F2) the candidate definition now names the default-true RiverGame
+  member and BOTH construction sites, with river_combo_values retaining
+  RM+ via the default; (F3) R6 is rewritten as a behavioral cross-kernel
+  parity run, not a source inspection; (F4) the inference is bounded to
+  "vanilla + linear at this anchor/iteration count", the untested
+  vanilla+uniform cell is an explicit non-goal justified by the two-solve
+  cap and D198's 2.7x uniform penalty, and the anchor must report the
+  relative NC delta. Mechanism correctness, default byte-preservation,
+  axis isolation, falsifiability, and scope were all accepted.
+
+- D251 IMPLEMENTATION AND ANCHOR RESULT (single instance, no retry).
+  Code: one bench bool RiverSolveConfig::rm_plus (default true) plus a
+  matching RiverGame member; the single clip_regrets() call is gated on
+  it and both RiverGame construction sites (solve_river_subgame and
+  river_combo_values) thread the field, so the default call sequence and
+  FP order are byte-identical. The native ctest test_rfc0047_rm_mode
+  covers R1-R6 on the real kernel (~53 s): default bitwise
+  preservation through both entry points, vanilla divergence
+  (max row L1 1.87 at 60 iters), finite normalized vanilla sigmas,
+  vanilla bitwise repeat, finite reach-bound evaluation on both modes,
+  and the default-stable/skip-diverges river kernel contract. R6 was
+  rescoped during implementation: turn rm_plus is a pre-existing
+  untouched surface whose vanilla mode needs mixed-game iterations past
+  the cheap-ctest range to diverge (measured identical hashes through
+  10 iters at 22-47 s per solve pair on the shallow turn root), so turn
+  vanilla stays a manual rfc0047_g3_step1 "van" probe rather than a fast
+  ctest; the changed river surface carries the full behavioral contract.
+  Anchor receipt (docs/plans/ablation/rfc0047/s3/rm-mode/w1-coarse-300.
+  csv; process wall 46.03 s under timeout 120s, two fresh 300-iter
+  threads=1 solves, 4.92/4.97 s per solve, RSS peak 46,852 KB =
+  45.8 MiB, wall_budget_exceeded=0, Coarse cap-1, cap0 mapped, six
+  nodes):
+   - rm_plus_control: bounded NC 0.02761552, exact e_embed 31.24489667,
+     pure menu 31.21728115 BB, relative NC delta 0;
+   - vanilla_rm_candidate: bounded NC 0.07900126, exact e_embed
+     31.37198635, pure menu 31.29298508 BB, relative NC delta
+     +1.86075555 (2.86x the control).
+  The control row reproduces the sealed D184/D198 coarse linear value
+  0.02761552 exactly, independently confirming default byte-preservation
+  at anchor scale. Both rows fail the 0.002 BB gate (candidate_gate_pass
+  0); the vanilla policy is strictly worse, not better, at 300
+  iterations.
+  VERDICT: pre-registered negative result. The T^-0.52 policy-tier wall
+  is NOT an RM+ clipping artifact: removing negative-regret clipping
+  makes the bounded NashConv 2.86x worse at this anchor and iteration
+  count. The ~31.2 BB structural menu floor is unchanged in scale (the
+  pure-menu residual moved only +0.076 BB, within the marginal
+  sigma-dependent band established in review F1). The asymptotic
+  "faster vanilla tail" crossover, if it exists, lies beyond 300
+  iterations and is explicitly out of scope per the inference bound;
+  the untested vanilla+uniform cell remains a documented non-goal. No
+  M2/G5 pass, no budget overrun, no retry. The remaining open policy-tier
+  levers are outside the regret-rule axis (e.g. DCFR-style discounting
+  or alternative update schemes, each requiring its own pre-registered
+  mechanism). The ~3 h ASan and gadget wall-budget items remain separate
+  non-strategy ledgers.
+
+- D251 IMPLEMENTATION REVIEW (independent, post-anchor): verdict Approved,
+  no blocker or major, five low/nit observations. F1 and F2 were folded in
+  as comment-only precision fixes before commit: the candidate_gate_pass
+  wall conjunct is now documented as fail-closed suppression (the probe
+  exits non-zero on a tripwire regardless), and RSS is described as a
+  sampled measurement rather than an enforced tripwire, with the 1 GiB
+  TreeLimits byte cap named as the real memory bound. F3 (stronger
+  river_combo_values cross-check), F4 (R6 overlaps R1/R2/R4), and F5
+  (8-decimal CSV rounding of the relative delta, full-precision formula
+  verified) were accepted as-is because the anchor already reproduces the
+  sealed D184/D198 control hash and NC exactly, which is stronger
+  byte-preservation evidence than another in-test comparison. The
+  regression subset (river_solver, union_embedding, averaging, rm_mode,
+  fine_grid) is 5/5 green over ~349 s in release; no production, contract,
+  budget, or quality-bar change.
