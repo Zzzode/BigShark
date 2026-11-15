@@ -4954,3 +4954,293 @@ RFCs 0041/0043/0045/0046).
   regression subset (river_solver, union_embedding, averaging, rm_mode,
   fine_grid) is 5/5 green over ~349 s in release; no production, contract,
   budget, or quality-bar change.
+## Linear DCFR+ time-discounting policy-tier candidate on the frozen anchor (D252)
+
+- WHY THIS MECHANISM NEXT. D249 (sizing-grid density), D198 (average-
+  strategy weight, linear t vs uniform 1.0), and D251 (RM+ regret
+  clipping on vs off) closed three orthogonal update-side axes without
+  moving either binding wall: the ~31 BB fixed-policy pure-menu term and
+  the T^-0.52 bounded-NC policy tier (vanilla RM was 2.86x WORSE, so the
+  wall is not a clipping artifact). The one standard CFR update family
+  still untested in this kernel is DISCOUNTED CFR, DCFR (Brown and
+  Sandholm 2019): each iteration multiplies the accumulated regret and
+  average-strategy tables by time-dependent factors, so stale early
+  iterations lose influence as the solve proceeds. Discounted variants
+  are the literature's principal reported lever for faster finite-
+  iteration convergence, which is precisely the claimed remedy for a
+  T^-0.52 wall at 300 iterations. This milestone tests whether time
+  discounting lowers the bounded policy-tier NashConv on the frozen
+  anchor.
+
+- SCOPE AND HONEST EXPECTATION. Discounting cannot remove the STRUCTURAL
+  fixed-policy menu floor: the embedded cap-1 policy still places zero
+  mass on cap-0-only edges, so the pure-menu band stays ~31.0-31.2 BB
+  (~99.9% of e_embed) and no M2/G5 pass is possible at this anchor. The
+  target is exclusively the bounded NashConv policy tier (sealed control
+  0.02761552 BB at 300 iterations). Expected direction is a LOWER bounded
+  NC from faster finite-horizon convergence; an NC at or above the
+  control is an equally valid, pre-registered negative result that
+  certifies the policy wall as discounting-invariant at this anchor and
+  iteration count. The sigma-weighted pure-menu residual may move
+  marginally (the D198/D251 band is +-0.2 BB) and is recorded per row,
+  never asserted invariant. No budget, threshold, gate, or production
+  contract changes.
+
+- CANDIDATE DEFINITION (fixed before code). Name: Linear DCFR+, with RM+
+  clipping retained. Add one bench-visible field `bool dcfr = false` to
+  RiverSolveConfig and a matching RiverGame member, threaded through BOTH
+  construction sites (solve_river_subgame and river_combo_values); the
+  false default makes the field dead and keeps every existing numeric
+  path byte-identical. The iteration index t is threaded into
+  RiverGame::iterate_weighted(double weight, std::uint64_t iteration) at
+  the two river call sites only; TurnGame and the mixed-menu game are
+  separate classes whose own iterate_weighted signatures and callers
+  (turn_solver.cpp, mixed_menu.cpp) are untouched. When dcfr is true, at
+  the START of iteration t (t = 1..T), before the two traversals, every
+  action node's reg_ and sum_ vectors are scaled in place by the Linear
+  factor d_t = t/(t+1) (alpha = gamma = 1). The traversals then add the
+  same unweighted counterfactual regret deltas and the same weight=t
+  average contributions as the control, and post-update RM+ clipping is
+  unchanged. Convention follows the DCFR paper's UPDATE ORDERING only:
+  only the PRIOR accumulated tables (R^{t-1}, s^{t-1}) are discounted;
+  the fresh iteration-t contributions are added undiscounted afterwards.
+  The bounded-scale factor t/(t+1) is not algebraically the paper's
+  growing power form t^alpha: under this recurrence the effective
+  surviving weight of iteration-k regret at time T is (k+1)/(T+1), a
+  linear recency weighting with w_k proportional to k+1, rather than the
+  paper form's T!/k! ratio. The factor is nevertheless not invented: the
+  production kernel engine/src/gto/cfr_solver.cpp discount() applies the
+  same f = t/(t+1) to both the positive regret part and the average
+  table, and the repository names that form DCFR+
+  (engine/include/bs/river_gto.hpp). At t = 1 both tables are zero, so
+  0 * d_1 = 0 exactly and first-iteration outputs are provably
+  identical to the control. The beta (negative-regret) factor is
+  structurally inert: RM+ clipping leaves every stored regret >= 0 at
+  every discount time, so no negative entry exists to discount; this is
+  a stated property of the DCFR+ form, not a tuned parameter.
+  Terminology boundary (review F2): this bench candidate does NOT claim
+  recurrence identity with the production cfr_solver DCFR+ — different
+  kernel, and the production form pairs the discount with unit-weight
+  average contributions whereas this candidate keeps weight t (the
+  unit-weight textbook recurrence is explicit non-goal (2)); the shared
+  element is solely the t/(t+1) factor and its DCFR+ naming.
+  Adaptation versus the textbook recurrence: canonical DCFR
+  adds UNIT-weight average contributions and lets gamma perform all
+  weighting, whereas this kernel's established default contributes
+  weight t (linear averaging, the D198/D251 control). Switching to unit
+  weights would re-enter the D198 uniform-averaging axis (measured 2.7x
+  worse) simultaneously and confound two mechanisms, so the candidate
+  KEEPS weight t and layers only the discount passes on top; control and
+  candidate therefore differ by exactly one mechanism. Under this form
+  the surviving weight at time T of the iteration-k average
+  contribution is k * (k+1)/(T+1). No production interface, protocol,
+  persisted format, traversal order, FP operation order on the default
+  path, or quality bar changes; engine/include and engine/src are not
+  modified.
+
+- CONTROLLED EXPERIMENT. Single process, single frozen w1 reached-river
+  root, Coarse cap-1 menu (the canonical baseline whose linear RM+
+  bounded NC is sealed at 0.02761552 BB, giving a built-in harness
+  cross-check), linear averaging held constant, rm_plus=true held
+  constant, threads=1, exactly two fresh 300-iteration solves: an RM+
+  control (dcfr=false) and a Linear DCFR+ candidate (dcfr=true). Same
+  two-layer 120 s wall tripwire (OS timeout plus in-probe steady_clock
+  flag and non-zero exit), TreeLimits{2,000,000 nodes, 256 depth, 1 GiB
+  bytes} on every tree, RSS sampled via getrusage/statm only, and the
+  same empirical cap0-subset/union reference selection as D249/D251. No
+  sweep, second root, retry, parameter grid, or budget increase.
+
+- PASS AND FALSIFICATION RULES. Mechanism gates (native ctest, must all
+  hold): dcfr=false is bitwise identical to the pre-change default
+  (snapshot hash and NashConv) through both entry points; dcfr=true
+  yields a distinct legal finite policy (different snapshot hash, max
+  row L1 >= 1e-12, rows sum to 1); the candidate is deterministic across
+  two fresh solves; both modes evaluate to finite reach-bound results;
+  the discount insertion acts only on accumulated history (1-iteration
+  equality, 2-iteration divergence). Anchor verdict (manual probe):
+  record bounded NC, exact e_embed, pure-menu term, and policy hash per
+  mode plus the RELATIVE NC delta (candidate minus control divided by
+  the control), so a hairline deterministic "win" cannot be framed as
+  envelope headroom without magnitude context. A policy-tier improvement
+  is declared only if the candidate bounded NC is STRICTLY below the
+  in-process RM+ control (which must itself reproduce 0.02761552); an NC
+  at or above the control is a negative result for the discounting
+  hypothesis. Neither verdict may be recorded as an M2/G5 pass while the
+  ~31 BB structural menu floor remains, and both rows are expected to
+  show candidate_gate_pass=0 against 0.002 BB.
+
+- INFERENCE BOUND AND NON-GOALS. (1) With alpha = gamma = 1 both factors
+  are the SAME number t/(t+1), so this milestone cannot separate the
+  regret-discount and average-strategy-discount effects; a split requires
+  its own pre-registered candidate. (2) Classic DCFR (alpha = 1.5,
+  beta = 0, gamma = 2) and the unit-weight textbook average recurrence
+  are not run: the two-solve cap forbids a parameter grid, and unit
+  weights would confound the D198 axis. (3) Unclipped discounted CFR
+  with an active beta factor is not run, because removing clipping
+  re-enters the D251 axis whose vanilla arm was 2.86x worse. (4) A
+  300-iteration null is scoped to this anchor and iteration count; any
+  later discounting crossover at larger T remains open and needs a new
+  pre-registered envelope. Negative-result characterization (review F4,
+  wording tightened): if the candidate NC is at or above the control,
+  the time-discounting axis joins the three explicitly covered levers as
+  closed at this anchor — sizing-grid density (D249), average-strategy
+  weight (D198), regret clipping (D251), and now time discounting
+  (D252) — and the ledger must state the remaining feasible space
+  explicitly. The closed set is not a claim that no CFR variant can
+  exist: residual ideas such as alternative discount factor schedules
+  (e.g. classic 1.5/0/2) and exponential or optimistic regret matching
+  are classified as NEW MECHANISM CLASSES requiring their own
+  pre-registration and separate authorization, not as another in-place
+  variant inside the frozen two-solve envelope.
+
+- NATIVE GATES (RED first). A new test_rfc0047_dcfr exercises the real
+  river kernel on the existing shallow 8-chip and w1 fixtures with no
+  substitute allocator and no source-text matching: (R1) dcfr=false
+  matches the pre-change default path bitwise (hash and NashConv),
+  including the river_combo_values entry point; (R2) dcfr=true diverges
+  with a distinct hash and max row L1 >= 1e-12; (R3) candidate sigmas
+  are finite, non-negative, normalized rows with finite non-negative
+  NashConv; (R4) candidate bitwise repeat stability across two fresh
+  solves; (R5) finite reach-bound evaluation of both modes through the
+  frozen instrument on the empirically selected domain; (R6) the
+  insertion-point behavioral contract — at 1 iteration dcfr=true is
+  bitwise identical to the control (discounting all-zero tables is an
+  exact no-op and clipping is retained), while by 2 iterations the
+  hashes diverge because nonzero prior tables are now discounted —
+  proven entirely through public outputs. Pre-fixed fallback (review
+  F3): if the 2-iteration hashes unexpectedly coincide on the shallow
+  fixture, divergence is asserted at the next pre-registered small count
+  in the fixed sequence {3, 5, 10}, stopping at the first diverging
+  count and recording that count in the test output; this is a
+  pre-fixed ladder, not a post-hoc free choice, and a failure to diverge
+  by 10 iterations fails the gate rather than extending the search. The 300-iteration anchor stays
+  a manual non-ctest probe.
+
+- LEDGER. Rows reuse the D249/D251 CSV schema under
+  docs/plans/ablation/rfc0047/s3/dcfr/ with wall/CPU/RSS per solve and
+  no cumulative ceiling (none was ever defined). The ~3 h ASan and
+  gadget wall-budget items remain separate non-strategy ledgers.
+
+- D252 PRE-REGISTRATION REVIEW ROUND 1: verdict Approved, no blocker or
+  major; four minor/nit findings, all resolved before implementation.
+  The reviewer independently re-derived every arithmetic claim (beta
+  inertness under retained clipping; surviving average weight
+  k*(k+1)/(T+1); exact t=1 no-op on zero-initialized tables; the
+  shared alpha=gamma factor being inseparable) and verified axis
+  isolation, byte-preservation feasibility, class isolation
+  (TurnGame/MixedMenuGame are separate classes with their own
+  iterate_weighted methods), the sub-120 s envelope, bench-only scope,
+  and all sealed D184/D198/D249/D251 numbers. (F1, minor) the paper
+  wording was overstated: t/(t+1) is a bounded-scale form whose
+  effective regret weight is w_k proportional to k+1, not the paper's
+  growing-power T!/k! ratio; the text now claims only update-ordering
+  fidelity and cites the repository's own production DCFR+ precedent
+  (engine/src/gto/cfr_solver.cpp discount(), f = t/(t+1) on r and s,
+  named DCFR+ in engine/include/bs/river_gto.hpp), which was
+  independently confirmed in source. (F2, minor) added an explicit
+  terminology boundary: the bench candidate does not claim recurrence
+  identity with production cfr_solver DCFR+ (different kernel and
+  average weighting; unit-weight form is non-goal (2)). (F3, nit) R6
+  now carries a pre-fixed divergence ladder {2, 3, 5, 10} with mandatory
+  recording of the first diverging count and a hard failure if no
+  divergence appears by 10, instead of an unqualified 2-iteration
+  assertion. (F4, nit) the negative-result framing now enumerates the
+  four covered levers (D249/D198/D251/D252) and classifies residual
+  ideas (other factor schedules, exponential/optimistic RM) as new
+  mechanism classes needing separate authorization.
+
+- D252 IMPLEMENTATION AND ANCHOR RESULT (single instance, no retry).
+  Code: one bench bool RiverSolveConfig::dcfr (default false) plus a
+  matching RiverGame member; RiverGame::iterate_weighted gains a
+  1-based iteration parameter and, only when dcfr is true, calls a new
+  serial apply_discount(t/(t+1)) pass over every action node's reg_ and
+  sum_ tables BEFORE the two traversals; the fresh regret deltas and
+  weight=t average contributions, the traversal order, and post-update
+  RM+ clipping are all unchanged. Both RiverGame construction sites
+  (solve_river_subgame and river_combo_values) and both driver loops
+  thread the field and the iteration index; TurnGame and MixedMenuGame
+  are separate classes whose own iterate_weighted(double) signatures and
+  callers were not modified. With dcfr=false the discount branch never
+  executes and the iteration parameter is unused, so the default FP
+  operation sequence is byte-identical. RED was confirmed first: the new
+  native ctest failed to compile against the unmodified kernel
+  ("'struct RiverSolveConfig' has no member named 'dcfr'"). GREEN: the
+  native ctest test_rfc0047_dcfr covers R1-R6 on the real kernel
+  (~49 s): default bitwise preservation through both entry points; DCFR
+  divergence (max row L1 7.12e-01 at 60 iters); finite normalized
+  candidate sigmas; candidate bitwise repeat; finite reach-bound
+  evaluation on both modes; and the insertion-point contract — exact
+  equality at 1 iteration (zero-table discount is an IEEE no-op) and
+  first divergence at the ladder's first rung, 2 iterations
+  (max row L1 6.01e-01), so the pre-fixed {2,3,5,10} fallback was not
+  needed.
+  Affected regression subset in release, 7/7 green over 398.74 s:
+  rfc0047_link_isolation, rfc0047_river_solver, rfc0047_union_embedding,
+  rfc0047_averaging, rfc0047_rm_mode, rfc0047_dcfr, rfc0047_fine_grid.
+  Anchor receipt (docs/plans/ablation/rfc0047/s3/dcfr/w1-coarse-300.
+  csv; process RC 0 under timeout 120s, two fresh 300-iter threads=1
+  solves, 4.94/4.91 s per solve, RSS peak 46,840 KB = 45.7 MiB,
+  wall_budget_exceeded=0, Coarse cap-1, cap0 mapped, six nodes):
+   - dcfr_off_rm_plus_control: bounded NC 0.02761552, exact e_embed
+     31.24489667, pure menu 31.21728115 BB, relative NC delta 0, policy
+     hash 1922761369290757593;
+   - linear_dcfr_plus_candidate: bounded NC 0.05989256, exact e_embed
+     31.31789978, pure menu 31.25800722 BB, relative NC delta
+     +1.16880035 (2.17x the control), policy hash
+     16061226701027915358.
+  The control row reproduces the sealed D184/D198/D251 coarse linear
+  value 0.02761552 and policy hash 1922761369290757593 exactly,
+  independently confirming default byte-preservation at anchor scale.
+  Both rows fail the 0.002 BB gate (candidate_gate_pass 0); the
+  discounted policy is strictly worse, not better, at 300 iterations.
+  VERDICT: pre-registered negative result. The time-discounting axis is
+  CLOSED at this anchor and iteration count: layering Linear DCFR+
+  (alpha = gamma = 1, RM+ retained) on the frozen kernel makes the
+  bounded policy-tier NashConv 2.17x worse, the opposite of the
+  finite-horizon acceleration the literature form is selected for. The
+  ~31.2 BB structural menu floor is unchanged in scale (the pure-menu
+  residual moved only +0.041 BB, inside the marginal sigma-dependent
+  band). FOUR ORTHOGONAL UPDATE-SIDE AXES ARE NOW CLOSED on the frozen
+  w1 Coarse cap-1 300-iteration anchor: sizing-grid density (D249),
+  average-strategy weight linear vs uniform (D198, 2.70x worse),
+  regret clipping RM+ vs vanilla (D251, 2.86x worse), and time
+  discounting (D252, 2.17x worse). Remaining feasible space per the
+  pre-registered F4 framing: no further in-place variant of the current
+  RM+/linear/undiscounted update belongs inside the frozen two-solve
+  envelope; residual ideas (classic DCFR 1.5/0/2 schedules, other
+  factor schedules, exponential or optimistic regret matching, any
+  split of the regret-side and average-side discount effects) are new
+  mechanism classes, each requiring its own pre-registration and
+  separate authorization, and none can move the ~31 BB structural menu
+  floor without a widened representable menu, which D195 proved
+  infeasible on the measured configs (0.0276 BB best-case residual,
+  13.8x over the gate, binding wall = policy convergence). No M2/G5
+  pass, no budget overrun, no retry. The ~3 h ASan and gadget
+  wall-budget items remain separate non-strategy ledgers.
+
+- D252 IMPLEMENTATION REVIEW (independent, post-anchor): verdict
+  Approved, no blocker or major, two nits with no required change. The
+  reviewer independently re-derived the discount recurrence (surviving
+  weights (k+1)/(T+1) and k*(k+1)/(T+1)), confirmed the factor is
+  exactly t/(t+1) applied before the traversals to both tables with
+  clipping retained and post-update, verified reg_/sum_ paired
+  allocation makes the null guard sufficient, confirmed serial
+  execution outside every fork-join barrier and zero hot-loop
+  allocation, forced a clean rebuild of the three D252 objects with
+  zero warnings, re-ran rfc0047_dcfr (48.77 s) and the full seven-test
+  regression subset independently green (399.0 s), and re-ran the probe
+  (RC 0) reproducing every policy field of both CSV rows bitwise with
+  only wall/RSS fields varying naturally. Scope was verified clean:
+  engine/include and engine/src carry no dcfr change, the protected
+  D231 CMake hunks and the other ~230 pre-existing dirty files were not
+  touched, the gate stays 0.002 BB, and clang-format is dry-run clean.
+  Nit 1 (no change): the relative-delta denominator is the kernel NC
+  while the numerator is the reach-bound bounded NC; the control row's
+  own zero delta bounds the cross-evaluator deviation below 5e-9, far
+  inside the 8-decimal rounding band, and the line is inherited
+  verbatim from the already-reviewed D251 probe, so fixing it would be
+  an unrelated cleanup. Nit 2 (no change): R1 compares two post-change
+  dcfr=false runs rather than a pre-change artifact; cross-version
+  byte-preservation is carried by the sealed anchor chain, whose
+  control hash/NC is bitwise identical across D184/D198/D251/D252, and
+  the gate is structurally identical to the approved D251 R1.
