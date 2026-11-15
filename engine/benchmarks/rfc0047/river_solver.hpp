@@ -51,6 +51,12 @@ struct RiverSolveConfig {
   // keeps every existing numeric path bitwise unchanged (the seedless kernel
   // layout and RM+ fallback depend only on the tree).
   std::optional<bs::abstraction::ActionAbstraction> action_abstraction;
+  // RFC 0048 D251: RM+ clips negative regrets after each sweep when true
+  // (the historical default, byte-preserving); false keeps vanilla RM
+  // regrets while rm() still applies the positive part, mirroring the turn
+  // solver's rm_plus switch. Bench-only measurement lever; the default
+  // leaves every existing numeric path unchanged.
+  bool rm_plus = true;
 };
 
 struct ComboNashConv {

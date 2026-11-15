@@ -39,8 +39,9 @@ class RiverGame {
  public:
   explicit RiverGame(
       const GameDef& d, std::size_t threads, std::uint8_t action_cap,
-      const std::optional<bs::abstraction::ActionAbstraction>& explicit_action = std::nullopt)
-      : def_(d) {
+      const std::optional<bs::abstraction::ActionAbstraction>& explicit_action = std::nullopt,
+      bool rm_plus = true)
+      : def_(d), rm_plus_(rm_plus) {
     if (def_.player_count != 2 || def_.board_size != 5 || def_.terminal != TerminalDepth::River)
       throw std::invalid_argument("river_solver: needs a 2-seat five-card river-root def");
     workers_ = std::make_unique<Pool>(threads);
@@ -100,7 +101,10 @@ class RiverGame {
     avg_weight_[1] = weight;
     run_traversal(0);
     run_traversal(1);
-    clip_regrets();
+    // D251: skip post-update clipping for vanilla RM; rm() still reads only
+    // the positive part, so strategy legality is unchanged either way.
+    if (rm_plus_)
+      clip_regrets();
   }
 
   void run_traversal(std::size_t trav) {
@@ -518,6 +522,7 @@ class RiverGame {
   }
 
   GameDef def_;
+  bool rm_plus_;
   std::unique_ptr<AbstractTree> tree_;
   std::unique_ptr<Pool> workers_;
   std::vector<std::array<int, 2>> holdings_;
@@ -548,7 +553,7 @@ class RiverGame {
 
 RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
                                      std::span<const std::uint64_t> checkpoints) {
-  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus);
   RiverSolveResult out;
   out.iterations = cfg.iterations;
   out.action_nodes = game.action_node_count();
@@ -581,7 +586,7 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
 
 ComboNashConv river_combo_values(const RiverSolveConfig& cfg, std::uint64_t iterations,
                                  bool linear_averaging) {
-  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus);
   for (std::uint64_t t = 1; t <= iterations; ++t)
     game.iterate_weighted(linear_averaging ? static_cast<double>(t) : 1.0);
   // RiverGame::ComboValues is exposed by the same deterministic eval walks;

@@ -745,6 +745,12 @@ add_executable(bigshark-rfc0047-fine-grid-probe
   benchmarks/rfc0047/rfc0047_fine_grid_probe.cpp)
 target_link_libraries(bigshark-rfc0047-fine-grid-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0048 D251 manual single-instance regret-mode anchor probe (NOT a CTest):
+# RM+ control vs vanilla-RM candidate, linear averaging held fixed.
+add_executable(bigshark-rfc0047-rm-mode-probe
+  benchmarks/rfc0047/rfc0047_rm_mode_probe.cpp)
+target_link_libraries(bigshark-rfc0047-rm-mode-probe PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
@@ -1342,6 +1348,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_averaging tests/test_rfc0047_averaging.cpp)
   target_link_libraries(test_rfc0047_averaging PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_averaging COMMAND test_rfc0047_averaging)
+
+  add_executable(test_rfc0047_rm_mode tests/test_rfc0047_rm_mode.cpp)
+  target_link_libraries(test_rfc0047_rm_mode PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_rm_mode COMMAND test_rfc0047_rm_mode)
 
   add_executable(test_rfc0047_fine_grid tests/test_rfc0047_fine_grid.cpp)
   target_link_libraries(test_rfc0047_fine_grid PRIVATE bigshark_rfc0047_bench)
