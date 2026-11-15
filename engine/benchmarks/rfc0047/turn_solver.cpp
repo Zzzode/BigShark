@@ -53,20 +53,6 @@ class TurnGame {
     layout();
   }
 
-  // Releases the per-node regret/sum tables. The class already owns
-  // non-copyable members (the worker Pool and the tree unique_ptr), so a
-  // destructor introduces no slicing or double-free risk. Without it every
-  // TurnGame leaks its layout() tables for the process lifetime, which
-  // LeakSanitizer reports on the repeated in-process turn solves used by the
-  // S3/G5 serve and G3 perturbation harness. Mirrors the RiverGame ownership
-  // cleanup; the CFR algorithm, policy output, and numerics are untouched.
-  ~TurnGame() {
-    for (std::vector<double>* p : reg_)
-      delete p;
-    for (std::vector<double>* p : sum_)
-      delete p;
-  }
-
   void clip_regrets() {
     for (std::size_t n = 0; n < tree_->size(); ++n)
       if (reg_[n] != nullptr)
@@ -185,8 +171,13 @@ class TurnGame {
 
   std::vector<std::int8_t> actor_;
   std::vector<std::uint32_t> menu_;
-  std::vector<std::vector<double>*> reg_;
-  std::vector<std::vector<double>*> sum_;
+  // Owns the per-node regret/sum tables through unique_ptr elements so a
+  // bad_alloc midway through layout() rolls back every table already created
+  // during constructor unwinding; the implicit destructor then covers both the
+  // normal destroy path and partial-construction failure. The class stays
+  // non-copyable because its worker Pool has deleted copy operations.
+  std::vector<std::unique_ptr<std::vector<double>>> reg_;
+  std::vector<std::unique_ptr<std::vector<double>>> sum_;
   std::vector<std::vector<double>> sigma_;
   std::size_t action_nodes_ = 0;
   double avg_weight_ = 1.0;
@@ -232,8 +223,10 @@ class TurnGame {
   void layout() {
     actor_.assign(tree_->size(), 2);
     menu_.assign(tree_->size(), 0);
-    reg_.assign(tree_->size(), nullptr);
-    sum_.assign(tree_->size(), nullptr);
+    reg_.clear();
+    reg_.resize(tree_->size());  // default-inserted null unique_ptrs.
+    sum_.clear();
+    sum_.resize(tree_->size());
     for (std::size_t n = 0; n < tree_->size(); ++n) {
       const TreeNode& node = tree_->node(n);
       // Only TURN action nodes carry regret vectors. A river action node that
@@ -244,8 +237,8 @@ class TurnGame {
       ++action_nodes_;
       actor_[n] = static_cast<std::int8_t>(node.actor);
       menu_[n] = static_cast<std::uint32_t>(node.actions.size());
-      reg_[n] = new std::vector<double>(kTurnC * menu_[n], 0.0);
-      sum_[n] = new std::vector<double>(kTurnC * menu_[n], 0.0);
+      reg_[n] = std::make_unique<std::vector<double>>(kTurnC * menu_[n], 0.0);
+      sum_[n] = std::make_unique<std::vector<double>>(kTurnC * menu_[n], 0.0);
     }
     for (int k = 0; k < 96; ++k) {
       scratch_pool_.emplace_back(std::make_unique<Val>(kTurnC, 0.0));
