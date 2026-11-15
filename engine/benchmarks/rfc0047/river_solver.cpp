@@ -40,8 +40,8 @@ class RiverGame {
   explicit RiverGame(
       const GameDef& d, std::size_t threads, std::uint8_t action_cap,
       const std::optional<bs::abstraction::ActionAbstraction>& explicit_action = std::nullopt,
-      bool rm_plus = true)
-      : def_(d), rm_plus_(rm_plus) {
+      bool rm_plus = true, bool dcfr = false)
+      : def_(d), rm_plus_(rm_plus), dcfr_(dcfr) {
     if (def_.player_count != 2 || def_.board_size != 5 || def_.terminal != TerminalDepth::River)
       throw std::invalid_argument("river_solver: needs a 2-seat five-card river-root def");
     workers_ = std::make_unique<Pool>(threads);
@@ -96,7 +96,16 @@ class RiverGame {
   // leaf). All per-combo reductions keep their exact serial operation order,
   // so the produced regrets/average strategy are bitwise identical to the
   // recursive kernel at every thread count.
-  void iterate_weighted(double weight) {
+  // D252: iteration is 1-based. Under Linear DCFR+ the accumulated tables
+  // from iterations 1..t-1 are scaled by t/(t+1) before the fresh traversal
+  // contributions are added; at t = 1 the tables are zero-initialized, so
+  // the pass is an exact IEEE no-op and the first iteration is bitwise
+  // identical to the undiscounted path.
+  void iterate_weighted(double weight, std::uint64_t iteration) {
+    if (dcfr_) {
+      const double factor = static_cast<double>(iteration) / (static_cast<double>(iteration) + 1.0);
+      apply_discount(factor);
+    }
     avg_weight_[0] = weight;
     avg_weight_[1] = weight;
     run_traversal(0);
@@ -390,6 +399,22 @@ class RiverGame {
             r = 0.0;
   }
 
+  // D252 Linear DCFR+ discount pass: scale every accumulated regret and
+  // average-strategy entry by the same time factor in place. Runs in the
+  // serial section of iterate_weighted (like clip_regrets), outside every
+  // fork-join region; the per-iteration cost is one linear sweep over the
+  // action-node tables, far below one O(kC^2) traversal.
+  void apply_discount(double factor) {
+    for (std::size_t n = 0; n < tree_->size(); ++n) {
+      if (reg_[n] == nullptr)
+        continue;
+      for (double& r : *reg_[n])
+        r *= factor;
+      for (double& s : *sum_[n])
+        s *= factor;
+    }
+  }
+
   void build_sigma() {
     // build_sigma runs more than once per game (each eval walk rebuilds the
     // average-strategy snapshot); release the previous snapshot instead of
@@ -523,6 +548,7 @@ class RiverGame {
 
   GameDef def_;
   bool rm_plus_;
+  bool dcfr_;
   std::unique_ptr<AbstractTree> tree_;
   std::unique_ptr<Pool> workers_;
   std::vector<std::array<int, 2>> holdings_;
@@ -553,7 +579,8 @@ class RiverGame {
 
 RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
                                      std::span<const std::uint64_t> checkpoints) {
-  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus,
+                 cfg.dcfr);
   RiverSolveResult out;
   out.iterations = cfg.iterations;
   out.action_nodes = game.action_node_count();
@@ -561,7 +588,7 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
 
   std::size_t cp = 0;
   for (std::uint64_t t = 1; t <= cfg.iterations; ++t) {
-    game.iterate_weighted(cfg.linear_averaging ? static_cast<double>(t) : 1.0);
+    game.iterate_weighted(cfg.linear_averaging ? static_cast<double>(t) : 1.0, t);
     while (cp < checkpoints.size() && checkpoints[cp] <= t) {
       const double nc = game.nash_conv_chips() / (cfg.def.big_blind > 0 ? cfg.def.big_blind : 1);
       out.history_nash_conv_bb.push_back(nc);
@@ -586,9 +613,10 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
 
 ComboNashConv river_combo_values(const RiverSolveConfig& cfg, std::uint64_t iterations,
                                  bool linear_averaging) {
-  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus);
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus,
+                 cfg.dcfr);
   for (std::uint64_t t = 1; t <= iterations; ++t)
-    game.iterate_weighted(linear_averaging ? static_cast<double>(t) : 1.0);
+    game.iterate_weighted(linear_averaging ? static_cast<double>(t) : 1.0, t);
   // RiverGame::ComboValues is exposed by the same deterministic eval walks;
   // the free function maps it into the public header's flat vectors (values
   // are mean chips per compatible opponent deal, normalized by 990).

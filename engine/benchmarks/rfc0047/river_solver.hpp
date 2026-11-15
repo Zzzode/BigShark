@@ -57,6 +57,15 @@ struct RiverSolveConfig {
   // solver's rm_plus switch. Bench-only measurement lever; the default
   // leaves every existing numeric path unchanged.
   bool rm_plus = true;
+  // RFC 0048 D252: Linear DCFR+ time discounting. When true, at the start
+  // of iteration t every accumulated regret and average-strategy table is
+  // scaled in place by t/(t+1) BEFORE the two traversals add their fresh
+  // undiscounted contributions; RM+ clipping is governed separately by
+  // rm_plus and stays on in the D252 candidate, so the beta (negative-
+  // regret) factor is structurally inert. The false default makes this
+  // field dead and keeps every existing numeric path byte-identical.
+  // Bench-only measurement lever; no production solver reads it.
+  bool dcfr = false;
 };
 
 struct ComboNashConv {

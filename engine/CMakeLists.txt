@@ -751,6 +751,13 @@ add_executable(bigshark-rfc0047-rm-mode-probe
   benchmarks/rfc0047/rfc0047_rm_mode_probe.cpp)
 target_link_libraries(bigshark-rfc0047-rm-mode-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0048 D252 manual single-instance Linear DCFR+ anchor probe (NOT a
+# CTest): RM+ control vs time-discounted candidate, linear averaging and
+# clipping held fixed, 120 s steady-clock tripwire.
+add_executable(bigshark-rfc0047-dcfr-probe
+  benchmarks/rfc0047/rfc0047_dcfr_probe.cpp)
+target_link_libraries(bigshark-rfc0047-dcfr-probe PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
@@ -1352,6 +1359,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_rm_mode tests/test_rfc0047_rm_mode.cpp)
   target_link_libraries(test_rfc0047_rm_mode PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_rm_mode COMMAND test_rfc0047_rm_mode)
+
+  add_executable(test_rfc0047_dcfr tests/test_rfc0047_dcfr.cpp)
+  target_link_libraries(test_rfc0047_dcfr PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_dcfr COMMAND test_rfc0047_dcfr)
 
   add_executable(test_rfc0047_fine_grid tests/test_rfc0047_fine_grid.cpp)
   target_link_libraries(test_rfc0047_fine_grid PRIVATE bigshark_rfc0047_bench)
