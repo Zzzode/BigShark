@@ -4274,3 +4274,95 @@ RFCs 0041/0043/0045/0046).
   wall-budget timeout under sanitizer slowdown remains independently open
   and is not a lifecycle defect. No M2/G5 or 0.002 BB implication; frozen
   cap0/cap1, B0, G1, and production/thread/funding boundaries unchanged.
+
+## TurnGame constructor-failure resource qualification under fault injection (D243)
+
+- OBJECTIVE AND BOUNDARY. Close the constructor-throw gap the D239 review
+  left open: if TurnGame::layout() threw bad_alloc after allocating some
+  per-node tables, the failed constructor leaked every table created before
+  the throw. Same constraints as D239: bench-only, zero CFR/solve/re-solve,
+  no production allocator API or global hook, no LSan suppression, timeout,
+  assertion, or quality-gate change; solver algorithm, policy, numerics,
+  public API, and persisted format must stay unchanged; the gadget wall-budget
+  timeout and the multi-hour full ASan rerun stay out of scope.
+
+- REACHABILITY AND OWNERSHIP ANALYSIS. layout() is the only table allocation
+  point and is called unconditionally from the constructor; a bad_alloc at
+  either per-node make_unique/new site propagates out of the constructor, so
+  under the D239 raw-pointer design the previously assigned reg_/sum_
+  elements had no owner during unwinding. map_leaves can also throw (null
+  matrix) before any table exists, and Pool/tree construction precedes the
+  tables and self-releases. The fix therefore only needed to make the table
+  members self-owning.
+
+- FIX (local, evidence-driven). reg_/sum_ change from
+  vector<vector<double>*> to vector<unique_ptr<vector<double>>>; layout()
+  default-fills null slots via clear()+resize() and allocates through
+  make_unique; the D239 hand-written destructor is deleted because the
+  implicit member destructor now covers BOTH normal destruction and
+  constructor-throw rollback uniformly. All dereference sites keep identical
+  syntax and the nullptr-slot guards remain valid via unique_ptr bool
+  conversion. TurnGame stays non-copyable (Pool has deleted copy ops) and is
+  constructed only as a stack object in solve_turn_subgame and the lifecycle
+  probe; no external copy/move API is introduced. RiverGame and MixedMenuGame
+  retain their raw-pointer-plus-destructor design and the same theoretical
+  ctor-throw gap; a uniform refactor across all three classes is a separate
+  broader change and is deliberately not taken here.
+
+- NATIVE FAULT FIXTURE (real production path, no test allocator in
+  production). New engine/tests/test_rfc0047_turn_construction_fault.cpp is
+  its own executable with a process-wide operator new override on the
+  established test_heads_up_allocations seam: malloc-backed tracking headers
+  report live bytes per fault window and a one-shot bad_alloc ordinal. Fault
+  ordinals are keyed to the main thread so the parked Pool worker cannot
+  perturb the deterministic construction sequence; the probe dispatches no
+  parallel region. The 8-chip w1-shaped stratum uses an EMPTY leaf span, a
+  real constructor boundary under which map_leaves is a no-op and layout
+  allocates tables for every action node (2410 vs 2074 on the
+  leaf-intercepted production shape): the exercised ownership loop is a
+  strict superset with identical allocation/cleanup code. A full ordinal
+  sweep is infeasible (~60.7k main-thread allocations, dominated by
+  value-temporary live_cards vectors inside the combo-index helpers, not
+  leaks), so the test uses deterministic bands: the first five Pool/tree
+  ordinals, quarter/half/three-quarter points, and a dense tail series
+  (total-5000..total-120) intersecting the layout table loop and scratch
+  pool, plus one past-the-end clean construction and three post-fault retry
+  cycles. Every faulted construction must throw exactly one bad_alloc and
+  return live bytes to zero.
+
+- RED -> GREEN RECEIPTS (same ASan+UBSan+LSan preset, halt_on_error=1).
+  Pre-fix: RC=1 in ~2.2 s, in-process live=55,826,592 B at a tail ordinal and
+  an LSan report of 55,981,984 bytes across 4,856 allocations, stacks bound
+  to TurnGame::layout() allocation sites via turn_game_lifecycle_probe.
+  Post-fix: RC=0 in ~8.1 s, 17 faulted constructions all live==0 plus one
+  clean construction; the D239 rfc0047_turn_lifecycle normal-path gate
+  remains ASan-green. Release turn group (lifecycle, construction_fault,
+  turn_solver, turn_serve) is the targeted regression set; no 105-test full
+  run and no ~3 h heavy ASan rerun is executed.
+
+- REMAINING BOUNDARIES. Only the lifecycle/fault fixtures are claimed green;
+  the original ASan RC8 as a whole is still not re-certified without the
+  unauthorized heavy rerun, and rfc0046_gadget's 60 s wall timeout remains
+  an independent non-lifecycle item. The banded ordinal sampling does not
+  exhaust every one of the ~60.7k allocation ordinals, though it covers every
+  allocation phase including the layout table loop where the only owning
+  gap existed; the un-sampled interior ordinals exercise the same RAII
+  rollback mechanism by construction. No M2/G5 or 0.002 BB implication.
+
+- INDEPENDENT MEMORY-SAFETY REVIEW (D243): Approved, no blocker or major,
+  no required change. RAII rollback semantics, exclusive unique_ptr
+  ownership (no double-free), preserved null-slot guards and bit-identical
+  zero-initialized table contents, non-copyable stack-only TurnGame with an
+  unchanged public header, honest main-thread-keyed fault fixture with a
+  strict-superset empty-leaf shape, and tight three-file scope all pass with
+  file:line evidence. Two informational notes: (1) the banded ordinals do
+  not hit the exact layout-entry boundary or the table loop's first half,
+  but every slot shares one unique_ptr rollback mechanism and a deep-loop
+  fault exercises partial rollback of hundreds of owned tables, which is
+  strictly stronger evidence than a first-node fault; (2) the injector's
+  live/peak counters are non-atomic, which is safe because the single worker
+  is parked without allocating and LeakSanitizer independently audits
+  process exit; this matches the established heads-up allocation seam.
+  RiverGame and MixedMenuGame keep their raw-pointer designs and the
+  equivalent theoretical ctor-throw gap as an explicitly separate, broader
+  refactor candidate.
