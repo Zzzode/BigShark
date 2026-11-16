@@ -5244,3 +5244,231 @@ RFCs 0041/0043/0045/0046).
   byte-preservation is carried by the sealed anchor chain, whose
   control hash/NC is bitwise identical across D184/D198/D251/D252, and
   the gate is structurally identical to the approved D251 R1.
+## In-envelope M2 closure and convergence-law certification (D253)
+
+- CLOSURE QUESTION AND VERDICT. With the frozen gates unchanged
+  (cap-0/cap-1 menus, R0 = 0.002 BB, B0 = 0.010 BB, G1 p95 <= 10 s /
+  max <= 12 s / 1 GiB / 5M nodes), does any candidate remain that is
+  in-domain AND distinguishable by a 300-iteration single-process
+  two-solve anchor? Verdict: NONE. The full argument is the standalone
+  <=2-page note docs/plans/0047-m2-in-envelope-closure-d253.md; its
+  two load-bearing facts are (1) the D195 single-walk bit-exact split
+  e_embed 31.24489667 = bounded NC 0.02761552 + pure menu 31.21728115,
+  under the T13 construction-level zero-mass/menu_gap >= 0 invariant
+  (an embedded cap-1 policy cannot place mass on cap-0-only edges; this
+  part holds for every bounded policy and iteration count), while the
+  exact pure-menu NUMBER is separately a sigma-weighted residual whose
+  sealed measured band is 31.02412861-31.39289840 BB (minimum still
+  15,512x over the gate; review F1 corrected the earlier pointwise-
+  invariance overstatement, the same class as D251 F1), and (2) the
+  D195 perfect-widening floor e_Gg = 0.0276 BB
+  (13.8x over gate) with the D164 measured T^-0.52 policy wall
+  (300 -> 1000 iters = only 1.86x NC reduction; 700 s/1000; 1e5-1e6
+  iters to 0.002). Four orthogonal update axes are exhausted
+  (D249 grid, D198 averaging 2.70x worse, D251 clipping 2.86x worse,
+  D252 discounting 2.17x worse), so a fifth in-place variant cannot
+  move either wall and is excluded on the merits. The never-run
+  vanilla-RM + uniform-average factorial cell is inherited as a D251
+  documented non-goal (both component arms independently worse and the
+  two-solve cap forbids the cell), not an overlooked candidate.
+
+- CANDIDATE DEFINITION (measurement-only, fixed before code). D253 is
+  NOT a strategy candidate: no solver field, no production or bench
+  kernel change. A new manual probe
+  bigshark-rfc0047-convergence-cert-probe runs ONE process containing
+  ONE 300-iteration RM+ linear Coarse cap-1 w1 solve
+  (dcfr=false, rm_plus=true, linear_averaging=true, threads=1) using
+  the existing solve_river_subgame checkpoint API with the fixed
+  checkpoint ladder {30, 60, 100, 150, 200, 250, 300}; the per-checkpoint
+  history_nash_conv_bb is the kernel NashConv curve. All seven points
+  are retained in the receipt unconditionally — no point may be dropped
+  to improve the fit; a non-finite checkpoint value is a non-zero probe
+  exit and any local NashConv increase is printed as observed, not
+  smoothed. After the solve, ONE reach_bound_from_snapshot call on the
+  final T=300 snapshot (the only snapshot RiverSolveResult retains)
+  through the empirical cap0/union domain reconciles bounded NC with
+  kernel NC; the interior checkpoints carry the bounded-NC identity via
+  the D195 Coarse domain theorem plus the T13 1e-12 restricted-walk
+  reconciliation, not via per-point independent walks, and the receipt
+  states this certification source explicitly. The probe then computes
+  in-process: OLS fit log10(NC) = a + b*log10(T) over the seven points
+  plus R^2; T* = iterations at which the fitted bounded NC reaches
+  0.002 BB; per-iteration throughput and t* = T*/throughput;
+  G1-feasible iteration counts at 10 s and 12 s; and the t*/12 s
+  overshoot factor. PRE-RUN DESIGN PROJECTIONS (not receipt fields:
+  the probe prints only the point-estimate fit and G1 ceilings),
+  endpoint-anchored at the sealed ~16.3 ms/iteration throughput, show
+  the conclusion is not point-estimate-sensitive: at b=-0.60,
+  T* ~ 2.4e4 and t* ~ 389 s = 32x; at b=-0.45, T* ~ 1.0e5 and
+  t* ~ 1,674 s = 140x. Same TreeLimits{2,000,000, 256, 1 GiB}, two-layer 120 s
+  tripwire with exit 4, sampled-only RSS, and fail-closed semantics as
+  D249-D252. This probe is not a duplicate of
+  bigshark-rfc0047-river-curve: that binary emits only kernel-NC
+  checkpoints on an automatic x1.5 ladder with iter/s and has no
+  bounded-NC reconciliation, OLS/R^2/T*/t*/G1 receipt, or tripwire/CSV
+  discipline.
+
+- EXPECTED VALUES AND DECISION RULE. Expected: b near the sealed -0.52,
+  R^2 >= 0.90, T* of order 10^4-10^5 iterations, t* tens to hundreds of
+  times the 12 s G1 max. The certification SUCCEEDS (corroborating
+  in-envelope that the policy wall is outside G1) when b < 0 with
+  R^2 >= 0.90, b in [-0.60, -0.45], and t* > 12 s, with the actual
+  factor printed. Pre-registered FALSIFIER that forces the closure to
+  be reopened: b steeper than -0.60 AND fitted t* <= 12 s. At the
+  sealed throughput the wall clause alone already implies b around
+  -2.93, so the slope conjunct gains independent force only if the
+  receipt's measured throughput differs materially; this near-
+  redundancy is stated rather than hidden. A weak fit
+  or an out-of-band slope without the falsifier conjunction is recorded
+  INCONCLUSIVE, never as a pass. The slope band and R^2 threshold are
+  conventional pre-registered values around the out-of-tree D164
+  two-point estimate, not calibrated constants; failure directions are
+  safe because inconclusive never upgrades the closure and a local NC
+  increase only flattens b, it cannot manufacture the falsifier. The
+  extrapolation spans ~2 decades
+  from a 1-decade fit and is explicitly labeled order-of-magnitude
+  corroboration of D164, not a standalone proof; the structural menu
+  argument needs no extrapolation at all.
+
+- NON-GOALS AND BOUNDARIES. No second root, menu, sweep, retry,
+  parameter grid, or budget category; no engine/include or engine/src
+  change; no threshold or gate change; the probe is not a CTest and no
+  RED/GREEN mechanism gate applies because no production or kernel code
+  is modified (verification is build + single run + the unchanged
+  rfc0047 regression subset). The result cannot authorize production
+  changes and does not test any new policy; the surviving successor
+  hypothesis stays offline-certified blueprints/CVs under a new RFC.
+
+- LEDGER. One receipt under
+  docs/plans/ablation/rfc0047/s3/convergence-cert/ with the seven
+  checkpoint rows, fit coefficients, R^2, T*, t*, G1 ratios, wall/CPU/
+  RSS, and wall_budget_exceeded; no cumulative ceiling (none was ever
+  defined). The ~3 h ASan and gadget wall-budget items remain separate
+  non-strategy ledgers.
+
+- D253 PRE-REGISTRATION REVIEW ROUND 1: verdict Changes Requested, no
+  blocker; one major and four minor/two nit findings, all resolved
+  before implementation. (F1, major) the pointwise claim that the exact
+  31.217 BB pure-menu value is invariant for every policy and iteration
+  count repeated the D251 F1 overstatement: sealed rows measure a
+  sigma-dependent band of 31.02412861-31.39289840 BB and D164 cap-6
+  shows iteration drift on another tree, so both the note and this
+  section now separate the construction-level zero-mass/menu_gap
+  invariant (T13, universal) from the measured residual band (minimum
+  still 15,512x over the gate, so the closure direction is unchanged).
+  (F2, minor) the never-run vanilla-RM + uniform-average factorial cell
+  is now explicitly inherited as a D251 non-goal rather than omitted.
+  (F3, minor) a non-duplication paragraph against
+  bigshark-rfc0047-river-curve was added (automatic x1.5 ladder, no
+  bounded-NC reconciliation, no OLS/T*/G1 receipt, no tripwire
+  discipline). (F4, minor) the seven checkpoints are now pre-registered
+  as unconditionally retained, non-finite values force a non-zero exit,
+  local NC increases are reported as observed, and band-edge t* values
+  (32x at b=-0.60, 140x at b=-0.45) were specified as pre-run design
+  projections; the post-run result review F1 confirmed the probe emits
+  no band-edge columns and the wording was corrected to projections
+  rather than receipt fields (no rerun). (F5, minor) the G1 infoset
+  unit was corrected
+  from "1 MiB" to the 1,000,000-infoset count. (F6, nit) the hash chain
+  is now attributed to D198/D251/D252 only (D184 predates the FNV
+  instrument); the numeric NC row is bitwise across all four. (F7, nit)
+  only the T=300 endpoint gets an independent reach-bound walk;
+  interior checkpoints are certified via the D195 identity and the T13
+  1e-12 reconciliation, and the receipt says so. (F8, nit) the
+  falsifier conjunction's near-redundancy at the sealed throughput
+  (the wall clause alone implies b about -2.93) is now stated
+  explicitly.
+
+- D253 RUN RESULT (single instance, no retry; receipt
+  docs/plans/ablation/rfc0047/s3/convergence-cert/w1-coarse-300.csv).
+  Process RC 0 under timeout 120 s: solve wall 5,146.004 ms, total
+  process wall 23,107.317 ms (the endpoint reach-bound walk is ~18 s,
+  as the pre-reg review estimated), RSS peak 46,772 KB = 45.7 MiB,
+  wall_budget_exceeded=0, Coarse cap-1, cap0 mapped. The seven
+  checkpoints are finite and strictly monotone decreasing
+  (0.31669569 at t=30 through 0.02761552 at t=300); the endpoint
+  equals the sealed control NC bitwise and the reach-bound
+  reconciliation returns bounded NC 0.02761552 and pure menu
+  31.21728115 exactly.
+  Fit receipt (independently re-derived in Python, bit-matching the
+  CSV): intercept a = 1.08887660, slope b = -1.03655081, R^2 =
+  0.98003715. The measured slope is OUTSIDE the pre-registered
+  [-0.60, -0.45] band, so the emitted verdict is INCONCLUSIVE exactly
+  as the decision rule requires; the falsifier conjunction is not met
+  because t* = 77.380 s is far above the 12 s G1 max (the falsifier
+  needs b < -0.60 AND t* <= 12 s). No threshold, band, or checkpoint
+  was adjusted after the run, and no rerun was performed.
+  Why the band missed: the band was centered on the D164 cap-6
+  two-point estimate on a much larger tree over 300-1,000 iterations;
+  the small cap-1 w1 tree is still in its early convergence regime at
+  30-300 iterations, and the adjacent-segment slopes steepen
+  monotonically across the whole ladder (-0.786, -0.896, -1.020,
+  -1.156, -1.633, -1.790), so the -1.04 log-log slope is not an
+  early-point artifact. The D164 asymptotic plateau and this early
+  steep regime are different windows of possibly the same law; the
+  one-decade in-envelope fit cannot decide that.
+  What the receipt supports despite the inconclusive slope verdict:
+  the extrapolated T* = 4,511 iterations at t* = 77.380 s = 6.448x the
+  G1 max, and the G1 latency ceiling itself (699 iterations at the
+  measured 17.153 ms/iteration; 582 at p95) leaves a fitted bounded NC
+  of 0.013818 BB at 699 iterations = 6.91x over the 0.002 gate (8.35x
+  at the 582-iteration p95 ceiling). Because the measured tail is
+  steepening, a flattening toward the D164 asymptotic rate would move
+  t* further out rather than closer, so the 6.45x overshoot is an
+  optimistic figure, not a conservative one. The symmetric direction
+  is also closed: an endpoint-anchored power law reaching 0.002 BB
+  inside the 699-iteration G1-max ceiling at the measured throughput
+  would require b about -3.10, far steeper than the steepest observed
+  segment (-1.79), so continued steepening cannot bring the target
+  inside G1 either. These are in-envelope
+  measurements on the exact w1 Coarse cap-1 root and no longer require
+  importing the D164 out-of-tree datum for the latency-wall claim, but
+  per the pre-registered rule they CORROBORATE, they do not CERTIFY:
+  the M2-unreachable evidence continues to rest on the construction-
+  level structural menu argument (section 2 of the closure note) plus
+  D195/D164, and D253 is recorded as an inconclusive slope-band
+  experiment with a supporting in-envelope G1 overshoot measurement.
+
+- D253 RESULT INTERPRETATION GUARDRAILS. (1) The verdict string in the
+  receipt is inconclusive and must not be relabeled a pass in any
+  downstream document. (2) The T*/699-iteration figures are log-log
+  extrapolations beyond the last measured point at T=300, in explicit
+  units: T* = 4,511 lies 1.18 decades (15.0x) past the endpoint and the
+  699-iteration G1 ceiling lies 0.37 decades (2.33x) past it; both are
+  order-of-magnitude corroboration, and the only bit-exact measured
+  points are the seven checkpoints and the endpoint reconciliation.
+  (3) D253
+  changes no solver or production code, so no mechanism CTest applies;
+  verification is the clean build, this single run, the unchanged
+  rfc0047 regression subset, and the independent result review. (4) The
+  closure note's structural menu argument is independent of D253 and
+  its standing is unchanged by the inconclusive slope.
+
+- D253 RESULT REVIEW (independent, post-run): verdict Approved, no
+  blocker or major, two minor and three nit findings, all documentation-
+  level; the reviewer independently re-derived every summary quantity
+  from the seven checkpoint rows (OLS a/b/R^2 within 1 ULP of the
+  rounded CSV, T* = 4,511, t* = 77.380 s, 582/699 ceilings, 6.448x,
+  6.91x/8.35x, monotone steepening -0.79 to -1.79), verified the 24-
+  column CSV alignment, the verdict branching against the
+  pre-registered rule, the empty .err, the clean scope (no
+  engine/include or engine/src change, no CTest, one additive CMake
+  hunk), and clang-format cleanliness. (F1, minor) the band-edge
+  extrapolations were promised as printed receipt fields in two places
+  but the probe correctly emits only the point estimate; both docs now
+  label them pre-run design projections (endpoint-anchored, sealed
+  16.3 ms/iteration assumption) and explicitly state they are not
+  receipt fields, with no rerun. (F2, minor) the extrapolation
+  distance now carries explicit units: T* is 1.18 decades (15.0x) past
+  the endpoint, the 699 ceiling 0.37 decades (2.33x). (F3, nit) added
+  the symmetric closure: entering G1 would require b about -3.10 at the
+  measured throughput, beyond the steepest observed -1.79, so continued
+  steepening also cannot move the target inside the envelope. (F4, nit)
+  the design section's 16.3 ms/iteration is now called the sealed
+  prior-run throughput, distinct from this run's measured 17.153 ms.
+  (F5, nit) the alleged double blank line in the D253 CMake hunk was
+  re-verified: the hunk adds exactly one blank line, matching the
+  single-blank convention of every neighboring probe block, so no
+  change was required. The regression subset (link_isolation,
+  river_solver, reach_bound, rm_mode, dcfr) is 5/5 green over 248.04 s
+  in release.
