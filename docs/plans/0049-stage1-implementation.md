@@ -64,47 +64,122 @@ rfc0047_offline_census 4/4 green in 119.09 s; full release build green;
 clang-format clean; no production, schema, mount, protocol, or threshold
 file changed.
 
-## Gate 2 — offline convergence (not started)
+## Gate 2 — offline convergence (in progress)
 
-Planned artifacts (per the accepted RFC, each RED-tested before
-implementation):
+Implemented seams (both additive and default-off, native-tested):
 
-1. Two additive default-off bench seams in `river_solver.{hpp,cpp}`:
-   an optional `TreeLimits` field on `RiverSolveConfig` (the constructor
-   currently builds with the implicit default at river_solver.cpp:56)
-   and an optional checkpoint sink plus a per-iteration stop predicate
-   `stop(iteration, elapsed_wall_ms) -> bool` polled at the top of the
-   driver loop outside all traversal FP work. Default-off behavior must
-   stay byte-identical (sealed control 0.02761552 BB /
-   hash 1922761369290757593), with a native test pinning it.
-2. A convergence probe iterating only the eight Gate-1 passing
-   candidates, one single-instance process per candidate, rungs
-   {100, 200, 400, 800, 1,500, 3,000, 6,000, 12,000, 20,000},
-   1,800 s in-process wall, 1,900 s outer timeout, hard-coded constants
-   with no argv override. Each rung row is scored by the frozen
-   reach-bound instrument and flushed before the next rung.
-3. Native tests for sink invocation and row flushing, predicate
-   latching on a deliberately tiny budget (in-process trip before any
-   outer stop), verdict routing PASS / CONVERGENCE_NO_GO /
-   BUDGET_NO_GO / INCONCLUSIVE, and the single-rerun-to-BLOCKED rule.
+1. `RiverSolveConfig::tree_limits` (optional `TreeLimits`, nullopt
+   preserves the implicit construction) plus `checkpoint_sink` and
+   `stop_predicate` (`RiverCheckpointSink` / `RiverStopPredicate` in
+   river_solver.hpp). With both empty no `steady_clock` call and no
+   snapshot allocation occur; the default solve is byte-identical,
+   asserted by test_rfc0047_offline_convergence against repeated
+   default solves and an explicit-limits solve.
+2. The driver polls the predicate once per iteration at the loop top,
+   outside every traversal FP operation, latches
+   `stopped_early` / records `iterations_completed`, and invokes the
+   sink at each reached rung.
+3. `offline_convergence.{hpp,cpp}` classifies flushed rows into PASS /
+   CONVERGENCE_NO_GO / BUDGET_NO_GO / INCONCLUSIVE, with non-finite
+   instrumentation forced to INCONCLUSIVE and a post-first-rung wall
+   trip never retried.
+4. The manual probe `rfc0047_offline_convergence_probe` takes only a
+   validated candidate index; rungs, the 1,800 s wall, and the
+   0.002 BB gate (`kRfc0049GateBb`) are hard-coded with no argv
+   override. Each rung is scored through the frozen reach-bound
+   instrument and flushed before the next.
 
-Gate 2 exit is a typed verdict per candidate; the stage cannot be closed
-while any candidate is BLOCKED.
+Control receipt (w1 coarse cap-1, full nine-rung ladder,
+`gate2/w1-control-cap1.csv`; the t=100 bounded NC 0.11621217 matches
+the D253 curve bitwise): bounded NashConv converges from 0.1162 at
+100 iterations to 0.00006391 BB at 20,000 — already far below the
+0.002 gate by itself — while the pure-menu structural term stays
+inside 31.0443-31.2192 BB and e_embed never drops below 31.1606 BB
+(15,580x over the gate). Verdict: CONVERGENCE_NO_GO. This is direct
+in-anchor evidence that even a well-converged bounded policy cannot
+move the structural floor, matching the RFC 0049 closure prediction.
+The remaining seven candidates run one process each under the
+pre-registered budget estimate in `gate2/budget-estimate.md`.
 
-## Gate 3 — packed-artifact projection (not started)
+### Gate 2 closure (all eight candidates, 2026-11-16)
 
-Runs only for Gate 2 PASS candidates. Computes probability-only BSFLIB
-row math (per-node menu block, 8-byte bucket entries, 3-byte compact
-actions, Codebook16 runs) with the 1.0249 factor explicitly carried as
-an unverified flop-derived assumption that Stage 2 must re-measure.
-Nothing is serialized and no format is modified.
+Every process returned RC 0 with an empty stderr; no INCONCLUSIVE and no
+BLOCKED occurred, so the per-iteration stop predicate delivered a typed
+verdict for every candidate. Zero candidates crossed e_embed <= 0.002 BB.
+
+| Candidate | verdict | rungs | completed / requested | min e_embed (x over gate) | min bounded NC | last pure-menu term | peak RSS |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| coarse-cap1-control | convergence_no_go | 9 | 20,000 / 20,000 | 31.1606 (15,580x) | 0.00006391 | 31.1851 | 46.9 MB |
+| fine-cap1 | convergence_no_go | 9 | 20,000 / 20,000 | 31.3231 (15,662x) | 0.000044 | 31.4230 | 47.0 MB |
+| wide-cap1 | convergence_no_go | 9 | 20,000 / 20,000 | 22.2180 (11,109x) | 0.000078 | 23.7952 | 50.8 MB |
+| identity-cap2 | budget_no_go | 8 | 15,496 / 20,000 | 2.1223 (1,061x) | 0.004041 | 2.2098 | 47.1 MB |
+| identity-cap3 | budget_no_go | 6 | 4,916 / 20,000 | 0.3747 (187x) | 0.027304 | 0.3474 | 79.4 MB |
+| identity-cap4 | budget_no_go | 5 | 1,558 / 20,000 | 0.0980 (49x) | 0.034051 | 0.0640 | 171.5 MB |
+| identity-cap5 | budget_no_go | 3 | 562 / 20,000 | 0.0911 (46x) | 0.050865 | 0.0402 | 398.0 MB |
+| identity-cap6 | budget_no_go | 2 | 227 / 20,000 | 0.1908 (95x) | 0.181198 | 0.0096 | 802.1 MB |
+
+Two independent walls are now measured, not extrapolated from other
+RFCs:
+
+1. Structural menu wall. The cap-1/grid policies cannot shrink the
+   pure-menu term below ~22-31 BB; the smallest value observed anywhere
+   is cap-6 at 0.00959 BB, which by itself is still 4.8x over the
+   0.002 gate. No measured policy reaches a representable policy whose
+   embedded exploitability is within the contract.
+2. Convergence wall on the wide caps. Even setting the menu term aside,
+   local log-log extrapolation of the partial curves puts bounded NC
+   <= 0.002 at roughly 7,200-98,000 further iterations, i.e. 6.6-26
+   hours of single-instance solve per candidate (cap-3 ~10.4 h, cap-4
+   ~11.6 h, cap-5 ~6.6 h, cap-6 ~26 h) — all far beyond the 1,800 s
+   offline process budget and the G1 online envelope.
+
+The control's bounded-NC curve matches D253 bitwise at the shared
+t=100 checkpoint (0.11621217), cross-validating the new sink path. The
+R2-1 design concern is resolved in practice: the slowest candidate
+(cap-6, ~8 s/iteration) still flushed two finite rungs before latching
+at 1,800 s and closed as a clean BUDGET_NO_GO rather than an OS-killed
+INCONCLUSIVE.
+
+### Gate 2 independent review (Approved)
+
+A separate non-author agent reviewed the seams, receipts, and scope and
+returned Approved with no blocker/major and three minor plus two nit
+findings, all resolved:
+
+- Minor 1 (RFC R3-1 poll measurement): the target-host steady_clock
+  poll cost is now measured in the native ctest at 22.8 ns per read on
+  this machine, inside the vDSO 15-30 ns range the RFC review cited and
+  about 1.3e-6 of the shortest sealed 17.153 ms iteration. The integer
+  read stays outside all FP work, so no numeric path changes.
+- Minor 2 (sealed-value native pin): test_rfc0047_offline_convergence
+  now pins the w1 Coarse cap-1 300-iteration control natively — policy
+  hash 1922761369290757593 exactly and NashConv 0.02761552 within half
+  the sealed 8-decimal digit (a raw double cannot equal the decimal
+  literal at the ULP), so byte-identity is asserted on the real anchor
+  in addition to the shallow fixture.
+- Minor 3 (zero clock/alloc proof): covered structurally by the
+  conditional `has_stop` construction and empty-function guards; no
+  instrumentation test is added because the property is compile-time.
+- Nit 4: the missing control `.err` sidecar was added; all eight
+  processes now have a zero-byte stderr receipt.
+- Nit 5: `std::exit(3)` on a non-finite rung is retained for the manual
+  probe (rows are flushed first and there is no state to destruct).
+
+## Gate 3 — packed-artifact projection (not applicable)
+
+Gate 3 runs only for a Gate 2 PASS candidate. No candidate passed, so
+no projection is produced and no BSFLIB04 sizing input is generated;
+this is the RFC's designed NO-GO path, not a skipped gate. The
+flop-derived 1.0249 overhead assumption remains unverified and stays
+documented as such for any future campaign.
 
 ## Stage exit
 
-GO requires at least one Gate 2 PASS with a finite Gate 3 projection;
-NO-GO means every candidate is census-rejected, CONVERGENCE_NO_GO, or
-BUDGET_NO_GO; BLOCKED requires owner escalation and either an
-instrument fix or an approved pre-registration amendment. The likely
-outcome implied by the D195/D164 evidence (a 0.0276 BB best-case policy
-floor, 13.8x over the gate, under a T^-0.52 law) is NO-GO; that is the
-RFC's designed falsifiable result, not a defect.
+NO-GO. Every candidate is CONVERGENCE_NO_GO or BUDGET_NO_GO with finite
+curves and no BLOCKED state. Path A — pre-solving a widened cap-1/grid
+equilibrium on the binding w1 anchor to e_embed <= 0.002 BB inside the
+offline process envelope — is infeasible on measured evidence. The
+surviving direction is the Stage 2/3 addendum scope (a different packed
+river/turn format and a per-stratum, multi-anchor campaign), which
+remains un-authorized and would need a new RFC grounded in these
+receipts.
