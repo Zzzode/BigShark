@@ -14,7 +14,12 @@ cap-0 menu, single-thread seedless kernel, linear averaging, RM+ on,
 DCFR off. Receipt: `stage1-calibration.csv` (solve-only accounting;
 `stage1-calibration-run1-raw.csv` retains the first run's raw
 cumulative accounting, whose NC columns are bitwise identical,
-confirming seedless determinism across processes).
+confirming seedless determinism across processes). Note on schema
+(review M-3): the rung/summary rows follow the fixed 14-column CSV
+header, while the final `estimate,key=value,...` line is intentionally
+a separate key-value record type (not a rung observation) and is not
+expected to match the column count; the frozen gate receipt itself
+uses strictly aligned 16-column rows throughout.
 
 | quantity | measured value |
 | --- | --- |
@@ -52,7 +57,12 @@ Frozen: nine-rung ladder {100 .. 20,000}, 1,800 s in-process wall,
     iterations (~44 h at 6.87 s/iter), just beyond the frozen ladder.
   - If the slope decays to the ~T^-0.52 law measured on the RFC 0049
     bounded controls, NC(200) ~= 0.62 BB and the crossing needs order
-    1.2 x 10^7 iterations (~2.3 years).
+    10^6-10^7 iterations (1.2 x 10^7 anchored at the T=30 calibration;
+    the absolute count is anchor-dependent, the multi-year conclusion
+    is not).
+  - A frozen relative plateau (the RFC 0043 failure mode) is a third
+    scenario in which no power-law crossing exists; the early rungs
+    cannot rule it out.
   - Under either law the in-wall result is 100-300x over the gate. The
     frozen run's rungs 100/200 have scientific value precisely because
     they distinguish which regime the exact-menu curve enters; the

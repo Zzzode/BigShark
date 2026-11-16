@@ -309,17 +309,25 @@ Stage 1 result (frozen gate run 2026-11-17): BUDGET_NO_GO, matching the
 pre-registered expectation. Rungs 100 and 200 flushed at 0.53255290 BB
 and 0.26548740 BB bounded NashConv (equal to e_embed) with the
 pure-menu term inside the 1e-8 BB zero tolerance at both rungs, then
-the 1,800 s wall latched at iteration 301 before rung 400; the outer
-1,900 s timeout did not fire and the stderr sidecar is empty. The
-measured 100->200 doubling gives a slope of -1.004, still on the steep
-calibration law rather than the decayed ~T^-0.52 regime. Two scenarios
-bracket the future: if -1.0 persists the 0.002 BB crossing is near
-~26,000 iterations (~43 h single-thread) and the frozen 20k ladder
-would end ~1.3x over; if the slope decays to -0.52 the crossing needs
-order 10^7 iterations. The two-rung gate cannot certify the later
-slope, so a longer wall or wider ladder is an amendment, not an argv
-change; the structural zero-menu identity is proven regardless of the
-convergence outcome.
+301 iterations completed and the t=302 poll latched the 1,800 s wall
+before rung 400 (the per-iteration predicate fires at the loop top, so
+`iterations_completed=301` and `stopped_early=true`); the outer
+1,900 s timeout did not fire and the stderr sidecar contains only the
+shell-recorded `GATE_RC=0` exit marker (the probe itself writes nothing
+to stderr). The measured 100->200 doubling gives a slope of -1.004,
+still on the steep calibration law rather than the decayed ~T^-0.52
+regime. Three scenarios bracket the future, all assuming a monotone
+power law and none certified from two rungs: if -1.0 persists the
+0.002 BB crossing is near ~26,000 iterations (~43 h single-thread) and
+the frozen 20k ladder would end ~1.3x over; if the slope decays to
+-0.52 the crossing needs order 10^6-10^7 iterations (2.4x10^6 anchored
+at T=200, 1.2x10^7 anchored at the T=30 calibration); and a frozen
+plateau of the kind RFC 0043 encountered, in which the relative gap
+stops shrinking and no power-law crossing exists, remains an unnamed
+risk that only a longer run can rule out. The two-rung gate cannot
+certify which regime holds past 200, so a longer wall or wider ladder
+is an amendment, not an argv change; the structural zero-menu identity
+is proven regardless of the convergence outcome.
 
 ### Stage 2 — anchor boundary map
 
@@ -777,3 +785,47 @@ remains blocked by the separately registered sanitizer blocker B1 in
 `docs/development/build-and-test.md`. The authorization limit is
 unchanged: Stages 0-2 measurement only, no production, schema, codec,
 mount, host, wire, threshold, funded compute, or push.
+
+## Stage 1 Independent Review (2026-11-17): Approved
+
+A separately launched non-author agent (id adb7942108d648af7) reviewed
+commits a529fb3 and 3e11ed8, independently rebuilt the bench targets,
+ran the rfc0050 ctests and the rfc0047 link/convergence regressions,
+recomputed every slope, crossing, tolerance, wall-latch, and CSV column
+figure with an isolated interpreter, and compared the two calibration
+receipts' NashConv columns string-for-string. Verdict: Approved with no
+blocker and no major finding; three minor and four nit findings, all
+dispositioned below.
+
+- M1 (latch wording): corrected to "301 iterations completed; the
+  t=302 top-of-loop poll latched", reflecting that the predicate fires
+  before iteration FP work. No rerun; the verdict and rung counts were
+  always correct.
+- M2 (missing plateau scenario): a third named scenario, the RFC 0043
+  frozen relative plateau with no power-law crossing, now brackets the
+  extrapolation alongside the persistent -1.0 and decayed -0.52 laws,
+  and the monotone-power-law assumption is stated explicitly.
+- M3 (ragged calibration estimate row): documented as an intentional
+  separate key=value record type rather than a rung observation; the
+  frozen gate receipt itself stays strictly 16-column. Sealed receipts
+  are not rewritten.
+- N1 (stderr wording): the RFC now states the sidecar holds only the
+  shell-recorded GATE_RC marker and the probe writes no stderr itself.
+- N2 (crossing anchor): the 10^6-10^7 range is labeled with its T=30
+  vs T=200 anchors; the multi-year conclusion is anchor-invariant.
+- N3 (1e-8 premise): no action; the header already bounds the figure
+  as a practice-derived cross-walk tolerance (8.08e-10 BB accumulation
+  bound recomputed by the reviewer), not an FP theorem, and all eight
+  scored rungs printed zero.
+- N4 (RSS source): the plan distinguishes the rung-row /proc/self/statm
+  current residency from the summary-row getrusage peak.
+
+The reviewer confirmed the scope is clean (bench-only, link guard green,
+zero production/schema/codec/mount/host/wire/threshold change; the
+pre-existing dirty CMake hunks contain no rfc0050 lines), the native
+tests exercise real tree builds and a real exact solve with no
+source-text matching, and the reused RFC 0049 sink/stop/classifier
+machinery is unmodified. Remaining risks are the B1 ASan blocker, the
+single gate run (mitigated by bitwise-identical calibration reruns),
+the two-rung limit on slope certification, and the un-authorized
+Stages 2/3.

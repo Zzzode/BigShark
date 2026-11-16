@@ -158,9 +158,16 @@ of post-loop best-response evaluation).
 | 100 | 0.53255290 | -0.00000000 (within 1e-8) | 608.2 | 615 |
 | 200 | 0.26548740 | -0.00000000 (within 1e-8) | 1,211.7 | 615 |
 
-1. Pre-registered expectation: MET exactly. The stop predicate latched
-   at iteration 301 (between rungs 200 and 400), two rungs flushed,
-   verdict `budget_no_go`. No deviation to flag; the only surprise was
+RSS semantics (review N-4): rung rows read current resident set from
+`/proc/self/statm` while the summary row reports the getrusage peak;
+the two coincide at 615 MB in this receipt but they are distinct
+measures and are not assumed equal in general.
+
+1. Pre-registered expectation: MET exactly. 301 iterations completed
+   and the t=302 top-of-loop poll latched the wall (between rungs 200
+   and 400; the predicate fires before the FP work, so
+   `iterations_completed=301`), two rungs flushed, verdict
+   `budget_no_go`. No deviation to flag; the only surprise was
    favorable — solve throughput improved to a ~5.95 s/iter blended
    steady state versus the calibration's conservative 6.87 s/iter
    cumulative average, so rungs landed earlier than estimated.
@@ -182,14 +189,23 @@ The exact-menu curve is still on the steep ~T^-1.0 law seen in the
 calibration OLS (-1.012); the decayed ~T^-0.52 law from the RFC 0049
 bounded controls has not appeared by iteration 200 (its prediction of
 0.615 BB at 200 is 2.3x above the measured 0.265 BB). Extrapolation
-is explicitly two-scenario, not a certified slope:
+is explicitly multi-scenario under a monotone power-law assumption, not
+a certified slope:
 
 - If the -1.0 law persists: a two-point fit gives
   NC(T) ~= 54.3 T^-1.004, a 0.002 BB crossing near 26,000 iterations
   (~43 h single-thread at 5.95 s/iter), and even the frozen 20k ladder
   would end near 0.0026 BB (only ~1.3x over).
 - If the slope decays to -0.52 later: the 20k ladder ends near
-  0.034 BB (~17x over) and the crossing needs order 10^7 iterations.
+  0.034 BB (~17x over) and the crossing needs order 10^6-10^7
+  iterations (2.4x10^6 anchored at T=200; 1.2x10^7 anchored at the
+  T=30 calibration — the anchor changes the absolute count but not the
+  multi-year conclusion).
+- Plateau scenario (RFC 0043 precedent): the relative gap could stop
+  shrinking into a frozen relative plateau with no power-law crossing
+  at all, the failure mode RFC 0043 measured on offline blueprints.
+  Two rungs cannot rule this out; only a longer run that observes the
+  slope flattening (or not) can.
 
 Two rungs cannot certify which regime holds past 200; that is the open
 scientific question and a single 1,800 s process cannot settle it. The
