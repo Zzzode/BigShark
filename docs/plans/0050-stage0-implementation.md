@@ -153,3 +153,25 @@ cleared; its fail-closed branch is covered natively by the injected
 tiny-limit test. Stage 0 is complete and Stage 1 (exact-menu
 convergence on this anchor) is the next gate, subject to its own
 pre-registered 1,800 s budget estimate before the long solve.
+
+## Stage 0 closure verification (2026-11-17)
+
+- Full release build: 91/91 targets clean, zero warnings on the new
+  translation units.
+- Full release ctest: 114/114 passed in 3,850.53 s (the prior 112 plus
+  the two new `rfc0050_*` suites), including the rfc0047 link guard and
+  the sealed w1 river-solver regression that pins kernel byte identity.
+- `npm run check` and `npm run proto:check`: both RC 0, confirming the
+  expected no-op for bench-only C++ work (no TypeScript or proto IDL
+  touched).
+- clang-format dry-run on every touched C++ file: clean. The global
+  format target was not run because the working tree carries unrelated
+  pre-existing dirty files that must not be reformatted.
+- check-rfcs (50) and check-docs (560) green.
+- ASan: not run at this closure. The GCC 12.2.0 preset cannot build the
+  vendored abseil dependency; the failure is registered independently
+  as sanitizer blocker B1 in `docs/development/build-and-test.md`, with
+  Clang ASan as the documented path. The Stage 0 change is bench-only
+  and link-guarded, and is covered in the release lane; the remaining
+  unverified scope is specifically sanitizer instrumentation of these
+  new TUs, not their behavior.
