@@ -758,6 +758,14 @@ add_executable(bigshark-rfc0047-dcfr-probe
   benchmarks/rfc0047/rfc0047_dcfr_probe.cpp)
 target_link_libraries(bigshark-rfc0047-dcfr-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0048 D253 manual single-instance convergence-law certification probe
+# (NOT a CTest): one checkpointed 300-iter solve, OLS log-log NashConv fit,
+# T*/t* extrapolation against the G1 latency envelope, endpoint reach-bound
+# reconciliation; no solver code changes.
+add_executable(bigshark-rfc0047-convergence-cert-probe
+  benchmarks/rfc0047/rfc0047_convergence_cert_probe.cpp)
+target_link_libraries(bigshark-rfc0047-convergence-cert-probe PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
