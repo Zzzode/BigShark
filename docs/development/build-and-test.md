@@ -116,6 +116,53 @@ automatically. When network access is unavailable (FetchContent cannot
 download protobuf), pre-populate `build/asan/_deps/` from a debug or release
 build and add `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`.
 
+### Sanitizer build blocker registry
+
+Persistent infrastructure findings that prevent part of the sanitizer
+lane from running, recorded separately from per-RFC conclusions. Unlike
+the runtime wall allowances below (the suites build and pass, they only
+need more time), a blocker entry means the sanitizer build or run cannot
+complete at all on the named toolchain. A blocker is never a routine
+ASan-exempt license: every entry carries a trigger, an affected-scope
+inventory, and a concrete removal direction, and targets do not acquire
+permanent exemptions from it.
+
+#### B1 (opened 2026-11-17): GCC 12.2.0 cannot compile abseil lts_20250814 under the ASan preset
+
+- Trigger: under `/usr/bin/c++` (Debian GCC 12.2.0-14+deb12u1) with
+  `-fsanitize=address,undefined -std=c++23`, abseil
+  `absl::lts_20250814` fails constant-expression evaluation in
+  `absl/container/internal/hash_policy_traits.h:158`, instantiated from
+  `raw_hash_set.h:3594`. The observed failing translation units are
+  `absl/flags/reflection.cc` (at line 215,
+  `TypeErasedApplyToSlotFn<StringHash, std::string_view, true> == 0`
+  is not a constant expression) and open_spiel `policy.cc` (at line
+  407, `TypeErasedDerefAndApplyToSlotFn<Hash<int>, int, true> == 0`).
+  Compiling `raw_hash_set.cc` alone succeeds, so the failure depends on
+  the instantiation context, not the TU in isolation. The release and
+  debug presets compile the same sources cleanly; only the sanitizer
+  build is affected.
+- Affected scope: a full `cmake --build --preset asan` stops at roughly
+  432 of 774 build actions. Every target whose dependency graph reaches
+  `open_spiel_min` is blocked; `bigshark_solver` links it
+  `PRIVATE`, so the blocker propagates to nearly all engine ctests and
+  the entire `rfc0047` benchmark/test suite (zero error sites are in
+  first-party code). At the observed stop the 16 test binaries already
+  linked were the targets whose graph does not reach open_spiel, e.g.
+  settlement, multiway, equity, game-definition suites.
+- Removal directions, in preference order:
+  1. Use the Clang ASan configure line above for sanitizer verification
+     on GCC 12 hosts (Clang 14.0.6 is installed on the current host);
+     the next stage-closure full sanitizer run is expected under Clang.
+  2. When open_spiel is refreshed, move its vendored abseil to an LTS
+     that fixes the GCC 12 constexpr interaction, then re-run the full
+     GCC ASan build and close this entry.
+  3. Alternatively pin a newer GCC for the `asan` preset toolchain.
+- Explicitly not adopted: marking the affected targets ASan-exempt. A
+  build-blocked target that stops being built under sanitizers silently
+  loses the safety net; any future exemption needs its own recorded
+  justification and an expiry, and does not follow from this entry.
+
 The framed protocol parsers are native untrusted-input code, so the
 full ASan ctest (not only the new targets) is required after changes to
 `engine/src/protocol/`.
