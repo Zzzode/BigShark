@@ -1,0 +1,2 @@
+family,pot,contribution0,contribution1,status,failure,action_nodes,total_nodes,tree_accounted_bytes,showdown_matrix_bytes,regret_bytes,average_sum_bytes,reach_bytes,value_bytes,sigma_snapshot_bytes,scratch_bytes,bookkeeping_bytes,itemized_total_bytes,envelope_bytes,envelope_headroom_x,peak_rss_kb,construction_wall_ms
+srp,32,16,16,allocated,none,1600,4797,2978208,1168561,41475808,41475808,82968912,41484456,0,553472,161341,212266566,8589934592,40,211620,181.831527

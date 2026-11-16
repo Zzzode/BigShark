@@ -791,6 +791,13 @@ add_executable(bigshark-rfc0050-ledger-census-probe
   benchmarks/rfc0047/rfc0050_ledger_census_probe.cpp)
 target_link_libraries(bigshark-rfc0050-ledger-census-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0050 Stage 0 Step 0b manual single-instance exact RiverGame
+# allocation probe (NOT a CTest): zero-iteration construction on the
+# measured-smallest anchor with itemized bytes and a typed memory NO-GO.
+add_executable(bigshark-rfc0050-river-allocation-probe
+  benchmarks/rfc0047/rfc0050_river_allocation_probe.cpp)
+target_link_libraries(bigshark-rfc0050-river-allocation-probe PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
@@ -1408,6 +1415,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0050_ledger_census tests/test_rfc0050_ledger_census.cpp)
   target_link_libraries(test_rfc0050_ledger_census PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0050_ledger_census COMMAND test_rfc0050_ledger_census)
+
+  add_executable(test_rfc0050_river_allocation tests/test_rfc0050_river_allocation.cpp)
+  target_link_libraries(test_rfc0050_river_allocation PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0050_river_allocation COMMAND test_rfc0050_river_allocation)
 
   add_executable(test_rfc0047_fine_grid tests/test_rfc0047_fine_grid.cpp)
   target_link_libraries(test_rfc0047_fine_grid PRIVATE bigshark_rfc0047_bench)

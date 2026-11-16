@@ -1,5 +1,7 @@
 #include "river_solver.hpp"
 
+#include <sys/resource.h>
+
 #include <algorithm>
 #include <array>
 #include <bs/abstract_tree.hpp>
@@ -70,6 +72,52 @@ class RiverGame {
 
   const AbstractTree& tree() const { return *tree_; }
   std::size_t action_node_count() const { return action_nodes_; }
+
+  // RFC 0050 Step 0b: itemize every heap table resident after construction
+  // (zero iterations). The average-strategy snapshot is built lazily by
+  // build_sigma, so sigma bytes are zero at this point and stated explicitly.
+  RiverAllocationReceipt allocation_bytes() const {
+    RiverAllocationReceipt r;
+    r.allocated = true;
+    r.failure = "none";
+    r.action_nodes = action_nodes_;
+    r.total_nodes = tree_->size();
+    r.tree_accounted_bytes = tree_->accounted_bytes();
+    r.showdown_matrix_bytes = a0_.size() * sizeof(std::int8_t);
+    std::size_t regret = 0;
+    std::size_t sums = 0;
+    for (std::size_t n = 0; n < tree_->size(); ++n) {
+      if (reg_[n] != nullptr)
+        regret += reg_[n]->capacity() * sizeof(double);
+      if (sum_[n] != nullptr)
+        sums += sum_[n]->capacity() * sizeof(double);
+    }
+    r.regret_bytes = regret;
+    r.average_sum_bytes = sums;
+    std::size_t reach = 0;
+    for (const auto& ra : reach_)
+      reach += (ra[0].capacity() + ra[1].capacity()) * sizeof(double);
+    r.reach_bytes = reach;
+    std::size_t values = 0;
+    for (const auto& v : value_)
+      values += v.capacity() * sizeof(double);
+    r.value_bytes = values;
+    std::size_t scratch = 0;
+    for (const auto& p : pool_)
+      scratch += p->capacity() * sizeof(double);
+    r.scratch_bytes = scratch;
+    r.sigma_snapshot_bytes = 0;  // build_sigma never runs at zero iterations
+    r.bookkeeping_bytes = actor_.capacity() * sizeof(std::uint8_t) +
+                          menu_.capacity() * sizeof(std::size_t) +
+                          fold0_.capacity() * sizeof(double) + stake_.capacity() * sizeof(double) +
+                          holdings_.capacity() * sizeof(std::array<int, 2>) +
+                          showdown_nodes_.capacity() * sizeof(std::size_t) +
+                          fold_nodes_.capacity() * sizeof(std::size_t);
+    r.itemized_total_bytes = r.tree_accounted_bytes + r.showdown_matrix_bytes + r.regret_bytes +
+                             r.average_sum_bytes + r.reach_bytes + r.value_bytes +
+                             r.sigma_snapshot_bytes + r.scratch_bytes + r.bookkeeping_bytes;
+    return r;
+  }
 
   // Snapshot the built average strategy keyed by tree node (empty at
   // non-action nodes). Benchmark-only fixed-policy consumers read this instead
@@ -638,6 +686,32 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
   if (cfg.compute_deal_matrix)
     out.deal_value_seat0 = game.equilibrium_deal_matrix();
   out.avg_sigma = game.snapshot_sigma();
+  return out;
+}
+
+RiverAllocationReceipt probe_river_allocation(const RiverSolveConfig& cfg) {
+  RiverAllocationReceipt out;
+  const auto t0 = std::chrono::steady_clock::now();
+  try {
+    RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus,
+                   cfg.dcfr, cfg.tree_limits);
+    out = game.allocation_bytes();
+  } catch (const bs::tree::tree_resource_exhausted&) {
+    // Typed envelope NO-GO: the TreeLimits guard tripped before the full
+    // exact game existed. Leave every byte field at zero.
+    out.allocated = false;
+    out.failure = "tree_resource_exhausted";
+  } catch (const std::bad_alloc&) {
+    // Typed allocator NO-GO: the host could not back a table the envelope
+    // nominally allowed. Also fail-closed.
+    out.allocated = false;
+    out.failure = "bad_alloc";
+  }
+  out.construction_wall_ms =
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  struct rusage ru{};
+  if (getrusage(RUSAGE_SELF, &ru) == 0)
+    out.peak_rss_kb = ru.ru_maxrss;  // kilobytes on Linux
   return out;
 }
 

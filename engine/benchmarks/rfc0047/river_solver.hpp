@@ -22,6 +22,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace bs::rfc0047 {
@@ -105,6 +106,42 @@ struct ComboNashConv {
   std::vector<double> seat0_ev;  // per combo equilibrium-game value
   std::vector<double> seat1_ev;
 };
+
+// RFC 0050 Stage 0 Step 0b: exact-menu construction-only allocation
+// receipt. The probe builds the full RiverGame (tree, showdown matrix,
+// per-action-node regret/average tables, per-node reach/value storage,
+// scratch pool) under the supplied TreeLimits and runs ZERO CFR
+// iterations, so no NashConv exists and the average-strategy snapshot is
+// never built (sigma bytes are reported zero). Every resident table is
+// itemized per the Amendment 1 review nit 3 rather than summed into one
+// number. A construction failure is a typed memory NO-GO: the tree
+// builder's envelope guard reports "tree_resource_exhausted" and an
+// allocator failure reports "bad_alloc"; on failure every byte field is
+// zero and the campaign gate is fail-closed. Bench-only under the link
+// guard.
+struct RiverAllocationReceipt {
+  bool allocated = false;
+  std::string failure;  // "none" | "tree_resource_exhausted" | "bad_alloc"
+  std::size_t action_nodes = 0;
+  std::size_t total_nodes = 0;
+  std::size_t tree_accounted_bytes = 0;
+  std::size_t showdown_matrix_bytes = 0;
+  std::size_t regret_bytes = 0;
+  std::size_t average_sum_bytes = 0;
+  std::size_t reach_bytes = 0;
+  std::size_t value_bytes = 0;
+  std::size_t sigma_snapshot_bytes = 0;  // always 0 at zero iterations
+  std::size_t scratch_bytes = 0;
+  std::size_t bookkeeping_bytes = 0;
+  std::size_t itemized_total_bytes = 0;
+  long peak_rss_kb = -1;  // getrusage ru_maxrss; -1 if unavailable
+  double construction_wall_ms = 0.0;
+};
+
+// Construct the exact-menu RiverGame once, allocate every table, run no
+// iterations, and return the itemized allocation receipt. Never throws on
+// the two memory failure modes; any other exception propagates.
+RiverAllocationReceipt probe_river_allocation(const RiverSolveConfig& cfg);
 
 struct RiverSolveResult {
   std::uint64_t iterations = 0;

@@ -1,7 +1,7 @@
 ---
 rfc: "0050"
 subject: "Exact-Menu Offline River Blueprint Feasibility and the Packed River/Turn Format Campaign"
-status: "Accepted"
+status: "Implementing"
 authors: "BigShark maintainers (zzzode agent session)"
 created: "2026-11-17"
 updated: "2026-11-17"
@@ -278,6 +278,14 @@ ledger is chosen by measurement rather than by name; the executed
 Step 0a census reproduces both counts exactly and names the SRP
 (32, 16, 16) ledger (1,600 action nodes) as the measured-smallest
 decision-bearing anchor.
+
+Stage 0 result (closed 2026-11-17): PASS. The zero-iteration exact
+RiverGame on the SRP (32, 16, 16) anchor allocates 212,266,566 itemized
+bytes (~202.4 MiB; 211,620 KB peak RSS, 181.8 ms construction), a 40x
+margin under the 8 GiB envelope, with every resident table itemized in
+the Step 0b receipt and the NO-GO branch native-tested on an injected
+limit. The falsification point was exercised and cleared; Stage 1 is
+the next gate.
 
 ### Stage 1 — exact-menu convergence on the feasible anchor
 
