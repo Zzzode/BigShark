@@ -119,6 +119,47 @@ class RiverGame {
     return r;
   }
 
+  // RFC 0050 D307: export the raw regret/sum tables for a resume checkpoint.
+  RiverResumableState export_state(std::uint64_t completed, std::uint64_t action_digest,
+                                   const GameDef& source_def) const {
+    RiverResumableState out;
+    out.completed_iterations = completed;
+    out.def = source_def;
+    out.action_id_digest = action_digest;
+    out.tree_size = tree_->size();
+    out.regret.resize(tree_->size());
+    out.average_sum.resize(tree_->size());
+    for (std::size_t n = 0; n < tree_->size(); ++n) {
+      if (reg_[n] != nullptr)
+        out.regret[n] = *reg_[n];
+      if (sum_[n] != nullptr)
+        out.average_sum[n] = *sum_[n];
+    }
+    return out;
+  }
+
+  // Import a checkpoint's tables into this freshly constructed game. Fails
+  // closed on any structural mismatch rather than partially overwriting.
+  void import_state(const RiverResumableState& seed) {
+    if (seed.tree_size != tree_->size())
+      throw std::invalid_argument("river resume: tree size mismatch");
+    if (seed.regret.size() != tree_->size() || seed.average_sum.size() != tree_->size())
+      throw std::invalid_argument("river resume: checkpoint table vector size mismatch");
+    for (std::size_t n = 0; n < tree_->size(); ++n) {
+      const bool is_action = reg_[n] != nullptr;
+      // An action node must carry NON-empty tables and a non-action node
+      // empty ones; a mismatch is empty==is_action in either direction.
+      if (seed.regret[n].empty() == is_action || seed.average_sum[n].empty() == is_action)
+        throw std::invalid_argument("river resume: action-node pattern mismatch");
+      if (!is_action)
+        continue;
+      if (seed.regret[n].size() != reg_[n]->size() || seed.average_sum[n].size() != sum_[n]->size())
+        throw std::invalid_argument("river resume: per-node table width mismatch");
+      *reg_[n] = seed.regret[n];
+      *sum_[n] = seed.average_sum[n];
+    }
+  }
+
   // Snapshot the built average strategy keyed by tree node (empty at
   // non-action nodes). Benchmark-only fixed-policy consumers read this instead
   // of touching the internal regret/sum tables.
@@ -667,6 +708,87 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
       out.history_nash_conv_bb.push_back(nc);
       // RFC 0049 Gate 2: the optional sink snapshots the average strategy at
       // this rung for external reach-bound scoring; absent by default.
+      if (cfg.checkpoint_sink)
+        cfg.checkpoint_sink(RiverCheckpoint{t, nc, game.snapshot_sigma()});
+      ++cp;
+    }
+  }
+  out.iterations_completed = completed;
+  const double ncChips = game.nash_conv_chips();
+  out.nash_conv_chips = ncChips;
+  out.nash_conv_bb = ncChips / (cfg.def.big_blind > 0 ? cfg.def.big_blind : 1);
+  out.nash_conv_pot = cfg.def.pot > 0 ? ncChips / cfg.def.pot : ncChips;
+  auto cv0 = game.combo_values(0);
+  auto cv1 = game.combo_values(1);
+  out.root_cfv_seat0 = std::move(cv0.ev);
+  out.root_br_seat0 = std::move(cv0.br);
+  out.root_cfv_seat1 = std::move(cv1.ev);
+  out.root_br_seat1 = std::move(cv1.br);
+  if (cfg.compute_deal_matrix)
+    out.deal_value_seat0 = game.equilibrium_deal_matrix();
+  out.avg_sigma = game.snapshot_sigma();
+  return out;
+}
+
+namespace {
+
+std::uint64_t config_menu_digest(const RiverSolveConfig& cfg) {
+  const bs::abstraction::ActionAbstraction action =
+      cfg.action_abstraction.value_or(bs::abstraction::ActionAbstraction::identity(cfg.action_cap));
+  return action.id().digest;
+}
+
+}  // namespace
+
+RiverResumableState capture_river_state(const RiverSolveConfig& cfg) {
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus,
+                 cfg.dcfr, cfg.tree_limits);
+  for (std::uint64_t t = 1; t <= cfg.iterations; ++t)
+    game.iterate_weighted(cfg.linear_averaging ? static_cast<double>(t) : 1.0, t);
+  return game.export_state(cfg.iterations, config_menu_digest(cfg), cfg.def);
+}
+
+RiverSolveResult resume_river_solve(const RiverSolveConfig& cfg,
+                                    std::span<const std::uint64_t> checkpoints,
+                                    const RiverResumableState& seed) {
+  // Fail-close identity validation before any table import.
+  if (!bs::poker::same_game_def(seed.def, cfg.def))
+    throw std::invalid_argument("river resume: GameDef identity mismatch");
+  if (seed.action_id_digest != config_menu_digest(cfg))
+    throw std::invalid_argument("river resume: action abstraction digest mismatch");
+  if (cfg.iterations <= seed.completed_iterations)
+    throw std::invalid_argument("river resume: requested iterations must exceed checkpoint");
+
+  RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus,
+                 cfg.dcfr, cfg.tree_limits);
+  game.import_state(seed);
+
+  RiverSolveResult out;
+  out.iterations = cfg.iterations;
+  out.action_nodes = game.action_node_count();
+  out.combos_per_seat = kC;
+  const bool has_stop = static_cast<bool>(cfg.stop_predicate);
+  const std::chrono::steady_clock::time_point t0 =
+      has_stop ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  std::uint64_t completed = seed.completed_iterations;
+  std::size_t cp = 0;
+  // Only checkpoints strictly after the resumed point can fire.
+  while (cp < checkpoints.size() && checkpoints[cp] <= seed.completed_iterations)
+    ++cp;
+  for (std::uint64_t t = seed.completed_iterations + 1; t <= cfg.iterations; ++t) {
+    if (has_stop) {
+      const double elapsed_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      if (cfg.stop_predicate(t, elapsed_ms)) {
+        out.stopped_early = true;
+        break;
+      }
+    }
+    game.iterate_weighted(cfg.linear_averaging ? static_cast<double>(t) : 1.0, t);
+    ++completed;
+    while (cp < checkpoints.size() && checkpoints[cp] <= t) {
+      const double nc = game.nash_conv_chips() / (cfg.def.big_blind > 0 ? cfg.def.big_blind : 1);
+      out.history_nash_conv_bb.push_back(nc);
       if (cfg.checkpoint_sink)
         cfg.checkpoint_sink(RiverCheckpoint{t, nc, game.snapshot_sigma()});
       ++cp;

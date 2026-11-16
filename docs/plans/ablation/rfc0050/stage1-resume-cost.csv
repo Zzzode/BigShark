@@ -1,0 +1,15 @@
+metric,value
+split_iterations,6
+total_iterations,12
+payload_bytes,82989992
+file_bytes,82990230
+serialize_ms,141.625
+write_ms,243.546
+load_ms,438.805
+reference_iteration_ms,6000.0
+serialize_cost_fraction,0.023604
+write_cost_fraction,0.040591
+write_gate_fraction,0.05
+within_write_gate,1
+nash_conv_bb,4.03377467
+resume_neutral_bitwise,1

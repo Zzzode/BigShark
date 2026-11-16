@@ -658,6 +658,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/offline_convergence.cpp
   benchmarks/rfc0047/ledger_census.cpp
   benchmarks/rfc0047/rfc0050_stage1.cpp
+  benchmarks/rfc0047/river_state_codec.cpp
   benchmarks/rfc0047/union_menu.cpp
   benchmarks/rfc0047/union_embedding.cpp
   benchmarks/rfc0047/reach_bound.cpp
@@ -815,6 +816,13 @@ target_link_libraries(bigshark-rfc0050-exact-convergence-probe PRIVATE bigshark_
 add_executable(bigshark-rfc0050-thread-scaling
   benchmarks/rfc0047/rfc0050_thread_scaling_probe.cpp)
 target_link_libraries(bigshark-rfc0050-thread-scaling PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0050 D307 manual resume-checkpoint cost/neutrality probe (NOT a
+# CTest): measured write/load cost against the 5% iteration-cost gate and
+# bitwise split-vs-uninterrupted neutrality on the real anchor.
+add_executable(bigshark-rfc0050-resume-probe
+  benchmarks/rfc0047/rfc0050_resume_probe.cpp)
+target_link_libraries(bigshark-rfc0050-resume-probe PRIVATE bigshark_rfc0047_bench)
 
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
@@ -1441,6 +1449,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0050_stage1 tests/test_rfc0050_stage1.cpp)
   target_link_libraries(test_rfc0050_stage1 PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0050_stage1 COMMAND test_rfc0050_stage1)
+
+  add_executable(test_rfc0050_resume tests/test_rfc0050_resume.cpp)
+  target_link_libraries(test_rfc0050_resume PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0050_resume COMMAND test_rfc0050_resume)
 
   add_executable(test_rfc0047_fine_grid tests/test_rfc0047_fine_grid.cpp)
   target_link_libraries(test_rfc0047_fine_grid PRIVATE bigshark_rfc0047_bench)

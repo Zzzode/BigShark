@@ -143,6 +143,25 @@ struct RiverAllocationReceipt {
 // the two memory failure modes; any other exception propagates.
 RiverAllocationReceipt probe_river_allocation(const RiverSolveConfig& cfg);
 
+// RFC 0050 D307 bench-only resumable river state. The raw regret and
+// average-sum tables are the only quantities a seedless CFR continuation
+// needs; the average-strategy snapshot is derived lazily and is not stored.
+// Tables are parallel to tree nodes, empty at non-action nodes. The identity
+// block lets a checkpoint validate that it is reloaded into the identical
+// game and menu before any table byte is imported.
+struct RiverResumableState {
+  std::uint64_t completed_iterations = 0;
+  bs::poker::GameDef def{};
+  std::uint64_t action_id_digest = 0;
+  std::size_t tree_size = 0;
+  std::vector<std::vector<double>> regret;
+  std::vector<std::vector<double>> average_sum;
+};
+
+// Run cfg.iterations CFR iterations from zeroed tables and capture the raw
+// state for later resume. Bench-only; does not compute NashConv.
+RiverResumableState capture_river_state(const RiverSolveConfig& cfg);
+
 struct RiverSolveResult {
   std::uint64_t iterations = 0;
   std::size_t action_nodes = 0;
@@ -183,6 +202,16 @@ struct RiverSolveResult {
 // (non-five-card / non-two-seat / non-river) config.
 RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
                                      std::span<const std::uint64_t> checkpoints = {});
+
+// Rebuild the identical game, import the captured tables (failing on any
+// identity or shape mismatch), then run iterations seed.completed+1 through
+// cfg.iterations and return the normal solved result with NashConv and
+// average strategy. Numeric neutrality is a hard contract: the resumed
+// result must be bitwise equal to an uninterrupted solve of the same total
+// iteration count.
+RiverSolveResult resume_river_solve(const RiverSolveConfig& cfg,
+                                    std::span<const std::uint64_t> checkpoints,
+                                    const RiverResumableState& seed);
 
 // Best-response / equilibrium per-combo values of the current average
 // strategy (also deterministic), kept separate for certified-error use.
