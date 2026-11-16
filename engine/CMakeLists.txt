@@ -809,6 +809,13 @@ add_executable(bigshark-rfc0050-exact-convergence-probe
   benchmarks/rfc0047/rfc0050_exact_convergence_probe.cpp)
 target_link_libraries(bigshark-rfc0050-exact-convergence-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0050 D303 manual thread-scaling probe (NOT a CTest): frozen thread
+# list, ten iterations per point, Amdahl inverse serial fraction, and a
+# bitwise cross-thread determinism gate; no argv overrides.
+add_executable(bigshark-rfc0050-thread-scaling
+  benchmarks/rfc0047/rfc0050_thread_scaling_probe.cpp)
+target_link_libraries(bigshark-rfc0050-thread-scaling PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 
 namespace bs::rfc0047 {
@@ -57,6 +58,37 @@ Rfc0050Calibration extrapolate_stage1_calibration(double ms_per_iteration,
       out.last_rung_inside_wall = kRfc0050Stage1Rungs[i];
   }
   return out;
+}
+
+ScalingVerdict classify_scaling(double speedup_at_28_threads) {
+  if (speedup_at_28_threads >= kRfc0050CheapSpeedup)
+    return ScalingVerdict::LongWallAmendmentCheap;
+  if (speedup_at_28_threads >= kRfc0050IncompressibleSpeedup)
+    return ScalingVerdict::PlateauRiskDominates;
+  return ScalingVerdict::ComputeIncompressible;
+}
+
+AmdahlBreakdown amdahl_from_speedup(double speedup, std::size_t threads) {
+  AmdahlBreakdown b;
+  const double n = static_cast<double>(threads);
+  if (threads <= 1) {
+    // Amdahl is undefined on a single worker; signal with NaN and let the
+    // caller leave the fraction columns blank rather than print a fake zero.
+    b.serial_fraction = std::numeric_limits<double>::quiet_NaN();
+    b.parallel_fraction = std::numeric_limits<double>::quiet_NaN();
+    return b;
+  }
+  const double inv_s = 1.0 / speedup;
+  b.serial_fraction = (inv_s - 1.0 / n) / (1.0 - 1.0 / n);
+  // Clamp numerical overshoot at the endpoints; a measured superlinear or
+  // sub-1 result maps to the nearest physical bound rather than a negative
+  // or >1 fraction.
+  if (b.serial_fraction < 0.0)
+    b.serial_fraction = 0.0;
+  if (b.serial_fraction > 1.0)
+    b.serial_fraction = 1.0;
+  b.parallel_fraction = 1.0 - b.serial_fraction;
+  return b;
 }
 
 }  // namespace bs::rfc0047

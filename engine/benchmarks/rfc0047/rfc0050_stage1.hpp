@@ -78,4 +78,29 @@ struct Rfc0050Calibration {
 Rfc0050Calibration extrapolate_stage1_calibration(double ms_per_iteration,
                                                   double ms_per_rung_scoring);
 
+// D303 pre-registered thread-scaling verdict on the 28-thread speedup
+// relative to the single-thread point. Thresholds are hard-coded and
+// cannot be changed after data lands. The directive named two bands
+// (>=10x cheap; 3-5x middle; <3x incompressible); the unstated 5x-10x
+// interval is assigned to the conservative middle band rather than the
+// favorable cheap band, so the classification is total and fail-closed.
+enum class ScalingVerdict {
+  LongWallAmendmentCheap,  // speedup >= 10
+  PlateauRiskDominates,    // 3 <= speedup < 10
+  ComputeIncompressible,   // speedup < 3
+};
+inline constexpr double kRfc0050CheapSpeedup = 10.0;
+inline constexpr double kRfc0050IncompressibleSpeedup = 3.0;
+ScalingVerdict classify_scaling(double speedup_at_28_threads);
+
+// Amdahl inverse: measured speedup S on n workers implies a serial
+// fraction p = (1/S - 1/n) / (1 - 1/n). Pure arithmetic; returns the
+// effective parallel fraction 1-p as well so the report carries the
+// parallelizable share, not only the headline speedup.
+struct AmdahlBreakdown {
+  double serial_fraction = 0.0;
+  double parallel_fraction = 0.0;
+};
+AmdahlBreakdown amdahl_from_speedup(double speedup, std::size_t threads);
+
 }  // namespace bs::rfc0047

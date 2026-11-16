@@ -17,6 +17,7 @@
 #include "../benchmarks/rfc0047/cap_embedding.hpp"
 #include "../benchmarks/rfc0047/ledger_census.hpp"
 #include "../benchmarks/rfc0047/offline_census.hpp"
+#include "../benchmarks/rfc0047/policy_hash.hpp"
 #include "../benchmarks/rfc0047/reach_bound.hpp"
 #include "../benchmarks/rfc0047/rfc0050_anchors.hpp"
 #include "../benchmarks/rfc0047/rfc0050_stage1.hpp"
@@ -155,12 +156,78 @@ bool test_calibration_extrapolation_pinned() {
   return true;
 }
 
+bool test_scaling_verdict_bands_and_amdahl() {
+  // Pre-registered D303 thresholds; the 5x-10x gap falls into the
+  // conservative middle band, never the favorable cheap band.
+  CHECK(classify_scaling(10.0) == ScalingVerdict::LongWallAmendmentCheap);
+  CHECK(classify_scaling(15.3) == ScalingVerdict::LongWallAmendmentCheap);
+  CHECK(classify_scaling(9.99) == ScalingVerdict::PlateauRiskDominates);
+  CHECK(classify_scaling(5.0) == ScalingVerdict::PlateauRiskDominates);
+  CHECK(classify_scaling(3.0) == ScalingVerdict::PlateauRiskDominates);
+  CHECK(classify_scaling(2.99) == ScalingVerdict::ComputeIncompressible);
+  CHECK(classify_scaling(1.0) == ScalingVerdict::ComputeIncompressible);
+  // Perfect linear speedup on n workers implies a zero serial fraction.
+  const AmdahlBreakdown perfect = amdahl_from_speedup(8.0, 8);
+  CHECK(perfect.serial_fraction == 0.0 && perfect.parallel_fraction == 1.0);
+  // Serial execution implies a fully serial program.
+  const AmdahlBreakdown serial = amdahl_from_speedup(1.0, 8);
+  CHECK(serial.serial_fraction == 1.0 && serial.parallel_fraction == 0.0);
+  // Worked example: S=4 on 8 workers -> p = (0.25-0.125)/(1-0.125) = 1/7.
+  const AmdahlBreakdown ex = amdahl_from_speedup(4.0, 8);
+  CHECK(std::fabs(ex.serial_fraction - 1.0 / 7.0) <= 1e-12);
+  CHECK(std::fabs(ex.parallel_fraction - 6.0 / 7.0) <= 1e-12);
+  return true;
+}
+
+bool test_multithread_determinism_shallow() {
+  // The kernel contract: thread count changes wall time only, never the
+  // numeric result. Solve the shallow exact fixture at 1, 2, and 4 threads
+  // and require identical NashConv, e_embed, zero pure-menu, and hash.
+  const auto def = shallow_river();
+  Rfc0050Stage1Domain domain = build_stage1_domain(def, offline_census_limits());
+  std::vector<std::uint64_t> hashes;
+  double first_nc = 0.0;
+  double first_e = 0.0;
+  for (std::size_t threads : std::array<std::size_t, 3>{1, 2, 4}) {
+    RiverSolveConfig cfg;
+    cfg.def = def;
+    cfg.iterations = 20;
+    cfg.threads = threads;
+    cfg.linear_averaging = true;
+    cfg.rm_plus = true;
+    cfg.dcfr = false;
+    cfg.action_abstraction = domain.menu;
+    cfg.tree_limits = offline_census_limits();
+    const std::vector<std::uint64_t> cps{20};
+    const RiverSolveResult solved = solve_river_subgame(cfg, cps);
+    CHECK(!solved.stopped_early && solved.iterations_completed == 20);
+    RiverSolveResult snap;
+    snap.avg_sigma = solved.avg_sigma;
+    snap.nash_conv_bb = solved.nash_conv_bb;
+    const ReachBoundResult rb =
+        reach_bound_from_snapshot(def, snap, domain.reference_tree, domain.bounded_tree,
+                                  domain.subset, CapExtensionCompletion::Uniform);
+    CHECK(pure_menu_reads_zero(rb.exact_exploitability_bb - rb.bounded_nash_conv_bb));
+    hashes.push_back(hash_average_snapshot(solved.avg_sigma));
+    if (threads == 1) {
+      first_nc = rb.bounded_nash_conv_bb;
+      first_e = rb.exact_exploitability_bb;
+    } else {
+      CHECK(rb.bounded_nash_conv_bb == first_nc);
+      CHECK(rb.exact_exploitability_bb == first_e);
+      CHECK(hashes.back() == hashes.front());
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 int main() {
   if (!test_stage1_domain_is_full_identity() || !test_sealed_anchor_domain_matches_census() ||
       !test_exact_solve_pure_menu_reads_zero() || !test_pure_menu_guard_rejects_nonzero() ||
-      !test_calibration_extrapolation_pinned())
+      !test_calibration_extrapolation_pinned() || !test_scaling_verdict_bands_and_amdahl() ||
+      !test_multithread_determinism_shallow())
     return 1;
   std::printf("rfc0050_stage1: all checks passed\n");
   return 0;
