@@ -657,6 +657,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/offline_census.cpp
   benchmarks/rfc0047/offline_convergence.cpp
   benchmarks/rfc0047/ledger_census.cpp
+  benchmarks/rfc0047/rfc0050_stage1.cpp
   benchmarks/rfc0047/union_menu.cpp
   benchmarks/rfc0047/union_embedding.cpp
   benchmarks/rfc0047/reach_bound.cpp
@@ -797,6 +798,16 @@ target_link_libraries(bigshark-rfc0050-ledger-census-probe PRIVATE bigshark_rfc0
 add_executable(bigshark-rfc0050-river-allocation-probe
   benchmarks/rfc0047/rfc0050_river_allocation_probe.cpp)
 target_link_libraries(bigshark-rfc0050-river-allocation-probe PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0050 Stage 1 manual probes (NOT CTests): the cheap hard-coded
+# per-iteration calibration pre-gate and the frozen nine-rung exact-menu
+# convergence gate with a pure-menu zero guard and the 1,800 s wall.
+add_executable(bigshark-rfc0050-stage1-calibration
+  benchmarks/rfc0047/rfc0050_stage1_calibration.cpp)
+target_link_libraries(bigshark-rfc0050-stage1-calibration PRIVATE bigshark_rfc0047_bench)
+add_executable(bigshark-rfc0050-exact-convergence-probe
+  benchmarks/rfc0047/rfc0050_exact_convergence_probe.cpp)
+target_link_libraries(bigshark-rfc0050-exact-convergence-probe PRIVATE bigshark_rfc0047_bench)
 
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
@@ -1419,6 +1430,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0050_river_allocation tests/test_rfc0050_river_allocation.cpp)
   target_link_libraries(test_rfc0050_river_allocation PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0050_river_allocation COMMAND test_rfc0050_river_allocation)
+
+  add_executable(test_rfc0050_stage1 tests/test_rfc0050_stage1.cpp)
+  target_link_libraries(test_rfc0050_stage1 PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0050_stage1 COMMAND test_rfc0050_stage1)
 
   add_executable(test_rfc0047_fine_grid tests/test_rfc0047_fine_grid.cpp)
   target_link_libraries(test_rfc0047_fine_grid PRIVATE bigshark_rfc0047_bench)

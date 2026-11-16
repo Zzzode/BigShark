@@ -1,0 +1,7 @@
+record_type,family,pot,contribution0,contribution1,iteration,wall_ms,incremental_ms,solve_ms_per_iteration,bounded_nc_bb,pure_menu_bb,scoring_ms,cumulative_scoring_ms,peak_rss_kb
+rung,srp,32,16,16,5,39579.947,39579.947,7915.989,10.46245731,-0.00000000,10495.237,10495.237,614944
+rung,srp,32,16,16,10,89454.793,49874.846,7895.956,4.89227959,0.00000000,10442.145,20937.383,615144
+rung,srp,32,16,16,20,168872.914,79418.122,7396.777,2.64788157,0.00000000,10474.085,31411.468,615200
+rung,srp,32,16,16,30,247964.042,79091.128,7218.419,1.64954217,-0.00000000,10444.537,41856.006,615200
+summary,srp,32,16,16,30,247964.042,0.000,6870.268,1.64954217,-0.00000000,10464.001,41856.006,615200
+estimate,projected_20k_solve_s=137405.4,projected_full_ladder_s=137499.5,iterations_inside_1800s_wall=261,last_rung_inside_wall=200,frozen_wall_s=1800,pure_menu_zero_tolerance_bb=1e-08
