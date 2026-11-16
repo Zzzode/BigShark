@@ -211,7 +211,13 @@ eleven distinct ledgers — five limped plus six SRP — recording per
 ledger action nodes, total nodes, projected infosets, and max per-node
 menu width, and names the anchors in the deterministic ascending order
 of measured cap-0 action-node count. The pre-registered Stage 1/2 anchor
-set is then the first six ledgers in that measured order. It is
+set is then the first six ledgers in that measured order. Amendment 1
+(see the amendment section below) restricts that selection to
+decision-bearing ledgers: the executed Step 0a census found two terminal
+all-in ledgers with zero action nodes, which cannot host an allocation
+or convergence gate, so the anchor set is the first six eligible ledgers
+of the nine decision-bearing rows, while the eleven-row census receipt
+still reports every ledger including the two terminal rows. It is
 expected (not promised) to span both the limped and SRP shape families;
 the actual family composition follows the census output and is reported
 as measured, with any deviation handled by the amendment rule because
@@ -248,21 +254,30 @@ with action nodes, total nodes, projected infosets, and maximum
 per-node menu width (also checked against the BSFLIB 32-action ceiling
 as an early Stage 3 de-risk). This census determines the hard-coded
 ordered anchor list the later steps use; nothing about the order is
-assumed before it runs.
+assumed before it runs. Executed 2026-11-17 (Amendment 1): all eleven
+trees fit the envelope; two rows — the (400, 200, 200) all-in roots,
+one per turn root — are single-node terminal trees with zero action
+nodes and no menu, and are excluded from anchor eligibility by the
+Amendment 1 structural predicate while remaining in the eleven-row
+receipt.
 
 Step 0b, exact RiverGame allocation on the measured-smallest ledger:
-the probe takes the ledger whose cap-0 tree has the smallest measured
-(action nodes, projected infosets, max menu width) tuple from Step 0a
-and attempts the full exact-menu RiverGame allocation under the offline
-`TreeLimits{25M nodes, depth 256, 8 GiB}`, recording the actual
-regret/sum byte allocation (not just the public-tree node count) and a
-construction-fail row typed as a memory NO-GO. FAIL condition: the exact
-RiverGame cannot be allocated within 8 GiB. This is the single most
-important gate: if the measured-smallest exact solve does not fit
+the probe takes the decision-bearing ledger whose cap-0 tree has the
+smallest measured (action nodes, projected infosets, max menu width)
+tuple from Step 0a (Amendment 1: the two zero-action all-in rows are not
+candidates) and attempts the full exact-menu RiverGame allocation under
+the offline `TreeLimits{25M nodes, depth 256, 8 GiB}`, recording the
+actual regret/sum byte allocation (not just the public-tree node count)
+and a construction-fail row typed as a memory NO-GO. FAIL condition: the
+exact RiverGame cannot be allocated within 8 GiB. This is the single
+most important gate: if the measured-smallest exact solve does not fit
 offline, the exact-menu route is closed and the RFC terminates without
 building any format. The T6 note that an SRP cap-0 tree (7,824 action
 nodes) is smaller than the w1 tree (11,232) is exactly why the smallest
-ledger is chosen by measurement rather than by name.
+ledger is chosen by measurement rather than by name; the executed
+Step 0a census reproduces both counts exactly and names the SRP
+(32, 16, 16) ledger (1,600 action nodes) as the measured-smallest
+decision-bearing anchor.
 
 ### Stage 1 — exact-menu convergence on the feasible anchor
 
@@ -427,9 +442,10 @@ that addendum exists.
   ledger) and a hard-coded ordered six-anchor list derived from it, with
   a native determinism test asserting the hard-coded order equals the
   census's measured ascending (action nodes, projected infosets, max menu
-  width) order and the frontier ledger constants. Step 0b then produces
-  an exact RiverGame allocation row or a typed memory NO-GO for the
-  measured-smallest ledger, native-tested.
+  width) order over decision-bearing ledgers (Amendment 1 eligibility)
+  and the frontier ledger constants. Step 0b then produces an exact
+  RiverGame allocation row or a typed memory NO-GO for the
+  measured-smallest decision-bearing ledger, native-tested.
 - AC2. Every Stage-0-passing anchor has a Stage 1 receipt with the
   zero-menu identity asserted and a typed PASS/NO-GO verdict.
 - AC3. Stage 2 records the six-ledger feasibility boundary with every
@@ -545,3 +561,158 @@ Authorization limit: Stages 0-2 measurement implementation only under
   schema, codec, mount, host, wire, enablement, funded compute, or push is
   authorized; the BSFLIB04/Stage 3 addendum needs a separate RFC.
 ```
+
+## Amendment 1 — decision-bearing anchor eligibility (2026-11-17)
+
+### Trigger
+
+Stage 0 Step 0a was implemented RED-first and executed on 2026-11-17.
+The eleven-ledger cap-0 public-tree census receipt
+(`docs/plans/ablation/rfc0050/stage0a-eleven-ledger-cap0-census.csv`,
+single run, RC 0, empty stderr) returned eleven fitting trees but
+exposed a structural fact the accepted text did not anticipate: two of
+the eleven distinct ledgers are terminal all-in roots. Both carry the
+key (pot 400, contribution 200/200), one under each turn root; both
+stacks are fully committed before the river, so neither tree contains a
+single action node — the cap-0 tree is one terminal root node with no
+menu (action_nodes 0, max_menu_width 0, depth 1 under the builder's
+single-node depth convention, accounted bytes 576). They sort first in
+the measured ascending order because their tuples are zero.
+
+### Why the literal accepted rule would fail
+
+The accepted Stage 0 rule selects the first six ledgers in measured
+ascending order without an eligibility condition. Applied literally it
+would take in both zero-action all-in rows, and Step 0b would run on a
+ledger with no menu: no regret or average-strategy vectors exist to
+allocate and there is no policy whose NashConv could ever cross 0.002
+BB. That makes the RFC's single falsification point — the 8 GiB memory
+NO-GO — vacuous: it could never fire on the selected smallest ledger,
+and the convergence gate would be undefined on half the anchor set. Per
+the Stage 0 directive, a gate that cannot be falsified is worse than an
+honest NO-GO, so the rule needed an amendment rather than literal
+execution.
+
+### Change detail
+
+1. A single structural eligibility predicate, measurement-derived and
+   never name-based: a ledger is anchor-eligible exactly when its cap-0
+   census row fits AND `action_nodes > 0`
+   (`is_decision_bearing` in `ledger_census.{hpp,cpp}`). The predicate
+   applies uniformly to all eleven rows; it introduces no family quota,
+   no run-time selection, and no argv override.
+2. The hard-coded six-anchor pre-registration equals the first six
+   eligible ledgers in the same measured ascending tuple order as
+   before; tie handling (stable, enumeration order; ties tested as one
+   group) is unchanged.
+3. The eleven-row census receipt still reports every ledger, terminal
+   all-in rows included; they are labeled ineligible rather than deleted
+   or hidden, so the structural inventory remains complete.
+4. Step 0b's "measured-smallest ledger" now explicitly means the
+   smallest DECISION-BEARING ledger.
+5. Native coverage adds: nine eligible / two terminal row counts, the
+   terminal keys pinned to (400, 200, 200), card-independence of the
+   cap-0 shape within every ledger, composite (family, key) uniqueness
+   because the (pot, contributions) tuple is not unique across roots,
+   and the R2-1 consistency gate re-aimed at the eligible order.
+
+### Measured anchor pre-registration (from the sealed receipt)
+
+| rank | family | key (pot, c0, c1) | action nodes | total nodes | projected infosets | accounted bytes |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | srp | (32, 16, 16) | 1,600 | 4,797 | 1,729,600 | 2,978,208 |
+| 1 | srp | (20, 10, 10) | 2,632 | 7,893 | 2,845,192 | 4,983,200 |
+| 2 | limped | (16, 8, 8) | 3,344 | 10,029 | 3,614,864 | 5,972,576 |
+| 3 | srp | (14, 7, 7) | 3,984 | 11,949 | 4,306,704 | 6,036,384 |
+| 4 | srp | (12, 6, 6) | 4,880 | 14,637 | 5,275,280 | 9,929,184 |
+| 5 | limped | (10, 5, 5) | 5,720 | 17,157 | 6,183,320 | 11,845,984 |
+
+The six anchors span both shape families (four SRP, two limped),
+satisfying the downgraded "expected" family-mix statement. The next
+eligible rows are a 7,824-action-node tie shared by limped (8, 4, 4)
+and srp (8, 4, 4), and the deepest is the w1 check-to-river ledger
+(4, 2, 2) at 11,232 action nodes. All nine decision-bearing cap-0 trees
+fit the frozen envelope; every per-node menu is at most six actions,
+inside the 32-action BSFLIB ceiling with wide margin.
+
+### External validation
+
+The census reproduces the two T6 historical cap-0 figures exactly —
+7,824 action nodes for the SRP (8, 4, 4) tree and 11,232 for the w1
+(4, 2, 2) tree — cross-validating the builder and the ordering that
+drives Step 0b. The earlier Gate 1 cap-6 action-node count (1,924)
+remains the sealed control for the bounded-menu harness; the cap-0
+counts here are a different, exact-menu measurement.
+
+### What does not change
+
+- The 0.002 BB gate, the 25M-node / depth-256 / 8 GiB envelope, the
+  frozen constants, the no-argv hard-coding, and the four-verdict
+  taxonomy.
+- The ascending measured-tuple ordering mechanics and stable tie
+  handling.
+- Step 0b fail-closed semantics: on the measured-smallest eligible
+  ledger, an allocation beyond 8 GiB is still a typed memory NO-GO that
+  terminates the campaign before any format is built — and it is now a
+  gate with a real allocation behind it, restorable to full falsifying
+  power rather than softened.
+- Dependency rules: bench-only `bigshark_rfc0047_bench` artifacts,
+  native tests under `engine/tests/test_rfc0047_*`/`test_rfc0050_*`,
+  no production, protocol, schema, mount, host, or threshold change;
+  link guards unchanged.
+
+### Step 0b budget estimate (pre-registered before the run)
+
+On the smallest eligible anchor, srp (32, 16, 16): 1,729,600 projected
+infosets at a maximum menu width of six actions. At the seedless
+kernel's two double tables (regret plus linear-average) of six entries
+per infoset, the strategy vectors are on the order of
+1,729,600 x 6 x 2 x 8 ~ 166 MB, plus the 2.98 MB public tree and
+per-node/combo scratch; estimated peak RSS is 0.2-0.35 GB, a 25-40x
+margin under 8 GiB, with second-scale wall for allocation with zero
+iterations. The same arithmetic on the w1-scale tree (12.14M infosets)
+gives ~1.17 GB, the same order as the T6 ~1.4 GB engineering estimate,
+which is a sanity check, not a receipt. Step 0b records the actual
+allocated bytes and peak RSS as the typed receipt regardless of this
+estimate.
+
+### Amendment 1 decision (2026-11-17): Approved
+
+Proposed 2026-11-17 by the author agent and approved the same day by a
+separately launched non-author approval agent
+(`ab13a1464313cf183`), which independently rebuilt the bench targets,
+re-ran the native tests and the frontier check, and reproduced the
+sealed census receipt byte-for-byte. Verdict: Approved with no blocker
+and no major finding; four nits and one non-blocking observation.
+
+- Nit 1 (absolute sealed counts): the native test now pins the six
+  anchors' sealed action-node counts (1,600 / 2,632 / 3,344 / 3,984 /
+  4,880 / 5,720) and the T6 cross-validation anchors (the two 7,824
+  tie rows and the single 11,232 w1 row), so a builder drift plus
+  coincident list re-transcription cannot pass the order gate alone.
+- Nit 2 (determinism scope): the determinism test now compares the
+  family, family index, and leaf count in addition to the ledger key and
+  every measured census field.
+- Nit 3 (estimate granularity): accepted as a Step 0b receipt
+  requirement — the allocation receipt must itemize the tables actually
+  resident at measurement (regret/sum, reach, value, and any result-side
+  snapshot), since a fully resident result set could reach roughly
+  0.4 GB rather than the 0.2-0.35 GB allocation-only estimate; either
+  figure stays more than an order of magnitude under 8 GiB.
+- Nit 4 (status bookkeeping): this decision record; check-rfcs and
+  check-docs re-run after the record is written.
+- Observation (no action): the dependency-rule wording about
+  `engine/include` is stricter than the established bench pattern, whose
+  real boundary is the configure-time link guard; pre-existing wording,
+  not introduced by this amendment.
+
+Residual risks recorded by the reviewer: Step 0b is not yet exercised,
+so the falsifying gate is still pending by design; tuple monotonicity is
+empirical over the nine ledgers, protected by measured non-decreasing
+storage, the tie-group rule, and the Stage 2 per-anchor receipts; the
+census is a single run, mitigated by byte-identical independent
+reproduction and the in-test determinism assertions; the ASan lane
+remains blocked by the separately registered sanitizer blocker B1 in
+`docs/development/build-and-test.md`. The authorization limit is
+unchanged: Stages 0-2 measurement only, no production, schema, codec,
+mount, host, wire, threshold, funded compute, or push.

@@ -1,0 +1,46 @@
+# ledger enumeration: 11 distinct ledgers
+ordinal,family,family_index,pot,contribution0,contribution1,leaf_count
+0,limped,0,4,2,2,48
+1,limped,1,8,4,4,96
+2,limped,2,10,5,5,96
+3,limped,3,16,8,8,96
+4,limped,4,400,200,200,96
+5,srp,0,8,4,4,48
+6,srp,1,12,6,6,96
+7,srp,2,14,7,7,96
+8,srp,3,20,10,10,96
+9,srp,4,32,16,16,96
+10,srp,5,400,200,200,96
+# cap-0 public-tree census (no solve), offline envelope 25000000 nodes / 256 depth / 8589934592 bytes
+label,family,family_index,pot,contribution0,contribution1,status,total_nodes,action_nodes,max_menu_width,menu_within_pack_limit,depth,projected_infosets,accounted_bytes
+limped-ledger-0,limped,0,4,2,2,fits,33693,11232,6,1,102,12141792,23677536
+limped-ledger-1,limped,1,8,4,4,fits,23469,7824,6,1,101,8457744,12059552
+limped-ledger-2,limped,2,10,5,5,fits,17157,5720,6,1,101,6183320,11845984
+limped-ledger-3,limped,3,16,8,8,fits,10029,3344,6,1,99,3614864,5972576
+limped-ledger-4,limped,4,400,200,200,fits,1,0,0,1,1,0,576
+srp-ledger-0,srp,0,8,4,4,fits,23469,7824,6,1,101,8457744,12059552
+srp-ledger-1,srp,1,12,6,6,fits,14637,4880,6,1,100,5275280,9929184
+srp-ledger-2,srp,2,14,7,7,fits,11949,3984,6,1,100,4306704,6036384
+srp-ledger-3,srp,3,20,10,10,fits,7893,2632,6,1,98,2845192,4983200
+srp-ledger-4,srp,4,32,16,16,fits,4797,1600,6,1,95,1729600,2978208
+srp-ledger-5,srp,5,400,200,200,fits,1,0,0,1,1,0,576
+# measured ascending (action_nodes, projected_infosets, max_menu_width) order
+rank,ordinal,family,family_index,pot,contribution0,contribution1,action_nodes,projected_infosets,max_menu_width,eligible,status
+0,4,limped,4,400,200,200,0,0,0,0,fits
+1,10,srp,5,400,200,200,0,0,0,0,fits
+2,9,srp,4,32,16,16,1600,1729600,6,1,fits
+3,8,srp,3,20,10,10,2632,2845192,6,1,fits
+4,3,limped,3,16,8,8,3344,3614864,6,1,fits
+5,7,srp,2,14,7,7,3984,4306704,6,1,fits
+6,6,srp,1,12,6,6,4880,5275280,6,1,fits
+7,2,limped,2,10,5,5,5720,6183320,6,1,fits
+8,1,limped,1,8,4,4,7824,8457744,6,1,fits
+9,5,srp,0,8,4,4,7824,8457744,6,1,fits
+10,0,limped,0,4,2,2,11232,12141792,6,1,fits
+# decision-bearing ledgers: 9; hard-coded six anchors must equal eligible ranks 0..5
+anchor0,srp,pot=32,contribution0=16,contribution1=16,match=1
+anchor1,srp,pot=20,contribution0=10,contribution1=10,match=1
+anchor2,limped,pot=16,contribution0=8,contribution1=8,match=1
+anchor3,srp,pot=14,contribution0=7,contribution1=7,match=1
+anchor4,srp,pot=12,contribution0=6,contribution1=6,match=1
+anchor5,limped,pot=10,contribution0=5,contribution1=5,match=1
