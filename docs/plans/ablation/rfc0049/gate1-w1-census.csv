@@ -1,0 +1,9 @@
+label,family,raise_cap,status,total_nodes,action_nodes,max_menu_width,menu_within_pack_limit,depth,projected_infosets,accounted_bytes
+coarse-cap1-control,control,1,fits,15,6,3,1,4,6486,9664
+identity-cap2,raise_cap,2,fits,99,34,6,1,5,36754,77024
+identity-cap3,raise_cap,3,fits,315,106,6,1,6,114586,186624
+identity-cap4,raise_cap,4,fits,957,320,6,1,7,345920,621792
+identity-cap5,raise_cap,5,fits,2631,878,6,1,8,949118,1498208
+identity-cap6,raise_cap,6,fits,5769,1924,6,1,9,2079844,3015168
+wide-cap1,sizing_grid,1,fits,33,12,6,1,4,12972,23040
+fine-cap1,sizing_grid,1,fits,21,8,4,1,4,8648,11584

@@ -654,6 +654,7 @@ add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/river_serve.cpp
   benchmarks/rfc0047/cap_embedding.cpp
   benchmarks/rfc0047/patha_grid_budget.cpp
+  benchmarks/rfc0047/offline_census.cpp
   benchmarks/rfc0047/union_menu.cpp
   benchmarks/rfc0047/union_embedding.cpp
   benchmarks/rfc0047/reach_bound.cpp
@@ -765,6 +766,13 @@ target_link_libraries(bigshark-rfc0047-dcfr-probe PRIVATE bigshark_rfc0047_bench
 add_executable(bigshark-rfc0047-convergence-cert-probe
   benchmarks/rfc0047/rfc0047_convergence_cert_probe.cpp)
 target_link_libraries(bigshark-rfc0047-convergence-cert-probe PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0049 Stage 1 Gate 1 manual single-instance offline wide-menu census
+# probe (NOT a CTest): frozen candidate list, offline TreeLimits envelope,
+# structural node/menu/infoset counts with no solve and no argv overrides.
+add_executable(bigshark-rfc0047-offline-census-probe
+  benchmarks/rfc0047/rfc0047_offline_census_probe.cpp)
+target_link_libraries(bigshark-rfc0047-offline-census-probe PRIVATE bigshark_rfc0047_bench)
 
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
@@ -1371,6 +1379,10 @@ if(BUILD_TESTING)
   add_executable(test_rfc0047_dcfr tests/test_rfc0047_dcfr.cpp)
   target_link_libraries(test_rfc0047_dcfr PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_dcfr COMMAND test_rfc0047_dcfr)
+
+  add_executable(test_rfc0047_offline_census tests/test_rfc0047_offline_census.cpp)
+  target_link_libraries(test_rfc0047_offline_census PRIVATE bigshark_rfc0047_bench)
+  add_test(NAME rfc0047_offline_census COMMAND test_rfc0047_offline_census)
 
   add_executable(test_rfc0047_fine_grid tests/test_rfc0047_fine_grid.cpp)
   target_link_libraries(test_rfc0047_fine_grid PRIVATE bigshark_rfc0047_bench)
