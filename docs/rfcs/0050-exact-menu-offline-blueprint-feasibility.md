@@ -622,7 +622,11 @@ execution.
    terminal keys pinned to (400, 200, 200), card-independence of the
    cap-0 shape within every ledger, composite (family, key) uniqueness
    because the (pot, contributions) tuple is not unique across roots,
-   and the R2-1 consistency gate re-aimed at the eligible order.
+   the R2-1 consistency gate re-aimed at the eligible order, and an
+   explicit exclusion guard asserting every non-eligible index is
+   absent from the eligible ordering and no terminal key reaches the
+   hard-coded anchor set (D292 requirement that the predicate itself
+   carry a guardrail).
 
 ### Measured anchor pre-registration (from the sealed receipt)
 
@@ -642,6 +646,39 @@ and srp (8, 4, 4), and the deepest is the w1 check-to-river ledger
 (4, 2, 2) at 11,232 action nodes. All nine decision-bearing cap-0 trees
 fit the frozen envelope; every per-node menu is at most six actions,
 inside the 32-action BSFLIB ceiling with wide margin.
+
+### Why a predicate rather than the literal first-six, and future zero-action ledgers
+
+The predicate is chosen over literal first-six selection because the
+failure mode is structural, not incidental: any row with zero action
+nodes has no menu, no regret/sum vectors, and no policy whose NashConv
+could be measured, so including one makes both Stage 0b allocation and
+the Stage 1 convergence gate vacuous. A name-based exclusion list would
+be brittle and would violate the no-name-selection discipline; a
+uniform structural predicate (`fits && action_nodes > 0`) derives the
+decision from the same measured census fields that drive ordering, so
+the rule cannot drift from the data.
+
+Forward behavior under later campaigns is fully determined by the
+predicate and needs no new rule:
+
+- If a future census (new strata, deeper stacks, additional turn roots)
+  produces more zero-action ledgers, every such row is kept in the full
+  census receipt as an informative boundary fact but is uniformly
+  excluded from `decision_bearing_ascending_order`; the six anchors are
+  still the first six ELIGIBLE rows in measured order. The native test's
+  explicit exclusion guard (every non-eligible index is absent from the
+  eligible ordering and no terminal composite key appears in the
+  hard-coded anchor set) fails loudly if that ever stops holding.
+- A `census_rejected` row (`fits = false`) is likewise non-eligible, so
+  an envelope failure can never silently enter the anchor set.
+- If fewer than six decision-bearing ledgers exist, the hard-coded
+  six-anchor list cannot be populated consistently: the consistency
+  test fails and Stage 1/2 must stop for an amendment rather than
+  silently shrink the anchor set or promote a terminal row. If every
+  ledger were zero-action, no Step 0b target exists at all and the
+  campaign halts at Stage 0 on the structural inventory. Both are
+  fail-closed outcomes, not implicit rule changes.
 
 ### External validation
 

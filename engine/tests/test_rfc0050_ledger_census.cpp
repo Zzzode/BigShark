@@ -184,6 +184,19 @@ bool test_ascending_order_and_r2_1_anchor_gate() {
     }
   }
   CHECK(terminal == 2);
+  // D292 explicit exclusion guard: every non-eligible row must be absent
+  // from the eligible ordering, and no terminal all-in (family, key) may
+  // appear in the hard-coded anchor set. The predicate itself gets a
+  // guard, not just the happy-path ordering.
+  std::set<std::size_t> eligible_set(eligible.begin(), eligible.end());
+  std::set<std::pair<std::string, LedgerKey>> terminal_keys;
+  for (std::size_t idx = 0; idx < rows.size(); ++idx) {
+    if (!is_decision_bearing(rows[idx])) {
+      CHECK(!eligible_set.contains(idx));
+      terminal_keys.emplace(rows[idx].anchor.family, rows[idx].anchor.key);
+    }
+  }
+  CHECK(terminal_keys.size() == 2);
 
   // R2-1 consistency gate: the hard-coded six-anchor pre-registration must
   // equal the first six ELIGIBLE measured ledgers in order, by family AND
@@ -219,6 +232,8 @@ bool test_ascending_order_and_r2_1_anchor_gate() {
   for (const AnchoredLedger& a : hard_coded) {
     const bool inserted = anchor_keys.emplace(a.family, a.key).second;
     CHECK(inserted);
+    // The all-in rows must never reach the anchor pre-registration.
+    CHECK(!terminal_keys.contains({std::string(a.family), a.key}));
   }
   return true;
 }
