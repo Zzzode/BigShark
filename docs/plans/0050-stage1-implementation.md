@@ -91,3 +91,112 @@ launched with an outer `timeout 1900` backstop, the same 100 s margin
 the RFC 0049 Gate 2 runner used; the outer timeout exists only as a
 safety net and a clean run always stops inside the in-process wall.
 
+
+## Frozen gate run (2026-11-17)
+
+Launched after the reported budget estimate was confirmed:
+
+```bash
+timeout 1900 build/release/engine/bigshark-rfc0050-exact-convergence-probe \
+  > docs/plans/ablation/rfc0050/stage1-exact-convergence.csv \
+  2> docs/plans/ablation/rfc0050/stage1-exact-convergence.err
+```
+
+Receipt and typed verdict are recorded on completion. Closure analysis
+must confirm, against the actual rows rather than the estimate:
+
+1. every flushed rung's pure-menu term is inside the 1e-8 BB zero
+   tolerance (the exact-menu structural identity held for the whole
+   gate, not just the calibration);
+2. the verdict is one of the four RFC 0049 typed outcomes and matches
+   the stopped-early flag and rung count;
+3. the measured rungs 100/200 bracket the early convergence regime and
+   are compared against the two pre-registered extrapolation laws;
+4. the outer 1,900 s timeout never fired (an outer kill would be an
+   INCONCLUSIVE operational failure, not a convergence verdict);
+5. the stderr sidecar is empty apart from the recorded exit code.
+
+### D297 pre-registration and verdict discipline
+
+Pre-registered expectation (stated before the run, not fitted after):
+the stop predicate latches between rungs 200 and 400 and the probe
+emits BUDGET_NO_GO with rungs 100 and 200 flushed. Any deviation — an
+earlier wall trip, a full-ladder completion, or a gate crossing — is a
+higher-information signal and must be called out explicitly in the
+closure report rather than narrated as expected.
+
+The pure-menu zero check is unconditional and more fundamental than
+the wall. Even under BUDGET_NO_GO, both completed rungs (100 and 200)
+must show a pure-menu term inside the 1e-8 BB tolerance. A nonzero
+reading means the exact menu was not actually exact; the run aborts
+with exit 5 and the cause is investigated before any convergence
+interpretation, regardless of the wall outcome.
+
+The three non-PASS outcomes are distinct and reported separately,
+never collapsed into "did not pass":
+
+- BUDGET_NO_GO: finite rungs flushed, then the in-process wall latched
+  (a compute-envelope result; the curve is partial but valid).
+- CONVERGENCE_NO_GO: the full nine-rung ladder completed and no rung
+  crossed 0.002 BB (a convergence-law result on complete evidence).
+- INCONCLUSIVE: pre-first-rung instrumentation failure or insufficient
+  finite rows to judge (one journaled rerun, then BLOCKED if
+  reproduced); an outer 1,900 s timeout kill lands here as an
+  operational failure, not a convergence result.
+
+## Stage 1 gate closure (2026-11-17): BUDGET_NO_GO, pre-registered expectation met
+
+Receipt: `stage1-exact-convergence.csv` (RC 0, empty stderr sidecar
+apart from the recorded exit marker; the outer `timeout 1900` did not
+fire; total in-process wall 1,824.9 s = the 1,800 s latch plus 24.9 s
+of post-loop best-response evaluation).
+
+### Rows and the D297 checks
+
+| rung | bounded NC = e_embed (BB) | pure-menu (BB) | wall (s) | RSS (MB) |
+| --- | --- | --- | --- | --- |
+| 100 | 0.53255290 | -0.00000000 (within 1e-8) | 608.2 | 615 |
+| 200 | 0.26548740 | -0.00000000 (within 1e-8) | 1,211.7 | 615 |
+
+1. Pre-registered expectation: MET exactly. The stop predicate latched
+   at iteration 301 (between rungs 200 and 400), two rungs flushed,
+   verdict `budget_no_go`. No deviation to flag; the only surprise was
+   favorable — solve throughput improved to a ~5.95 s/iter blended
+   steady state versus the calibration's conservative 6.87 s/iter
+   cumulative average, so rungs landed earlier than estimated.
+2. Pure-menu zero under BUDGET_NO_GO: HELD. Both completed rungs read
+   a structural term inside the 1e-8 BB tolerance and e_embed equals
+   bounded NashConv to all eight printed decimals. The exact menu was
+   exact for the entire gate; no exit-5 structural abort occurred.
+3. Verdict distinction: this is BUDGET_NO_GO (finite partial curve,
+   in-process wall latched, ladder not completed), not
+   CONVERGENCE_NO_GO (would require all nine rungs) and not
+   INCONCLUSIVE (rows are finite and sufficient). The classifier
+   output matches `stopped_early=true` and `rung_rows=2`.
+
+### Convergence regime: the higher-information content
+
+The two gate rungs measure a 100->200 doubling ratio of
+0.26548740 / 0.53255290 = 0.4985, i.e. an observed slope of -1.004.
+The exact-menu curve is still on the steep ~T^-1.0 law seen in the
+calibration OLS (-1.012); the decayed ~T^-0.52 law from the RFC 0049
+bounded controls has not appeared by iteration 200 (its prediction of
+0.615 BB at 200 is 2.3x above the measured 0.265 BB). Extrapolation
+is explicitly two-scenario, not a certified slope:
+
+- If the -1.0 law persists: a two-point fit gives
+  NC(T) ~= 54.3 T^-1.004, a 0.002 BB crossing near 26,000 iterations
+  (~43 h single-thread at 5.95 s/iter), and even the frozen 20k ladder
+  would end near 0.0026 BB (only ~1.3x over).
+- If the slope decays to -0.52 later: the 20k ladder ends near
+  0.034 BB (~17x over) and the crossing needs order 10^7 iterations.
+
+Two rungs cannot certify which regime holds past 200; that is the open
+scientific question and a single 1,800 s process cannot settle it. The
+gate's measured contribution is that the structural term is genuinely
+zero (Stage 1 boundary 1 proven on a real anchor) and convergence so
+far follows the favorable steep law, reframing the campaign as a
+compute-budget decision (a longer single run, parallelism, or
+warm-start) rather than a structural impossibility. Any longer wall or
+wider ladder is an RFC amendment with fresh independent review; the
+0.002 BB gate, ladder, and verdict taxonomy were not changed.

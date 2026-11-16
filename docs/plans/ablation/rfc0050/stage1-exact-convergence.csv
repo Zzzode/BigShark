@@ -1,0 +1,4 @@
+record_type,label,family,pot,contribution0,contribution1,verdict,iteration,requested_iterations,rung_rows,bounded_nc_bb,exact_e_embed_bb,pure_menu_bb,e_embed_bb,wall_ms,rss_current_kb
+rung,exact-cap0,srp,32,16,16,,100,,,0.53255290,0.53255290,-0.00000000,0.53255290,608182.935,614936
+rung,exact-cap0,srp,32,16,16,,200,,,0.26548740,0.26548740,-0.00000000,0.26548740,1211671.489,615104
+summary,exact-cap0,srp,32,16,16,budget_no_go,301,20000,2,,,,,1824905.638,615104

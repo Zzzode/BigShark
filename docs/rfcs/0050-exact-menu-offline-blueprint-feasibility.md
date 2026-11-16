@@ -305,6 +305,22 @@ the probe with no argv override; any change to the ladder, wall, anchor
 list, or gate is an amendment requiring a fresh independent review. FAIL
 condition: no rung reaches 0.002 inside the budget.
 
+Stage 1 result (frozen gate run 2026-11-17): BUDGET_NO_GO, matching the
+pre-registered expectation. Rungs 100 and 200 flushed at 0.53255290 BB
+and 0.26548740 BB bounded NashConv (equal to e_embed) with the
+pure-menu term inside the 1e-8 BB zero tolerance at both rungs, then
+the 1,800 s wall latched at iteration 301 before rung 400; the outer
+1,900 s timeout did not fire and the stderr sidecar is empty. The
+measured 100->200 doubling gives a slope of -1.004, still on the steep
+calibration law rather than the decayed ~T^-0.52 regime. Two scenarios
+bracket the future: if -1.0 persists the 0.002 BB crossing is near
+~26,000 iterations (~43 h single-thread) and the frozen 20k ladder
+would end ~1.3x over; if the slope decays to -0.52 the crossing needs
+order 10^7 iterations. The two-rung gate cannot certify the later
+slope, so a longer wall or wider ladder is an amendment, not an argv
+change; the structural zero-menu identity is proven regardless of the
+convergence outcome.
+
 ### Stage 2 — anchor boundary map
 
 Repeat Stages 0-1 across the six-ledger set, one process per anchor, and
