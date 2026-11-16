@@ -1,0 +1,11 @@
+record_type,label,family,raise_cap,reference_kind,cap0_direct_map,verdict,iteration,requested_iterations,rung_rows,bounded_nc_bb,exact_e_embed_bb,pure_menu_bb,e_embed_bb,wall_ms,rss_current_kb
+rung,wide-cap1,sizing_grid,1,union,rejected,,100,,,0.08527087,22.21802341,22.13275254,22.21802341,27990.930,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,200,,,0.04233985,22.51348207,22.47114222,22.51348207,55954.597,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,400,,,0.01860167,23.21629190,23.19769024,23.21629190,87480.840,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,800,,,0.00673867,23.67926978,23.67253111,23.67926978,126142.879,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,1500,,,0.00300022,23.82678013,23.82377991,23.82678013,175431.756,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,3000,,,0.00114463,23.95333046,23.95218584,23.95333046,253167.494,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,6000,,,0.00040549,23.96450194,23.96409644,23.96450194,383541.802,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,12000,,,0.00016359,23.87523807,23.87507448,23.87523807,623084.789,44132
+rung,wide-cap1,sizing_grid,1,union,rejected,,20000,,,0.00007836,23.79530620,23.79522785,23.79530620,933488.100,44416
+summary,wide-cap1,sizing_grid,1,union,rejected,convergence_no_go,20000,20000,9,,,,,933627.353,50788

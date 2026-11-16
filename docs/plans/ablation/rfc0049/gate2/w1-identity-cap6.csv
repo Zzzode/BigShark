@@ -1,0 +1,4 @@
+record_type,label,family,raise_cap,reference_kind,cap0_direct_map,verdict,iteration,requested_iterations,rung_rows,bounded_nc_bb,exact_e_embed_bb,pure_menu_bb,e_embed_bb,wall_ms,rss_current_kb
+rung,identity-cap6,raise_cap,6,cap0,mapped,,100,,,0.39042645,0.41586431,0.02543786,0.41586431,809317.992,801996
+rung,identity-cap6,raise_cap,6,cap0,mapped,,200,,,0.18119795,0.19078829,0.00959034,0.19078829,1601907.442,802076
+summary,identity-cap6,raise_cap,6,cap0,mapped,budget_no_go,227,20000,2,,,,,1830413.310,802076

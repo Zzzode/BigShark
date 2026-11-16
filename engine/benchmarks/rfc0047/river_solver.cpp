@@ -5,6 +5,7 @@
 #include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
 #include <bs/eval.hpp>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <memory>
@@ -40,7 +41,8 @@ class RiverGame {
   explicit RiverGame(
       const GameDef& d, std::size_t threads, std::uint8_t action_cap,
       const std::optional<bs::abstraction::ActionAbstraction>& explicit_action = std::nullopt,
-      bool rm_plus = true, bool dcfr = false)
+      bool rm_plus = true, bool dcfr = false,
+      std::optional<bs::tree::TreeLimits> tree_limits = std::nullopt)
       : def_(d), rm_plus_(rm_plus), dcfr_(dcfr) {
     if (def_.player_count != 2 || def_.board_size != 5 || def_.terminal != TerminalDepth::River)
       throw std::invalid_argument("river_solver: needs a 2-seat five-card river-root def");
@@ -53,7 +55,12 @@ class RiverGame {
     // identity(action_cap) tree every existing numeric path already solves.
     const bs::abstraction::ActionAbstraction action =
         explicit_action.value_or(bs::abstraction::ActionAbstraction::identity(action_cap));
-    tree_ = std::make_unique<AbstractTree>(d, action);
+    // RFC 0049 Gate 2: explicit bench-only limits, otherwise the implicit
+    // TreeLimits default used by every prior path.
+    if (tree_limits.has_value())
+      tree_ = std::make_unique<AbstractTree>(d, action, *tree_limits);
+    else
+      tree_ = std::make_unique<AbstractTree>(d, action);
     holdings_.resize(kC);
     for (std::uint32_t x = 0; x < kC; ++x)
       holdings_[x] = holding_for_dense(std::span<const int>(bd.data(), 5), x);
@@ -580,21 +587,44 @@ class RiverGame {
 RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
                                      std::span<const std::uint64_t> checkpoints) {
   RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus,
-                 cfg.dcfr);
+                 cfg.dcfr, cfg.tree_limits);
   RiverSolveResult out;
   out.iterations = cfg.iterations;
   out.action_nodes = game.action_node_count();
   out.combos_per_seat = kC;
 
+  // RFC 0049 Gate 2: the clock exists only when a stop predicate is
+  // installed; with the default empty predicate no steady_clock call is
+  // made and the loop is byte-identical to every prior path.
+  const bool has_stop = static_cast<bool>(cfg.stop_predicate);
+  const std::chrono::steady_clock::time_point t0 =
+      has_stop ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  std::uint64_t completed = 0;
   std::size_t cp = 0;
   for (std::uint64_t t = 1; t <= cfg.iterations; ++t) {
+    if (has_stop) {
+      const double elapsed_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+      // Integer clock read before any traversal FP work; latching here
+      // preserves the most recent completed rung.
+      if (cfg.stop_predicate(t, elapsed_ms)) {
+        out.stopped_early = true;
+        break;
+      }
+    }
     game.iterate_weighted(cfg.linear_averaging ? static_cast<double>(t) : 1.0, t);
+    ++completed;
     while (cp < checkpoints.size() && checkpoints[cp] <= t) {
       const double nc = game.nash_conv_chips() / (cfg.def.big_blind > 0 ? cfg.def.big_blind : 1);
       out.history_nash_conv_bb.push_back(nc);
+      // RFC 0049 Gate 2: the optional sink snapshots the average strategy at
+      // this rung for external reach-bound scoring; absent by default.
+      if (cfg.checkpoint_sink)
+        cfg.checkpoint_sink(RiverCheckpoint{t, nc, game.snapshot_sigma()});
       ++cp;
     }
   }
+  out.iterations_completed = completed;
   const double ncChips = game.nash_conv_chips();
   out.nash_conv_chips = ncChips;
   out.nash_conv_bb = ncChips / (cfg.def.big_blind > 0 ? cfg.def.big_blind : 1);
@@ -614,7 +644,7 @@ RiverSolveResult solve_river_subgame(const RiverSolveConfig& cfg,
 ComboNashConv river_combo_values(const RiverSolveConfig& cfg, std::uint64_t iterations,
                                  bool linear_averaging) {
   RiverGame game(cfg.def, cfg.threads, cfg.action_cap, cfg.action_abstraction, cfg.rm_plus,
-                 cfg.dcfr);
+                 cfg.dcfr, cfg.tree_limits);
   for (std::uint64_t t = 1; t <= iterations; ++t)
     game.iterate_weighted(linear_averaging ? static_cast<double>(t) : 1.0, t);
   // RiverGame::ComboValues is exposed by the same deterministic eval walks;

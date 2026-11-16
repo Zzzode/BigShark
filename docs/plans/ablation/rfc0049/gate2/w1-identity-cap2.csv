@@ -1,0 +1,10 @@
+record_type,label,family,raise_cap,reference_kind,cap0_direct_map,verdict,iteration,requested_iterations,rung_rows,bounded_nc_bb,exact_e_embed_bb,pure_menu_bb,e_embed_bb,wall_ms,rss_current_kb
+rung,identity-cap2,raise_cap,2,cap0,mapped,,100,,,0.40132249,6.45309667,6.05177417,6.45309667,29225.392,47032
+rung,identity-cap2,raise_cap,2,cap0,mapped,,200,,,0.20349973,4.20825368,4.00475396,4.20825368,58382.604,47032
+rung,identity-cap2,raise_cap,2,cap0,mapped,,400,,,0.10528276,2.99160794,2.88632518,2.99160794,98183.772,47032
+rung,identity-cap2,raise_cap,2,cap0,mapped,,800,,,0.04208892,2.21471280,2.17262388,2.21471280,159328.081,47032
+rung,identity-cap2,raise_cap,2,cap0,mapped,,1500,,,0.02948299,2.12234889,2.09286590,2.12234889,252848.312,47032
+rung,identity-cap2,raise_cap,2,cap0,mapped,,3000,,,0.02148049,2.19672673,2.17524624,2.19672673,431959.575,47032
+rung,identity-cap2,raise_cap,2,cap0,mapped,,6000,,,0.00878040,2.22761558,2.21883518,2.22761558,770699.050,47032
+rung,identity-cap2,raise_cap,2,cap0,mapped,,12000,,,0.00404104,2.21385483,2.20981379,2.21385483,1427935.213,47032
+summary,identity-cap2,raise_cap,2,cap0,mapped,budget_no_go,15496,20000,8,,,,,1800543.174,47104

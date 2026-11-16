@@ -15,14 +15,37 @@
 // Benchmark-only under the rfc0047 link guard.
 #pragma once
 
+#include <bs/abstract_tree.hpp>
 #include <bs/abstraction.hpp>
 #include <bs/game_definition.hpp>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
 
 namespace bs::rfc0047 {
+
+// RFC 0049 Stage 1 Gate 2: one scored checkpoint. Emitted to the optional
+// sink only at pre-registered rungs; carrying the average-strategy snapshot
+// so an external reach-bound instrument can score e_embed mid-solve.
+struct RiverCheckpoint {
+  std::uint64_t iteration = 0;
+  double nash_conv_bb = 0.0;
+  std::vector<std::vector<double>> avg_sigma;
+};
+
+// Sink invoked once per reached rung after that iteration's strategy is
+// observable. Bench-only; absent by default.
+using RiverCheckpointSink = std::function<void(const RiverCheckpoint&)>;
+
+// Polled once per iteration at the top of the driver loop, OUTSIDE every
+// traversal floating-point operation, with elapsed wall time in
+// milliseconds. Returning true latches an early, orderly stop after zero
+// traversal FP work has run for that iteration. Integer clock reads only,
+// so no numeric result or FP ordering can change. Bench-only; absent by
+// default (and when absent no clock call is made).
+using RiverStopPredicate = std::function<bool(std::uint64_t iteration, double elapsed_wall_ms)>;
 
 struct RiverSolveConfig {
   bs::poker::GameDef def;        // five-card board, terminal=River, 2 seats
@@ -66,6 +89,14 @@ struct RiverSolveConfig {
   // field dead and keeps every existing numeric path byte-identical.
   // Bench-only measurement lever; no production solver reads it.
   bool dcfr = false;
+  // RFC 0049 Stage 1 Gate 2 additive default-off seams. When tree_limits is
+  // unset the RiverGame builds with the implicit production-default
+  // TreeLimits exactly as before; the sink and stop predicate are empty
+  // std::functions that disable themselves (no snapshot allocation, no
+  // steady_clock call), leaving the default solve byte-identical.
+  std::optional<bs::tree::TreeLimits> tree_limits;
+  RiverCheckpointSink checkpoint_sink;
+  RiverStopPredicate stop_predicate;
 };
 
 struct ComboNashConv {
@@ -103,6 +134,12 @@ struct RiverSolveResult {
   // cap-0 menu-materiality embedding) can evaluate the solved policy without
   // touching the kernel's internal regret/sum tables or re-running CFR.
   std::vector<std::vector<double>> avg_sigma;
+  // RFC 0049 Gate 2: number of iterations actually completed and whether the
+  // stop predicate latched before cfg.iterations. Zero/default on every
+  // pre-RFC-0049 path that ran to completion, where iterations_completed
+  // equals the requested count.
+  std::uint64_t iterations_completed = 0;
+  bool stopped_early = false;
 };
 
 // Deterministic exact solve. Throws std::invalid_argument on a malformed
