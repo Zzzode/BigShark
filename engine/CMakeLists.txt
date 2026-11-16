@@ -824,6 +824,13 @@ add_executable(bigshark-rfc0050-resume-probe
   benchmarks/rfc0047/rfc0050_resume_probe.cpp)
 target_link_libraries(bigshark-rfc0050-resume-probe PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0050 Stage 2 manual six-anchor boundary probe (NOT a CTest): the
+# frozen exact-menu gate run per hard-coded decision-bearing anchor with
+# an independent 1,800 s wall, zero-menu guard, and typed verdict each.
+add_executable(bigshark-rfc0050-stage2-boundary
+  benchmarks/rfc0047/rfc0050_stage2_boundary_probe.cpp)
+target_link_libraries(bigshark-rfc0050-stage2-boundary PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
