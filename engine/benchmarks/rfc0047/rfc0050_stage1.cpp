@@ -91,4 +91,44 @@ AmdahlBreakdown amdahl_from_speedup(double speedup, std::size_t threads) {
   return b;
 }
 
+DecisiveSlopeResult classify_decisive_slope(double e_400, double e_800, double e_1600) {
+  DecisiveSlopeResult out;
+  if (!(std::isfinite(e_400) && std::isfinite(e_800) && std::isfinite(e_1600)) || e_400 <= 0.0 ||
+      e_800 <= 0.0 || e_1600 <= 0.0)
+    throw std::invalid_argument("decisive slope: rungs must be positive finite");
+  // Plateau first: a near-flat last interval means no power-law crossing.
+  const double relative_change = std::fabs(e_1600 - e_800) / e_800;
+  if (relative_change < kD326PlateauRelative) {
+    out.plateau = true;
+    out.regime = DecisiveSlopeRegime::Plateau;
+  }
+  // OLS on log2 values; the rung iterations are 400/800/1600, equally spaced
+  // in log2, but a general OLS keeps the routine independent of that spacing.
+  const double xs[3] = {std::log2(400.0), std::log2(800.0), std::log2(1600.0)};
+  const double ys[3] = {std::log2(e_400), std::log2(e_800), std::log2(e_1600)};
+  double mx = 0.0, my = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    mx += xs[i];
+    my += ys[i];
+  }
+  mx /= 3.0;
+  my /= 3.0;
+  double cov = 0.0, var = 0.0;
+  for (int i = 0; i < 3; ++i) {
+    cov += (xs[i] - mx) * (ys[i] - my);
+    var += (xs[i] - mx) * (xs[i] - mx);
+  }
+  out.slope = cov / var;
+  if (!out.plateau) {
+    const double magnitude = std::fabs(out.slope);
+    if (magnitude >= kD326SteepMagnitude)
+      out.regime = DecisiveSlopeRegime::SteepLawHolds;
+    else if (magnitude >= kD326DecayedMagnitude)
+      out.regime = DecisiveSlopeRegime::Decaying;
+    else
+      out.regime = DecisiveSlopeRegime::DecayedConfirmed;
+  }
+  return out;
+}
+
 }  // namespace bs::rfc0047

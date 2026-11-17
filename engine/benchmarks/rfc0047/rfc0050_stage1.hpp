@@ -103,4 +103,31 @@ struct AmdahlBreakdown {
 };
 AmdahlBreakdown amdahl_from_speedup(double speedup, std::size_t threads);
 
+// D326 decisive three-rung slope classification. The directive's signed
+// inequalities were directionally inconsistent with their own labels and
+// expected values (-1.0 is not greater than -0.85; -0.52 is not less than
+// -0.6), so the bands are applied to the slope MAGNITUDE, which matches the
+// labels: a steep ~-1.0 law vs a shallow ~-0.52 decay. Pre-registered, no
+// change after the data lands.
+enum class DecisiveSlopeRegime {
+  SteepLawHolds,     // |slope| >= 0.85: the -1.0 convergence law persists
+  Decaying,          // 0.6 <= |slope| < 0.85: flattening toward the decayed law
+  DecayedConfirmed,  // |slope| < 0.6: near the ~-0.52 bounded-control regime
+  Plateau,           // last two rungs within a 5% relative band: no crossing
+};
+inline constexpr double kD326SteepMagnitude = 0.85;
+inline constexpr double kD326DecayedMagnitude = 0.60;
+inline constexpr double kD326PlateauRelative = 0.05;
+
+struct DecisiveSlopeResult {
+  double slope = 0.0;  // signed OLS log2 slope across the three rungs
+  DecisiveSlopeRegime regime = DecisiveSlopeRegime::Decaying;
+  bool plateau = false;
+};
+
+// OLS fit of log2(e_embed) against log2(iteration) on three rungs, then the
+// pre-registered regime. A plateau (relative change between the last two
+// rungs under 5%) takes precedence, since a flat curve carries no crossing.
+DecisiveSlopeResult classify_decisive_slope(double e_400, double e_800, double e_1600);
+
 }  // namespace bs::rfc0047

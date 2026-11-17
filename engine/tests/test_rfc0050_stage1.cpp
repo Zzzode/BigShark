@@ -221,13 +221,51 @@ bool test_multithread_determinism_shallow() {
   return true;
 }
 
+bool test_decisive_slope_classification() {
+  // Steep -1.0 law: e halves each doubling -> slope exactly -1.
+  const DecisiveSlopeResult steep = classify_decisive_slope(0.08, 0.04, 0.02);
+  CHECK(steep.regime == DecisiveSlopeRegime::SteepLawHolds);
+  CHECK(std::fabs(steep.slope - (-1.0)) <= 1e-12);
+  CHECK(!steep.plateau);
+  // Decayed ~-0.52 law.
+  const double e400 = 1.0;
+  const double e800 = e400 * std::pow(0.5, 0.52);
+  const double e1600 = e800 * std::pow(0.5, 0.52);
+  const DecisiveSlopeResult decayed = classify_decisive_slope(e400, e800, e1600);
+  CHECK(decayed.regime == DecisiveSlopeRegime::DecayedConfirmed);
+  CHECK(std::fabs(decayed.slope - (-0.52)) <= 1e-9);
+  // Intermediate magnitude ~-0.7 lands in Decaying.
+  const double d800 = e400 * std::pow(0.5, 0.7);
+  const double d1600 = d800 * std::pow(0.5, 0.7);
+  const DecisiveSlopeResult decaying = classify_decisive_slope(e400, d800, d1600);
+  CHECK(decaying.regime == DecisiveSlopeRegime::Decaying);
+  // Band boundaries by magnitude.
+  CHECK(classify_decisive_slope(1.0, std::pow(0.5, 0.85), std::pow(0.25, 0.85)).regime ==
+        DecisiveSlopeRegime::SteepLawHolds);
+  CHECK(classify_decisive_slope(1.0, std::pow(0.5, 0.6), std::pow(0.25, 0.6)).regime ==
+        DecisiveSlopeRegime::Decaying);
+  // Plateau: last two rungs within 5% takes precedence over a shallow slope.
+  const DecisiveSlopeResult plateau = classify_decisive_slope(0.10, 0.051, 0.050);
+  CHECK(plateau.regime == DecisiveSlopeRegime::Plateau);
+  CHECK(plateau.plateau);
+  // Non-finite input fails loudly rather than classifying.
+  bool threw = false;
+  try {
+    (void)classify_decisive_slope(std::nan(""), 0.04, 0.02);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  CHECK(threw);
+  return true;
+}
+
 }  // namespace
 
 int main() {
   if (!test_stage1_domain_is_full_identity() || !test_sealed_anchor_domain_matches_census() ||
       !test_exact_solve_pure_menu_reads_zero() || !test_pure_menu_guard_rejects_nonzero() ||
       !test_calibration_extrapolation_pinned() || !test_scaling_verdict_bands_and_amdahl() ||
-      !test_multithread_determinism_shallow())
+      !test_multithread_determinism_shallow() || !test_decisive_slope_classification())
     return 1;
   std::printf("rfc0050_stage1: all checks passed\n");
   return 0;

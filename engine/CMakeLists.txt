@@ -838,6 +838,13 @@ add_executable(bigshark-rfc0050-deep-rerun
   benchmarks/rfc0047/rfc0050_deep_rerun.cpp)
 target_link_libraries(bigshark-rfc0050-deep-rerun PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0050 D326 decisive convergence measurement (NOT a CTest): rank-0
+# exact-menu solve to iteration 1600 at 28 threads under a 3-hour diagnostic
+# wall, with a pre-registered three-rung slope regime; hard-coded, no argv.
+add_executable(bigshark-rfc0050-decisive
+  benchmarks/rfc0047/rfc0050_decisive_probe.cpp)
+target_link_libraries(bigshark-rfc0050-decisive PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
