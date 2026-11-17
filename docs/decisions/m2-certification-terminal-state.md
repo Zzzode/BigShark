@@ -225,6 +225,11 @@ this lineage cannot carry a restart.
   equilibrium's own NashConv while ignoring the menu restriction as
   quality laundering; RFC 0048 Path C rejects adding a menu-error line
   to B0. This option may not be re-proposed without R4-class evidence.
+  The product-level analysis of what shipping it would actually mean —
+  online-budget quality in BB per hand, the per-decision concentration
+  of the leak, and its operational risk profile — is recorded separately
+  in [cap1-online-quality-and-risk.md](cap1-online-quality-and-risk.md)
+  as decision support, not as a certification.
 
 ## 7. Maintenance rule
 
