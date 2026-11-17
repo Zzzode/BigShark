@@ -1,0 +1,7 @@
+anchor_rank,family,pot,contribution0,contribution1,verdict,completed_iterations,requested_iterations,rung_rows,min_e_embed_bb,min_pure_menu_abs_bb,wall_ms,peak_rss_kb
+0,srp,32,16,16,budget_no_go,298,20000,2,0.26548740,0.00000000,1822531.081,614948
+1,srp,20,10,10,budget_no_go,160,20000,1,0.44453217,0.00000000,1842891.030,1006984
+2,limped,16,8,8,budget_no_go,120,20000,1,0.41925887,0.00000000,1847765.705,1275996
+3,srp,14,7,7,budget_no_go,100,20000,1,0.43075423,0.00000000,1880539.624,1515332
+4,srp,12,6,6,inconclusive,82,20000,0,inf,0.00000000,1879746.438,1515332
+5,limped,10,5,5,inconclusive,69,20000,0,inf,0.00000000,1875539.303,1515332

@@ -831,6 +831,13 @@ add_executable(bigshark-rfc0050-stage2-boundary
   benchmarks/rfc0047/rfc0050_stage2_boundary_probe.cpp)
 target_link_libraries(bigshark-rfc0050-stage2-boundary PRIVATE bigshark_rfc0047_bench)
 
+# RFC 0050 D316 deep-anchor fixed-rung rerun (NOT a CTest): runs ranks 4
+# and 5 to the second rung (iteration 200) under a 3x budget cap with an
+# explicit pure-menu-measured flag; hard-coded keys, no argv.
+add_executable(bigshark-rfc0050-deep-rerun
+  benchmarks/rfc0047/rfc0050_deep_rerun.cpp)
+target_link_libraries(bigshark-rfc0050-deep-rerun PRIVATE bigshark_rfc0047_bench)
+
 # RFC 0048 D202 manual single-process mixed-menu anchor probe (NOT a CTest):
 # one 300-iteration root-only widening solve, both completion arms evaluated
 # on the immutable snapshot with no second long solve.
