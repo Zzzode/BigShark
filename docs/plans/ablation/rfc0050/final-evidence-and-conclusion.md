@@ -123,8 +123,11 @@ it is parked with its evidence and review record intact.
 Unchanged: the 0.002 BB gate, B0, the nine-rung ladder, the 1,800 s
 wall, the frozen verdict classifier, all production solver/schema/codec/
 mount/host/wire surfaces, and the no-push boundary. Open questions for a
-future program, not this campaign: whether a different CFR variant or
-warm-started trunk produces a monotone tail on the exact menu; whether
+future program, not this campaign: whether a different CFR variant
+produces a monotone tail on the exact menu — the warm-start leg of this
+question is now analytically closed by
+`warm-start-legitimacy.md` (same-game warm start is the D307 resume and
+cannot change the trajectory; non-monotonicity is intrinsic); whether
 the margin-gadget path can ever provide a zero-residual transport; and
 what quality contract the project adopts if the exact 0.002 online line
 is abandoned.
