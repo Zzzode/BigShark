@@ -8,6 +8,20 @@ records the gap, the two distinct situations the current code
 collapses, and the impact, for that review. No frozen constant is
 modified here.
 
+Independent review (2026-11-17, non-author): Changes Requested,
+documentation only — the problem framing, evidence, default-zero
+withdrawal, and minimal-change intent were all accepted, all arithmetic
+reproduced, and the frozen classifier confirmed byte-identical. The
+findings are dispositioned in this revision: M1 (the two implementation
+routes have different blast radius because `completed_iterations` is
+not in the classifier signature; Route 1 probe-layer sub-reason
+recommended), m1 (capacity estimate derivation and its ~6% optimistic
+bias), m2 (the rerun/BLOCKED protocol belongs to case A only; the D316
+rerun was a one-off directive), m3 (boundary RSS is a process-level
+high-water mark, not per-anchor), n1 (the threshold is exactly 100, not
+"near 90-100"), n2 (the 5,400 s cap is a D316 diagnostic gate, not an
+RFC pre-registered wall). No recompute or code change was required.
+
 ## Observed case
 
 Stage 2 anchor rank 4 (srp, pot 12, contributions 6/6) completed 82
@@ -16,8 +30,10 @@ CFR iterations normally, the in-process 1,800 s wall latched
 `rung_rows=0`, `min_e_embed=inf`. It produced no rung because the first
 frozen checkpoint is iteration 100 and 82 < 100. Anchor rank 3 (srp,
 pot 14), one step smaller, reached exactly 100 iterations and one rung
-in its wall, locating the first-rung threshold near 90-100 iterations
-for these deeper ledgers.
+in its wall. The first-rung threshold is frozen at exactly iteration
+100; what varies across adjacent ledgers is in-wall capacity (rank 3
+completed 100 and reached the rung, rank 4 only 82 and did not), not
+the threshold itself.
 
 ## The two situations currently sharing one verdict
 
@@ -60,50 +76,89 @@ the more decision-relevant fact for Stage 2.
 
 ## Candidate semantics for review (proposal, not adopted)
 
-One conservative option that changes no rung, wall, or gate constant:
-refine only the empty-rows branch of the classifier into
+Two implementation routes exist, with different blast radius. The
+independent review (2026-11-17, Changes Requested on the first draft)
+identified that `completed_iterations` is NOT currently in the frozen
+classifier's scope — `classify_convergence` has signature
+`(std::vector<OfflineRungRow> rows, bool stopped_early)` only — so the
+two routes must not be presented as equally cheap.
 
-- `Inconclusive` only for situation A (an actual instrumentation
-  anomaly or zero completed iterations);
-- a budget outcome for situation B, either a new typed verdict such as
-  `BUDGET_NO_GO_NO_RUNG` or an explicit sub-reason on the existing
-  budget path, selected by the reviewer. The distinction is decided
-  purely from `rows.empty()`, `stopped_early`, and
-  `completed_iterations`, all already recorded, so no new measurement is
-  required.
+### Route 1 (recommended): probe/receipt-layer sub-reason, no frozen change
 
-The alternative of leaving the taxonomy as-is and recording situation B
-as a documented "inconclusive (budget, no fault)" with an explicit
-sub-reason is also acceptable to the reviewer; the requirement is that
-the two situations be distinguishable in the receipt and report, not
-that a new enum value exist.
+Keep the RFC 0049 classifier byte-identical and distinguish the two
+situations at the probe/receipt layer, where `completed_iterations` is
+already available on `RiverSolveResult`. This is the pattern the
+D316 deep-rerun already implements and validates
+(`rfc0050_deep_rerun.cpp`): it emits `target_rung_reached`,
+`budget_reached_partial_rungs`, or `budget_unreachable_first_rung`
+from `stopped_early` + `pure_menu_measured` + `iterations_completed`,
+with no change to the shared enum, its signature, or the native test
+that pins it (`test_rfc0047_offline_convergence.cpp`). Zero frozen
+code changes; the distinction is carried in the receipt and report.
+
+### Route 2 (higher cost): a new classifier enum, which changes a frozen API
+
+A new typed verdict such as `BUDGET_NO_GO_NO_RUNG` emitted by
+`classify_convergence` is NOT a local empty-branch edit. It requires
+(a) extending the frozen RFC 0049 function signature and header to
+accept `completed_iterations`, (b) updating the pinned native test that
+calls `classify_convergence({}, false)`, and (c) re-reviewing the
+shared component used by every RFC 0049/0050 gate. It also needs a new
+token in `verdict_token`. This route is only worth taking if the
+distinction must be enforced inside the shared classifier rather than
+at the bench boundary; the evidence so far does not require that.
+
+The recommended decision is Route 1. Either way, no rung, wall, gate,
+or threshold constant changes, and no new measurement is required
+because the deciding signals are already recorded.
 
 ## Impact on the six-anchor conclusion
 
 Per-iteration cost grows with action-node count, so deeper (lower-pot)
-anchors complete fewer iterations in the fixed wall. Estimated
-in-wall capacity falls from ~262 iterations on the smallest anchor to
-~73 on the largest (pot 10, 5,720 action nodes). Anchors whose capacity
-is below the first rung of 100 therefore fall into situation B; anchor
-4 did at 82, and the completed batch confirms anchor 5 (limped, pot 10,
-5,720 action nodes) does too at 69 iterations. This is now observed as a
+anchors complete fewer iterations in the fixed wall. Derivation of the
+capacity estimate: the Stage 1 calibration receipt measures a
+solve-only 6,870.268 ms/iteration on the smallest anchor (1,600 action
+nodes), giving 1,800,000 / 6,870.268 = 262 iterations in-wall (the
+receipt's own floor prints 261). Scaling linearly in action-node count
+— an explicit assumption, because the terminal showdown matvec is
+node-count-independent and only reach/backprop work scales with the
+tree — projects 262 / (5,720/1,600) = 73 iterations for the largest
+anchor. Measured capacity was 298 on the smallest and 69 on the
+largest, so the linear figure is ~6% optimistic at the deep end and is
+an upper bound, not a prediction. Anchors whose capacity is below the
+first rung of 100 therefore fall into situation B; anchor 4 did at 82,
+and the completed batch confirms anchor 5 (limped, pot 10, 5,720
+action nodes) does too at 69 iterations. This is now observed as a
 class, not an isolated case: two of the six anchors (the two deepest)
 cannot reach the iteration-100 first rung inside 1,800 s. The frozen
 100-iteration first rung is simply too expensive to reach in the
 per-process envelope on the deepest ledgers. The boundary report must
 list these two anchors separately as "verdict pending (budget, no
 fault)" rather than counting them among anchors with a clean typed
-convergence result, while their structural identity is only partially
-evidenced — the zero pure-menu term could not be scored because no rung
-fired, so it is neither confirmed nor refuted on these two ledgers.
+convergence result. The earlier concern that their zero pure-menu term
+was unmeasured is now resolved by the D316 fixed-rung rerun, which
+scored both anchors with `pure_menu_measured=1` and a measured zero;
+see `stage2-boundary-closure.md`.
 
-## Journal note for the anchor-4 rerun
+## Rerun protocol ownership and the D316 rerun
 
-Per directive, one journaled rerun is owed. The journal must record:
-the first-rung threshold is iteration 100; anchor 4 completed 82
-iterations, i.e. 18 iterations short of the first scoring point, with
-a per-iteration cost near 1,879,746 ms / 82 ~= 22.9 s; the run ended
-normally on the wall latch with no NaN, checksum, or flag anomaly. If
-the rerun again yields zero rungs for the same budget reason, it is
-recorded as BLOCKED with the explicit note that this is a budget
-conclusion, not an instrumentation failure.
+The "one journaled rerun, reproduction means BLOCKED" protocol belongs
+to situation A (instrumentation failure) only. Situation B does not
+inherit it: its standing treatment is the budget sub-reason / distinct
+budget verdict described above, because a clean run that simply cannot
+afford the first rung is not an apparatus fault and rerunning under the
+same fixed wall would reproduce by construction.
+
+The D316 deep-anchor rerun was a one-off directive action, not the
+standing case-B protocol. It changed the measurement shape (a fixed
+second-rung target with a 3x budget cap rather than the fixed 1,800 s
+wall) specifically to obtain comparable scored rungs. That 5,400 s cap
+is a new diagnostic gate not pre-registered in RFC 0050; its authority
+is the D316 directive, and a permanent diagnostic gate would need to be
+aligned with the RFC's frozen-wall amendment rule. The journal facts it
+established for anchor 4: the first-rung threshold is exactly iteration
+100; anchor 4 completed 82 iterations, 18 short of the first scoring
+point, at ~22.9 s/iteration (1,879,746 ms / 82), ending normally on the
+wall latch with no NaN, checksum, or flag anomaly. The rerun then
+reached iteration 200 under the 3x cap with `fault=0`, so no BLOCKED
+state applies and the budget explanation is confirmed.

@@ -33,6 +33,14 @@ no checkpoint was reached. That zero is explicitly NOT counted as a
 zero-menu result; the zero-menu claim for those two anchors was
 withdrawn and replaced by the fixed-rung evidence below.
 
+RSS semantics: the fixed-wall run is one process looping over six
+anchors, so its `peak_rss_kb` from getrusage is a process-level
+high-water mark, not an independent per-anchor measurement — the
+identical 1,515,332 KB on ranks 3-5 is a plateau, not equal per-anchor
+consumption. Per-anchor peak residency comes from the separate
+single-anchor deep-rerun processes (1.85 GB on srp pot 12, 2.18 GB on
+limped pot 10).
+
 ## D316 fixed-rung rerun (target iteration 200, 5,400 s 3x cap)
 
 Both deep anchors reached the target without hitting the cap, and every
