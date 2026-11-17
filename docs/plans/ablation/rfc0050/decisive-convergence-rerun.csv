@@ -1,0 +1,5 @@
+record_type,anchor,iteration,e_embed_bb,pure_menu_bb,pure_menu_measured,wall_ms
+rung,srp32,400,0.24053200,0.00000000,1,162412.482
+rung,srp32,800,0.14159415,0.00000000,1,323693.967
+rung,srp32,1600,0.17584872,-0.00000000,1,624402.385
+summary,srp32,completed=1600,rungs=3,stopped_early=0,wall_ms=644635.213,slope=-0.2259,regime=decayed_confirmed,plateau=0,e400=0.24053200,e800=0.14159415,e1600=0.17584872,peak_rss_kb=615260

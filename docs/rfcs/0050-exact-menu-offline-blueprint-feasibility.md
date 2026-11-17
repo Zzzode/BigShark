@@ -329,6 +329,17 @@ certify which regime holds past 200, so a longer wall or wider ladder
 is an amendment, not an argv change; the structural zero-menu identity
 is proven regardless of the convergence outcome.
 
+Decisive follow-up (D326, 2026-11-17): extending rank 0 to iteration
+1600 at 28 threads refuted the persistent-steep-law scenario. The
+average-strategy NashConv held the ~-1.0 slope only through iteration
+200, then flattened (200->400 slope -0.14) and turned non-monotonic
+(800->1600 slope +0.31, NashConv up 24.2%); the three-point 400/800/
+1600 OLS slope is -0.2259 with a best e_embed of 0.1416 BB at iteration
+800, still 71x over the gate, reproduced bitwise across two processes.
+See `docs/plans/ablation/rfc0050/final-evidence-and-conclusion.md` for
+the campaign-closing analysis; this measurement is a diagnostic, not a
+change to the frozen Stage 1 gate.
+
 ### Stage 2 — anchor boundary map
 
 Repeat Stages 0-1 across the six-ledger set, one process per anchor, and
