@@ -840,3 +840,25 @@ machinery is unmodified. Remaining risks are the B1 ASan blocker, the
 single gate run (mitigated by bitwise-identical calibration reruns),
 the two-rung limit on slope certification, and the un-authorized
 Stages 2/3.
+
+## Campaign Closure (2026-11-18): closed, not paused
+
+The later Stage 2 boundary, fixed-rung deep rerun, decisive
+three-rung convergence measurement, Stage 3 addendum review, and the
+warm-start legitimacy analysis are recorded under
+`docs/plans/ablation/rfc0050/`, summarized in
+`final-evidence-and-conclusion.md`. The campaign delivered its
+structural result — a measured zero pure-menu term on all six
+decision-bearing anchors — but the online 0.002 BB line is closed by
+three independent walls: no measured solver trajectory to the gate
+(best 0.1416 BB at iteration 800, 71x over, then non-monotone),
+campaign coverage that does not arithmetically close (134,459 classes;
+~5.78M core-hours even under the refuted persistent-law lower bound),
+and no zero-residual transport into the bounded online tree
+(22.13-31.43 BB embedding residual). Same-game warm-start was
+analytically foreclosed (it is the bitwise-neutral D307 resume
+trajectory; the linear average strategy is already cumulative). The
+standing restart criteria and their evidence standards are recorded in
+the decision record
+[docs/decisions/exact-menu-online-blueprint-closure.md](../decisions/exact-menu-online-blueprint-closure.md);
+a restart requires a new RFC and may not ride an amendment to this one.
