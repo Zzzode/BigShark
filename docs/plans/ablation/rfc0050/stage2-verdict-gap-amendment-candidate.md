@@ -138,7 +138,11 @@ fault)" rather than counting them among anchors with a clean typed
 convergence result. The earlier concern that their zero pure-menu term
 was unmeasured is now resolved by the D316 fixed-rung rerun, which
 scored both anchors with `pure_menu_measured=1` and a measured zero;
-see `stage2-boundary-closure.md`.
+see `stage2-boundary-closure.md`. That closure also records the RSS
+caveat (review m3): the fixed-wall receipt's `peak_rss_kb` is a
+process-level high-water mark across the six-phase single process, not
+an independent per-anchor measurement, with per-anchor residency taken
+from the separate single-anchor deep-rerun processes.
 
 ## Rerun protocol ownership and the D316 rerun
 
