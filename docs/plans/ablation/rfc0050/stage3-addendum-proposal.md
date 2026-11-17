@@ -59,7 +59,8 @@ with fail-closed load and no best-effort recovery.
 - Measured size: the servable average-strategy snapshot is 41.5 MB on
   the smallest anchor (1,600 action nodes) and scales to roughly 148 MB
   on the largest (5,720 nodes), ~3.58x by action-node count. Only the
-  41.5 MB figure is a measured receipt; the 141-148 MB largest-anchor
+  41.5 MB figure is a measured receipt; the ~141 MiB (~148 MB)
+  largest-anchor
   figure is a linear action-node extrapolation, not a receipt.
 
 ### 3b — serving path and its quality gate (the actual hard part)
@@ -72,7 +73,9 @@ verified against production code rather than an earlier mistaken draft:
   (`resident_policy.hpp:kDefaultResidentBudgetBytes`), with an existing
   mmap + lazy LRU on-demand residency mechanism (RFC 0012/0035);
 - per-resolve envelope: p95 10 s / max 12 s, RSS 1 GiB, at most
-  1,000,000 information sets (`resolver.hpp`);
+  1,000,000 information sets. The 10 s p95, 1 GiB RSS, and infoset cap
+  are in `resolver.hpp`; the 12 s max is the RFC 0047 G1 figure
+  (`rfc0047_convergence_cert_probe.cpp:kG1MaxMs` and the RFC 0047 doc);
 - the 1 MiB constant in the codebase is the wire frame limit
   (`protocol.hpp:kMaxFrameBytes`), not a resident budget, and there is no
   sub-second decision requirement.
