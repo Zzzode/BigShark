@@ -10,6 +10,7 @@ protocol, and development documentation.
 | Area | Document | Status | Purpose |
 | --- | --- | --- | --- |
 | Decision | [Exact-menu online blueprint closure](decisions/exact-menu-online-blueprint-closure.md) | Current | Why the RFC 0050 exact-menu online 0.002 BB line is closed, the three blocking walls, and the falsifiable restart criteria |
+| Decision | [M2 certification terminal state](decisions/m2-certification-terminal-state.md) | Current | Why M2 is uncertifiable: the cap-1/cap-0 menu dilemma has no feasible column, the B0-margin restart criterion R4, and the G5/production/cap-1-ship downstream states |
 | Architecture | [System overview](architecture/system-overview.md) | Current | Components, boundaries, data flow, and runtime safety |
 | Design | [GTO engine](design/gto-engine.md) | Current | Implemented decision logic, solvers, range tracking, RFC 0005 strategy artifacts, and limitations |
 | Reference | [Protobuf engine protocol](reference/protobuf-engine-protocol.md) | Current | IDL, pinned generation, compatibility baseline, and conformance vectors |

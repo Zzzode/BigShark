@@ -9,7 +9,11 @@ artifacts served through the online bounded-menu path against the frozen
 This record exists so the line is not re-walked. It states what the
 RFC 0050 campaign proved, the three independent walls that close the
 online route, and the exact, falsifiable conditions under which a
-restart would be legitimate. "Run it longer" is not one of them.
+restart would be legitimate. "Run it longer" is not one of them. The
+companion record
+[m2-certification-terminal-state.md](m2-certification-terminal-state.md)
+formalizes the same evidence as the closed cap-1/cap-0 menu dilemma and
+adds the M2-specific B0-margin restart criterion (R4).
 
 ## 1. Decision
 
