@@ -1,0 +1,9 @@
+record_type,family,pot,contribution0,contribution1,first_rung_iteration_threshold,target_rung_iteration,cap_wall_ms,iteration,bounded_nc_bb,e_embed_bb,pure_menu_bb,pure_menu_measured,wall_ms,peak_rss_kb
+rung,srp,12,6,6,100,200,5400000,100,0.46503812,0.46503812,0.00000000,1,2276135.530,1852008
+rung,srp,12,6,6,100,200,5400000,200,0.20692830,0.20692830,0.00000000,1,4545004.505,1852204
+summary,srp,12,6,6,100,200,5400000,200,,,,1,4606642.804,1852204
+# reach target_rung_reached srp(12): stopped_early=0 completed=200 measured=1 fault=0
+rung,limped,10,5,5,100,200,5400000,100,0.42518013,0.42518013,-0.00000000,1,2586518.051,2180824
+rung,limped,10,5,5,100,200,5400000,200,0.20231846,0.20231846,-0.00000000,1,5181342.971,2180860
+summary,limped,10,5,5,100,200,5400000,200,,,,1,5253821.301,2180860
+# reach target_rung_reached limped(10): stopped_early=0 completed=200 measured=1 fault=0
