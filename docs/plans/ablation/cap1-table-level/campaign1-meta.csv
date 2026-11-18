@@ -1,0 +1,6 @@
+run,log,seed,hands,served,fallbacks,fallback_rate,wall_s
+station,hu-station-400-seed401.log,401,400,1288,200,0.1344,673.9
+folder,hu-folder-400-seed402.log,402,400,238,200,0.4566,160.2
+passive-random,hu-passive-random-400-seed403.log,403,400,714,200,0.2188,379.5
+uniform,hu-uniform-400-seed404.log,404,400,742,600,0.4471,342.4
+srp-passive,hu-srp-passive-400-seed405.log,405,400,594,1000,0.6274,259.3

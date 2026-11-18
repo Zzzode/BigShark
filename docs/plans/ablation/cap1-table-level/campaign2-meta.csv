@@ -1,0 +1,6 @@
+run,log,seed,hands,served,fallbacks,fallback_rate,wall_s
+r2-station,r2-station-400-seed501.log,501,400,1314,200,0.1321,653.1
+r2-folder,r2-folder-400-seed502.log,502,400,242,200,0.4525,161.7
+r2-passive,r2-passive-random-400-seed503.log,503,400,658,200,0.2331,339.5
+r2-uniform,r2-uniform-400-seed504.log,504,400,701,628,0.4725,324.9
+r2-srppassive,r2-srp-passive-400-seed505.log,505,400,616,1000,0.6188,272.4
