@@ -1,0 +1,20 @@
+build,arm,branch,per_occurrence_per_seat_bb,per_hand_bb,bb_per_100,se_bb_per_100
+cap4-20k,uniform,lower_other_zero,0.03969408,0.002216,0.2216,0.0186
+cap4-20k,br_favorable,lower_other_zero,2.36305820,0.131937,13.1937,1.1075
+cap4-20k,uniform,upper_other_eq_w1_proxy,0.03969408,0.013661,1.3661,0.0411
+cap4-6k,uniform,lower_other_zero,0.03901312,0.002178,0.2178,0.0183
+cap4-6k,br_favorable,lower_other_zero,2.38105417,0.132942,13.2942,1.1159
+cap4-6k,uniform,upper_other_eq_w1_proxy,0.03901312,0.013427,1.3427,0.0404
+cap3-20k,uniform,lower_other_zero,0.18875485,0.010539,1.0539,0.0885
+cap3-20k,br_favorable,lower_other_zero,7.92504557,0.442482,44.2482,3.7142
+cap3-20k,uniform,upper_other_eq_w1_proxy,0.18875485,0.064963,6.4963,0.1957
+
+# crude-factor audit (not deliverable numbers)
+build,two_seat_e_embed,crude_bb_per_100,precise_lower_bb_per_100,ratio_precise_over_crude
+cap4-20k,0.07938816,0.1405,0.2216,1.5774
+cap4-6k,0.07802624,0.1381,0.2178,1.5774
+cap3-20k,0.37750969,0.6681,1.0539,1.5774
+
+# reference: cap-1 sealed table-level 55.1974 BB/100
+# cap-1 T6U per-seat 9.8861, union per-seat 15.62244834
+# frequencies: limp 0.055833 other 0.288333 allin 0.147500 srp 0.000000

@@ -1,38 +1,43 @@
-# Decision Support: Serving Cost of the Cap-3 / Cap-4 Wide Menus
+# Decision Support: Cap-4 Serving Menu and the Cap-3 Fallback
 
 Status: Current
 Date: 2026-11-19
-Scope: read-only decision support for the product-selected serving range
-"support cap-3 to cap-4". Every number comes from bench receipts taken on
-this machine; no engine, sealed instrument, protocol, or quality contract
-was changed, and nothing is mounted, shipped, or pushed. The certification
-gate is not relaxed (section 4). Companion to
-[m2-certification-terminal-state.md](m2-certification-terminal-state.md),
-[cap1-online-quality-and-risk.md](cap1-online-quality-and-risk.md), and the
-D-370 closure note
-[../plans/ablation/rfc0049/gate2/d370-cap4-convergence-closure.md](../plans/ablation/rfc0049/gate2/d370-cap4-convergence-closure.md).
+Scope: D-380 decision support for the product-selected serving range
+"support cap-3 to cap-4". All numbers come from bench receipts and offline
+analysis tooling under `../plans/ablation/cap34-table-level/`; no engine,
+sealed instrument, protocol, or existing contract number was changed, and
+nothing is mounted, deployed, or pushed. The D-380 decisions are quoted,
+not rewritten: certification rail unchanged at <=0.002 BB per decision;
+new serving rail at <=1.0 BB/100 table-level residual (target <=0.5);
+serving menu cap-4 with cap-3 as fallback only; serving iteration count
+frozen at 20,000 (changing it requires re-measuring the menu term).
+Supersedes the D-371 version of this document with the precise BB/100
+calculation and coverage-cost curve; companion to
+[cap1-table-level-expectation.md](cap1-table-level-expectation.md), whose
+55.20 BB/100 figure is retained unchanged as the cap-1 comparison.
 
-## 1. Headline
+## 1. Two-track verdict (separate statements, not merged)
 
-Both wide menus converge to a stable, non-negligible structural gap:
+- **Certification rail: NOT PASSED.** Cap-4 converged e_embed is 0.0794 BB
+  against the frozen 0.002 BB per-decision gate — about 40x over (39.7x at
+  20,000 iterations; 39.0x at the 6,000-iteration floor). This sentence
+  stands regardless of the serving-rail result below.
+- **Serving rail: PASSED ON MEASURED CLASSES, CONDITIONAL ON THE UNMEASURED
+  RIVER CLASS.** The precise table-level expectation for cap-4 at 20,000
+  iterations is **0.2216 BB/100** (95% interval 0.185-0.258) on the same
+  lower-branch discipline as the cap-1 55.20 certificate — inside the
+  0.5 target and far under the 1.0 hard rail. The proxy upper band that
+  charges the unmeasured `other` river class at the w1 severity is
+  1.37 BB/100, above the hard rail; the rail cannot be closed end-to-end
+  until that class is measured (section 6).
 
-- **cap-4 at 20,000 iterations: e_embed 0.0794 BB**, i.e. **0.0397 BB per
-  player per dealt hand, about 2.0% of the 2 BB anchor pot**;
-- **cap-3 at 20,000 iterations: e_embed 0.3775 BB**, i.e. **0.1888 BB per
-  player per dealt hand, about 9.4% of pot**.
-
-cap-4 is 4.76x better than cap-3 on converged exploitability at 3.08x the
-per-anchor solve cost. Neither is within 0.002 BB. On both caps the
-policy's own NashConv keeps converging while the pure-menu structural term
-bottoms and then rises: convergence reveals the menu restriction rather
-than removing it.
-
-## 2. Converged quality, side by side
+## 2. Converged cap-3 / cap-4 quality side by side
 
 Configuration: w1 deep check-to-river anchor (pot 4 chips, big blind 2,
 full 1,081-combo ranges), identity(k) menu, seedless linear-averaging RM+,
-28 threads, D164 `EmbeddedGame` evaluator, frozen identity
-`e_embed = bounded NC + pure_menu`. All values BB, summed over both seats.
+28 threads, 20,000 iterations, D164 `EmbeddedGame` evaluator, frozen
+identity `e_embed = bounded NC + pure_menu`. BB values are two-seat sums;
+per-hand values divide by two for the single engine seat.
 
 | Quantity (Uniform arm) | cap-3 @20,000 | cap-4 @20,000 | cap-4 @6,000 (measured floor) |
 | --- | --- | --- | --- |
@@ -40,101 +45,197 @@ full 1,081-combo ranges), identity(k) menu, seedless linear-averaging RM+,
 | Bounded NC (policy's own error) | 0.00340111 | 0.00714721 | 0.01205936 |
 | Pure-menu structural term | 0.37410857 | 0.07224095 | 0.06596689 |
 | e_embed (total exact exploitability) | 0.37750969 | 0.07938816 | 0.07802624 |
-| e_embed vs M = 0.002 | 188.8x over | 39.7x over | 39.0x over |
-| e_embed vs B0 margin 1.28e-3 | 294.9x over | 62.0x over | 61.0x over |
-| Per-player loss per dealt hand (e_embed / 2) | 0.18875 BB | 0.03969 BB | 0.03901 BB |
+| e_embed vs 0.002 certification gate | 188.8x over | 39.7x over | 39.0x over |
+| Per-player loss per dealt hand | 0.18875 BB | 0.03969 BB | 0.03901 BB |
 | Share of the 2 BB anchor pot | 9.44% | 1.98% | 1.95% |
-| Pure-menu component per hand | 0.18705 BB | 0.03612 BB | 0.03298 BB |
-| BrFavorable arm e_embed (adversarial bound) | 15.8501 | 4.7261 | 4.7621 |
+| **Precise table-level BB/100 (lower branch)** | **1.0539** | **0.2216** | **0.2178** |
+| Proxy upper band BB/100 (other = w1 severity) | 6.4963 | 1.3661 | 1.3427 |
+| BrFavorable adversarial BB/100 (lower branch) | 44.2482 | 13.1937 | 13.2942 |
 | Peak RSS | 35.1 MB | 63.7 MB | 63.5 MB |
 
-Structural-term trajectory. cap-3's sealed reach_bound curve has pure_menu
-0.3474 BB at 3,000 iterations; the 20,000-iteration EmbeddedGame reading is
-0.3741 BB (+7.7%) while bounded NC falls 0.0273 -> 0.0034. cap-4's pure_menu
-bottoms near iteration 1,500 (0.0640) and rises to 0.0722 at 20,000. These
-are converged structural levels, not truncated transients. For cap-4 the
-best measured total is the 6,000-iteration point (0.0780 BB); pushing to
-20,000 slightly worsens e_embed while improving the policy's own NashConv.
+cap-4 is 4.76x better than cap-3 on converged exploitability at 3.08x the
+per-anchor solve cost; cap-3's own lower-branch BB/100 (1.0539) already
+exceeds the 1.0 serving hard rail, which is the numeric basis for its
+fallback-only role under D-380. The 6,000-iteration cap-4 build is
+marginally better than the 20,000 one on total exploitability and costs
+roughly one third, but D-380 freezes the serving count at 20,000
+(section 5); the 6,000 column is retained as evidence, not as a serving
+configuration.
 
-Instrument caveat. The 200-3,000-iteration anchors were scored by
-`reach_bound_from_snapshot`; the 6,000/20,000-iteration anchors by the
-independent
-`EmbeddedGame` evaluator. Both implement the same independently reviewed
-frozen T6 identity, but no shared-iteration bitwise equivalence receipt
-exists between the two evaluators. Within-instrument comparisons (the
-6,000 -> 20,000 tail direction) are unaffected.
+## 3. Precise table-level BB/100 — method and sources
 
-Context. Sealed cap-1 20,000-iteration e_embed readings are 20.69 BB (T6
-direct cap-0 reference) to 31.19 BB (union reference). The cap-3/cap-4
-levels here are roughly two orders of magnitude below cap-1, but they are
-measured under the direct cap-0 evaluator and are not a like-for-like
-subtraction.
+The D-380 audit found the working estimate `(55.20 / 31.19) x 0.0794
+~= 0.14 BB/100` unfit for delivery: it mixes two measurement scopes. The
+31.19 BB divisor is the cap-1 **union-reference** w1 two-seat value (it
+also prices missing bet-sizing actions), while 55.20 is built from the
+**T6 direct cap-0 reference** per-seat limped mean (9.8861 BB). The
+precise calculation reuses the D-346 frequency machine unchanged and
+substitutes the cap-3/cap-4 per-occurrence severity at the same scope.
 
-## 3. Campaign arithmetic over 134,459 canonical classes
+Method (identical identity to
+[cap1-table-level-expectation.md](cap1-table-level-expectation.md)
+sections 2.1 and 5.1):
 
-Per-anchor walls are measured process wall times at 28 threads; the
-campaign multiplies them by the 134,459-class frontier with no learning,
-deduplication, or queue overhead assumed. "100 slots" means 100 parallel
-28-thread jobs, i.e. about 2,800 hardware threads running 24/7.
+```
+per-hand loss = P(limp_ctr) x (e_embed / 2)
+BB/100        = 100 x per-hand loss
+```
 
-| Build | Wall per anchor (Uniform) | Machine-hours | Single box (8,760 h/y) | 100 slots |
-| --- | --- | --- | --- | --- |
-| cap-3, 20,000 iters | 0.1340 h (482 s) | 18,014 | 2.06 years | 7.5 days |
-| cap-4, 20,000 iters | 0.4118 h (1,483 s) | 55,375 | 6.32 years | 23.1 days |
-| cap-4, 6,000 iters | 0.1286 h (463 s) | 17,296 | 1.97 years | 7.2 days |
+- `P(limp_ctr) = 134 / 2,400 = 0.0558333`, the pooled passive frequency
+  over the two independent 1,200-hand campaigns (sealed
+  `both-summary.csv`; the pooled passive corpus has zero SRP
+  check-to-river hands by construction, so no second term appears).
+- `e_embed / 2` converts the two-seat summed exploitability to the
+  per-engine-seat loss, exactly as table-expectation.mjs halves the T6
+  values. The cap-3/cap-4 EmbeddedGame evaluator is a direct cap-0
+  reference, matching the T6 scope.
+- The lower branch charges zero for the unmeasured `other` river class
+  and treats all-in runouts (14.75% of hands) as structurally zero, the
+  same discipline as the 55.20 certificate.
 
-Each process also runs the BrFavorable completion arm (a second full
-solve); counting both arms doubles the totals: cap-3 36,154 machine-hours
-(4.13 years / 15.1 days), cap-4 20k 111,360 machine-hours (12.71 years /
-46.4 days), cap-4 6k 34,462 machine-hours (3.93 years / 14.4 days).
-Measured CPU-time is 15.4-15.8x wall time; Uniform-arm campaign CPU-hours
-are about 277k (cap-3) and 875k (cap-4 20k).
+Results and the crude-factor audit (full table in
+`../plans/ablation/cap34-table-level/cap34-table-expectation.csv`):
 
-The D-371 cross-check figure (cap-4 20k, 0.41 h/anchor -> 55,375 machine-
-hours, 6.3 years single box, ~23 days on 100 slots) reproduces exactly.
-The cap-4 6,000-iteration build is notable: it is the measured quality
-floor (0.0780 BB, marginally better than 20k) at roughly one third of the
-20k campaign cost.
+| Build | Precise lower BB/100 | Crude-factor estimate | Ratio |
+| --- | --- | --- | --- |
+| cap-4 @20,000 | 0.2216 | 0.1405 | 1.58x |
+| cap-4 @6,000 | 0.2178 | 0.1381 | 1.58x |
+| cap-3 @20,000 | 1.0539 | 0.6681 | 1.58x |
 
-## 4. Certification position — gate unchanged
+The deviation is 1.58x — under the 2x re-examination threshold D-380 set,
+so the 1.0 BB/100 rail does not require revisiting on this evidence. The
+1.58x factor is structural, not sampled: the correct implicit conversion
+of a direct-scope two-seat value is `100 x 0.055833 / 2 = 2.7917` per BB,
+while the crude factor 55.20/31.19 = 1.7698 is the union-scope conversion
+misapplied to a direct-scope number.
 
-The M = 0.002 BB river term and the B0 residual margin 1.28e-3 BB are
-**not relaxed, amended, or reinterpreted** by this document. Neither cap
-passes: cap-3 is 188.8x over M and cap-4 is 39.0-39.7x over M at their
-best measured points. The numbers above are the measured practical price
-of serving within the user-selected cap-3/cap-4 range — per-hand expected
-loss, pot share, and build cost — not a certification, a quality-laundering
-re-baselining, or evidence toward restart criteria R1-R4. No
-`certified_bound` claim attaches to either menu.
+Bands. The BrFavorable completion scales the cap-4 lower branch to
+13.19 BB/100 and cap-3 to 44.25 BB/100 — adversarial envelopes in the
+same role as the cap-1 document's 438-601 BB/100 rows. The proxy upper
+band applies the w1 per-seat severity to the `other` river class
+(28.83% of pooled hands, no cap-3/cap-4 receipt exists) purely to bracket
+the unknown; it is a labeled assumption, not a measurement.
 
-## 5. Remaining unmeasured items
+## 4. Coverage-cost curve over the 134,459 canonical classes
 
-1. **Real opponent reach frequencies.** The existing table-level 55.20
-   BB/100 figure (D-346) weights cap-1 per-occurrence losses by frequencies
-   observed in two 2,400-hand passive-style campaigns under cap-0
-   conditional arrival rates. No analogous reach-weighted BB/100 exists for
-   cap-3 or cap-4; the per-hand figures in section 2 are exact
-   per-anchor-occurrence rates, assuming the anchor is reached.
-2. **Multi-way play.** Every measurement here is heads-up. Three-or-more-seat
-   trees have different menus, reaches, and showdown normalizations; no
-   cap-3/cap-4 multi-way number exists.
-3. **Marginal benefit toward cap-6.** The only cap-5/cap-6 readings are
-   truncated Gate 2 rows (pure_menu 0.0402 BB at 562 iterations and
-   0.00959 BB at 227; D164 cap-6 0.00610 BB at 1,000), all unconverged.
-   The direction indicates further widening shrinks the structural term,
-   but no converged cap-5/cap-6 value exists, and the D-370 branch-3
-   result pre-closed the conditional 30.6-hour cap-6 run. cap-6 also costs
-   ~802 MB RSS and ~8 s per iteration versus cap-4's 64 MB and ~74 ms.
-4. **Six-stratum and all-root coverage.** All D-370/D-371 numbers are the
-   single w1 anchor root. The per-stratum MAX discipline requires repeating
-   the build across the six frozen strata; the campaign arithmetic assumes
-   the per-anchor cost is representative.
+The single full-universe number "134,459 classes = 55,375 machine-hours"
+is correct but unactionable. Each canonical river board class is an orbit
+of concrete five-card boards under the 24 suit permutations; its orbit
+size is its exact deal-frequency mass under a uniform river deal, the
+same joint-deal normalization the seedless engine uses. The analysis
+tool `board-orbit-coverage.mjs` re-derives every orbit with the ctest-
+pinned canonicalization rule and passes three sealed invariants:
+134,459 classes, total mass C(52,5) = 2,598,960, and 1,287 monochrome
+classes each of orbit size 4. Only three orbit sizes exist:
 
-## 6. Receipts and traceability
+| Orbit size (concrete boards per class) | Classes | Share of classes |
+| --- | --- | --- |
+| 4 | 2,301 | 1.71% |
+| 12 | 48,503 | 36.07% |
+| 24 | 83,655 | 62.22% |
 
-- cap-4: `../plans/ablation/rfc0049/gate2/d370-w1-identity-cap4-embed-{20000,6000}.csv`
-  and `d370-cap4-convergence-closure.md` (committed as D-370).
-- cap-3: `../plans/ablation/rfc0049/gate2/d371-w1-identity-cap3-embed-20000.csv`
-  (RC 0, empty stderr; the `*.log` runner file is git-ignored).
-- Sealed comparison curves: `w1-identity-cap3.csv`, `w1-identity-cap4.csv`,
-  `w1-identity-cap5.csv`, `w1-identity-cap6.csv` in the same directory.
+Mass is therefore close to uniformly spread across the class universe —
+there is no small hot subset that buys most of the coverage. Ranking
+classes by descending deal mass and applying the measured per-anchor
+walls (one w1-ledger solve per class, 28 threads; "100 slots" means 100
+parallel 28-thread jobs, about 2,800 hardware threads 24/7):
+
+| Deal-mass coverage | Classes needed | Share of universe | cap-3 20k mach-h / days | cap-4 20k mach-h / days | cap-4 6k mach-h / days |
+| --- | --- | --- | --- | --- | --- |
+| 50% | 54,145 | 40.27% | 7,254 / 3.02 | 22,299 / 9.29 | 6,965 / 2.90 |
+| 80% | 89,609 | 66.64% | 12,006 / 5.00 | 36,904 / 15.38 | 11,527 / 4.80 |
+| 95% | 122,096 | 90.81% | 16,358 / 6.82 | 50,283 / 20.95 | 15,706 / 6.54 |
+| 99% | 130,760 | 97.25% | 17,519 / 7.30 | 53,851 / 22.44 | 16,821 / 7.01 |
+| 100% | 134,459 | 100.00% | 18,014 / 7.51 | 55,375 / 23.07 | 17,297 / 7.21 |
+
+Direct answers: half of all river deal mass needs 40% of the classes and
+9.3 days of 100-slot compute at the cap-4 20k serving configuration;
+95% needs 91% of classes and 21.0 days. The marginal 50%->95% step alone
+adds 27,984 machine-hours (67,951 further classes), while the final
+99%->100% point adds 1,524 machine-hours (3,699 classes): mass is
+concentrated enough that the last percent is cheap, but not enough that
+any small subset reaches high coverage. The cap-4 6,000-iteration build
+tracks cap-3 20k cost at every level while retaining the 4.76x quality
+advantage. Scope: this weights board classes at one betting ledger (the
+w1 campaign line); a full eleven-ledger build multiplies by the ledger
+structure, whose distribution is the opponent-action unknown in
+section 6.
+
+## 5. Iteration freeze at 20,000 and why
+
+D-380 freezes the serving iteration count at 20,000; changing it requires
+re-measuring the menu term. The measured evidence supports the freeze
+because the structural term is non-monotone, so iteration count is a
+quality-sensitive serving parameter rather than a tunable budget:
+
+| cap-4 point | Iterations | Pure-menu term (BB) |
+| --- | --- | --- |
+| sealed Gate 2 | 1,500 | 0.06397012 |
+| D-370 | 6,000 | 0.06596689 |
+| D-370 | 20,000 | 0.07224095 |
+
+The policy's own bounded NashConv keeps falling across the same range
+(0.0341 -> 0.0121 -> 0.0071) while the menu term bottoms and rises:
+convergence reveals the restriction, it does not price it away. No
+interpolation across iteration counts is valid; every serving-count
+change needs a fresh same-instrument menu-term receipt.
+
+## 6. Unmeasured items and risks
+
+1. **Real opponent reach frequencies.** Both the 55.20 cap-1 figure and
+   the 0.22 cap-4 figure use frequencies from a mounted cap-0 resolver in
+   the 2,400-hand passive-style campaigns. A cap-4 engine generates its
+   own arrival distribution; qualitative direction (less fold pressure,
+   higher river reach) is recorded in the cap-1 document but no
+   cap-4-conditional frequency has been measured. The 0.22 BB/100 is the
+   best available estimate, not a cap-4-certified rate.
+2. **The `other` river class (28.83% of pooled hands).** No cap-3/cap-4
+   per-occurrence measurement exists for rivers reached after flop/turn
+   aggression, and no raised-srp (pot-8) cap-3/cap-4 anchor has been run.
+   The proxy upper band (1.37 BB/100 for cap-4) is the quantified
+   consequence; closing it requires one pot-8 cap-4 anchor and an
+   aggressive-line anchor, each roughly one hour of bench time at
+   20,000 iterations.
+3. **Heads-up only.** Every severity and frequency here is two-seat. No
+   multi-way BB/100, orbit weighting, or menu residual exists; 3+ seat
+   trees have different menus, reaches, and normalizations.
+4. **cap-5/cap-6 marginal benefit is unconverged.** The only readings
+   remain the truncated Gate 2 rows (pure_menu 0.0402 BB at 562
+   iterations, 0.00959 at 227; D164 cap-6 0.00610 at 1,000). The D-370
+   branch-3 result pre-closed the conditional 30.6-hour cap-6 run; cap-6
+   also carries ~802 MB RSS and ~8 s per iteration versus cap-4's 64 MB
+   and ~74 ms.
+5. **Single anchor and single evaluator.** All cap-3/cap-4 values are
+   the w1 root; the 200-3,000-iteration anchors use reach_bound while
+   6,000/20,000 use EmbeddedGame (same frozen identity, no
+   shared-iteration bitwise equivalence receipt). Six-stratum and
+   all-root coverage is unmeasured, and the campaign arithmetic assumes
+   the w1 per-anchor wall is representative.
+
+## 7. Relationship to the cap-1 decision records
+
+[cap1-table-level-expectation.md](cap1-table-level-expectation.md) is
+not rewritten or re-scaled: its 55.20 BB/100 (95% interval 46.1-64.3)
+remains the sealed cap-1 table-level certificate under the cap-0-
+conditional frequencies, and its raw campaign CSVs are the direct input
+to section 3. The cap-4 0.22 BB/100 and cap-1 55.20 BB/100 share one
+frequency machine and one per-seat convention, so their ratio (~249x
+less table-level expected loss) is internally consistent; they differ in
+per-occurrence severity (0.0397 vs 9.8861 BB per seat), not in weighting.
+[cap1-online-quality-and-risk.md](cap1-online-quality-and-risk.md) and
+[m2-certification-terminal-state.md](m2-certification-terminal-state.md)
+keep their standing: nothing here satisfies restart criteria R1-R4, and
+no `certified_bound` claim attaches to cap-3 or cap-4.
+
+## 8. Receipts and reproducibility
+
+- Severity receipts: `../plans/ablation/rfc0049/gate2/d370-w1-identity-cap4-embed-{20000,6000}.csv`
+  and `d371-w1-identity-cap3-embed-20000.csv` (all RC 0, empty stderr).
+- BB/100 tooling and output:
+  `../plans/ablation/cap34-table-level/cap34-table-expectation.mjs`
+  and `.csv` (deterministic; sealed frequencies and D-370/D-371
+  severities only).
+- Coverage tooling and output:
+  `../plans/ablation/cap34-table-level/board-orbit-coverage.mjs`
+  and `.csv` (~17 s, three sealed invariants asserted at run time).
+- Frequency inputs: `../plans/ablation/cap1-table-level/both-summary.csv`.
