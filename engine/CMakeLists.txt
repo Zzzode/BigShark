@@ -717,6 +717,9 @@ target_link_libraries(bigshark-rfc0047-turn-g6-report PRIVATE bigshark_rfc0047_b
 # RFC 0047 S3/G5 manual cap-1 vs cap-0 menu-materiality probe (NOT a CTest).
 add_executable(bigshark-rfc0047-cap-materiality benchmarks/rfc0047/rfc0047_cap_materiality.cpp)
 target_link_libraries(bigshark-rfc0047-cap-materiality PRIVATE bigshark_rfc0047_bench)
+add_executable(bigshark-rfc0047-ledger-embed-probe
+  benchmarks/rfc0047/rfc0047_ledger_embed_probe.cpp)
+target_link_libraries(bigshark-rfc0047-ledger-embed-probe PRIVATE bigshark_rfc0047_bench)
 
 # RFC 0048 Path A stage-1 (D176) manual offline wide-menu/grid footprint
 # census (NOT a CTest); solve-free public-tree build cost vs the envelope.

@@ -1,0 +1,41 @@
+# D-382 other-bucket weights (shares of 692 pooled other hands)
+weight,L1_limped1_pot8,pot8,0.0751,hands=52
+weight,L2_limped2_pot10,pot10,0.2962,hands=205
+weight,L3_limped3_pot16,pot16,0.6286,hands=435
+
+practice_pot,hands,share,mapped_ledger_pot
+8,52,0.0751,8
+10,104,0.1503,10
+11,57,0.0824,10
+12,44,0.0636,10
+14,102,0.1474,16
+16,37,0.0535,16
+18,86,0.1243,16
+20,46,0.0665,16
+22,37,0.0535,16
+25,47,0.0679,16
+28,43,0.0621,16
+40,37,0.0535,16
+
+arm,basis,per_seat_severity_bb,other_bucket_bb_per_100,ci_low,ci_high
+uniform,empirical_weighted,0.243594,7.0236,6.5822,7.4651
+br_favorable,empirical_weighted,2.983106,86.0129,80.6065,91.4193
+uniform,min-ledger_fixed_weight,0.222570,6.4174,,
+uniform,max-ledger_fixed_weight,0.260498,7.5110,,
+br_favorable,min-ledger_fixed_weight,2.671649,77.0326,,
+br_favorable,max-ledger_fixed_weight,3.069675,88.5090,,
+
+# total table-level (D-380 lower branch 0.2216 + other bucket)
+total_uniform_bb_per_100,7.2452
+total_uniform_ci_high,7.6867
+other_brfav_bb_per_100,86.0129
+f_other,0.288333,se,0.009247
+
+# D-382 pre-registered judgment (Uniform arm)
+rule_point_le_1.0,FAIL,point=7.0236
+rule_ci_high_le_1.0,FAIL,ci_high=7.4651
+rule_point_le_0.5_keep_threshold,FAIL
+
+# SRP anchor cross-check (zero passive-corpus weight; not in bucket)
+srp0_pot8,uniform,e_embed=0.44514081,per_seat=0.222570
+srp0_pot8,br_favorable,e_embed=5.34329845,per_seat=2.671649

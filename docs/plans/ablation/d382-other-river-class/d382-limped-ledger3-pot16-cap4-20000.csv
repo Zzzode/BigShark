@@ -1,0 +1,4 @@
+# d382_ledger_embed family=limped family_index=3 pot=16 contributions=8/8 leaf_count=96 iters=20000 threads=28 cap=4
+cap,completion,cap0_action_nodes,online_action_nodes,mapped_nodes,online_nash_conv_bb,e_embed_bb,pure_menu_term_bb,gate_m_bb,gate_pass,wall_ms,cpu_ms,rss_peak_kb,rss_current_kb
+4,uniform,3344,344,344,0.00489256,0.47628157,0.47138901,0.0020,0,1565453.278,25143961.261,67832,8896
+4,br_favorable,3344,344,344,0.00489256,6.13934936,6.13445681,0.0020,0,1569505.986,25061022.932,67920,8960
