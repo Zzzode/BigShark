@@ -9,9 +9,10 @@
 // D164 CSV columns) and adds no solver, certifier, or production surface.
 // Terminal all-in ledgers (zero action nodes) are rejected structurally.
 //
-// Usage: bigshark-rfc0047-ledger-embed-probe FAMILY FAMILY_INDEX ITERS THREADS CAP
+// Usage: bigshark-rfc0047-ledger-embed-probe FAMILY FAMILY_INDEX ITERS THREADS CAP [ARM]
 //        FAMILY is "limped" or "srp"; FAMILY_INDEX follows the sealed
-//        stage0a eleven-ledger census ordering.
+//        stage0a eleven-ledger census ordering; ARM defaults to both and
+//        accepts uniform|br_favorable|both for bounded-wall campaigns.
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -19,6 +20,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "cap_embedding.hpp"
 #include "ledger_census.hpp"
@@ -66,8 +68,9 @@ void print_embed_row(const CapMateriality& m, CapExtensionCompletion arm, double
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 6) {
-    std::fprintf(stderr, "usage: %s FAMILY(limped|srp) FAMILY_INDEX ITERS THREADS CAP\n", argv[0]);
+  if (argc != 6 && argc != 7) {
+    std::fprintf(stderr, "usage: %s FAMILY(limped|srp) FAMILY_INDEX ITERS THREADS CAP [ARM]\n",
+                 argv[0]);
     return 2;
   }
   const std::string family = argv[1];
@@ -90,6 +93,20 @@ int main(int argc, char** argv) {
     return 2;
   }
   const std::uint8_t cap = static_cast<std::uint8_t>(cap_raw);
+  std::vector<CapExtensionCompletion> arms{CapExtensionCompletion::Uniform,
+                                           CapExtensionCompletion::BrFavorable};
+  if (argc == 7) {
+    const std::string arm_arg = argv[6];
+    if (arm_arg == "uniform")
+      arms = {CapExtensionCompletion::Uniform};
+    else if (arm_arg == "br_favorable")
+      arms = {CapExtensionCompletion::BrFavorable};
+    else if (arm_arg != "both") {
+      std::fprintf(stderr, "arm must be uniform, br_favorable, or both; got '%s'\n",
+                   arm_arg.c_str());
+      return 2;
+    }
+  }
 
   const std::vector<LedgerAnchor> anchors = enumerate_ledger_anchors();
   const LedgerAnchor* target = nullptr;
@@ -123,8 +140,7 @@ int main(int argc, char** argv) {
       static_cast<unsigned long long>(iters), threads, static_cast<unsigned>(cap));
   std::printf("%s", kEmbedHeader);
   std::fflush(stdout);
-  for (const CapExtensionCompletion arm :
-       {CapExtensionCompletion::Uniform, CapExtensionCompletion::BrFavorable}) {
+  for (const CapExtensionCompletion arm : arms) {
     rusage ru0{};
     getrusage(RUSAGE_SELF, &ru0);
     const auto t0 = std::chrono::steady_clock::now();
