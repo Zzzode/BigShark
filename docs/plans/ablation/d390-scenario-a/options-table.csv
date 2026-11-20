@@ -42,3 +42,9 @@ option,ledger,cap,e_embed,pure_menu,bounded_nc,structural_bb100,convergence_bb10
 hull-probe-20k,srp4-pot32,cap6,0.00322537,0.00002709,0.00319828,0.000072,0.0085,0.7339,pot-gt16-probe-MEASURED-20k
 # corrected weights L1 52/L2 205/L3 308/pot32 127 of 692; measured 20k remapped end-to-end 0.3292 (PASS 0.5 margin 0.1708, PASS 1.0); 3k-severity retained end-to-end 1.0214 (fails both)
 # family convergence: pot32 NC 3k->20k 37.77x vs limped 6.39-15.17x -> non-transfer CONFIRMED, SRP converges faster; structural term stays near-zero (0.84% of e_embed)
+
+# Pot-40 final hull (prereg/finding: pot40-availability.md); no pot-40 decision-bearing ledger exists, only terminal pot-400 all-in (zero action nodes); probe cannot construct arbitrary pots
+option,ledger,cap,e_embed,pure_menu,bounded_nc,structural_bb100,convergence_bb100,wall_h,label
+final-hull,pot40-nonexistent,cap6,UNMEASURED,UNMEASURED,UNMEASURED,UNMEASURED,UNMEASURED,0,no-ledger-GAP
+# 37 non-terminal hands (all_in=0): 1.542% of dealt, 5.35% of other; currently charged via pot32 proxy = 0.00249 BB/100 inside 0.3292
+# worst measured-cell bounds (labeled proxies, not substitution): exclude->0.3267, worst20k->0.3369, worst3k->0.4198; every bound passes 0.5 and 1.0; true structural ceiling underivable without a ledger-extension harness change

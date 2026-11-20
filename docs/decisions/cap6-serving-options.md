@@ -299,7 +299,36 @@ training point.
   it: the largest-pot measured cell converges inside both rails, so no
   measured ledger now exhibits an unbounded or structural-only gap.
 
-## 8. Reproducibility and receipts
+## 8. Pot-40 final hull: no ledger exists, residual bounded by proxy
+
+The last named hull is 37 practice hands at river pot 40 (1.542% of
+dealt hands, 5.35% of the other bucket). A pre-registered classification
+framework (`../plans/ablation/d390-scenario-a/pot40-availability.md`,
+rules written before checking availability) first asked whether a
+runnable ledger exists. It does not: the sealed eleven-ledger census has
+no pot-40 decision-bearing entry — only the two pot-400 terminal all-in
+ledgers with zero action nodes — and the ledger probe can only address
+enumerated family/index pairs, so no probe is launched and the pot-32
+value is not substituted.
+
+The 37 hands are live decisions (all 37 are `all_in = 0`: 32 showdown,
+5 fold), so structural-zero treatment does not apply. They are an
+enumeration-coverage gap, not a measured cell. Their current weight in
+the 0.3292 headline is a disclosed nearest-ledger (pot-32) proxy worth
+0.00249 BB/100. Labeled conservative bounds, all built from measured
+severities, keep both rails: excluding the hands gives 0.3267; charging
+them at the worst measured 20k cell gives 0.3369; at the worst measured
+3k cell gives 0.4198, still 0.0802 inside the 0.5 target. No true
+structural ceiling is derivable without extending the frontier
+enumeration, an engine/harness change outside the current boundary.
+
+Final scope statement: the 0.3292 BB/100 result is fully measured over
+655 of 692 other hands (94.65%); the remaining 5.35% is unmeasured,
+non-terminal, and proxy-bounded with every measured proxy passing both
+rails. The single open instrument item is a pot-40 decision-bearing
+ledger, which requires harness work rather than another bench run.
+
+## 9. Reproducibility and receipts
 
 - Calculator and output:
   `../plans/ablation/d390-scenario-a/options-table.mjs` and
@@ -313,6 +342,7 @@ training point.
 - Pot>16 hull evidence: `../plans/ablation/d390-scenario-a/pot-gt16-prereg.md`,
   `pot32-srp4-cap6-3000.csv` (Rule B at 3k) and
   `pot32-srp4-cap6-20000.csv` (measured closure), with runner time files.
+- Final hull availability and bounds: `../plans/ablation/d390-scenario-a/pot40-availability.md`.
   `../plans/ablation/rfc0049/gate2/d370-w1-identity-cap4-embed-20000.csv`.
 - No cell in this page uses a projected severity; projected labels apply
   only to the section-4 design proposal and the mixed-thread cost caveat.
