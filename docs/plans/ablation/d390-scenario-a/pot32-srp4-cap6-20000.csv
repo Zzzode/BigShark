@@ -1,0 +1,3 @@
+# d382_ledger_embed family=srp family_index=4 pot=32 contributions=16/16 leaf_count=96 iters=20000 threads=18 cap=6
+cap,completion,cap0_action_nodes,online_action_nodes,mapped_nodes,online_nash_conv_bb,e_embed_bb,pure_menu_term_bb,gate_m_bb,gate_pass,wall_ms,cpu_ms,rss_peak_kb,rss_current_kb
+6,uniform,1600,470,470,0.00319828,0.00322537,0.00002709,0.0020,0,2641957.435,33358070.444,90312,90208

@@ -36,4 +36,9 @@ option,ledger,cap,e_embed,pure_menu,bounded_nc,structural_bb100,convergence_bb10
 hull-probe,srp4-pot32,cap6,0.12082666,0.00002653,0.12080013,0.000070,0.3196,0.1126,pot-gt16-probe-single-point-RULE-B
 # verdict: y=0.12083 vs locked band [0.004030,0.004738] and Rule-B threshold 0.007107 -> 17.0x over, Rule B CONFIRMED; deviation is 99.98% bounded NC (convergence), pure_menu near-zero 2.65e-5
 # remap: 296 beyond-16 hands -> 169 stay pot16, 127 map pot32; residual hull pot40 only = 37 hands (5.3% of other)
-# 3k worst-case end-to-end 0.6270 (fails 0.5, passes 1.0); 20k projection via measured NC factors 6.39-15.17x -> end-to-end 0.3284-0.3574 (passes both), labeled projection not measurement
+# 3k corrected end-to-end 1.0214 with correct 308-hand L3 weight (the earlier 0.6270 dropped 139 hands and is superseded)
+# pot32 20k measured receipt (srp 4 20000 18 6 uniform, RC=0): y=0.00322537, below the locked band [0.004030,0.004738] (0.80x its lower edge) and below Rule-B threshold 0.007107 -> Rule B NOT triggered at 20k; Rule B remains a 3k-only finding (convergence closure, not threshold change)
+option,ledger,cap,e_embed,pure_menu,bounded_nc,structural_bb100,convergence_bb100,wall_h,label
+hull-probe-20k,srp4-pot32,cap6,0.00322537,0.00002709,0.00319828,0.000072,0.0085,0.7339,pot-gt16-probe-MEASURED-20k
+# corrected weights L1 52/L2 205/L3 308/pot32 127 of 692; measured 20k remapped end-to-end 0.3292 (PASS 0.5 margin 0.1708, PASS 1.0); 3k-severity retained end-to-end 1.0214 (fails both)
+# family convergence: pot32 NC 3k->20k 37.77x vs limped 6.39-15.17x -> non-transfer CONFIRMED, SRP converges faster; structural term stays near-zero (0.84% of e_embed)

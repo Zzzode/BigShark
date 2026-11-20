@@ -115,3 +115,20 @@ RC=0 in 405.4 s, peak RSS 88.1 MB, empty stderr
   the D-390 headline is consequently downgraded from measured to
   conditional on a 20k pot-32 receipt; the 1.0 pass retains margin in
   every scenario.
+
+## Pre-run note for the 20k receipt (correction logged before launch)
+
+A pre-launch weight audit found the section-8 remap arithmetic dropped
+139 hands: L3's correct post-remap count is 308 (139 hands at practice
+pots <=16 plus 169 of the beyond-16 hands), not 169. Correct weights over
+the 692 other hands are L1 52 / L2 205 / L3 308 / pot-32 127 (sum 692).
+The correct raw 3k remapped end-to-end is therefore 1.0214 BB/100, which
+fails BOTH rails at 3k severity — not 0.6270 as previously written. The
+20k run below replaces the pot-32 3k cell with a measured 20k cell under
+the same Rule-B thresholds; all end-to-end figures are recomputed with the
+corrected weights and the earlier values explicitly superseded.
+
+Command: srp 4 20000 18 6 uniform, 4,200 s guard, 1 GiB RSS line; estimate
+2,702 s from the measured 135.1 ms/iter. Rule B (y > 0.007107) stays
+locked; a reading inside the band is labeled convergence closure, not a
+threshold change.

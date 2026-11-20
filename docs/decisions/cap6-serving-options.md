@@ -229,68 +229,77 @@ cap-7, L2/L3 cap-6) projects to 10.23 h/class / 1.38M machine-hours /
   was not triggered: the rerun produced a full measured row, so no third
   long run and no contingency instrument were launched.
 
-## 8. Pot>16 extrapolation hull: Rule B, convergence-driven, not structural
+## 7. Pot>16 extrapolation hull: measured 20k restores the pass, with a correction
 
 The D-390 headline flagged 42.8% of the other bucket (296 hands at
 practice pots 18-40) as an extrapolation charged at the pot-16 severity.
-A pre-registered de-risk run
-(`../plans/ablation/d390-scenario-a/pot-gt16-prereg.md`, rules and the
-log-linear prediction band locked before launch) measured the largest
-decision-bearing ledger above the hull: SRP family_index 4, pot 32,
-cap-6, 3,000 iterations, 18 threads, Uniform. It completed RC=0 in
-405.4 s at 88 MB peak RSS.
+Two pre-registered de-risk runs target the largest decision-bearing
+ledger above the hull (SRP family_index 4, pot 32, cap-6, 18 threads,
+Uniform); the rules in `../plans/ablation/d390-scenario-a/pot-gt16-prereg.md`
+were locked before any run and never edited.
 
-### 8.1 Measured row versus the locked band
+### 8.1 Arithmetic correction (logged before the 20k launch)
 
-| Quantity | Locked prediction band | Measured pot-32 | Verdict |
-| --- | --- | --- | --- |
-| e_embed | [0.004030, 0.004738] | **0.12082666** | Rule B: 17.0x over the 0.007107 threshold |
-| Bounded NC | not modeled | 0.12080013 | 99.978% of the deviation |
-| Pure-menu structural term | descriptive only | 0.00002653 | near-zero, same family as L1 cap-7 |
-| Online nodes | - | 470 of 1,600 cap-0 | smaller tree than any limped anchor |
+The first remap dropped 139 hands: L3's correct post-remap count is 308
+(139 hands at practice pots <=16 plus 169 of the beyond-16 hands), not
+169. Correct weights over the 692 other hands are L1 52 / L2 205 /
+L3 308 / pot-32 127. The earlier raw-3k end-to-end of 0.6270 is
+superseded; with corrected weights the 3k-severity end-to-end is
+**1.0214**, which fails BOTH rails. This correction stands independently
+of the 20k result and is part of the audit trail.
 
-The log-linear model fit on the three limped points does not transfer to
-the SRP family. The failure is a convergence-rate difference, not a
-hidden menu wall: the structural term stays near-zero, and the entire
-miss is bounded NashConv on a ledger whose per-iteration cost is much
-lower (135.1 ms) but whose 3,000-iteration policy is simply less
-converged.
+### 8.2 The two measured points and the locked Rule B
 
-### 8.2 Remap and the two rails
+| Point | Iterations | bounded NC | pure_menu | e_embed | vs locked band [0.004030, 0.004738] | Rule B (>0.007107) |
+| --- | --- | --- | --- | --- | --- | --- |
+| pot-32 3k | 3,000 | 0.12080013 | 0.00002653 | 0.12082666 | 25.5x over upper edge | **triggered** (17.0x threshold) |
+| pot-32 20k | 20,000 | 0.00319828 | 0.00002709 | **0.00322537** | outside, 0.80x the LOWER edge | not triggered |
 
-Pre-specified remap of the 296 hands: 169 (pots 18/20/22) stay on
-pot 16, 127 (pots 25/28/40) map to the measured pot-32 ledger; the
-residual unmeasured hull is pot 40 alone, 37 hands = 5.3% of the
-other bucket.
+At 20,000 iterations e_embed lands just below the pre-registered band and
+well under the Rule-B threshold, so the correct reading is **convergence
+closure of a 3,000-iteration outlier**, not a threshold relaxation: the
+band and rules were unchanged. Both structural terms are near-zero
+(0.84% of the 20k e_embed), consistent with the cap-7 L1 result — there
+is no menu wall on this ledger at any iteration count.
 
-- At the raw measured 3k severity, the remapped end-to-end is
-  **0.6270 BB/100** — still under the 1.0 hard rail but over the 0.5
-  target. The D-390 0.3328 headline's 0.5 pass is therefore downgraded
-  to conditional on a 20k pot-32 receipt, while its 1.0 pass keeps
-  margin in every scenario.
-- Applying the measured 6.39-15.17x 3k -> 20k NashConv improvement
-  factors (labeled projection, not a measurement) puts pot-32 20k
-  e_embed at 0.00799-0.01893 — Rule B still holds against the model
-  band (1.7-4.0x over its upper edge), but the projected end-to-end
-  returns to 0.3284-0.3574, inside both rails.
-- The structural-only pot-32 bucket contribution is 0.00007 BB/100; no
-  menu redesign is indicated by this run.
+### 8.3 Family convergence non-transfer, now a modeling premise
 
-### 8.3 Route-specific evaluation changes
+Pot-32's bounded NashConv improves 37.77x from 3k to 20k (e_embed 37.46x
+overall), versus the measured limped-family range of 6.39-15.17x. The
+limped-only log-linear model failed specifically because SRP trees start
+less converged at 3k and then improve faster; the non-transfer is real
+and directional. **Residual models must therefore carry family-specific
+convergence factors as a premise** — a single cross-family iteration
+curve is not defensible, and any future band fit needs at least one SRP
+training point.
 
-- **Full cap-6:** campaign cost unchanged; the 0.3328 measured label
-  over the full bucket becomes conditional until the pot-32 20k receipt
-  exists (one local run, projected well under one hour at the measured
-  135 ms/iter). The 1.0 hard-rail conclusion is not threatened.
-- **Narrow b:** still fails 0.5 on its own L1 cell; the hull result
-  adds no rescue path and removes any assumption that larger pots are
-  benign by extrapolation.
-- **Retirement:** marginally more attractive only as a default if no
-  further measurement is funded; the evidence does not show an
-  unbounded gap, just an unmeasured convergence cell with a cheap
-  closure path.
+### 8.4 Two end-to-end conventions and the final rail position
 
-## 7. Reproducibility and receipts
+- Measured 20k replacement (corrected weights): other bucket 0.1076,
+  **end-to-end 0.3292 BB/100** — passes the 0.5 target with 0.1708
+  margin and the 1.0 hard rail; this is a fully measured cell, not a
+  projection. The D-390 "conditional" label on the 0.3328 headline is
+  therefore removed and replaced by this slightly lower measured value.
+- Retained 3k severity convention (corrected weights): end-to-end
+  1.0214, failing both rails. It is retained only as the evidence that
+  the serving count 20,000 is load-bearing on this ledger; it is not a
+  serving configuration.
+- The residual unmeasured hull is pot 40 alone (37 hands, 5.3% of the
+  other bucket); every other cell is now measured at 20,000 iterations.
+
+### 8.5 Final route evaluation
+
+- **Full cap-6:** restored to a measured pass at 0.3292 BB/100; campaign
+  cost is unchanged from section 5 because the pot-32 ledger was already
+  inside the eleven-ledger build scope. The route's remaining open items
+  are the eight D-390 list entries minus this hull, now six.
+- **Narrow b:** still fails 0.5 on its L1 cap-4 cell (0.8017); the pot-32
+  result neither rescues nor worsens it.
+- **Retirement:** loses the marginal support the provisional hull gave
+  it: the largest-pot measured cell converges inside both rails, so no
+  measured ledger now exhibits an unbounded or structural-only gap.
+
+## 8. Reproducibility and receipts
 
 - Calculator and output:
   `../plans/ablation/d390-scenario-a/options-table.mjs` and
@@ -301,6 +310,9 @@ other bucket.
   `../plans/ablation/d390-scenario-a/` (including
   `l1-cap7-3000.csv`, the `*-attempt1-rc124.*` evidence, and
   `l1-cap7-discriminator-prereg.md`),
+- Pot>16 hull evidence: `../plans/ablation/d390-scenario-a/pot-gt16-prereg.md`,
+  `pot32-srp4-cap6-3000.csv` (Rule B at 3k) and
+  `pot32-srp4-cap6-20000.csv` (measured closure), with runner time files.
   `../plans/ablation/rfc0049/gate2/d370-w1-identity-cap4-embed-20000.csv`.
 - No cell in this page uses a projected severity; projected labels apply
   only to the section-4 design proposal and the mixed-thread cost caveat.
