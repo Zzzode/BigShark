@@ -1,0 +1,8 @@
+outbase=tmp/d390-scenarioA-20261120/l3-cap6-20000
+command=build/release/engine/bigshark-rfc0047-ledger-embed-probe limped 3 20000 18 6 uniform
+start_iso=2026-11-20T11:35:53+08:00
+end_iso=2026-11-20T13:32:50+08:00
+outer_wall_ms=7017643
+exit_code=0
+peak_rss_kb_from_probe=183576
+probe_wall_ms=7017596.645

@@ -1,0 +1,19 @@
+# D-390 Scenario A cap-6 measured receipts (Uniform arm)
+ledger,pot,weight,iter,source,online_nc,pure_menu,e_embed,wall_ms,rss_peak_kb
+L1,8,0.0751,3000,tmp,0.05480831,0.00939246,0.06420077,1286353,335112
+L1,8,0.0751,20000,tmp,0.00361227,0.00839753,0.01200981,12952765,334928
+L2,10,0.2962,3000,committed,0.05032803,0.00588446,0.05621249,1054217,275584
+L2,10,0.2962,20000,tmp,0.00432029,0.00889398,0.01321427,10659052,275328
+L3,16,0.6286,3000,committed,0.02656576,0.00000223,0.02656799,676200,183612
+L3,16,0.6286,20000,tmp,0.00415761,0.00045071,0.00460831,7017597,183576
+
+# Scenario A aggregation: other bucket = 100 * f_other * sum(w * e_embed/2)
+# constants f_other=0.288333 w1_lower=0.2216 target=0.5 rail=1
+scenario,cell_status,weighted_per_seat_bb,other_bucket_bb100,end_to_end_bb100,gap_to_0.5,vs_1.0_rail
+Scenario A @3000 (L1 measured; L2/L3 measured 3k),measured,0.019086,0.5503,0.7719,0.2719,PASS
+Scenario A @20000 (all three measured),measured,0.003856,0.1112,0.3328,0.0000,PASS
+
+# Memo reference (projection, not measured): other=0.5328 end_to_end=0.7544
+# D-380 two rails (must stay separate): certification <=0.002 BB per decision;
+# online serving <=1.0 BB/100 (0.5 keep target). Cap-6 3k e_embed stays >0.002,
+# so the certification rail is unaffected regardless of the serving-rail result.
