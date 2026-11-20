@@ -21,3 +21,9 @@ full-cap6,0.1112,0.0512,0.0600,0.3328,PASS,PASS,8.5082,8.9200,1199375,499.7,0.0,
 narrow-b-L2L3-cap6,0.5801,0.5198,0.0604,0.8017,FAIL,PASS,5.4352,5.8471,786190,327.6,36.1,measured-components
 narrow-a-L3-cap6,2.7485,2.6921,0.0564,2.9701,FAIL,FAIL,2.9635,3.3753,453840,189.1,65.2,measured-components
 baseline-all-cap4,7.0229,6.9599,0.0630,7.2445,FAIL,FAIL,1.4490,1.8608,250204,104.3,83.0,measured-components
+
+# L1 cap-7 discriminator (prereg: l1-cap7-discriminator-prereg.md); 2400s outer guard tripped RC=124, header only, empty stderr, no data row
+option,ledger,cap,e_embed,pure_menu,bounded_nc,structural_bb100,convergence_bb100,wall_h,label
+discriminator,L1,cap7,UNMEASURED,UNMEASURED,UNMEASURE,UNMEASURED,UNMEASURED,>0.6667,discriminator-single-point-GAP-RC124
+# cost-axis facts: cap6 L1 at 18 threads = 648 ms/iter (3k-equiv 1943 s); cap7 per-iter >=800 ms = >=1.24x cap6; build-phase RSS ~362 MB observed, memory not binding
+# pre-registered rule thresholds remain: A pure_menu<=0.00234812 (4-5x shrink); B pure_menu>=0.00788967 (0.84x plateau); no reading -> inconclusive, neither confirmed

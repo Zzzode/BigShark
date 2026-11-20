@@ -150,19 +150,63 @@ to narrow b's cost at full cap-6 quality).
 If the 0.5 target is contractually binding, full cap-6 is currently the
 only measured compliant option and the choice reduces to accepting its
 499.7-day, 1.2M machine-hour campaign or retiring. If 1.0 is the binding
-gate, narrow b is the measured cost/quality knee at 327.6 days. In
-either case, the single highest-value next action is the ~25-minute L1
-cap-7 discriminator in section 4: it is far cheaper than any campaign
-commitment and decides whether the 172-day price difference between full
-and narrow b is fundamental or an artifact of uniform cap stacking. The
+gate, narrow b is the measured cost/quality knee at 327.6 days. The
+candidate next action was the L1 cap-7 discriminator in section 4; its
+first run is wall-inconclusive under the 40-minute guard (section 6), so
+the live choice is authorizing the 3,600 s rerun named there or deciding
+among the priced options in sections 2-4. The
 product-direction choice among full, narrowed, and retired remains with
 the product owner; this page only attaches measured prices to each.
 
-## 6. Reproducibility and receipts
+## 6. L1 cap-7 discriminator: wall-budget gap, no verdict forced
+
+The section-4 minimal validation was pre-registered
+(`../plans/ablation/d390-scenario-a/l1-cap7-discriminator-prereg.md`,
+rules written before launch) and run once:
+`ledger-embed-probe limped 1 3000 18 7 uniform` under a 2,400 s (40 min)
+outer guard with a 1 GiB RSS hard line. Result: the guard tripped
+(exit 124) with only the probe header written, no data row, and empty
+stderr. Per the standing "stop and report the gap, do not force it, do
+not add iterations" instruction, no rerun was launched.
+
+Measured facts (cost axis only; no quality reading exists):
+
+- The cap-7 L1 tree builds and the process enters the solve; build-phase
+  RSS observed around 362 MB (cap-6 peak was 335 MB), so memory is not
+  the binding constraint and the 1 GiB envelope is not threatened.
+- The 3,000-iteration solve does not finish in 2,400 s, so cap-7
+  per-iteration wall is at least 800 ms versus cap-6's measured
+  648 ms/iter at the same 18 threads — at least 1.24x the per-solve
+  cost, possibly higher (how far the run progressed is unobservable;
+  the embed path emits no intermediate checkpoints).
+- Pre-registered rule A needed pure_menu <= 0.00234812 and rule B
+  needed >= 0.00788967; with no pure_menu reading neither is
+  confirmable. The honest verdict is **inconclusive / unmeasured at
+  this budget**, not A and not B.
+- Estimate correction: the original "20-30 minute" expectation was
+  anchored on the small L3 tree (cap-6 3k = 676 s at 28 threads). L1
+  is the largest tree (7,824 cap-0 nodes, 1,832 cap-6 online nodes);
+  its cap-6 3k-equivalent at 18 threads is already about 1,943 s
+  (32.4 min), so the 40-minute guard was tight even for cap-6.
+
+Consequence for the fourth path. The cost-axis evidence points against
+"uniform widening is cheap" — cap-7 already fails a wall budget that
+cap-6 barely fits — but the quality-axis question (does the structural
+term keep shrinking 4-5x or plateau at 0.84x?) remains open, so neither
+uniform stacking nor a selective-abstraction RFC is confirmed. The
+smallest unblocking measurement, proposed but not launched, is the
+identical configuration with a 3,600 s guard (estimated need 2,525-3,115 s
+if the per-iteration premium is 1.3-1.6x); it remains a single local run
+inside the memory envelope. The 172.2-day full-vs-narrow-b price
+difference therefore stays an open structural question pending that
+authorization.
+
+## 7. Reproducibility and receipts
 
 - Calculator and output:
   `../plans/ablation/d390-scenario-a/options-table.mjs` and
-  `options-table.csv` (deterministic; reads D-382/D-390/D-370 CSVs).
+  `options-table.csv` (deterministic; reads D-382/D-390/D-370 CSVs;
+  the cap-7 GAP row is labeled discriminator-single-point-GAP-RC124).
 - Source receipts: `../plans/ablation/d382-other-river-class/`,
   `../plans/ablation/d390-scenario-a/`,
   `../plans/ablation/rfc0049/gate2/d370-w1-identity-cap4-embed-20000.csv`.

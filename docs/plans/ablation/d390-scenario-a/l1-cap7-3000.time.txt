@@ -1,0 +1,3 @@
+cap7_launch_ts=2026-11-20T18:07:22+08:00
+command=build/release/engine/bigshark-rfc0047-ledger-embed-probe limped 1 3000 18 7 uniform
+exit_code=124 finish_ts=2026-11-20T18:47:22+08:00
