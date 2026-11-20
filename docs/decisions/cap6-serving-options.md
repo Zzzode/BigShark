@@ -151,64 +151,95 @@ If the 0.5 target is contractually binding, full cap-6 is currently the
 only measured compliant option and the choice reduces to accepting its
 499.7-day, 1.2M machine-hour campaign or retiring. If 1.0 is the binding
 gate, narrow b is the measured cost/quality knee at 327.6 days. The
-candidate next action was the L1 cap-7 discriminator in section 4; its
-first run is wall-inconclusive under the 40-minute guard (section 6), so
-the live choice is authorizing the 3,600 s rerun named there or deciding
-among the priced options in sections 2-4. The
-product-direction choice among full, narrowed, and retired remains with
-the product owner; this page only attaches measured prices to each.
+L1 cap-7 discriminator in section 6 has now returned Rule A: uniform
+widening structurally closes L1, so no selective-abstraction RFC is
+needed for feasibility, but cap-7 costs 1.364x per iteration and gives
+no serving-rail benefit over the already-passing full cap-6. The live
+decision is therefore among the priced options in sections 2-4 plus the
+section-6.4 finding that the menu-width question is engineering, not
+fundamental. The product-direction choice among full, narrowed, and
+retired remains with the product owner; this page only attaches measured
+prices to each.
 
-## 6. L1 cap-7 discriminator: wall-budget gap, no verdict forced
+## 6. L1 cap-7 discriminator: Rule A confirmed on the authorized rerun
 
 The section-4 minimal validation was pre-registered
 (`../plans/ablation/d390-scenario-a/l1-cap7-discriminator-prereg.md`,
-rules written before launch) and run once:
-`ledger-embed-probe limped 1 3000 18 7 uniform` under a 2,400 s (40 min)
-outer guard with a 1 GiB RSS hard line. Result: the guard tripped
-(exit 124) with only the probe header written, no data row, and empty
-stderr. Per the standing "stop and report the gap, do not force it, do
-not add iterations" instruction, no rerun was launched.
+rules and the second-timeout contingency written before any run). The
+first attempt under a 2,400 s guard tripped RC=124 with header-only output
+(receipts retained as `*-attempt1-rc124.*`); one rerun was then authorized
+with the identical configuration and a 4,200 s guard, which completed
+(RC=0, empty stderr, 44.2 min wall, 37% guard headroom).
 
-Measured facts (cost axis only; no quality reading exists):
+### 6.1 Measured cap-7 row (L1, 3,000 iterations, 18 threads, Uniform)
 
-- The cap-7 L1 tree builds and the process enters the solve; build-phase
-  RSS observed around 362 MB (cap-6 peak was 335 MB), so memory is not
-  the binding constraint and the 1 GiB envelope is not threatened.
-- The 3,000-iteration solve does not finish in 2,400 s, so cap-7
-  per-iteration wall is at least 800 ms versus cap-6's measured
-  648 ms/iter at the same 18 threads — at least 1.24x the per-solve
-  cost, possibly higher (how far the run progressed is unobservable;
-  the embed path emits no intermediate checkpoints).
-- Pre-registered rule A needed pure_menu <= 0.00234812 and rule B
-  needed >= 0.00788967; with no pure_menu reading neither is
-  confirmable. The honest verdict is **inconclusive / unmeasured at
-  this budget**, not A and not B.
-- Estimate correction: the original "20-30 minute" expectation was
-  anchored on the small L3 tree (cap-6 3k = 676 s at 28 threads). L1
-  is the largest tree (7,824 cap-0 nodes, 1,832 cap-6 online nodes);
-  its cap-6 3k-equivalent at 18 threads is already about 1,943 s
-  (32.4 min), so the 40-minute guard was tight even for cap-6.
+| Quantity | cap-6 @3k (same-iteration baseline) | cap-7 @3k (measured) | Movement |
+| --- | --- | --- | --- |
+| Online action nodes | 1,832 | 2,760 (35.3% of cap-0) | +50.7% |
+| Bounded NC | 0.05480831 | 0.05475901 | -0.09% (flat) |
+| Pure-menu structural term | 0.00939246 | **0.00001349** | **696.3x smaller** |
+| e_embed | 0.06420077 | 0.05477250 | 1.172x smaller |
+| Structural share of e_embed | 14.6% | 0.025% | composition flip |
+| Peak RSS | 335 MB | 491 MB | +156 MB, 533 MB headroom under 1 GiB |
+| Wall per iteration (18 threads) | 647.6 ms | 883.5 ms | 1.364x premium |
 
-Consequence for the fourth path. The cost-axis evidence points against
-"uniform widening is cheap" — cap-7 already fails a wall budget that
-cap-6 barely fits — but the quality-axis question (does the structural
-term keep shrinking 4-5x or plateau at 0.84x?) remains open, so neither
-uniform stacking nor a selective-abstraction RFC is confirmed. The
-smallest unblocking measurement, proposed but not launched, is the
-identical configuration with a 3,600 s guard (estimated need 2,525-3,115 s
-if the per-iteration premium is 1.3-1.6x); it remains a single local run
-inside the memory envelope. The 172.2-day full-vs-narrow-b price
-difference therefore stays an open structural question pending that
-authorization.
+The frozen identity holds exactly (NC + pure_menu = e_embed).
+
+### 6.2 Pre-registered verdict: Rule A, not B, not the middle zone
+
+r = pure_menu(cap7) / pure_menu(cap6) = 0.001436, decisively below the
+Rule-A threshold r <= 0.25: the aggressive-line 4-5x per-step shrink
+repeats and is vastly exceeded at 696x. Rule B (r >= 0.84, plateau) is
+not met, and the middle zone is not entered. The cap-7 pure_menu is 148x
+below M = 0.002 but 1,349x above the 1e-8 exact-zero predicate, so the
+correct label is **near-zero structural term, not a certified exact
+menu**. The residual's nature flips on this tree too: 99.975% of cap-7
+e_embed is bounded NashConv, a convergence problem iteration count
+attacks, not a menu problem.
+
+### 6.3 Same-ruler marginal comparison
+
+Quality (L1 structural bucket, equal 3k): 0.010169 -> 0.000015 BB/100,
+removing 0.010155 BB/100 of structural loss. Cost: the matched-thread
+premium is 1.364x per iteration, inside the anticipated 1.3-1.6x band; a
+linearly projected 20k L1 cap-7 build is about 4.91 h/class versus
+cap-6's measured 3.60 h. Beside the section-2 trade (0.4689 BB/100 per
+413,185 machine-hours for L1 cap-4 -> cap-6), cap-7 buys structural
+exactness rather than serving-rail economy: a narrow-b-plus shape (L1
+cap-7, L2/L3 cap-6) projects to 10.23 h/class / 1.38M machine-hours /
+573.2 days, which is 14.7% MORE expensive than uniform full cap-6
+(8.92 h/class), because the premium lands on the largest tree.
+
+### 6.4 Consequence for the fourth path and the two rails
+
+- A selective-abstraction RFC is **not required to close L1
+  structurally**: uniform widening one step past cap-6 collapses the term
+  to near-zero, so the 172.2-day full-vs-narrow-b difference is a
+  menu-width cost choice, not evidence of a fundamental abstraction
+  limitation. The RFC would only be revisited if campaign cost, not
+  structural feasibility, becomes the binding objection.
+- Serving rail: unchanged. Full cap-6 already passes at 0.3328 BB/100;
+  cap-7 adds no measured serving-rail benefit and costs more.
+- Certification rail: still failed, and cap-7 does not rescue it. At 3k
+  its e_embed is 0.0548 (27.4x over M), all convergence. Applying the
+  measured cap-6 L1 15.2x 3k -> 20k NashConv improvement as a labeled
+  projection puts cap-7 20k e_embed near 0.0036, still about 1.8x over
+  0.002. Certification remains governed exclusively by R1-R4.
+- The 1,500-iteration paired short-run contingency in the pre-registration
+  was not triggered: the rerun produced a full measured row, so no third
+  long run and no contingency instrument were launched.
 
 ## 7. Reproducibility and receipts
 
 - Calculator and output:
   `../plans/ablation/d390-scenario-a/options-table.mjs` and
   `options-table.csv` (deterministic; reads D-382/D-390/D-370 CSVs;
-  the cap-7 GAP row is labeled discriminator-single-point-GAP-RC124).
+  the cap-7 row is the measured discriminator-single-point-MEASURED-3k
+  cell, with the RC=124 attempt retained as separate attempt-1 files).
 - Source receipts: `../plans/ablation/d382-other-river-class/`,
-  `../plans/ablation/d390-scenario-a/`,
+  `../plans/ablation/d390-scenario-a/` (including
+  `l1-cap7-3000.csv`, the `*-attempt1-rc124.*` evidence, and
+  `l1-cap7-discriminator-prereg.md`),
   `../plans/ablation/rfc0049/gate2/d370-w1-identity-cap4-embed-20000.csv`.
 - No cell in this page uses a projected severity; projected labels apply
   only to the section-4 design proposal and the mixed-thread cost caveat.

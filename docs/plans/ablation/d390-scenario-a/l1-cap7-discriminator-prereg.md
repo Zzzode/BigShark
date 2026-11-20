@@ -58,3 +58,48 @@ L1 cap-6 -> cap-7 at equal 3,000 iterations (measured walls), with the
 20k campaign equivalent shown only as an explicitly labeled linear
 projection (20k/3k wall scaling, the convention the D-390 memo used and
 the measured 20k receipts later superseded).
+
+## Rerun authorization and second-timeout contingency (added before rerun)
+
+The first run (2,400 s guard) returned RC=124 with no data row. A single
+rerun is authorized with the identical configuration and a 4,200 s outer
+guard; the A/B thresholds above are unchanged and are not relaxed for the
+rerun. `/usr/bin/time -v` remains absent on this host, so peak RSS is
+again taken from the probe's own getrusage(ru_maxrss), the same kernel
+counter GNU time reports.
+
+If the rerun ALSO returns RC=124 (or any non-zero code without a data
+row), no third long run is launched. The replacement instrument is a
+paired short-run design, pre-specified now:
+
+- Two same-configuration probes back to back: L1 cap-6 and L1 cap-7, each
+  at 1,500 iterations, 18 threads, Uniform arm, with a 2,400 s per-run
+  guard. The cap-6 member is a same-day measured baseline, not a historical
+  comparison.
+- Two ratios are reported: pure_menu(cap7,1500) / pure_menu(cap6,1500)
+  for the structural direction, and mean wall per iteration cap7/cap6 for
+  the cost premium. The A/B thresholds still apply to the pure_menu ratio
+  (the rule is iteration-matched, so the factor transfers), with the
+  caveat below.
+- Comparability boundary: 1,500-iteration policies are substantially less
+  converged than 3,000 (the sealed L3 trajectory shows bounded NC roughly
+  doubling between 3k and earlier rungs), so a 1,500-iteration A/B verdict
+  is explicitly labeled a provisional structural-direction read, not a
+  replacement for a 3,000-iteration confirmation. Any cap-7 cap-0-only
+  subtree that only becomes BR-walk reachable after more traversals is
+  under-exposed at 1,500; if the short-run ratio lands in the middle zone,
+  the question stays open rather than being upgraded to a verdict.
+- The 4,200 s rerun itself remains the primary evidence; the paired short
+  runs are the contingency instrument, not a parallel track to be run
+  preemptively.
+
+## Rerun outcome (recorded after completion)
+
+Authorized rerun under the 4,200 s guard finished RC=0 at 44.2 min with a
+full data row (`l1-cap7-3000.csv`): pure_menu 0.00001349, bounded NC
+0.05475901, e_embed 0.05477250, peak RSS 491.2 MB. Measured r =
+0.00001349 / 0.00939246 = 0.001436, so **Rule A is confirmed** (r <= 0.25)
+and Rule B and the middle zone are not entered. The 1,500-iteration
+paired contingency was therefore not triggered. The 1e-8 exact-zero
+predicate is not met (value is 1,349x above it); the result is a
+near-zero structural term with the residual 99.975% convergence-bound.
