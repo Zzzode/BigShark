@@ -30,3 +30,10 @@ discriminator,L1,cap7,0.05477250,0.00001349,0.05475901,0.000015,0.059287,0.7363,
 # pre-registered verdict: r=pure7/pure6(3k)=0.001436 -> Rule A CONFIRMED (threshold r<=0.25); Rule B not met; pure_menu 148x below M but 1349x above the 1e-8 exact-zero predicate
 # matched-18-thread cost: cap7 883.5 ms/iter vs cap6 647.6 = 1.364x premium; RSS peak 491.2 MB (cap6 327.1), 533 MB headroom under 1 GiB; 2760 online nodes = 35.3% of cap0
 # comparability: 3000-iteration point, not 20k; bounded NC dominates (99.975% of e_embed), so 20k/serving-rail implications are labeled projections in the decision page
+
+# Pot>16 hull de-risk (prereg: pot-gt16-prereg.md); srp family_index 4 = pot 32, cap6 3k uniform 18 threads, RC=0
+option,ledger,cap,e_embed,pure_menu,bounded_nc,structural_bb100,convergence_bb100,wall_h,label
+hull-probe,srp4-pot32,cap6,0.12082666,0.00002653,0.12080013,0.000070,0.3196,0.1126,pot-gt16-probe-single-point-RULE-B
+# verdict: y=0.12083 vs locked band [0.004030,0.004738] and Rule-B threshold 0.007107 -> 17.0x over, Rule B CONFIRMED; deviation is 99.98% bounded NC (convergence), pure_menu near-zero 2.65e-5
+# remap: 296 beyond-16 hands -> 169 stay pot16, 127 map pot32; residual hull pot40 only = 37 hands (5.3% of other)
+# 3k worst-case end-to-end 0.6270 (fails 0.5, passes 1.0); 20k projection via measured NC factors 6.39-15.17x -> end-to-end 0.3284-0.3574 (passes both), labeled projection not measurement
