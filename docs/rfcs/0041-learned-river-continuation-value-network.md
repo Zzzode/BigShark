@@ -2,9 +2,10 @@
 rfc: "0041"
 subject: "Learned River Continuation-Value Network for Multiway Turn Strategy"
 status: "Accepted"
+closure: "Stage 1 honest FAILURE recorded 2026-10-29 (Amendment 2, rfc0041-amend2-approval-1); Amendment 1 10-second envelope remains in force"
 authors: "Claude (zzzode agent session 2026-10-28)"
 created: "2026-10-28"
-updated: "2026-10-28"
+updated: "2026-10-29"
 owners: "Engine resolver (production bounded turn entry + block refinement driver), engine solver (neural ContinuationValueModel + BSNCV01 codec), engine benchmarks (offline label generator and gates), tools (offline trainer), apps/engine-host (default-deny model mount/wiring)"
 supersedes: ""
 superseded-by: ""
@@ -16,9 +17,11 @@ superseded-by: ""
 
 RFC 0039 proved the nested range-conditioned river continuation value is
 the mathematically correct leaf object, but exact on-demand solving of
-that object cannot meet the 1,600 ms decision envelope (one leaf needs
-~10M inner iterations, ~138.6 s cold-start; 240/1,344 leaves per 2/3-seat
-turn solve => hours to days per solve). This RFC replaces the per-solve
+that object cannot meet the live decision envelope (at the historical
+1,600 ms p95 one leaf needs ~10M inner iterations, ~138.6 s cold-start;
+even under the amended 10,000 ms envelope, Amendment 1, that single
+leaf is ~14x over budget and 240/1,344 leaves per 2/3-seat turn solve
+=> hours to days per solve). This RFC replaces the per-solve
 inner MCCFR in the OFFLINE BENCHMARK/MEASUREMENT and FUTURE PRODUCTION
 serving paths with a feed-forward neural network trained offline to
 produce the same object — the per-seat per-combo range-conditioned
@@ -61,8 +64,9 @@ RFC 0039 Stage 1 evidence (`docs/plans/0039-m2.csv`,
 
 - The correct abstract-game inner gap needs ~10M inner iterations per
   river leaf; cumulative cold-start wall is ~138.6 s per leaf on a
-  28-core release build (~13.7 us/iter), 87x the 1,600 ms envelope for a
-  single leaf.
+  28-core release build (~13.7 us/iter), 87x the historical 1,600 ms
+  envelope for a single leaf — and still ~14x the amended 10,000 ms
+  envelope (Amendment 1), leaving the conclusion intact.
 - A turn solve has 240 (2 seats, 357-node tree) / 1,344 (3 seats,
   1,864-node tree) frontier leaves; exact solving is ~9 hours per
   2-seat solve and an extrapolated ~14-24 days per 3-seat solve.
@@ -673,9 +677,11 @@ packing), and seats in {2} initially; 3 requires its own certified table.
    public-state search complexity the problem does not need; ReBeL was
    only validated on small games.
 3. **Keep solving online with more compute / better hardware.**
-   87x-per-leaf miss and days-per-solve at 3 seats are not closable by
-   cores alone under a 1,600 ms receipt-to-action budget; also unusable
-   for the offline practice table's bulk hands.
+   Even under the amended 10,000 ms budget (Amendment 1) one leaf is
+   ~14x over at 28 cores and there are 240/1,344 of them per solve;
+   87x-per-leaf at the historical 1,600 ms budget and days-per-solve at
+   3 seats are not closable by cores alone; also unusable for the
+   offline practice table's bulk hands.
 4. **Equity frontier plus richer rollout (betting-aware heuristic).**
    This is a heuristic leaf core of the kind the project bars; RFC 0036
    measured it failing (0.402/6.161 BB), and it has no learning path.
@@ -886,6 +892,19 @@ own, rollback can be per-shape.
   - If any gate is not met the result is recorded as failure/inconclusive
     in `docs/plans/ablation/rfc0041-m2.csv` and no shape is enabled.
 - AC5 (latency/budget; aggregate protocol declared before measurement):
+  - **Decision envelope (Amendment 1, 2026-10-29): p95 AND p99
+    `T_decision` <= 10,000 ms, hard resolve cap 10,000 ms
+    (`ResolveLimits::time` default 10,000).** The historical 1,600 ms
+    p95 / 2,000 ms cap inherited from RFC 0032/RFC 0036 was the live
+    River Club runner budget, whose entire integration was retired by
+    RFC 0040; the current product surface is the offline engine and
+    practice table, whose declared requirement is a 10-second p95. A
+    decision stopped at the 10,000 ms cap is a normal budget
+    termination, not a quality failure; the §3a serve-rate and
+    zero-sum gates independently guard correctness. All other AC5
+    shares below are unchanged (the neural share stays tiny on
+    purpose so the outer MCCFR receives essentially the whole
+    envelope).
   - Reference hardware is named in the CSV header (the project's
     28-core release-build box class used by RFC 0039, with core count and
     CPU model recorded); timings are release build, >= 200 sampled turn
@@ -895,7 +914,8 @@ own, rollback can be per-shape.
     inference_total + outer_mccfr`, summed over every block refinement
     of every reachable leaf (240/1,344 at 2/3 seats in the measured
     cadence, with the block count fixed in the cell). The CSV breaks
-    these four shares out separately. p95 `T_decision` <= 1,600 ms.
+    these four shares out separately. p95 AND p99 `T_decision`
+    <= 10,000 ms.
   - A separate predeclared inference subtotal: p95 of
     `inference_total + feature_build_total` <= 400 ms at 2 seats
     (leaves x blocks, not per call); the per-call mean is reported for
@@ -929,15 +949,203 @@ own, rollback can be per-shape.
 
 ## Decision
 
-Author agent: Claude (zzzode agent session, RFC author 2026-10-28)
-Approved by: rfc0041-approval-1 (independent approval agent, auto_model/alwaysday1_max; did not author the RFC, code, or measurements)
-Decision date: 2026-10-28
+### Amendment 1 decision (2026-10-29): Approved (historical record; Amendment 2 is the primary decision)
+
+Amendment 1 was proposed by Claude (zzzode agent session) and approved on 2026-10-29 by the independent approval agent rfc0041-amend1-approval-1 (auto_model/alwaysday1_max, which neither authored nor edited the proposal), with zero blocking and zero major findings and four minor findings (M1-M4), none a condition of approval. It REMAINS IN FORCE after the Amendment 2 closure. The reviewer independently confirmed the 1,600/2,000 ms provenance (RFC 0032's 80%-of-cap derivation from the retired River Club runner maximumMs, reused by RFC 0036, with apps/river-club-agent deleted by RFC 0040), verified that every production ResolveLimits construction is overridden per request from the wire deadline, all tests set explicit budgets, and no current production budget hardcodes 2,000 ms; that AC1-AC4, AC6, AC7, the 400 ms inference+features subtotal, the 16 MiB ceiling, the >=200-decision sample, the four-share timing decomposition, and the 99% serve-rate gate are unchanged; and that no wire/proto/artifact/persisted-format change occurs. The cap == p99 == 10,000 ms design with at-cap treated as normal termination was held internally coherent because the measured gate verifies all four shares honor one wall and serve-rate, always-on zero-sum, and AC4 quality gates independently guard budget-stopped decisions. Residual risks recorded: no engineering headroom, resolve-internal T_decision scope (the Stage 3 AC5 CSV must report at-cap fraction and name the measurement boundary; noted again in Amendment 2's F-disposition list), and two stale historical comments/one unused client default (M1 clients/node timeoutMs=2000 and M2 rfc0036-era benchmark constants, both deliberately left unchanged as non-production historical code). Reviewed scope was the Amendment 1 text and AC5 rewrite, the two code defaults (resolver.hpp ResolveLimits::time, practice_simulator --solve-budget-ms), the practice-table doc row, and their provenance; the RFC 0041 Stage 1 plan and measurements were explicitly excluded. check-rfcs and check-docs passed at 41 RFCs / 394 files. The change detail follows.
+
+### Amendment 1 — 10,000 ms decision envelope (change detail)
+
+Trigger: explicit user direction on 2026-10-29 that the binding decision
+requirement is p95 within 10 seconds; investigation traced the 1,600 ms
+number to the retired River Club runner budget.
+
+Change:
+
+- AC5 p95 gate `T_decision` <= 1,600 ms is replaced by **p95 AND p99
+  `T_decision` <= 10,000 ms**, with the resolver hard cap
+  `ResolveLimits::time` default changed from 2,000 ms to **10,000 ms**.
+  Decisions stopped at the cap are normal budget terminations; the
+  99% serve-rate, zero-sum, and AC4 quality gates are unchanged.
+- The 400 ms inference+features subtotal, the 16 MiB model ceiling,
+  the >= 200-decision sample, and the four-share timing decomposition
+  are unchanged.
+- The Summary, Evidence, and Alternatives sections now state the
+  exact-solve infeasibility against BOTH envelopes (87x at 1,600 ms
+  historical; ~14x per leaf even at 10,000 ms, and 240/1,344 leaves
+  per solve), so the motivation for the network is unchanged.
+- No wire/proto, artifact, or persisted-format change; no change to
+  AC1-AC4, AC6, AC7.
+
+Provenance of the old number (verified in-repo and independently
+re-verified by the approval agent): the 2,000 ms hard cap was the live
+River Club runner `maximumMs` budget (cited by RFC 0032 from
+`apps/river-club-agent/runner-state.ts`, a path deleted by RFC 0040);
+1,600 ms was RFC 0032's 80%-of-cap p95 target and RFC 0036's calibration
+envelope. RFC 0036/0032 remain historical records of their era and are
+not rewritten by this amendment; only the CURRENT RFC 0041 gate and the
+engine default move.
+
+Minor findings and dispositions:
+
+- M1: `clients/node/proto-engine-process-client.ts` still defaults
+  `timeoutMs = 2000`; post-RFC-0040 only its own tests call it. Left
+  unchanged (out of amendment scope; not a production budget); a
+  comment/doc hint is recorded as a follow-up before any new embedded
+  caller adopts the client.
+- M2: `engine/benchmarks/rfc0036_calibration.cpp` and
+  `subgame_nash_conv.cpp` retain historical 1,600 ms constants/comments
+  from RFC 0036/0037-era measurement arms; they consume no engine
+  default. Left unchanged as historical measurement code; the
+  present-tense phrasing is a candidate for a future comment-only
+  clarification.
+- M3: cap == p99 == 10,000 ms carries no engineering headroom and
+  `T_decision` covers resolve-internal shares only (host/transport
+  excluded). Accepted for the offline product surface; the Stage 3 AC5
+  CSV must report the observed at-cap fraction and name the measurement
+  boundary explicitly.
+- M4 (approval mechanics): this decision record and the RFC index
+  annotation; completed in the acceptance change.
+
+### Original 2026-10-28 approval (pre-amendment text; historical)
+
+> Author agent: Claude (zzzode agent session, RFC author 2026-10-28)
+> Approved by: rfc0041-approval-1 (independent approval agent, auto_model/alwaysday1_max; did not author the RFC, code, or measurements)
+> Decision date: 2026-10-28
+> Review outcome: Approved
+> Amendment round: one Changes Requested round (five blocking findings); all five resolved and re-verified, and six editorial errata (NB1-NB6) applied in this acceptance commit
+> Review summary: Round 1 returned Changes Requested — Draft/Proposed status mismatch; overstated reuse of a production serving path that does not exist; an "unchanged seam" claim contradicted by budget/enum/certification edits and a nonexistent validation mode; gates that were not yet falsifiable (pseudo-replicated CIs, point-estimate comparisons, a missing mandatory exact-hand D1 column, an undefined latency aggregate and byte ceiling, unmeasured full-range export cost, no label-noise floor or serve-rate gate); and a BSNCV01 header sketch that could not be independently implemented. The revision: corrects the status and names the engine resolver plus the three components that must be built (bounded turn entry, production block refinement driver, model mount); adds §3a enumerating the additive seam surface (two defaulted budget fields, one Inferred termination enumerator, artifact-scope certification, deterministic Solved/Invalid/Decline rule, always-on per-refine weighted zero-sum check with Decline); defines AC4 as a complete predeclared statistical protocol ((board class x seed) resampling unit, >=60 held-out classes, >=3 seeds, range-mass weighting/bootstrap, 0.01 BB mean CI + 0.05 BB p95, <=0.003 BB label-noise floor with mandatory bet lines, strict RFC 0031 whole-interval composed-M2 rule, mandatory exact-hole D1 column, production-semantics mixed arm, 99% serve-rate); defines AC5 as the whole-decision aggregate latency over leaves x blocks (p95 <= 1,600 ms, named 28-core reference hardware, >=200 decisions, inference+features <=400 ms, full-range export measured before enablement, model <=16 MiB); and specifies BSNCV01 as a complete 128-byte offset table with explicit f32 row-major tensor layout, a digest-bound certification scope table, and a training-manifest digest. Round 2 verified every change against source and the CSV evidence, independently re-summed the header to 128 bytes, re-ran check-rfcs (41) and check-docs (392), and confirmed the enum has exactly one switch consumer; verdict Approved with no remaining blocking findings.
+>
+> Reviewed scope: full revised RFC 0041 (911+ lines), the RFC 0039 parent/amended gate semantics and Stage 4 trigger, the ContinuationValueModel seam and trainer hook, artifact precedents (BSF1/BSWARM03/BSFLIB03), the subgame_nash_conv M2 harnesses, RFC 0031's adoption-rule section, CMake/stage6 dependency boundaries (grep-verified zero existing neural code and no Python data pipeline), the host/envelope/proto receipt surfaces, and both index rows.
+>
+> Approved scope: the offline C++ label generator, the offline-only Python trainer under tools/neural-cv/, the BSNCV01 codec, the in-process f32 NeuralContinuationValueModel in bigshark_solver, the bounded turn entry and production outer refinement driver behind a default-deny gate table, the model mount/digest machinery, the predeclared AC4/AC5 gates, and the staged rollout. The approval does not cover any actual enablement (each seat/stack class needs its own evidence CSV and a fresh independent review confirmation), persistence beyond the model artifact itself, any wire/proto change, live operation, credentials, or spending. Conditions before Implementing: produce the implementation plan; Stage 1 label generation starts only after RFC 0039 E4's bucket-predicate switch and the converged 100 BB per-combo oracle row land; gates are frozen in CSV headers before the first gated training run; failure or Inconclusive is recorded and leaves the engine unchanged; the full Engine Build Contract is required before Implemented.
+>
+> Residual risks accepted: the label campaign's compute economics at bet/raised lines (anchored on 138.6 s per checked-through leaf), whether a <=16 MiB MLP reaches 0.01 BB on board-class-disjoint data, the unmeasured full-range joint-deal export cost gated by G8/AC5, and the absence of a multiplayer zero-sum theorem at 3+ seats (empirical gates only, 3-seat certification is a separate decision). Each is a predeclared honest-failure escape hatch.
+
+### Amendment 2 — Stage 1 honest FAILURE: RFC closed before any implementation (Proposed 2026-10-29, pending independent approval)
+
+Author agent: Claude (zzzode agent session, 2026-10-29)
+Failure trigger: the Stage 1 fixed label-cell campaign, required before any
+generator/network code, could not produce labels meeting the frozen AC4
+noise floor on real board textures. This is the predeclared honest-
+failure escape hatch ("failure or Inconclusive is recorded and leaves
+the engine unchanged"; accepted residual risk "label campaign's compute
+economics"), exercised with measured evidence rather than assumed away.
+
+Evidence (all committed under docs/plans/ablation/):
+
+1. Fixed iteration scheme fails across textures. T = 10,000,000 x 3
+   seeds passed on the fixture dry board (worst closure 0.00131 BB mean,
+   rfc0041-label-noise.csv) but the seven-texture pilot
+   (rfc0041-label-noise-textures.csv) found the coordinated board
+   9h Th Jd Qc at 0.00377-0.02445 BB mean across its five closures
+   (perturbed profile to 0.10280); on trip-aces As Ad Ac 7h the THREE
+   over-floor closures span 0.00357-0.02700 BB (the other two closures,
+   0.00076 and 0.00150, pass).
+2. Failures are a large, non-Declinable share of boards. The
+   deterministic 150-class hardness survey
+   (rfc0041-hardness-survey.csv; SplitMix sample of the 16,432 turn
+   classes, 10M x 3) measured 18.7% class-uniform / 15.3%
+   concrete-orbit-weighted floor failures (survey-weighted 20k-bootstrap
+   95% CI 9.6%-21.6%), 11.3% / 6.7% above 0.01 BB, worst class 4.12 BB.
+   Texture-stratified concrete-weighted failure: rainbow 1.1%,
+   two-tone 13.3%, three-flush 37.5%, monotone 77.8% (median label
+   noise 1.33 BB). The 99% serve-rate gate allows a 1% Decline
+   fraction; 15.3% is 15x that (lower CI bound still ~10x), so a
+   scoped/rare-class network cannot satisfy AC5.
+3. Scaling is dead for hard leaves. On 9hThJdQc cell 0 the uniform
+   mean half-spread is 0.300/0.186/0.113/0.0456/0.0221 BB at
+   100k/1M/3M/30M/100M x 4 (rfc0041-linear-cfr-spike.csv): decay
+   flattens (~N^-0.45 over 1M-100M). An OPTIMISTIC lower bound from
+   the steepest local interval (~-0.60) still puts the floor past
+   ~2.7e9 iterations per leaf; fits over wider windows give 1e10-3e11
+   (270x-30,000x the frozen 10M budget either way). The 10M x 8
+   half-spread is 0.084 BB; note this is a range statistic (which
+   grows mechanically with seed count), not the error of the
+   averaged label — under ideal sqrt(S) scaling it already implies
+   ~90+ seeds at 10M for a hard leaf, and the observed S=8 range is
+   ~2x the Gaussian prediction (heavy tails make averaging less
+   effective still).
+4. Cheap variance-reduction variants all fail (same file). At 10M x 3
+   vs Uniform on the two hardest boards: Linear CFR average-only is
+   worse; full Linear CFR improves only -10% (connected) / -41%
+   (monotone), still 7x/21x over floor; DCFR (alpha=3/2, beta=0,
+   gamma=2) is worse at 10M on both; full opponent-action enumeration
+   is bit-identical (8 printed decimals, mean and worst, both boards)
+   to external sampling, so no MEASURABLE opponent-action sampling
+   variance exists on these leaves and the dominant remaining Monte
+   Carlo term is the joint private-card deal (~N/1,081 visits per
+   combo). Deal-level chance baselines of the VR-MCCFR family do
+   target that variance, but they are a research-grade recursive
+   estimator, not a cheap parameter flip; deferring them is justified
+   and any future attempt must come as a new RFC citing this failure.
+   Full private-deal enumeration is the exact solve RFC 0039 already
+   found infeasible (87x the old envelope; ~14x even the amended
+   10-second envelope).
+
+Decision and scope of closure:
+
+- RFC 0041 is CLOSED at Stage 1 with a recorded FAILURE. No code from
+  the RFC is built or enabled: the neural model, BSNCV01 codec,
+  tools/neural-cv, bounded turn entry, block refinement driver, model
+  mount, gate table, and wire receipts do not exist and will not be
+  implemented under this RFC. Production stays exactly as today
+  (continuation slot null; turn roots use the existing path).
+- Amendment 1 (10-second decision envelope) is NOT withdrawn: it is an
+  independent product-requirement change (the old 1,600/2,000 ms was
+  the retired River Club budget) with its own approval, and it remains
+  in force.
+- The temporary spike code (linear/discounted averaging and full-
+  opponent sampling in NSeatTrainer/NestedRiverValueModel, reachable
+  only through benchmark environment hatches) is removed in the
+  closure change, per the no-feature-flags rule; the benchmark
+  measurement arms (--rfc0041-* probes, turn-class canonicalizer used
+  only by them and its ctest) stay as historical measurement tools.
+- Every evidence CSV and this RFC remain as the permanent record.
+  Future reconsideration requires a genuinely new algorithmic element
+  (e.g. a proven deal-level variance reducer) or a changed resource
+  envelope, proposed as a new RFC that cites this failure; the
+  accepted path forward for turn/river quality is not a neural label
+  campaign but offline blueprint coverage, live-seat-count-scoped
+  resolving, and the separate (larger, measured) card-abstraction loss
+  tracked by RFC 0031.
+
+Review:
+
+Approved by: rfc0041-amend2-approval-1 (independent approval agent;
+authored none of the RFC, measurements, or closure proposal;
+auto_model/alwaysday1_max)
+Decision date: 2026-10-29
 Review outcome: Approved
-Amendment round: one Changes Requested round (five blocking findings); all five resolved and re-verified, and six editorial errata (NB1-NB6) applied in this acceptance commit
-Review summary: Round 1 returned Changes Requested — Draft/Proposed status mismatch; overstated reuse of a production serving path that does not exist; an "unchanged seam" claim contradicted by budget/enum/certification edits and a nonexistent validation mode; gates that were not yet falsifiable (pseudo-replicated CIs, point-estimate comparisons, a missing mandatory exact-hand D1 column, an undefined latency aggregate and byte ceiling, unmeasured full-range export cost, no label-noise floor or serve-rate gate); and a BSNCV01 header sketch that could not be independently implemented. The revision: corrects the status and names the engine resolver plus the three components that must be built (bounded turn entry, production block refinement driver, model mount); adds §3a enumerating the additive seam surface (two defaulted budget fields, one Inferred termination enumerator, artifact-scope certification, deterministic Solved/Invalid/Decline rule, always-on per-refine weighted zero-sum check with Decline); defines AC4 as a complete predeclared statistical protocol ((board class x seed) resampling unit, >=60 held-out classes, >=3 seeds, range-mass weighting/bootstrap, 0.01 BB mean CI + 0.05 BB p95, <=0.003 BB label-noise floor with mandatory bet lines, strict RFC 0031 whole-interval composed-M2 rule, mandatory exact-hole D1 column, production-semantics mixed arm, 99% serve-rate); defines AC5 as the whole-decision aggregate latency over leaves x blocks (p95 <= 1,600 ms, named 28-core reference hardware, >=200 decisions, inference+features <=400 ms, full-range export measured before enablement, model <=16 MiB); and specifies BSNCV01 as a complete 128-byte offset table with explicit f32 row-major tensor layout, a digest-bound certification scope table, and a training-manifest digest. Round 2 verified every change against source and the CSV evidence, independently re-summed the header to 128 bytes, re-ran check-rfcs (41) and check-docs (392), and confirmed the enum has exactly one switch consumer; verdict Approved with no remaining blocking findings.
+Review findings: one required disposition (F1, registry
+re-annotation) and five minor findings F2-F6, all resolved in this
+acceptance change.
+Review summary: "Independent approval agent rfc0041-amend2-approval-1 reviewed Amendment 2 on 2026-10-29, having authored none of the RFC, measurements, or closure proposal. Reviewed scope: the full Amendment 2 text and frozen AC4/AC5 gates; all six evidence CSVs under docs/plans/ablation/; the SplitMix64 survey driver, sharding, canonicalizer, and noise-measurement code in engine/benchmarks/subgame_nash_conv.cpp; the production trainer/model surface for complete spike removal; Amendment 1 preservation; RFC lifecycle and both documentation indexes; and both repository checkers. The 150-class survey sample was independently reproduced bit-for-bit from the enumerator and hash code (no cherry-picking), and every cited number was spot-recomputed: 18.7% class-uniform and 15.3% concrete-orbit-weighted floor failures (survey-weighted bootstrap 95% lower bound 9.6%, ~10x the 1% serve-rate headroom), 6.7% above 0.01 BB, worst class 4.12 BB, monotone median 1.33 BB, the 100k-100M decay trajectory, the 8-seed row, and the four cheap-variant comparisons including the exactly-identical FullOpponent aggregates. The 3-seed half-spread is the frozen gate's own statistic and an upward-biased noise proxy, so its failure on margins this large cannot be an artifact; iteration scaling, multi-seed averaging, linear/discounted averaging, and opponent-action enumeration were all genuinely tested at the cited budgets, and deferring deal-level variance reducers (VR-MCCFR-style chance baselines) to a new RFC rather than the time-boxed spike is a justified, explicitly predeclared failure path rather than an abandoned cheap alternative. Spike removal is complete (trainer/model files byte-identical to HEAD, no enums, discounts, or env hatches, 538-line benchmark diff purely additive, retained arms compile and their canonicalizer ctest passes), no neural code ever existed, Amendment 1's 10,000 ms changes are preserved, and check-rfcs (41) and check-docs (394) pass. Residual risks and recorded minors: the registry rows must be re-annotated to the terminal FAILURE in the acceptance commit (F1); the 2.7e9 extrapolation is an optimistic lower bound under the steepest observed decay (other fits give 1e10-3e11, and the plan doc's stale '~1e9' must be corrected); the trip-aces and 'entirely deal variance'/VR-MCCFR phrasings should be tightened; the 8-seed evidence is a range-statistic result rather than a direct averaged-label error; and the full release/asan ctest remains the author's separate verification, not run by this reviewer. Verdict: Approved."
+Reviewed scope: Amendment 2 closure text; all six evidence CSVs; the
+SplitMix64 survey driver/sharding/canonicalizer; the production trainer
+and model surface for complete spike removal; Amendment 1 preservation;
+RFC lifecycle and both documentation indexes; and both repository
+checkers. The full release ctest and ASan were the author's separate
+verification (not run by the reviewer).
 
-Reviewed scope: full revised RFC 0041 (911+ lines), the RFC 0039 parent/amended gate semantics and Stage 4 trigger, the ContinuationValueModel seam and trainer hook, artifact precedents (BSF1/BSWARM03/BSFLIB03), the subgame_nash_conv M2 harnesses, RFC 0031's adoption-rule section, CMake/stage6 dependency boundaries (grep-verified zero existing neural code and no Python data pipeline), the host/envelope/proto receipt surfaces, and both index rows.
+Findings and dispositions:
 
-Approved scope: the offline C++ label generator, the offline-only Python trainer under tools/neural-cv/, the BSNCV01 codec, the in-process f32 NeuralContinuationValueModel in bigshark_solver, the bounded turn entry and production outer refinement driver behind a default-deny gate table, the model mount/digest machinery, the predeclared AC4/AC5 gates, and the staged rollout. The approval does not cover any actual enablement (each seat/stack class needs its own evidence CSV and a fresh independent review confirmation), persistence beyond the model artifact itself, any wire/proto change, live operation, credentials, or spending. Conditions before Implementing: produce the implementation plan; Stage 1 label generation starts only after RFC 0039 E4's bucket-predicate switch and the converged 100 BB per-combo oracle row land; gates are frozen in CSV headers before the first gated training run; failure or Inconclusive is recorded and leaves the engine unchanged; the full Engine Build Contract is required before Implemented.
-
-Residual risks accepted: the label campaign's compute economics at bet/raised lines (anchored on 138.6 s per checked-through leaf), whether a <=16 MiB MLP reaches 0.01 BB on board-class-disjoint data, the unmeasured full-range joint-deal export cost gated by G8/AC5, and the absence of a multiplayer zero-sum theorem at 3+ seats (empirical gates only, 3-seat certification is a separate decision). Each is a predeclared honest-failure escape hatch.
+- F1 (required; done here): docs/rfcs/README.md row 0041 and
+  docs/README.md registry now state the terminal Stage 1 FAILURE with
+  Amendment 1 retained; the 0041 implementation and label-cell plans
+  moved to the docs/README Historical table with closure pointers, and
+  their own status headers set to Historical.
+- F2 (done): trip-aces text now states the 0.00357-0.02700 band covers
+  the THREE over-floor closures (two closures pass at 0.00076/0.00150).
+- F3 (done): the ~2.7e9 extrapolation is labeled the optimistic lower
+  bound under the steepest observed decay (other fits give 1e10-3e11);
+  the plan doc's unsupported "~1e9" is corrected.
+- F4 (done): the eight-sead row is described as a range statistic with
+  the ~90-seed sqrt(S) implication and heavy-tail caveat, not a direct
+  averaged-label error.
+- F5 (done): FullOpponent identity is scoped to "no measurable
+  variance on these leaves"; VR-MCCFR chance baselines are correctly
+  identified as deal-level and deferred as research under a new RFC.
+- F6 (done): three-flush median reported as 0.00150 (mean of the two
+  middle values; lower/upper 0.00137/0.00163).
+- Full release ctest and ASan on touched surfaces are the author's
+  separate verification in this same change.

@@ -487,10 +487,23 @@ node) is NOT resident online.
 
 ## Risks
 
+> **S2 measurement update (2026-11-05, single-leaf).** The deterministic
+> full-deal river kernel solves a single online-reached (line,card) subtree to
+> summed-BB NashConv 0.0014-0.0021 in roughly 1,100-2,000 seedless iterations
+> (~40-60 s single-thread) on all three tested shapes, including the 12-action
+> raised-SRP object (0.00084 BB @2,052); no sampled noise and no T^-0.55
+> plateau in this range. This downgrades the "single-leaf oracle accuracy"
+> risk but leaves the G2-wide risks open: certified error vs a
+> higher-accuracy reference (CERT 0.005 / QUAL 0.03), the G3 boundary-error
+> slope into the turn gadget, and G4 coverage. Data:
+> [0047-stage1-tracker.md](../plans/0047-stage1-tracker.md),
+> `docs/plans/ablation/rfc0047/s2/`.
+
 - **Oracle accuracy unreachable offline (highest).** The deterministic V3
   law is unproven and the lineage (RFC 0039 ~0.26 BB; RFC 0043 T^-0.55 no
   plateau) is adverse. Mitigation: G2/G3 are predeclared Stage-1 kill gates;
-  stop before production.
+  stop before production. S2 single-leaf evidence above is favorable but not a
+  G2 pass.
 - **Coverage/build cost open (RFC 0043 AC6/AC7, 134,459-class).** The number
   of turn boundary objects and valid sharing are unknown; could make the
   offline build/storage infeasible. Mitigation: G4 census before any

@@ -3,26 +3,30 @@
 Status: Current
 
 The offline practice table lets a human play no-limit Texas hold'em hands
-locally against deterministic bots. It is a training tool: there is no server,
-no network call, no credential file, and no money. Every hand restarts every
-seat at the configured buy-in, and the running result is printed in big
-blinds.
+locally against engine-served opponents. It is a GTO training tool: there is
+no server on the network, no credential file, and no money. Every hand
+restarts every seat at the configured buy-in, and the running result is
+printed in big blinds.
 
-## What the bots are
+## The opponent tier
 
-The bot roster is deliberately labelled by what it does:
+There is exactly one opponent tier: every bot action is decided by a local
+`bigshark-engine --serve-proto` process through the framed Protobuf
+protocol, using whatever resident blueprints and flop libraries are
+configured. The table itself constructs NO opponent strategy; it creates
+all bot seats empty, and the CLI injects one engine-served policy per
+non-human seat before the first hand.
 
-| Difficulty | Behavior |
-| --- | --- |
-| `easy` | Uniform random over the declared finite action menu (fold/check/call, minimum raise, five declared pot fractions, and the cap). Loose and unpredictable, not strategic. |
-| `medium` | The pinned preflop charts plus the postflop Monte-Carlo-equity heuristic — standard ABC poker. The engine records this policy as `Guarantee::Approximate`; it is **not** a solved equilibrium and is never labelled "GTO". |
-| `engine` | A local `bigshark-engine --serve-proto` process decides every bot action through the framed Protobuf protocol. The engine loads resident blueprints and flop libraries when configured; without them it serves the labeled operational fallback. A descriptive label, never "GTO". |
+There is no random or heuristic ("easy"/"medium") opponent. Those legacy
+tiers were removed deliberately: a practice surface that is not the
+equilibrium tier has no place in a GTO trainer. Two consequences:
 
-The `easy` and `medium` rosters are self-contained offline policies. A trained
-equilibrium policy is not bundled offline: the stage-6 coarse candidate
-artifacts are measurement-only and have not been promoted (their measured
-confidence intervals overlap the baseline; see the RFC 0008 stage-6 plan
-notes).
+- If the engine process cannot be started or reached, the CLI aborts with
+  an error instead of falling back to a weaker opponent. Start the engine
+  (or fix `--engine-path`) and retry.
+- Table shapes for which no equilibrium artifact exists are not playable
+  against a fake opponent; the engine serves its labeled fallback
+  receipts on shapes outside the configured libraries.
 
 ## Running it
 
@@ -30,14 +34,14 @@ The interactive CLI is `bigshark-practice` (built from
 `engine/benchmarks/practice_simulator.cpp`):
 
 ```bash
-# Six-seat table, engine-served bots, 100 BB stacks.
-./build/release/engine/bigshark-practice --seats 6 --difficulty engine
+# Six-seat table against engine-served opponents, 100 BB stacks.
+./build/release/engine/bigshark-practice --seats 6
 
-# Heads-up against the Medium baseline bot.
-./build/release/engine/bigshark-practice --seats 2 --difficulty medium
+# Heads-up against the engine tier.
+./build/release/engine/bigshark-practice --seats 2
 
 # With a resident blueprint and flop library.
-./build/release/engine/bigshark-practice --seats 6 --difficulty engine \
+./build/release/engine/bigshark-practice --seats 6 \
   --resident-root artifacts/blueprint=abc123... \
   --flop-library artifacts/flop-library-6way-fullrange
 ```
@@ -50,16 +54,15 @@ The CLI accepts these flags:
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--seats N` | `6` | Table size including the human, `2` through `10`. |
-| `--difficulty easy\|medium\|engine` | `medium` | Bot roster. |
 | `--stack-bb N` | `100` | Starting stack in big blinds for every seat. |
 | `--hands N` | `0` (until quit) | Stop after N hands. |
 | `--seed S` | `0` (fixed default) | SplitMix64 deck seed. |
-| `--engine-path PATH` | `bin/bigshark-engine` | Path to the engine binary (engine tier). |
-| `--resident-root PATH=SHA256` | none | Repeatable resident root spec (engine tier). |
-| `--flop-library DIR` | none | Flop library directory (engine tier). |
-| `--solve-budget-ms N` | `1000` | Per-decision solve budget (engine tier). |
-| `--engine-timeout-ms N` | `30000` | Round-trip timeout (engine tier). |
-| `--lazy` | off | Enable lazy flop class loading (engine tier). |
+| `--engine-path PATH` | `bin/bigshark-engine` | Path to the engine binary. |
+| `--resident-root PATH=SHA256` | none | Repeatable resident root spec. |
+| `--flop-library DIR` | none | Flop library directory. |
+| `--solve-budget-ms N` | `10000` | Per-decision solve budget (RFC 0041 Amendment 1 10-second p95 envelope). |
+| `--engine-timeout-ms N` | `30000` | Round-trip timeout. |
+| `--lazy` | off | Enable lazy flop class loading. |
 
 ## Engine core and boundary
 
@@ -104,19 +107,18 @@ carries no `default:` label, and `-Werror=switch` is enabled on
 rather than spinning through a loop with no arm for it.
 
 The core is built as the `bigshark_practice` static library linking only
-`bigshark_stage6_eval` (which provides the bot policies) and poker. The
-engine tier is a separate `bigshark_practice_engine` static library that
-links `bigshark_practice` (PUBLIC) plus `bigshark_engine_protocol` and
-`bigshark_protocol` (PRIVATE), so the offline core never links the protocol
-or service. The configure-time offline guard lists `bigshark_practice` among
-the forbidden prefixes, so it cannot be linked into the decision service,
-either wire protocol, or the engine host, and the interactive binary is a
-leaf that never links those targets.
+`bigshark_behavior` (the policy interface) and poker; it contains NO bot
+strategy. The engine client is a separate `bigshark_practice_engine` static
+library that links `bigshark_practice` (PUBLIC) plus `bigshark_engine_protocol`
+and `bigshark_protocol` (PRIVATE), so the offline core never links the
+protocol or service. The configure-time offline guard lists
+`bigshark_practice` among the forbidden prefixes, so it cannot be linked
+into the decision service, either wire protocol, or the engine host, and
+the interactive binary is a leaf that never links those targets.
 
-### Engine tier
+### Engine-served opponents
 
-The `Engine` difficulty tier spawns one `bigshark-engine --serve-proto` child
-process and injects an `EngineServedPolicy` for every bot seat. The policy
+The CLI spawns one `bigshark-engine --serve-proto` child process and injects an `EngineServedPolicy` for every bot seat. The policy
 converts the current `GameState` and `HandLog` into an engine `DecisionRequest`,
 sends it through the ULEB128-framed protocol, and converts the engine
 `DecisionResponse` into a `PolicyAction` distribution. One `EngineProcess`
