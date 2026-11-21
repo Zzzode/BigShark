@@ -1,0 +1,2 @@
+stratum,shape_id,group,pot_chips,cand_nash_conv_bb,ref_nash_conv_bb,drift_max_bb,residual_max_bb,cert_max_bb,drift_rms_bb,residual_rms_bb,cert_rms_bb
+w1,7,0,4,0.00121431,0.00002770,0.02392922,0.00014885,0.02393973,0.00482568,0.00002919,0.00483432

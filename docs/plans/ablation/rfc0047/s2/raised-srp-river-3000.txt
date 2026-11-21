@@ -1,0 +1,16 @@
+raised-srp it=3000 nodes? action=12 wall=108.55s iter/s=28
+  cp=10 nc_bb=0.675033
+  cp=15 nc_bb=0.471580
+  cp=23 nc_bb=0.300224
+  cp=35 nc_bb=0.194409
+  cp=53 nc_bb=0.125948
+  cp=80 nc_bb=0.081579
+  cp=120 nc_bb=0.051807
+  cp=180 nc_bb=0.030485
+  cp=270 nc_bb=0.017139
+  cp=405 nc_bb=0.009011
+  cp=608 nc_bb=0.004569
+  cp=912 nc_bb=0.002303
+  cp=1368 nc_bb=0.001401
+  cp=2052 nc_bb=0.000837
+done raised-srp

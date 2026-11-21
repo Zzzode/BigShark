@@ -1,0 +1,20 @@
+# RFC 0042 Stage 2 evidence — flop exact-table wall probe (freeze item 7)
+#
+# Command: bigshark-subgame-nash-conv --rfc0042-flop-probe
+# Board:   As Kd 7c (frozen rainbow fixture, card ids 48,46,23)
+# Host:    reference build host (56 cores); single-threaded enumeration,
+#          release preset (-O3), unmemoized direct equity_strength_ehs.
+# Counts:  1,176 non-blocked hero holdings x 1,070,190 conditional
+#          (opponent, runout) terms = 1,258,543,440 terms
+#          (~2,517,086,880 seven-card evaluator invocations).
+# Symmetry: mean E_h over the full holding table is 0.500000 as it must
+#          be (uniform opponent range, full hero distribution).
+# Date:    2026-10-30
+#
+# This is feasibility evidence for the FOLLOW-ON flip RFC's flop table
+# build; no Stage 3 cell buckets a flop board. The predeclared
+# build-budget threshold (freeze item 5/7, per-fixture-board wall
+# ceiling on this reference host) is recorded in the Stage 2 freeze
+# addendum and compared against this 183.911 s measurement.
+board,holdings,terms_per_holding,total_terms,wall_s,mean_ehs,min_ehs,max_ehs
+AsKd7c,1176,1070190,1258543440,183.911,0.500000,0.172728,0.973504

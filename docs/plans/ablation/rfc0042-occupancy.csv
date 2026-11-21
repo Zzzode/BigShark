@@ -1,0 +1,32 @@
+# RFC 0042 Stage 2 evidence — equal-width occupancy predicate (freeze item 4)
+#
+# Commands:
+#   bigshark-subgame-nash-conv --rfc0042-occupancy fixture
+#   bigshark-subgame-nash-conv --rfc0042-occupancy full
+# Boards: the two W1 gated-shape fixture boards (2c3d7hJs9c river,
+#         2c3d7hJs turn), primary K = 64 on both streets.
+# Statistic: holdings per K/4-wide mega-bin (four equity quartiles of
+#            width 0.25); ratio = fullest / emptiest mega-bin.
+# Rule (RFC 0042 freeze item 4): switch the primary point to
+#   equal-mass ONLY if ratio > 5 on a majority of boards.
+#
+# Two scopes are reported:
+# - fixture-range: the 10-hand enumerable training range filtered to
+#   non-blocked holdings (8 river / 10 turn). The statistic is vacuous
+#   at that size: the two extreme quartiles are empty on both boards
+#   (ratio infinite) purely because 8-10 samples cannot cover four
+#   quartiles. This cannot be evidence about bin geometry.
+# - full-nonblocked: every holding compatible with the board
+#   (C(47,2)=1,081 river, C(48,2)=1,128 turn). The occupancy of equal
+#   width bins is a property of the board's equity distribution,
+#   independent of which range the solver enumerates; this is the
+#   meaningful reference population and is pinned as the predicate's
+#   reference set in the Stage 2 freeze addendum (pending independent
+#   approval). Both boards are below 5x (1.129, 2.273): 0/2 boards
+#   trigger -> the equal-width primary point RETAINS.
+# Date: 2026-10-30
+board,street,scope,holdings,mega0,mega1,mega2,mega3,max_over_min
+river-2c3d7hJs9c,river,fixture-range,8,0,3,0,5,1000000000.000
+turn-2c3d7hJs,turn,fixture-range,10,0,4,0,6,1000000000.000
+river-2c3d7hJs9c,river,full-nonblocked,1081,272,256,264,289,1.129
+turn-2c3d7hJs,turn,full-nonblocked,1128,176,400,336,216,2.273

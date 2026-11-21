@@ -1,0 +1,5 @@
+mode,scheme,seats,street,seed,target_iters,safety_wall_s,completed,infosets,sealed_bytes,joint_deals,max_gap_bb,sum_gap_bb,bucket_sum_gap_bb,wall_observed_s,peak_rss_kb,truncated,note
+ladder,tiers,2,river,4321,100000,21600,100000,30,6748,38,0.191573,0.355373,0.105099,1.953,5992,0,
+ladder,equity,2,river,4321,100000,21600,100000,60,12700,38,0.124601,0.216705,0.199536,4.008,5992,0,
+ladder,tiers,2,turn,4321,100000,21600,100000,30,6748,70,0.174099,0.334436,-1.000000,2.365,8676,0,
+ladder,equity,2,turn,4321,100000,21600,100000,70,14684,70,0.187145,0.326530,-1.000000,5.132,8856,0,

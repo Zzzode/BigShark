@@ -1,6 +1,9 @@
 # RFC 0041 Implementation Plan — Learned River Continuation-Value Network
 
-Status: Current (RFC Accepted 2026-10-28; not yet Implementing)
+Status: **Historical** — RFC closed 2026-10-29 at Stage 1 with a recorded
+FAILURE (Amendment 2); no Stage below was implemented. Kept as the
+sequencing/failure reference. Amendment 1 (10,000 ms decision envelope)
+was approved independently and remains in force.
 RFC: docs/rfcs/0041-learned-river-continuation-value-network.md
 Owning modules: engine resolver (bounded turn entry + production block refinement driver), engine gto/solver (NeuralContinuationValueModel + BSNCV01 codec), engine benchmarks (label generator + gates), tools/neural-cv (offline trainer), apps/engine-host (default-deny mount)
 
@@ -36,6 +39,12 @@ Stage 1 below starts only after these land on the RFC 0039 code line:
    producers both fit (this is also G7's benchmark-generalization work).
 
 ## Stage 1 — Exact label generator (no serving, no network)
+
+Frozen pre-generation plan: [0041-label-cells.md](0041-label-cells.md)
+(board-class universe and 300/60 split, line quotas, range profiles,
+seed/iteration scheme, storage and compute budget). Empirical inputs:
+`docs/plans/ablation/rfc0041-leaf-inventory.csv` and
+`rfc0041-leaf-cost.csv`.
 
 1. Add `--rfc0041-genlabels` to the subgame nash-conv benchmark (or a sibling
    binary if it grows): enumerate canonical river-boundary leaves over the

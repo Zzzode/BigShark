@@ -1,0 +1,15 @@
+monotone it=2000 nodes? action=10 wall=59.14s iter/s=34
+  cp=10 nc_bb=0.776393
+  cp=15 nc_bb=0.535509
+  cp=23 nc_bb=0.346526
+  cp=35 nc_bb=0.234393
+  cp=53 nc_bb=0.164112
+  cp=80 nc_bb=0.106174
+  cp=120 nc_bb=0.062467
+  cp=180 nc_bb=0.038914
+  cp=270 nc_bb=0.025895
+  cp=405 nc_bb=0.017234
+  cp=608 nc_bb=0.010627
+  cp=912 nc_bb=0.006075
+  cp=1368 nc_bb=0.003032
+done monotone

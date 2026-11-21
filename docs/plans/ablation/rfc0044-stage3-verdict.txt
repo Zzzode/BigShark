@@ -1,0 +1,28 @@
+group seats=2 scheme=equity street=river
+  rung[0] T=100,000 observed g=0.204051 hw=0.003575
+  rung[1] T=300,000 observed g=0.110068 hw=0.001827
+  rung[2] T=1,000,000 observed g=0.057083 hw=0.000614
+  rung[3] T=3,000,000 observed g=0.031276 hw=0.000112
+  rung[4] T=10,000,000 observed g=0.016414 hw=0.000142
+  rung[5] T=30,000,000 observed g=0.009097 hw=0.000059
+  rung[6] T=100,000,000 observed g=0.004856 hw=0.000043
+  rung[7] T=300,000,000 observed g=0.002717 hw=0.000052
+  CERT: CERTIFIED r_cert=6 (T=100,000,000)
+  tail-fit rungs[5..7] a=76.4328 b=0.5248 maxRelResidual=0.0028 g(100000000)=0.004843
+  QUAL: FAIL meanExact=0.048416 eps=0.03 allPairedStrict=true reasons=[qual:mean-exact-gap]
+    seed=4320 equity=0.048132 incumbent=0.314429 strictBetter=true
+    seed=4321 equity=0.049739 incumbent=0.313573 strictBetter=true
+    seed=4322 equity=0.050231 incumbent=0.314108 strictBetter=true
+    seed=4323 equity=0.045912 incumbent=0.313618 strictBetter=true
+    seed=4324 equity=0.048066 incumbent=0.313078 strictBetter=true
+group seats=2 scheme=tiers street=river
+  rung[0] T=100,000 observed g=0.100452 hw=0.005291
+  rung[1] T=300,000 observed g=0.050379 hw=0.003181
+  rung[2] T=1,000,000 observed g=0.023831 hw=0.001110
+  rung[3] T=3,000,000 observed g=0.012633 hw=0.000300
+  rung[4] T=10,000,000 observed g=0.006411 hw=0.000128
+  rung[5] T=30,000,000 observed g=0.003565 hw=0.000036
+  rung[6] T=100,000,000 observed g=0.001861 hw=0.000048
+  rung[7] T=300,000,000 observed g=0.001049 hw=0.000015
+  CERT: CERTIFIED r_cert=5 (T=30,000,000)
+  tail-fit rungs[5..7] a=33.4604 b=0.5315 maxRelResidual=0.0071 g(100000000)=0.001874

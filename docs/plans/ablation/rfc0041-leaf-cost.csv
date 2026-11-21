@@ -1,0 +1,23 @@
+# version: rfc0041-leaf-cost-v1
+# RFC 0041 Stage 1 per-class compute-budget anchor: wall time of one
+# NestedRiverValueModel::refine at one representative frontier leaf per
+# inventory cell (make_subgame_def_np 2 seats 100 BB, cap-1 streets(1),
+# uniform block-0 conditioned export), release build, 56-core host.
+# Command: bigshark-subgame-nash-conv --rfc0041-leaf-cost 2 100 100000 1 <ten|full> 4101
+# 'ten' = 10-hand representative range (20 live seat-combos); 'full' =
+# all-1,326 range card-blocked to the board (~1,081 live combos/seat,
+# 2,162 seat-combos). The fixed nested-tree build dominates at low
+# iterations (~18 s even for the check-through leaf); iteration cost
+# adds ~1.4-2.0 s per 100k. Planning extrapolations to the frozen
+# iteration count use the per-cell seconds in rfc0041-label-noise.csv.
+rfc0041-leaf-cost,seats,stack_bb,range,iters,run,cell,live_combos,seconds,status
+rfc0041-leaf-cost,2,100,ten,100000,0,fold0|turnline=CC|pot_bb=1.00,20,1.451,Solved
+rfc0041-leaf-cost,2,100,ten,100000,0,fold0|turnline=CRC|pot_bb=3.00,20,1.677,Solved
+rfc0041-leaf-cost,2,100,ten,100000,0,fold0|turnline=CRC|pot_bb=4.00,20,1.864,Solved
+rfc0041-leaf-cost,2,100,ten,100000,0,fold0|turnline=RC|pot_bb=3.00,20,1.675,Solved
+rfc0041-leaf-cost,2,100,ten,100000,0,fold0|turnline=RC|pot_bb=4.00,20,1.894,Solved
+rfc0041-leaf-cost,2,100,full,100000,0,fold0|turnline=CC|pot_bb=1.00,2162,19.317,Solved
+rfc0041-leaf-cost,2,100,full,100000,0,fold0|turnline=CRC|pot_bb=3.00,2162,24.175,Solved
+rfc0041-leaf-cost,2,100,full,100000,0,fold0|turnline=CRC|pot_bb=4.00,2162,29.120,Solved
+rfc0041-leaf-cost,2,100,full,100000,0,fold0|turnline=RC|pot_bb=3.00,2162,24.233,Solved
+rfc0041-leaf-cost,2,100,full,100000,0,fold0|turnline=RC|pot_bb=4.00,2162,29.398,Solved

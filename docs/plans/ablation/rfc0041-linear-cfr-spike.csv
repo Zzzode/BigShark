@@ -1,0 +1,61 @@
+# version: rfc0041-linear-cfr-spike-v1
+# RFC 0041 Stage 1 variance-reduction spike (authorized 2026-10-29;
+# option A, time-boxed). The production trainer (bs::gto::NSeatTrainer)
+# has RM+ external sampling with Uniform iteration weighting. Two
+# measurement-only variants were added behind NSeatTrainerLimits.
+# average_mode (default Uniform, cold-start enforced, reachable from
+# benchmark probes via BS_RFC0041_LINEAR_CFR=avg|full):
+#   LinearAvg  - Brown & Sandholm 2019 linear average only: iteration t
+#                contributes t times to the average-strategy sums;
+#                RM+ regrets unchanged.
+#   LinearFull - full Linear CFR: prior regrets AND sums discounted by
+#                t/(t+1) before iteration t+1; current sums weighted t.
+# Non-Uniform modes reject warm starts and batch widths > 1. The spike
+# is promoted (unconditional algorithm, own tests, revision handling) or
+# deleted as one change per the project's no-flags rule.
+#
+# Control evidence (Uniform RM+), 9h Th Jd Qc connected turn board,
+# cell 0 check-through, full 1,326 support, 2 seats 100 BB,
+# range-mass-weighted mean per-combo half-spread BB:
+rfc0041-spike,mode,board,iters,seeds,mean_halfspread_bb,worst_halfspread_bb,seconds
+rfc0041-spike,Uniform,9hThJdQc,100000,4,0.29996287,1.57345123,73.361
+rfc0041-spike,Uniform,9hThJdQc,1000000,4,0.18550031,0.95509619,137.645
+rfc0041-spike,Uniform,9hThJdQc,3000000,4,0.11326488,0.58558174,271.818
+rfc0041-spike,Uniform,9hThJdQc,30000000,4,0.04559009,0.23251210,2166.940
+rfc0041-spike,Uniform,9hThJdQc,100000000,4,0.02211944,0.11162304,6996.895
+rfc0041-spike,Uniform,AsAdAc7h,30000000,4,0.01099267,0.03933522,2414.983
+# 8-seed averaging at 10M (same board/cell) still 0.08388575 mean, so
+# more independent seeds do not rescue hard leaves either.
+rfc0041-spike,Uniform-8seeds,9hThJdQc,10000000,8,0.08388575,0.42767345,1461.294
+#
+# Linear comparison rows appended below (10M x 3, identical contention,
+# two hardest boards: connected 9hThJdQc and monotone 3c6c9cJc):
+#
+# 10M x 3 comparison, mean half-spread BB (identical contention, same seeds):
+rfc0041-spike,Uniform,9hThJdQc,10000000,3,0.02444912,0.13112175,549.893
+rfc0041-spike,LinearAvg,9hThJdQc,10000000,3,0.02743706,0.14977044,542.739
+rfc0041-spike,LinearFull,9hThJdQc,10000000,3,0.02207937,0.11573894,551.245
+rfc0041-spike,Dcfr,9hThJdQc,10000000,3,0.06100435,0.33189816,552.482
+rfc0041-spike,FullOpponent,9hThJdQc,10000000,3,0.02444912,0.13112175,564.327
+rfc0041-spike,Uniform,3c6c9cJc,10000000,3,0.10700140,0.54658552,565.889
+rfc0041-spike,LinearAvg,3c6c9cJc,10000000,3,0.13195943,0.67309870,566.619
+rfc0041-spike,LinearFull,3c6c9cJc,10000000,3,0.06353244,0.31672575,570.866
+rfc0041-spike,Dcfr,3c6c9cJc,10000000,3,0.12441111,0.63404128,571.608
+rfc0041-spike,FullOpponent,3c6c9cJc,10000000,3,0.10700140,0.54658552,586.070
+# DCFR 1M x 3 early rows: 9hThJdQc 0.10158421 (Uniform 1M 0.18550031),
+# 3c6c9cJc 0.13565021 - better early, worse at 10M (t^2 recent-weighting
+# amplifies the still-high Monte Carlo variance of recent iterations).
+#
+# OUTCOME (2026-10-29): all four authorized cheap variants fail to
+# reach the ~10x improvement needed for hard leaves (target 0.003 BB).
+# LinearAvg and DCFR make the noise WORSE at 10M; LinearFull gives
+# -10% (connected) / -41% (monotone), still 7x and 21x over floor;
+# FullOpponent is bit-identical to Uniform, proving opponent-action
+# sampling contributes no measurable variance - the remaining Monte
+# Carlo term is entirely the joint private-card deal (each per-combo
+# marginal gets ~N/1081 visits). The only remaining known lever
+# targeting that source is VR-MCCFR+ baselines (Schmid et al. 2019,
+# used in Pluribus), a substantially larger recursive
+# baseline-estimator change outside this spike's cheap-variant scope.
+# Uniform default path verified unchanged: full release ctest 80/80
+# with the spike compiled in.

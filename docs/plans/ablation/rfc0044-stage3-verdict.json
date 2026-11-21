@@ -1,0 +1,629 @@
+[
+  {
+    "seats": 2,
+    "scheme": "equity",
+    "street": "river",
+    "cert": {
+      "certified": true,
+      "rCert": 6,
+      "rungs": [
+        {
+          "index": 0,
+          "T": 100000,
+          "observed": true,
+          "eligible": false,
+          "passes": {
+            "r1": false,
+            "r2": false,
+            "r3": false,
+            "r4": false
+          },
+          "values": {
+            "g": 0.20405060000000003,
+            "hw": 0.003574677223164855
+          },
+          "failures": [
+            "ineligible:index<3"
+          ]
+        },
+        {
+          "index": 1,
+          "T": 300000,
+          "observed": true,
+          "eligible": false,
+          "passes": {
+            "r1": false,
+            "r2": false,
+            "r3": false,
+            "r4": false
+          },
+          "values": {
+            "g": 0.11006780000000001,
+            "hw": 0.0018274013817115766
+          },
+          "failures": [
+            "ineligible:index<3"
+          ]
+        },
+        {
+          "index": 2,
+          "T": 1000000,
+          "observed": true,
+          "eligible": false,
+          "passes": {
+            "r1": false,
+            "r2": false,
+            "r3": false,
+            "r4": false
+          },
+          "values": {
+            "g": 0.0570826,
+            "hw": 0.0006142571511521815
+          },
+          "failures": [
+            "ineligible:index<3"
+          ]
+        },
+        {
+          "index": 3,
+          "T": 3000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": false,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.0312764,
+            "hw": 0.0001124479703565412,
+            "tailFit": {
+              "a": 108.31368381613008,
+              "b": 0.5464262379231151
+            },
+            "tailMaxRelResidual": 0.0008696464564199113,
+            "priorFit": {
+              "a": 118.53496537008859,
+              "b": 0.5531086032739304
+            },
+            "priorPredicted": 0.03099523880305987,
+            "priorRelDeviation": 0.009071109234763387
+          },
+          "failures": [
+            "r1:absolute-distance"
+          ]
+        },
+        {
+          "index": 4,
+          "T": 10000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": false,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.016414,
+            "hw": 0.00014168891644240816,
+            "tailFit": {
+              "a": 100.6078609710031,
+              "b": 0.5411970626849247
+            },
+            "tailMaxRelResidual": 0.0046531703308268545,
+            "priorFit": {
+              "a": 108.31368381613008,
+              "b": 0.5464262379231151
+            },
+            "priorPredicted": 0.016206889133470917,
+            "priorRelDeviation": 0.012779186975577776
+          },
+          "failures": [
+            "r1:absolute-distance"
+          ]
+        },
+        {
+          "index": 5,
+          "T": 30000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": false,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.0090968,
+            "hw": 0.000058518187476291006,
+            "tailFit": {
+              "a": 93.1388821376604,
+              "b": 0.5363149359419572
+            },
+            "tailMaxRelResidual": 0.0006628314810152054,
+            "priorFit": {
+              "a": 100.6078609710031,
+              "b": 0.5411970626849247
+            },
+            "priorPredicted": 0.009037240816755667,
+            "priorRelDeviation": 0.006590416749093016
+          },
+          "failures": [
+            "r1:absolute-distance"
+          ]
+        },
+        {
+          "index": 6,
+          "T": 100000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": true,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.004856400000000001,
+            "hw": 0.00004311562374445691,
+            "tailFit": {
+              "a": 82.2774158980568,
+              "b": 0.5287787643741957
+            },
+            "tailMaxRelResidual": 0.006118323788001599,
+            "priorFit": {
+              "a": 93.1388821376604,
+              "b": 0.5363149359419572
+            },
+            "priorPredicted": 0.004771023257596869,
+            "priorRelDeviation": 0.017894849342263642
+          },
+          "failures": []
+        },
+        {
+          "index": 7,
+          "T": 300000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": true,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.0027168,
+            "hw": 0.000051796046933703394,
+            "tailFit": {
+              "a": 76.43279899624419,
+              "b": 0.5247746206627936
+            },
+            "tailMaxRelResidual": 0.002831965581632656,
+            "priorFit": {
+              "a": 82.2774158980568,
+              "b": 0.5287787643741957
+            },
+            "priorPredicted": 0.002708687731864309,
+            "priorRelDeviation": 0.0029949071058506713
+          },
+          "failures": []
+        }
+      ],
+      "firstFailureReasons": []
+    },
+    "rungs": [
+      {
+        "index": 0,
+        "T": 100000,
+        "observed": true,
+        "n": 5,
+        "g": 0.20405060000000003,
+        "hw": 0.003574677223164855
+      },
+      {
+        "index": 1,
+        "T": 300000,
+        "observed": true,
+        "n": 5,
+        "g": 0.11006780000000001,
+        "hw": 0.0018274013817115766
+      },
+      {
+        "index": 2,
+        "T": 1000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.0570826,
+        "hw": 0.0006142571511521815
+      },
+      {
+        "index": 3,
+        "T": 3000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.0312764,
+        "hw": 0.0001124479703565412
+      },
+      {
+        "index": 4,
+        "T": 10000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.016414,
+        "hw": 0.00014168891644240816
+      },
+      {
+        "index": 5,
+        "T": 30000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.0090968,
+        "hw": 0.000058518187476291006
+      },
+      {
+        "index": 6,
+        "T": 100000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.004856400000000001,
+        "hw": 0.00004311562374445691
+      },
+      {
+        "index": 7,
+        "T": 300000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.0027168,
+        "hw": 0.000051796046933703394
+      }
+    ],
+    "tailFit": {
+      "fromIndex": 5,
+      "toIndex": 7,
+      "fit": {
+        "a": 76.43279899624419,
+        "b": 0.5247746206627936
+      },
+      "maxRelResidual": 0.002831965581632656,
+      "projection100M": 0.00484264684234936
+    },
+    "rule5": null,
+    "qual": {
+      "atRung": 6,
+      "observed": true,
+      "meanExact": 0.048416,
+      "epsExact": 0.03,
+      "meanPasses": false,
+      "paired": [
+        {
+          "seed": 4320,
+          "equityExact": 0.048132,
+          "incumbentExact": 0.314429,
+          "strictlyBetter": true
+        },
+        {
+          "seed": 4321,
+          "equityExact": 0.049739,
+          "incumbentExact": 0.313573,
+          "strictlyBetter": true
+        },
+        {
+          "seed": 4322,
+          "equityExact": 0.050231,
+          "incumbentExact": 0.314108,
+          "strictlyBetter": true
+        },
+        {
+          "seed": 4323,
+          "equityExact": 0.045912,
+          "incumbentExact": 0.313618,
+          "strictlyBetter": true
+        },
+        {
+          "seed": 4324,
+          "equityExact": 0.048066,
+          "incumbentExact": 0.313078,
+          "strictlyBetter": true
+        }
+      ],
+      "allSeedsStrictlyBetter": true,
+      "passes": false,
+      "failureReasons": [
+        "qual:mean-exact-gap"
+      ]
+    }
+  },
+  {
+    "seats": 2,
+    "scheme": "tiers",
+    "street": "river",
+    "cert": {
+      "certified": true,
+      "rCert": 5,
+      "rungs": [
+        {
+          "index": 0,
+          "T": 100000,
+          "observed": true,
+          "eligible": false,
+          "passes": {
+            "r1": false,
+            "r2": false,
+            "r3": false,
+            "r4": false
+          },
+          "values": {
+            "g": 0.1004524,
+            "hw": 0.005290725687839334
+          },
+          "failures": [
+            "ineligible:index<3"
+          ]
+        },
+        {
+          "index": 1,
+          "T": 300000,
+          "observed": true,
+          "eligible": false,
+          "passes": {
+            "r1": false,
+            "r2": false,
+            "r3": false,
+            "r4": false
+          },
+          "values": {
+            "g": 0.05037879999999999,
+            "hw": 0.0031810113233938634
+          },
+          "failures": [
+            "ineligible:index<3"
+          ]
+        },
+        {
+          "index": 2,
+          "T": 1000000,
+          "observed": true,
+          "eligible": false,
+          "passes": {
+            "r1": false,
+            "r2": false,
+            "r3": false,
+            "r4": false
+          },
+          "values": {
+            "g": 0.023831400000000003,
+            "hw": 0.0011099860392124912
+          },
+          "failures": [
+            "ineligible:index<3"
+          ]
+        },
+        {
+          "index": 3,
+          "T": 3000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": false,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.0126334,
+            "hw": 0.0003002167935324769,
+            "tailFit": {
+              "a": 97.91452788991039,
+              "b": 0.6010626054118401
+            },
+            "tailMaxRelResidual": 0.017002324575582237,
+            "priorFit": {
+              "a": 133.41722438129133,
+              "b": 0.6247619261123228
+            },
+            "priorPredicted": 0.011982657624109811,
+            "priorRelDeviation": 0.05430701571418148
+          },
+          "failures": [
+            "r1:absolute-distance"
+          ]
+        },
+        {
+          "index": 4,
+          "T": 10000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": false,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.006411,
+            "hw": 0.000128030879616755,
+            "tailFit": {
+              "a": 62.60358164422789,
+              "b": 0.570115152868879
+            },
+            "tailMaxRelResidual": 0.005481210317303071,
+            "priorFit": {
+              "a": 97.91452788991039,
+              "b": 0.6010626054118401
+            },
+            "priorPredicted": 0.00607307852166293,
+            "priorRelDeviation": 0.05564253403470577
+          },
+          "failures": [
+            "r1:absolute-distance"
+          ]
+        },
+        {
+          "index": 5,
+          "T": 30000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": true,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.0035654000000000007,
+            "hw": 0.000036206214756828686,
+            "tailFit": {
+              "a": 45.629641155476506,
+              "b": 0.5496350856327644
+            },
+            "tailMaxRelResidual": 0.011289916766549557,
+            "priorFit": {
+              "a": 62.60358164422789,
+              "b": 0.570115152868879
+            },
+            "priorPredicted": 0.0034180550528812733,
+            "priorRelDeviation": 0.043107833208982975
+          },
+          "failures": []
+        },
+        {
+          "index": 6,
+          "T": 100000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": true,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.0018605999999999998,
+            "hw": 0.00004765874786682502,
+            "tailFit": {
+              "a": 37.041853574731924,
+              "b": 0.5373193008768088
+            },
+            "tailMaxRelResidual": 0.002339252707516666,
+            "priorFit": {
+              "a": 45.629641155476506,
+              "b": 0.5496350856327644
+            },
+            "priorPredicted": 0.0018288006537822714,
+            "priorRelDeviation": 0.017388087734965512
+          },
+          "failures": []
+        },
+        {
+          "index": 7,
+          "T": 300000000,
+          "observed": true,
+          "eligible": true,
+          "passes": {
+            "r1": true,
+            "r2": true,
+            "r3": true,
+            "r4": true
+          },
+          "values": {
+            "g": 0.001049,
+            "hw": 0.000015333170164059398,
+            "tailFit": {
+              "a": 33.46040682486778,
+              "b": 0.5314739917561032
+            },
+            "tailMaxRelResidual": 0.007131701119608819,
+            "priorFit": {
+              "a": 37.041853574731924,
+              "b": 0.5373193008768088
+            },
+            "priorPredicted": 0.0010322189899634306,
+            "priorRelDeviation": 0.016257218865120826
+          },
+          "failures": []
+        }
+      ],
+      "firstFailureReasons": []
+    },
+    "rungs": [
+      {
+        "index": 0,
+        "T": 100000,
+        "observed": true,
+        "n": 5,
+        "g": 0.1004524,
+        "hw": 0.005290725687839334
+      },
+      {
+        "index": 1,
+        "T": 300000,
+        "observed": true,
+        "n": 5,
+        "g": 0.05037879999999999,
+        "hw": 0.0031810113233938634
+      },
+      {
+        "index": 2,
+        "T": 1000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.023831400000000003,
+        "hw": 0.0011099860392124912
+      },
+      {
+        "index": 3,
+        "T": 3000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.0126334,
+        "hw": 0.0003002167935324769
+      },
+      {
+        "index": 4,
+        "T": 10000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.006411,
+        "hw": 0.000128030879616755
+      },
+      {
+        "index": 5,
+        "T": 30000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.0035654000000000007,
+        "hw": 0.000036206214756828686
+      },
+      {
+        "index": 6,
+        "T": 100000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.0018605999999999998,
+        "hw": 0.00004765874786682502
+      },
+      {
+        "index": 7,
+        "T": 300000000,
+        "observed": true,
+        "n": 5,
+        "g": 0.001049,
+        "hw": 0.000015333170164059398
+      }
+    ],
+    "tailFit": {
+      "fromIndex": 5,
+      "toIndex": 7,
+      "fit": {
+        "a": 33.46040682486778,
+        "b": 0.5314739917561032
+      },
+      "maxRelResidual": 0.007131701119608819,
+      "projection100M": 0.001873869243103144
+    },
+    "rule5": null,
+    "qual": null
+  }
+]

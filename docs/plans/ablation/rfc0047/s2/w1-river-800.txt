@@ -1,0 +1,13 @@
+w1 it=800 nodes? action=10 wall=24.20s iter/s=33
+  cp=10 nc_bb=0.762810
+  cp=15 nc_bb=0.548448
+  cp=23 nc_bb=0.356690
+  cp=35 nc_bb=0.235242
+  cp=53 nc_bb=0.160968
+  cp=80 nc_bb=0.109156
+  cp=120 nc_bb=0.069599
+  cp=180 nc_bb=0.044221
+  cp=270 nc_bb=0.028036
+  cp=405 nc_bb=0.017209
+  cp=608 nc_bb=0.009323
+done w1

@@ -1,0 +1,71 @@
+# version: rfc0041-label-noise-textures-v1
+# RFC 0041 Stage 1 cross-texture label-noise pilot. 10,000,000
+# iterations x 3 independent seeds per leaf, full 1,326-combo support
+# card-blocked to the named 4-card turn board (mode token carries the
+# board, e.g. full:9hThJdQc; 'pert' = deterministic -ln(u) Exp(1)
+# perturbed weights per the P2 profile). 2 seats, 100 BB, cap-1
+# streets(1), one representative leaf per each of the five inventory
+# closures (cell indices 0..4). Half-spread (max-min)/2 across seeds
+# in BB; floor is 0.003 BB mass-weighted mean.
+# Command: bigshark-subgame-nash-conv --rfc0041-label-noise 10000000 3
+#          <cell> <cell> <full|pert> 4101 <c1> <c2> <c3> <c4>
+#
+# RESULT: the fixed 10M x 3 scheme is NOT texture-uniform. PASS:
+# AsKsQsJs (broadway monotone), 5s6s7s8s (straight-flush draw),
+# AcKcQc5d (three-flush), AsAdKc7h (paired), KcKd7s7h (double pair),
+# mean 0.00028-0.00250. FAIL: 9hThJdQc (9-T-J-Q connected) full
+# 0.00377-0.02445 and pert 0.00486-0.10280; AsAdAc7h (trip aces)
+# full 0.00357-0.02700 (two closures over floor, CC marginal).
+# Conclusion: a single fixed iteration count cannot guarantee the
+# 0.003 floor across all 16,432 turn classes; T=10M x 3 as a UNIFORM
+# scheme is withdrawn pending a per-cell convergence criterion and a
+# hardness-distribution survey. Two-player zero-sum river values are
+# unique, so longer/averaged solves converge to the same truth; the
+# open question is cost, not correctness. Follow-up diagnostics:
+# 100k..100M trajectory and 8-seed averaging on 9hThJdQc cell 0.
+rfc0041-label-noise,range,iters,seeds,cell,seat_combos,worst_halfspread_bb,mean_halfspread_bb,seconds,status
+rfc0041-label-noise,full:5s6s7s8s,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.00333301,0.00037477,636.510,Solved
+rfc0041-label-noise,full:5s6s7s8s,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.00269638,0.00074230,735.955,Solved
+rfc0041-label-noise,full:5s6s7s8s,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.00354205,0.00107911,878.087,Solved
+rfc0041-label-noise,full:5s6s7s8s,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.00392161,0.00124992,736.245,Solved
+rfc0041-label-noise,full:5s6s7s8s,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.00230515,0.00101285,894.107,Solved
+rfc0041-label-noise,full:9hThJdQc,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.13112175,0.02444912,754.931,Solved
+rfc0041-label-noise,full:9hThJdQc,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.10435133,0.02290777,900.329,Solved
+rfc0041-label-noise,full:9hThJdQc,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.01512971,0.00376967,962.118,Solved
+rfc0041-label-noise,full:9hThJdQc,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.07420397,0.01589293,861.116,Solved
+rfc0041-label-noise,full:9hThJdQc,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.01358606,0.00481998,960.167,Solved
+rfc0041-label-noise,full:AcKcQc5d,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.05391657,0.00219764,702.136,Solved
+rfc0041-label-noise,full:AcKcQc5d,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.02000581,0.00088207,768.474,Solved
+rfc0041-label-noise,full:AcKcQc5d,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.03151385,0.00137151,953.786,Solved
+rfc0041-label-noise,full:AcKcQc5d,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.04480777,0.00085030,789.522,Solved
+rfc0041-label-noise,full:AcKcQc5d,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.01119397,0.00140177,955.275,Solved
+rfc0041-label-noise,full:AsAdAc7h,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.00807866,0.00356814,664.328,Solved
+rfc0041-label-noise,full:AsAdAc7h,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.00512733,0.00150401,751.427,Solved
+rfc0041-label-noise,full:AsAdAc7h,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.05982846,0.01657405,895.356,Solved
+rfc0041-label-noise,full:AsAdAc7h,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.00167471,0.00075787,756.710,Solved
+rfc0041-label-noise,full:AsAdAc7h,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.09749068,0.02700660,897.052,Solved
+rfc0041-label-noise,full:AsAdKc7h,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.03927709,0.00249902,696.863,Solved
+rfc0041-label-noise,full:AsAdKc7h,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.01099824,0.00059263,773.288,Solved
+rfc0041-label-noise,full:AsAdKc7h,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.03634929,0.00112515,939.083,Solved
+rfc0041-label-noise,full:AsAdKc7h,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.01759134,0.00068489,793.890,Solved
+rfc0041-label-noise,full:AsAdKc7h,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.02022236,0.00060256,924.180,Solved
+rfc0041-label-noise,full:AsKsQsJs,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.00120827,0.00050633,630.785,Solved
+rfc0041-label-noise,full:AsKsQsJs,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.00272549,0.00081096,740.229,Solved
+rfc0041-label-noise,full:AsKsQsJs,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.00203476,0.00028418,901.613,Solved
+rfc0041-label-noise,full:AsKsQsJs,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.00366908,0.00049923,742.528,Solved
+rfc0041-label-noise,full:AsKsQsJs,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.00367901,0.00137433,884.720,Solved
+rfc0041-label-noise,full:KcKd7s7h,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.07091803,0.00084587,645.839,Solved
+rfc0041-label-noise,full:KcKd7s7h,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.07835102,0.00216763,738.891,Solved
+rfc0041-label-noise,full:KcKd7s7h,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.06478822,0.00176130,881.713,Solved
+rfc0041-label-noise,full:KcKd7s7h,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.07661910,0.00166600,748.057,Solved
+rfc0041-label-noise,full:KcKd7s7h,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.04843908,0.00136430,894.712,Solved
+rfc0041-label-noise,pert:9hThJdQc,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.54179973,0.10280495,741.978,Solved
+rfc0041-label-noise,pert:9hThJdQc,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.01344644,0.00547155,909.432,Solved
+rfc0041-label-noise,pert:9hThJdQc,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.02020274,0.00486053,951.552,Solved
+rfc0041-label-noise,pert:9hThJdQc,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.06657506,0.01593789,863.309,Solved
+rfc0041-label-noise,pert:9hThJdQc,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.03722152,0.00734208,948.189,Solved
+rfc0041-label-noise,pert:AsKsQsJs,10000000,3,fold0|turnline=CC|pot_bb=1.00,2162,0.00086378,0.00029150,633.697,Solved
+rfc0041-label-noise,pert:AsKsQsJs,10000000,3,fold0|turnline=CRC|pot_bb=3.00,2162,0.00293593,0.00038794,753.039,Solved
+rfc0041-label-noise,pert:AsKsQsJs,10000000,3,fold0|turnline=CRC|pot_bb=4.00,2162,0.00604517,0.00256449,897.447,Solved
+rfc0041-label-noise,pert:AsKsQsJs,10000000,3,fold0|turnline=RC|pot_bb=3.00,2162,0.00449316,0.00059608,725.183,Solved
+rfc0041-label-noise,pert:AsKsQsJs,10000000,3,fold0|turnline=RC|pot_bb=4.00,2162,0.00387117,0.00101467,858.927,Solved

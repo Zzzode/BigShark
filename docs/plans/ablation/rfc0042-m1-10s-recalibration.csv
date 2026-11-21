@@ -1,0 +1,66 @@
+# version: rfc0042-m1-10s-recalibration-v1
+# Post-RFC-0041 wall-clock recalibration under the Amendment 1
+# 10,000 ms decision envelope. Production limped-root shapes (board
+# 2c3d7hJs[9c], 100 BB, cap-1), enumerable fixture ranges
+# (10-hand representative, 12-hand six-seat sub-range so joint deals
+# stay exact), 3 seeds (41029-31). Each solve runs to a 10 s trainer
+# wall with a huge iteration cap; completed iterations and in-model
+# NashConv are reported. Gates (RFC 0036): max per-seat gap < 0.05 BB,
+# summed gap < 0.15 BB. bucket_sum_gap_bb is the best-response gap
+# constrained to the SAME 9-tier card partition the policy plays
+# (chance-free river trees only; -1 = n/a): exact_sum - bucket_sum
+# isolates the card-abstraction floor (RFC 0031) from residual
+# solver noise. Command: bigshark-subgame-nash-conv
+# --m1-wall-recalibrate <lo> <hi> 10 41029
+#
+# SUMMARY (mean of 3 seeds, summed BB):
+# seats  shape  iters(mean)  exact_sum  bucket_sum  verdict
+# 2      river  ~591k         0.335      0.032       bucket PASS (0.032<<0.15): abstracted game converged; ~0.30 = card abstraction
+# 3      river  ~169k         0.710      0.139       bucket marginal PASS (0.135/0.139/0.143): ~0.57 = card abstraction
+# 4      river  ~50k          1.087      1.00        FAIL: bucket~=exact -> iteration-limited, not abstraction
+# 5      river  ~17k          4.418      4.416       FAIL: iteration-limited
+# 6      river  ~8.9k         5.763      5.126       FAIL: iteration-limited
+# 2      turn   ~443k         0.306      n/a         bucket BR invalid on turn chance nodes; RFC 0031 floor ~0.26
+# 3      turn   ~136k         0.805      n/a         FAIL exact gate (bucket split unavailable)
+# 4      turn   ~39k          2.134      n/a         FAIL iteration-limited
+# 5      turn   ~15k          3.206      n/a         FAIL iteration-limited
+# 6      turn   ~5.8k         5.881      n/a         FAIL iteration-limited
+# Compared with RFC 0036 (1,600 ms): 2/3-seat passing is unchanged;
+# the 6.25x budget does NOT promote 4+ live seats (still iteration-
+# limited at 10 s; ~1/sqrt(N) scaling implies hundreds of seconds).
+# Engineering conclusion: bounded real-time resolving within the
+# card abstraction is viable up to ~3 live seats on the river; 4+
+# live seats needs offline policy support (blueprints) rather than a
+# bigger wall. The dominant exact-game quality loss at every seat
+# count is the 9-tier card abstraction, not the time budget.
+shape,seats,wall_ms,seed,completed,infosets,joint_deals,max_gap_bb,sum_gap_bb,bucket_sum_gap_bb,note
+river-cap1,2,10000,41029,623161,30,38,0.176022,0.334268,0.030006,
+river-cap1,2,10000,41030,555167,30,38,0.172761,0.332402,0.034337,
+river-cap1,2,10000,41031,595701,30,38,0.175189,0.339111,0.032275,
+turn-cap1-s1,2,10000,41029,478079,30,70,0.170853,0.303987,-1.000000,
+turn-cap1-s1,2,10000,41030,437109,30,70,0.171865,0.310882,-1.000000,
+turn-cap1-s1,2,10000,41031,415219,30,70,0.167405,0.302165,-1.000000,
+river-cap1,3,10000,41029,176045,117,114,0.263765,0.724537,0.142758,
+river-cap1,3,10000,41030,158526,117,114,0.263333,0.706374,0.139205,
+river-cap1,3,10000,41031,172030,117,114,0.254617,0.699116,0.134651,
+turn-cap1-s1,3,10000,41029,142457,117,342,0.308036,0.810460,-1.000000,
+turn-cap1-s1,3,10000,41030,137440,117,342,0.296834,0.787987,-1.000000,
+turn-cap1-s1,3,10000,41031,129503,117,342,0.308733,0.817467,-1.000000,
+river-cap1,4,10000,41029,52710,432,192,0.574523,1.267832,1.186269,
+river-cap1,4,10000,41030,46927,432,192,0.454858,1.090506,1.006716,
+river-cap1,4,10000,41031,51695,432,192,0.339049,0.901781,0.802493,
+turn-cap1-s1,4,10000,41029,39428,432,1104,0.595081,2.137446,-1.000000,
+turn-cap1-s1,4,10000,41030,37789,432,1104,0.570016,2.161973,-1.000000,
+turn-cap1-s1,4,10000,41031,40382,432,1104,0.560183,2.103015,-1.000000,
+river-cap1,5,10000,41029,17221,760,120,1.472303,4.740524,4.740057,
+river-cap1,5,10000,41030,16947,760,120,1.325176,4.336361,4.332644,
+river-cap1,5,10000,41031,16876,760,120,1.417318,4.177709,4.175430,
+turn-cap1-s1,5,10000,41029,15698,1140,2040,0.837817,3.160918,-1.000000,
+turn-cap1-s1,5,10000,41030,14668,1140,2040,0.849300,3.353760,-1.000000,
+turn-cap1-s1,5,10000,41031,15029,1140,2040,0.749712,3.104690,-1.000000,
+river-cap1,6,10000,41029,8837,2808,25920,1.314120,5.887101,5.230925,
+river-cap1,6,10000,41030,8854,2808,25920,1.271967,6.113514,5.485297,
+river-cap1,6,10000,41031,9016,2808,25920,1.064775,5.289641,4.661977,
+turn-cap1-s1,6,10000,41029,6147,2808,25920,1.550094,5.831228,-1.000000,
+turn-cap1-s1,6,10000,41030,5914,2808,25920,1.858654,5.530550,-1.000000,
+turn-cap1-s1,6,10000,41031,5438,2808,25920,1.611109,6.281908,-1.000000,

@@ -3880,6 +3880,86 @@ RFCs 0041/0043/0045/0046).
   hunk. This does not touch any committed file (D217/D225 commits are
   intact).
 
+## D231 forensic recovery of protected engine/CMakeLists.txt history
+
+- INCIDENT AND FROZEN IDENTITY. A mistaken whole-file
+  `git checkout engine/CMakeLists.txt` discarded pre-existing uncommitted
+  cross-RFC hunks. No stash/stage/backup of the full worktree blob
+  existed. Forensic identities (frozen before any write): base commit
+  HEAD=3052448; index/stage blob for the path = 6b8a36e (identical to
+  HEAD, so the uncommitted work was worktree-only); pre-restore worktree
+  hash de3dfc2 (the semantically-rebuilt partial state). All recovery
+  writes were plain file copies; no checkout/reset/clean/stash --index,
+  and the index was never staged.
+
+- CERTIFIABLE SOURCE. /tmp/cmake_d217_full.patch (mtime 2026-11-14
+  11:30, before the incident) is a ten-hunk full diff whose old blob
+  c37c13b is a real git object equal to the committed blob of dff873a
+  and 6ace56f. Cryptographic self-consistency: applying the patch to
+  c37c13b in an isolated temp tree reconstructs a file hashing exactly
+  to the patch-declared new blob 588dcf9 (zero rejected hunks). A second
+  independent snapshot cmake_d208_full.patch (09:22) contains the same
+  nine historical hunk bodies (md5-identical per hunk); the only
+  snapshot-to-snapshot delta is the per-milestone test block. Lineage
+  check: diff(588dcf9, current HEAD 6b8a36e) contains only the later
+  committed witness_augment/two_node_combination blocks, so the
+  historical set is fully accounted for with no unknown additional hunks.
+  Original total of lost uncommitted hunks IS knowable: ten relative to
+  base c37c13b, of which nine were protected cross-RFC history and one
+  (the D217 pot_fraction test block) was already committed.
+
+- PER-HUNK LEDGER (all nine historical hunks restored BYTE-IDENTICAL;
+  verified by diffing applied +/- bodies against the source patch).
+  H1 @@ -430 (delete bigshark-stage6-measurement-driver manual target;
+  R12 step-8 leaf): restored, high confidence, corroborated by both
+  snapshots.
+  H2 @@ -634 (subgame-nash-conv links bigshark_artifacts +
+  bigshark_flop_library; add bigshark_rfc0046_bench six-source STATIC
+  library, three rfc0046 manual binaries cell/handpair/infoset-count,
+  include dir, PUBLIC bigshark_solver): restored byte-exact. The earlier
+  semantic rebuild had MISSED the three manual binaries and used a
+  different source order; now matches the original.
+  H3 @@ -673 (rfc0047 manual binary comment/link reordering; add g3-probe
+  and the step-2 builder comments; river-probe link moved): restored.
+  H4 @@ -846 (bigshark_stage6_eval drops baseline_policy.cpp,
+  candidate_policy.cpp, chart_preflop.cpp — files stay on disk, only the
+  build membership changes): restored; incremental rebuild relinked
+  libbigshark_stage6_eval.a confirming the exact source set.
+  H5 @@ -910 (bigshark_practice description rewritten to caller-injected
+  no-built-in-bot semantics): restored.
+  H6 @@ -922 (bigshark_practice links bigshark_behavior instead of
+  bigshark_stage6_eval): restored; bigshark_behavior target exists.
+  H7 @@ -1055 (delete test_stage6_candidate_policy CTest leaf): restored.
+  H8 @@ -1263 (add the three rfc0046 CTests concrete_keyer/keyer_seam/
+  gadget): restored byte-exact, INCLUDING the detail the semantic rebuild
+  got wrong: test_rfc0046_keyer_seam links bigshark_solver, NOT
+  bigshark_rfc0046_bench.
+  H9 @@ -1277 (drop an obsolete rfc0047 S2 comment block): restored.
+  Counts: identified=9 historical + 1 already-committed; original total
+  known=10; restored=9; conflicts=1 (the D225/D227 committed test block,
+  resolved by keeping committed content); unrecovered=0.
+
+- VERIFICATION (actual exit codes, not equated with byte-equality).
+  cmake --preset release exit 0; both rfc0046 and rfc0047 link isolation
+  guards pass. All seven rfc0046 targets (library + three manual binaries
+  + three ctests) link cleanly; rfc0046 ctest 4/4 pass (50.68 s,
+  including the rfc0046_link_isolation guard). The stage6/practice and
+  rfc0047_bench targets touched by H2/H4/H5/H6 build, and the five
+  rfc0047 mask ctests (mixed_menu, sparse_multilayer, pot_fraction,
+  witness_augment, two_node_combination) pass on the restored graph,
+  proving D225/D227 do not depend on any unrecovered configuration.
+  Byte-equality rests on the blob-hash proof above; test green is
+  reported separately and is not claimed as byte/semantic equivalence.
+
+- RESIDUAL GAP. None for the nine CMake hunks: they are byte-identical
+  to a hash-proven snapshot. The 11:30 snapshot itself is the closest
+  certifiable point; any hypothetical edit made between 11:30 and the
+  incident and captured nowhere would be unrecoverable, but no evidence
+  of such an edit exists (the only work in that window was the committed
+  D217/D225/D227 milestones, all present). The restored content stays
+  UNCOMMITTED in the worktree as cross-RFC history, distinct from the
+  D227 commit; index remains equal to HEAD.
+
 ## M2 comparable counterfactual attribution and candidate admission (D233)
 
 - D233 OBJECTIVE. A pure in-memory, zero-solve bench component that binds
@@ -4954,6 +5034,7 @@ RFCs 0041/0043/0045/0046).
   regression subset (river_solver, union_embedding, averaging, rm_mode,
   fine_grid) is 5/5 green over ~349 s in release; no production, contract,
   budget, or quality-bar change.
+
 ## Linear DCFR+ time-discounting policy-tier candidate on the frozen anchor (D252)
 
 - WHY THIS MECHANISM NEXT. D249 (sizing-grid density), D198 (average-
@@ -5244,6 +5325,7 @@ RFCs 0041/0043/0045/0046).
   byte-preservation is carried by the sealed anchor chain, whose
   control hash/NC is bitwise identical across D184/D198/D251/D252, and
   the gate is structurally identical to the approved D251 R1.
+
 ## In-envelope M2 closure and convergence-law certification (D253)
 
 - CLOSURE QUESTION AND VERDICT. With the frozen gates unchanged
