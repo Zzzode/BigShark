@@ -1,13 +1,11 @@
-// RFC 0008 stage 6: unit tests for the offline behavior-policy interface and
-// the declared fixed uniform reference. The estimator/simulator and the
-// pinned-baseline adapter are built on this menu identity, so the menu's
-// ordering, interval snapping, dedup, and probability normalization are
-// pinned here before any of those components exist.
+// Unit tests for the behavior-policy interface and the declared finite
+// action menu: ordering, interval snapping, dedup, and the deterministic
+// cumulative-mass action sampler. Evaluation harnesses (estimator,
+// simulator, oracle) and serving adapters are built on this menu.
 #include <array>
 #include <bs/behavior_policy.hpp>
 #include <bs/game_definition.hpp>
 #include <bs/heads_up.hpp>
-#include <cmath>
 #include <cstdio>
 #include <optional>
 #include <stdexcept>
@@ -96,25 +94,12 @@ int main() {
   check(raises >= 3, "the declared menu contains at least min/fraction/cap raises");
   check(previous == legal.aggressive->maximum, "the final raise target is the all-in cap");
 
-  // Uniform reference: equal mass over exactly the declared menu, summing to
-  // one, and every emitted action legal.
-  const UniformBehaviorPolicy uniform;
-  const HoleCards hole{{0, 1}};
-  const PolicyContext context{nullptr, 1};
-  const std::vector<PolicyAction> d = uniform.distribution(state, *actor, hole, context);
-  check(d.size() == menu.size(), "uniform distribution covers exactly the declared menu");
-  double sum = 0.0;
-  const double expected = 1.0 / static_cast<double>(menu.size());
-  for (const PolicyAction& pa : d) {
-    check(std::fabs(pa.probability - expected) < 1e-12,
-          "uniform gives every menu entry equal mass");
-    check(legal.contains(pa.action), "every uniform action is legal under GameState::legal()");
-    sum += pa.probability;
-  }
-  check(std::fabs(sum - 1.0) < 1e-12, "uniform probabilities sum to one");
-
   // sample_distribution selects deterministically by cumulative mass and the
-  // unit draw convention.
+  // unit draw convention over a caller-provided distribution.
+  const double uniform_mass = 1.0 / static_cast<double>(menu.size());
+  std::vector<PolicyAction> d;
+  for (const Action& a : menu)
+    d.push_back(PolicyAction{a, uniform_mass});
   const Action first = sample_distribution(d, 0.0);
   const Action last = sample_distribution(d, 0.999999);
   check(first.type == d.front().action.type && first.target_total == d.front().action.target_total,

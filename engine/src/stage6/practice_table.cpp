@@ -1,7 +1,6 @@
 #include <array>
 #include <bs/behavior_policy.hpp>
 #include <bs/prng.hpp>
-#include <bs/stage6/baseline_policy.hpp>
 #include <bs/stage6/practice_table.hpp>
 #include <cmath>
 #include <cstddef>
@@ -131,20 +130,6 @@ poker::Action sample_bot(const std::vector<PolicyAction>& dist, bs::SplitMix64& 
 
 }  // namespace
 
-std::unique_ptr<BehaviorPolicy> make_practice_bot(PracticeDifficulty difficulty) {
-  switch (difficulty) {
-    case PracticeDifficulty::Easy:
-      return std::make_unique<UniformBehaviorPolicy>();
-    case PracticeDifficulty::Medium:
-      return std::make_unique<BaselineBehaviorPolicy>();
-    case PracticeDifficulty::Engine:
-      // The Engine tier leaves bot seats null; the caller injects a policy
-      // via PracticeTable::set_bot().
-      return nullptr;
-  }
-  throw std::invalid_argument("unknown practice difficulty");
-}
-
 struct PracticeTable::Impl {
   PracticeConfig cfg;
   HumanAgent human;
@@ -170,11 +155,11 @@ struct PracticeTable::Impl {
       throw std::invalid_argument("big blind must be at least 2 so the small blind is nonzero");
     if (cfg.starting_stack < cfg.big_blind)
       throw std::invalid_argument("starting stack must cover the big blind");
+    // Bot slots stay null: the single product tier injects one
+    // engine-served policy per non-human seat via set_bot() before the
+    // first hand. No random/heuristic fallback is ever constructed here.
     bots.clear();
     bots.resize(cfg.seats);
-    for (std::size_t s = 0; s < cfg.seats; ++s)
-      if (s != cfg.human_seat)
-        bots[s] = make_practice_bot(cfg.difficulty);
   }
 
   static std::uint64_t seed_of(const PracticeConfig& c) {
@@ -332,7 +317,8 @@ PracticeHandResult run_practice_hand(poker::GameState state, const PracticeHand&
         } else {
           if (!hand.bots[seat])
             throw std::runtime_error(
-                "practice table: Engine tier requires set_bot before play_hand");
+                "practice table: every non-human seat requires an injected "
+                "engine policy via set_bot before play_hand");
           PolicyContext ctx;
           ctx.hand_log = &log;
           ctx.decision_seed = decision_seed(hand.hand_id, decisions);

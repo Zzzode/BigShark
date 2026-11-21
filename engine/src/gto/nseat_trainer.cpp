@@ -328,8 +328,22 @@ struct SweepContext {
   SplitMix64* chance_rng = nullptr;
   const gto::FrontierEvaluator* frontier = nullptr;
   const gto::ContinuationValueModel* continuation = nullptr;
+  const NSeatCardKeyerSeam* card_keyer = nullptr;  // RFC 0046 measurement seam
   std::size_t depth = 0;
 };
+
+// RFC 0046 Stage-1: infoset card key. Null seam keeps the identical
+// production kNSeatCardKind call bit-for-bit; a measurement seam replaces it
+// for both training sweeps and is range-checked against its declared cap.
+std::uint32_t sweep_card_bucket(const SweepContext& ctx, const std::array<int, 2>& hole,
+                                std::span<const int> board) {
+  if (ctx.card_keyer == nullptr)
+    return static_cast<std::uint32_t>(abstraction::card_bucket(kNSeatCardKind, hole, board));
+  const std::uint32_t key = ctx.card_keyer->bucket(hole, board);
+  if (key >= ctx.card_keyer->bucket_cap())
+    throw std::runtime_error("nseat trainer card keyer seam returned an out-of-cap bucket");
+  return key;
+}
 
 SampleDelta& touch_row(SweepContext& ctx, const NSeatInformationKey& key,
                        const std::vector<Action>& menu) {
@@ -494,8 +508,7 @@ double walk_action(SweepContext& ctx, const GameState& state, std::size_t node_i
     throw std::runtime_error("nseat trainer action node degree drifted from its menu");
 
   NSeatInformationKey key;
-  key.own_card_bucket = static_cast<std::uint32_t>(
-      abstraction::card_bucket(kNSeatCardKind, ctx.holes[actor], state.board()));
+  key.own_card_bucket = sweep_card_bucket(ctx, ctx.holes[actor], state.board());
   key.node_index = node_index;
   SampleDelta& row = touch_row(ctx, key, menu);
   const double* sigma = row.sigma().data();
@@ -644,7 +657,8 @@ void run_sweep(const AbstractTree& tree, const JointDealDealer& dealer, std::siz
                std::size_t traverser, NSeatTraversalStreams& streams, const RawTable& profile,
                DeltaStorage& storage, std::atomic<std::size_t>& visits,
                const NSeatTrainerLimits& limits, const gto::FrontierEvaluator* frontier,
-               const gto::ContinuationValueModel* continuation = nullptr) {
+               const gto::ContinuationValueModel* continuation = nullptr,
+               const NSeatCardKeyerSeam* card_keyer = nullptr) {
   const MultiwayDeal deal = dealer.sample(streams.joint_deal);
   if (deal.hands.size() != seat_count)
     throw std::runtime_error("nseat trainer joint deal has the wrong seat count");
@@ -666,6 +680,7 @@ void run_sweep(const AbstractTree& tree, const JointDealDealer& dealer, std::siz
   ctx.chance_rng = &streams.chance_card;
   ctx.frontier = frontier;
   ctx.continuation = continuation;
+  ctx.card_keyer = card_keyer;
   ctx.depth = 0;
   // The same deterministic root construction the L3 builder used for node 0.
   const GameState root(tree.def());
@@ -696,8 +711,7 @@ void walk_average(SweepContext& ctx, const GameState& state, std::size_t index,
           tree::abstract_node_menu(state, ctx.tree->action_abstraction(), state.legal()))
     throw std::runtime_error("nseat average action projection mismatch");
   const auto actor = *state.actor();
-  const NSeatInformationKey key{static_cast<std::uint32_t>(abstraction::card_bucket(
-                                    kNSeatCardKind, ctx.holes[actor], state.board())),
+  const NSeatInformationKey key{sweep_card_bucket(ctx, ctx.holes[actor], state.board()),
                                 static_cast<std::uint64_t>(index)};
   auto& delta = touch_row(ctx, key, node.actions);
   const auto sigma = delta.sigma();
@@ -712,7 +726,7 @@ void walk_average(SweepContext& ctx, const GameState& state, std::size_t index,
 void run_average(const AbstractTree& tree, const JointDealDealer& dealer, std::size_t seat_count,
                  const RawTable& profile, DeltaStorage& storage, std::uint64_t seed,
                  std::uint64_t sample, std::atomic<std::size_t>& visits,
-                 const NSeatTrainerLimits& limits) {
+                 const NSeatTrainerLimits& limits, const NSeatCardKeyerSeam* card_keyer = nullptr) {
   auto deal_rng = derive_nseat_stream(seed, NSeatStreamPurpose::AverageJointDeal, sample, 0);
   auto card_rng = derive_nseat_stream(seed, NSeatStreamPurpose::AverageChanceCard, sample, 0);
   const MultiwayDeal deal = dealer.sample(deal_rng);
@@ -726,6 +740,7 @@ void run_average(const AbstractTree& tree, const JointDealDealer& dealer, std::s
   ctx.visits = &visits;
   ctx.limits = &limits;
   ctx.chance_rng = &card_rng;
+  ctx.card_keyer = card_keyer;
   std::array<double, poker::kMaxUnifiedSeats> reach{};
   std::fill_n(reach.begin(), tree.def().player_count, 1.0);
   walk_average(ctx, GameState(tree.def()), tree.root_index(), reach);
@@ -956,7 +971,8 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
                                const NSeatTrainerLimits& limits,
                                const gto::FrontierEvaluator* frontier, std::size_t workers,
                                const NSeatInitialState* initial,
-                               const gto::ContinuationValueModel* continuation = nullptr) {
+                               const gto::ContinuationValueModel* continuation = nullptr,
+                               const NSeatCardKeyerSeam* card_keyer = nullptr) {
   validate_request(tree, ranges);
   validate_initial(tree, initial);
   if (iterations == 0 || limits.max_nodes == 0 || limits.max_information_sets == 0 ||
@@ -1056,9 +1072,10 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
           derive_nseat_stream(seed, NSeatStreamPurpose::OpponentAction, sample, seat),
           derive_nseat_stream(seed, NSeatStreamPurpose::ChanceCard, sample, seat)};
       run_sweep(tree, dealer, seats, seat, streams, table, *stores[slot], visits, limits, frontier,
-                workers == 1 ? continuation : nullptr);
+                workers == 1 ? continuation : nullptr, workers == 1 ? card_keyer : nullptr);
     }
-    run_average(tree, dealer, seats, table, *stores[slot], seed, sample, visits, limits);
+    run_average(tree, dealer, seats, table, *stores[slot], seed, sample, visits, limits,
+                workers == 1 ? card_keyer : nullptr);
   };
   const auto wall_start = std::chrono::steady_clock::now();
   std::unique_ptr<EpochWorkers> cohort;
@@ -1123,14 +1140,13 @@ NSeatTrainingResult train_impl(const AbstractTree& tree,
 
 }  // namespace
 
-NSeatTrainingResult train_nseat(const AbstractTree& tree,
-                                const std::vector<std::vector<WeightedHand>>& ranges,
-                                std::uint64_t iterations, std::uint64_t seed,
-                                const NSeatTrainerLimits& limits,
-                                const gto::FrontierEvaluator* frontier,
-                                const NSeatInitialState* initial,
-                                const gto::ContinuationValueModel* continuation) {
-  return train_impl(tree, ranges, iterations, seed, limits, frontier, 1, initial, continuation);
+NSeatTrainingResult train_nseat(
+    const AbstractTree& tree, const std::vector<std::vector<WeightedHand>>& ranges,
+    std::uint64_t iterations, std::uint64_t seed, const NSeatTrainerLimits& limits,
+    const gto::FrontierEvaluator* frontier, const NSeatInitialState* initial,
+    const gto::ContinuationValueModel* continuation, const NSeatCardKeyerSeam* card_keyer) {
+  return train_impl(tree, ranges, iterations, seed, limits, frontier, 1, initial, continuation,
+                    card_keyer);
 }
 
 NSeatTrainingResult train_nseat_parallel(const AbstractTree& tree,

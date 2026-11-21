@@ -25,6 +25,17 @@ inline int cardId(const std::string& two) {
   return cardId(two[0], two[1]);
 }
 
+// Inverse of cardId: rank*4+suit -> the two-character name ("As", "Th"),
+// using the same s=0,h=1,d=2,c=3 suit order.
+inline std::string cardName(int card_id) {
+  static const char* RANKS = "23456789TJQKA";
+  static const char* SUITS = "shdc";
+  std::string name;
+  name.push_back(RANKS[card_id >> 2]);
+  name.push_back(SUITS[card_id & 3]);
+  return name;
+}
+
 struct HandVal {
   int cat;  // 1 high card .. 9 straight flush
   uint32_t score;

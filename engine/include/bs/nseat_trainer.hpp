@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <span>
 #include <stdexcept>
 #include <vector>
 namespace bs::gto {
@@ -33,6 +34,28 @@ namespace bs::solver {
 // misses every row.
 inline constexpr abstraction::CardBucketKind kNSeatCardKind =
     abstraction::CardBucketKind::Preflop169;
+
+// RFC 0046 Stage-1 measurement seam (benchmark/tests only). When passed to
+// train_nseat it REPLACES the postflop infoset card key for one training run:
+// the two training sweeps call bucket() instead of the compile-time
+// abstraction::card_bucket(kNSeatCardKind, ...). A null seam (every
+// production caller) keeps the identical production call bit-for-bit. The
+// interface is never serialized and is never stored on NSeatPolicy; the only
+// concrete implementation lives in the benchmark-only RFC 0046 translation
+// unit. The read-side NSeatPolicy::lookup serving path is intentionally not
+// seam-able.
+class NSeatCardKeyerSeam {
+ public:
+  virtual ~NSeatCardKeyerSeam() = default;
+  // Dense per-combo key for one holding over the PUBLIC board prefix. The
+  // implementation must be a pure function of (hole, board) and return the
+  // same key at every node sharing the board; the trainer rejects a key at or
+  // above bucket_cap().
+  virtual std::uint32_t bucket(const std::array<int, 2>& hole,
+                               std::span<const int> board) const = 0;
+  // Exclusive upper bound on values returned by bucket().
+  virtual std::uint32_t bucket_cap() const = 0;
+};
 
 // Resource bounds for the n-seat trainer. Distinct from TrainingLimits: the
 // node cap bounds the FINITE tree materialization (delegated to TreeLimits,
@@ -274,7 +297,8 @@ NSeatTrainingResult train_nseat(const tree::AbstractTree& tree,
                                 const NSeatTrainerLimits& limits,
                                 const gto::FrontierEvaluator* frontier = nullptr,
                                 const NSeatInitialState* initial_state = nullptr,
-                                const gto::ContinuationValueModel* continuation = nullptr);
+                                const gto::ContinuationValueModel* continuation = nullptr,
+                                const NSeatCardKeyerSeam* card_keyer = nullptr);
 
 // RFC 0016: synchronous parallel batches. Width is num_threads clamped to
 // [1, iterations]; every sample's seat sweeps and independent averaging read

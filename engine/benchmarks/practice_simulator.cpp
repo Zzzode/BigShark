@@ -1,25 +1,24 @@
 // practice_simulator.cpp — offline interactive no-limit hold'em practice table.
 //
 // You are the ONLY human at a 2..10-seat table; every other seat is an offline
-// bot (Easy = uniform random over the declared menu, Medium = the pinned chart
-// + Monte-Carlo-equity heuristic, i.e. ABC poker — NOT a solved "GTO" policy,
-// Engine = a local bigshark-engine process serving decisions through the
-// framed engine protocol). The table deals real shuffled cards, posts blinds, plays
-// street by street, rotates the button, and tracks your session result in big
-// blinds. Every hand restarts every seat at the fixed buy-in; it is a local
-// training tool, never a money game, and it makes no network call and reads no
-// credentials.
+// bot served exclusively by a local bigshark-engine process over the framed
+// engine protocol: an equilibrium policy, never a random or heuristic tier. If
+// the engine is unreachable the session aborts — there is no fallback opponent.
+// The table deals real shuffled cards, posts blinds, plays street by street,
+// rotates the button, and tracks your session result in big blinds. Every hand
+// restarts every seat at the fixed buy-in; it is a local training tool, never
+// a money game, and it makes no network call and reads no credentials.
 //
 // Usage:
-//   bigshark-practice [--seats N] [--difficulty easy|medium|engine]
-//                    [--stack-bb B] [--hands H] [--seed S]
-//                    [--engine-path PATH] [--resident-root PATH=SHA256]
-//                    [--flop-library DIR] [--solve-budget-ms N]
-//                    [--engine-timeout-ms N] [--lazy]
+//   bigshark-practice [--seats N] [--stack-bb B] [--hands H] [--seed S]
+//                     [--engine-path PATH] [--resident-root PATH=SHA256]
+//                     [--flop-library DIR] [--solve-budget-ms N]
+//                     [--engine-timeout-ms N] [--lazy]
 // At your turn pick an action from the numbered menu (or type f/x/c,
 // `b TARGET`, `r TARGET`); `q` ends the session.
 #include <array>
 #include <bs/behavior_policy.hpp>
+#include <bs/eval.hpp>
 #include <bs/heads_up.hpp>
 #include <bs/practice/engine_process.hpp>
 #include <bs/practice/engine_served_policy.hpp>
@@ -43,18 +42,6 @@ using namespace bs::poker;
 using namespace bs::stage6;
 
 constexpr poker::Chips kBigBlind = 2;
-
-const char* difficulty_name(PracticeDifficulty d) {
-  switch (d) {
-    case PracticeDifficulty::Easy:
-      return "easy (uniform random over the action menu)";
-    case PracticeDifficulty::Medium:
-      return "medium (pinned charts + equity heuristic, ABC poker; not GTO)";
-    case PracticeDifficulty::Engine:
-      return "engine (served by a local bigshark-engine process; a descriptive label, not GTO)";
-  }
-  return "unknown";
-}
 
 // Button-relative seat label: heads-up has button/SB vs BB; three seats and up
 // have SB, BB, UTG(+k), CO clockwise of the button.
@@ -115,7 +102,8 @@ struct CliObserver : PracticeObserver {
     button = s.def().button;
     std::printf("\n=== Hand #%zu  [%s] ===\n", id + 1,
                 position_label(seats, button, human).c_str());
-    std::printf("Your cards: %s %s\n", card_name(hole[0]).c_str(), card_name(hole[1]).c_str());
+    std::printf("Your cards: %s %s\n", bs::cardName(hole[0]).c_str(),
+                bs::cardName(hole[1]).c_str());
     std::printf("Pot %lld | Blinds %lld/%lld\n", static_cast<long long>(s.pot()),
                 static_cast<long long>(kBigBlind / 2), static_cast<long long>(kBigBlind));
   }
@@ -137,7 +125,7 @@ struct CliObserver : PracticeObserver {
     // completed flop (3), turn (4), and river (5).
     std::string cards;
     for (int c : s.board()) {
-      cards += card_name(c);
+      cards += bs::cardName(c);
       cards += ' ';
     }
     std::printf("--- %s: %s (pot %lld) ---\n", street_name(s.street()), cards.c_str(),
@@ -151,13 +139,13 @@ struct CliObserver : PracticeObserver {
     } else {
       std::string cards;
       for (int c : s.board()) {
-        cards += card_name(c);
+        cards += bs::cardName(c);
         cards += ' ';
       }
       std::printf("Showdown  board: %s\n", cards.c_str());
       for (const auto& [seat, hole] : shown)
-        std::printf("  seat %zu shows %s %s\n", seat, card_name(hole[0]).c_str(),
-                    card_name(hole[1]).c_str());
+        std::printf("  seat %zu shows %s %s\n", seat, bs::cardName(hole[0]).c_str(),
+                    bs::cardName(hole[1]).c_str());
     }
     const double hu = u[human];
     std::printf("You %s %lld chips this hand (%+.2f bb).\n", hu >= 0 ? "win" : "lose",
@@ -187,7 +175,7 @@ void prompt_human(const GameState& state, std::size_t seat, const PracticeTable&
   if (state.board().size() > 0) {
     std::string cards;
     for (int c : state.board()) {
-      cards += card_name(c);
+      cards += bs::cardName(c);
       cards += ' ';
     }
     std::printf("Board: %s\n", cards.c_str());
@@ -270,24 +258,28 @@ struct Args {
   std::size_t seats = 6;
   std::size_t stack_bb = 100;
   std::size_t hands = 0;  // 0 = until quit
-  PracticeDifficulty difficulty = PracticeDifficulty::Medium;
   std::uint64_t seed = 0;
-  // Engine tier (--difficulty engine).
+  // The practice table has one opponent tier: a local engine process
+  // serving equilibrium policies.
   std::string engine_path = "bin/bigshark-engine";
   std::vector<std::string> resident_roots;  // "<path>=<sha256>"; empty = none
   std::string flop_library;                 // directory path; empty = none
-  std::uint32_t solve_budget_ms = 1000;
+  // RFC 0041 Amendment 1: the offline decision envelope is a 10-second p95.
+  std::uint32_t solve_budget_ms = 10000;
   std::uint32_t engine_timeout_ms = 30000;
   bool lazy = false;
 };
 
 void usage() {
   std::printf(
-      "usage: bigshark-practice [--seats 2..10] [--difficulty easy|medium|engine]\n"
+      "usage: bigshark-practice [--seats 2..10]\n"
       "                        [--stack-bb N] [--hands N] [--seed S]\n"
       "                        [--engine-path PATH] [--resident-root PATH=SHA256]\n"
       "                        [--flop-library DIR] [--solve-budget-ms N]\n"
-      "                        [--engine-timeout-ms N] [--lazy]\n");
+      "                        [--engine-timeout-ms N] [--lazy]\n"
+      "\n"
+      "Opponents are served exclusively by a local bigshark-engine process\n"
+      "(equilibrium tier); there is no random or heuristic opponent.\n");
 }
 
 }  // namespace
@@ -310,17 +302,7 @@ int main(int argc, char** argv) {
         args.hands = std::stoul(next());
       else if (arg == "--seed")
         args.seed = std::stoull(next());
-      else if (arg == "--difficulty") {
-        const std::string d = next();
-        if (d == "easy")
-          args.difficulty = PracticeDifficulty::Easy;
-        else if (d == "medium")
-          args.difficulty = PracticeDifficulty::Medium;
-        else if (d == "engine")
-          args.difficulty = PracticeDifficulty::Engine;
-        else
-          throw std::runtime_error("unknown --difficulty '" + d + "' (want easy|medium|engine)");
-      } else if (arg == "--engine-path")
+      else if (arg == "--engine-path")
         args.engine_path = next();
       else if (arg == "--resident-root")
         args.resident_roots.push_back(next());
@@ -353,14 +335,7 @@ int main(int argc, char** argv) {
   cfg.human_seat = 0;
   cfg.big_blind = kBigBlind;
   cfg.starting_stack = static_cast<poker::Chips>(args.stack_bb * kBigBlind);
-  cfg.difficulty = args.difficulty;
   cfg.rng_seed = args.seed;
-
-  std::printf("Offline practice table: %zu seats, you are seat 0, %zu bb effective, bots: %s.\n",
-              cfg.seats, args.stack_bb, difficulty_name(cfg.difficulty));
-  std::printf(
-      "Every hand restarts at the full buy-in; session result is tracked in bb. "
-      "Type q to leave.\n");
 
   bool quit = false;
   CliObserver observer;
@@ -371,42 +346,41 @@ int main(int argc, char** argv) {
         return a;
       });
 
-  // Engine tier: spawn one EngineProcess shared across all bot seats, then
-  // inject an EngineServedPolicy for each non-human seat.
-  std::unique_ptr<bs::practice::EngineProcess> engine;
+  // Single opponent tier: spawn one EngineProcess shared across all bot
+  // seats and inject an EngineServedPolicy for each non-human seat. If the
+  // engine cannot be reached the session aborts — a random/heuristic
+  // fallback opponent does not exist by design.
+  bs::practice::EngineProcessConfig ec;
+  ec.engine_path = args.engine_path;
+  ec.resident_roots = args.resident_roots;
+  ec.flop_library = args.flop_library;
+  ec.solve_budget_ms = args.solve_budget_ms;
+  ec.timeout_ms = args.engine_timeout_ms;
+  ec.lazy = args.lazy;
+  bs::practice::EngineProcess engine(std::move(ec));
+  if (!engine.start()) {
+    std::fprintf(stderr,
+                 "failed to start the engine opponent (%s): %s\n"
+                 "The practice table has no non-engine opponent tier; start or "
+                 "point --engine-path at a reachable bigshark-engine.\n",
+                 args.engine_path.c_str(), engine.last_error().c_str());
+    return 1;
+  }
+  std::printf("Engine opponent connected: %s, solve budget %u ms.\n", args.engine_path.c_str(),
+              args.solve_budget_ms);
+  std::printf("Offline practice table: %zu seats, you are seat 0, %zu bb effective.\n", cfg.seats,
+              args.stack_bb);
+  std::printf(
+      "Every hand restarts at the full buy-in; session result is tracked in bb. "
+      "Type q to leave.\n");
   std::vector<bs::practice::EngineServedPolicy*> engine_policies;
-  if (args.difficulty == PracticeDifficulty::Engine) {
-    bs::practice::EngineProcessConfig ec;
-    ec.engine_path = args.engine_path;
-    ec.resident_roots = args.resident_roots;
-    ec.flop_library = args.flop_library;
-    ec.solve_budget_ms = args.solve_budget_ms;
-    ec.timeout_ms = args.engine_timeout_ms;
-    ec.lazy = args.lazy;
-    engine = std::make_unique<bs::practice::EngineProcess>(std::move(ec));
-    if (engine->start()) {
-      std::printf("Engine tier: connected to %s, solve budget %u ms.\n", args.engine_path.c_str(),
-                  args.solve_budget_ms);
-      for (std::size_t s = 0; s < cfg.seats; ++s) {
-        if (s == cfg.human_seat)
-          continue;
-        auto policy =
-            std::make_unique<bs::practice::EngineServedPolicy>(*engine, s, args.solve_budget_ms);
-        engine_policies.push_back(policy.get());
-        table.set_bot(s, std::move(policy));
-      }
-    } else {
-      std::printf(
-          "Engine tier: WARNING engine unreachable (%s); every bot decision "
-          "will fall back to check/call/fold.\n",
-          engine->last_error().c_str());
-      // Inject fallback policies so the table can still run.
-      for (std::size_t s = 0; s < cfg.seats; ++s) {
-        if (s == cfg.human_seat)
-          continue;
-        table.set_bot(s, make_practice_bot(PracticeDifficulty::Medium));
-      }
-    }
+  for (std::size_t s = 0; s < cfg.seats; ++s) {
+    if (s == cfg.human_seat)
+      continue;
+    auto policy =
+        std::make_unique<bs::practice::EngineServedPolicy>(engine, s, args.solve_budget_ms);
+    engine_policies.push_back(policy.get());
+    table.set_bot(s, std::move(policy));
   }
 
   for (std::size_t h = 0; args.hands == 0 || h < args.hands; ++h) {

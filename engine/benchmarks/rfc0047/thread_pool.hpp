@@ -75,9 +75,7 @@ class Pool {
     work_cv_.notify_all();
     drain();  // calling thread helps; it does not count in arrived_
     std::unique_lock<std::mutex> lk(done_mu_);
-    done_cv_.wait(lk, [&] {
-      return remaining_.load() == 0 && arrived_.load() == worker_count_;
-    });
+    done_cv_.wait(lk, [&] { return remaining_.load() == 0 && arrived_.load() == worker_count_; });
   }
 
  private:

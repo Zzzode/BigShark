@@ -13,7 +13,6 @@
 #include <array>
 #include <bs/policy.hpp>
 #include <bs/stage6/adapter.hpp>
-#include <bs/stage6/baseline_policy.hpp>
 #include <bs/stage6/chart_reach.hpp>
 #include <bs/stage6/geometry_enumerator.hpp>
 #include <cstddef>
@@ -38,10 +37,10 @@ std::vector<std::array<int, 2>> all_holdings() {
   return out;
 }
 
-// The distinct concrete (kind,total) chart actions any holding maps to at the
-// state, expressed as poker::Actions legal in `state`. Uses the pinned chart
-// through the same adapter the baseline uses, but sweeps every holding so the
-// SUPPORT (not one sampled hand's action) is enumerated.
+// The distinct concrete (kind,total) actions any holding maps to at the
+// state, expressed as poker::Actions legal in `state`, via the
+// GameState->Ctx adapter; sweeps every holding so the SUPPORT (not one
+// sampled hand's action) is enumerated.
 std::vector<poker::Action> chart_action_support(const poker::GameState& state, std::size_t seat,
                                                 const HandLog& log) {
   std::vector<poker::Action> support;

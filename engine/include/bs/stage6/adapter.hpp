@@ -50,7 +50,14 @@ Ctx adapt_to_ctx(const poker::GameState& state, std::size_t seat, const HoleCard
 // consistently with those buckets.
 std::string position_vocabulary(std::size_t player_count, std::size_t button_relative_offset);
 
-// Card id (rank*4+suit) -> the two-character name the Ctx uses ("As", "Th").
-std::string card_name(int card_id);
+// Maps a deployed Decision (string action + amount) to a concrete legal
+// poker::Action for `state`. Postflop the aggressive verb follows the
+// advertised vocabulary ("bet" opens, "raise" re-opens); preflop the big
+// blind's limp option is still advertised as "raise" even though the unified
+// rules type it Bet. Throws std::runtime_error on any token/state mismatch
+// or an illegal mapped action; the caller treats that as a typed harness
+// failure, never a clamp. (Migrated from the deleted pinned-baseline
+// wrapper; this mapping is protocol vocabulary, not a strategy.)
+poker::Action map_deployed_decision(const poker::GameState& state, const Decision& decision);
 
 }  // namespace bs::stage6

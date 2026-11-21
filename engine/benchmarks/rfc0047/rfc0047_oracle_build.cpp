@@ -31,8 +31,8 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <mutex>
 #include <stdexcept>
@@ -55,9 +55,7 @@ namespace {
 struct GameKey {
   std::array<std::uint64_t, 5> ledger{};  // pot, contrib0, contrib1, stack0, stack1
   std::array<int, 5> board5{};
-  bool operator==(const GameKey& o) const {
-    return ledger == o.ledger && board5 == o.board5;
-  }
+  bool operator==(const GameKey& o) const { return ledger == o.ledger && board5 == o.board5; }
 };
 
 struct GameKeyHash {
@@ -107,8 +105,8 @@ struct GroupResult {
 // per-combo candidate values and one-sided reference-certified errors. Safe to
 // run concurrently: each call owns its RiverGame/per-instance scratch, and the
 // read-only static holding tables are shared without mutation.
-GroupResult solve_group(std::size_t group, const bs::poker::GameDef& def,
-                       std::uint64_t cand_iters, std::uint64_t ref_iters) {
+GroupResult solve_group(std::size_t group, const bs::poker::GameDef& def, std::uint64_t cand_iters,
+                        std::uint64_t ref_iters) {
   RiverSolveConfig cfg;
   cfg.def = def;
   cfg.linear_averaging = true;
@@ -132,12 +130,9 @@ GroupResult solve_group(std::size_t group, const bs::poker::GameDef& def,
   double drift_max = 0.0, residual_max = 0.0, cert_max = 0.0;
   double ss_drift = 0.0, ss_residual = 0.0, ss_cert = 0.0;
   for (std::uint32_t seat = 0; seat < 2; ++seat) {
-    const std::vector<double>& cv = seat == 0 ? cand.root_cfv_seat0
-                                             : cand.root_cfv_seat1;
-    const std::vector<double>& rv = seat == 0 ? ref.root_cfv_seat0
-                                             : ref.root_cfv_seat1;
-    const std::vector<double>& rb = seat == 0 ? ref.root_br_seat0
-                                             : ref.root_br_seat1;
+    const std::vector<double>& cv = seat == 0 ? cand.root_cfv_seat0 : cand.root_cfv_seat1;
+    const std::vector<double>& rv = seat == 0 ? ref.root_cfv_seat0 : ref.root_cfv_seat1;
+    const std::vector<double>& rb = seat == 0 ? ref.root_br_seat0 : ref.root_br_seat1;
     std::vector<double>& err = seat == 0 ? out.err0 : out.err1;
     for (std::uint32_t c = 0; c < out.combos; ++c) {
       const double residual = std::max(0.0, rb[c] - rv[c]);
@@ -223,8 +218,8 @@ int main(int argc, char** argv) {
   if (max_groups != 0 && jobs.size() > max_groups)
     jobs.resize(max_groups);
   const std::size_t n_jobs = jobs.size();
-  const std::size_t n_threads = std::max<std::size_t>(1,
-      std::min<std::size_t>(threads_req, n_jobs));
+  const std::size_t n_threads =
+      std::max<std::size_t>(1, std::min<std::size_t>(threads_req, n_jobs));
 
   // Concurrent solves, deterministic results stored per job slot.
   std::vector<GroupResult> results(n_jobs);
@@ -241,13 +236,11 @@ int main(int argc, char** argv) {
         if (slot >= n_jobs || worker_error)
           return;
         const std::size_t g = jobs[slot];
-        results[slot] =
-            solve_group(g, leaves[first_leaf[g]].river_def, cand_iters, ref_iters);
+        results[slot] = solve_group(g, leaves[first_leaf[g]].river_def, cand_iters, ref_iters);
         const std::size_t d = done.fetch_add(1) + 1;
         if (d % 12 == 0 || d == n_jobs) {
           std::lock_guard<std::mutex> lk(log_mu);
-          std::fprintf(stderr, "solved %zu/%zu subgames on %zu threads\n", d,
-                       n_jobs, n_threads);
+          std::fprintf(stderr, "solved %zu/%zu subgames on %zu threads\n", d, n_jobs, n_threads);
         }
       }
     } catch (...) {
@@ -286,11 +279,10 @@ int main(int argc, char** argv) {
     worst_ref_nc_bb = std::max(worst_ref_nc_bb, r.ref_nc_bb);
     worst_drift_rms_bb = std::max(worst_drift_rms_bb, r.drift_rms_bb);
     worst_drift_max_bb = std::max(worst_drift_max_bb, r.drift_max_bb);
-    std::fprintf(csv,
-                 "%s,%u,%zu,%u,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f\n",
-                 spec->name, shape_id, r.group, r.root_pot, r.cand_nc_bb,
-                 r.ref_nc_bb, r.drift_max_bb, r.residual_max_bb, r.cert_max_bb,
-                 r.drift_rms_bb, r.residual_rms_bb, r.cert_rms_bb);
+    std::fprintf(csv, "%s,%u,%zu,%u,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f\n", spec->name,
+                 shape_id, r.group, r.root_pot, r.cand_nc_bb, r.ref_nc_bb, r.drift_max_bb,
+                 r.residual_max_bb, r.cert_max_bb, r.drift_rms_bb, r.residual_rms_bb,
+                 r.cert_rms_bb);
     for (std::size_t li : member_leaves[r.group]) {
       const FrontierLeaf& leaf = leaves[li];
       for (std::uint8_t seat = 0; seat < 2; ++seat) {
@@ -316,8 +308,7 @@ int main(int argc, char** argv) {
   std::fclose(csv);
   writer.write(out_path);
   const double wall_s =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start)
-          .count();
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
 
   // G2 gates the SUMMED NashConv (CERT/QUAL), not a per-combo quantity: the
   // seedless exact V3 kernel's within-instrument and exact-hole gaps both
@@ -330,11 +321,9 @@ int main(int argc, char** argv) {
                "  G2 CERT/QUAL summed NashConv cand max %.6f BB (bars 0.005/0.03)\n"
                "  reference summed NashConv max %.6f BB (seed half-width 0 by seedlessness)\n"
                "  [G3 input, not G2-gated] per-combo drift e_max %.6f, drift RMS %.6f BB\n",
-               out_path.c_str(), csv_path.c_str(), unique_games, n_jobs,
-               emitted_rows, n_threads,
+               out_path.c_str(), csv_path.c_str(), unique_games, n_jobs, emitted_rows, n_threads,
                static_cast<unsigned long long>(cand_iters),
-               static_cast<unsigned long long>(ref_iters), wall_s,
-               worst_cand_nc_bb, worst_ref_nc_bb, worst_drift_max_bb,
-               worst_drift_rms_bb);
+               static_cast<unsigned long long>(ref_iters), wall_s, worst_cand_nc_bb,
+               worst_ref_nc_bb, worst_drift_max_bb, worst_drift_rms_bb);
   return 0;
 }

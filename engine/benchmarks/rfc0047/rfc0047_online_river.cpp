@@ -130,8 +130,8 @@ int main(int argc, char** argv) {
   std::printf("stratum=%s unique_river_subgames=%zu stride=%zu max_iters=%llu\n", spec->name,
               groups.size(), stride, static_cast<unsigned long long>(max_iters));
 
-  const std::vector<std::uint64_t> all_cp{250, 500, 1000, 2000, 2500, 3000, 3500,
-                                          4000, 8000, 16000, 32000};
+  const std::vector<std::uint64_t> all_cp{250,  500,  1000, 2000,  2500, 3000,
+                                          3500, 4000, 8000, 16000, 32000};
   std::vector<std::uint64_t> cps;
   if (only_one) {
     cps.push_back(only_iter);

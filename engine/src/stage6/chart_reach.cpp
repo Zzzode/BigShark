@@ -12,7 +12,6 @@
 #include <array>
 #include <bs/policy.hpp>
 #include <bs/stage6/adapter.hpp>
-#include <bs/stage6/baseline_policy.hpp>
 #include <bs/stage6/chart_reach.hpp>
 #include <cstddef>
 #include <cstdint>

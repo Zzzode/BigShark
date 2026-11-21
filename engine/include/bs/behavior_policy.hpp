@@ -69,12 +69,10 @@ struct PolicyContext {
   std::uint64_t decision_seed = 0;
 };
 
-// Seat-indexed behavior over the unified 2..10-seat game. Implementations:
-//  * the pinned baseline adapter (drives evaluatePolicy through a
-//    GameState->Ctx adapter; lives in bigshark_stage6_eval),
-//  * UniformBehaviorPolicy (the declared fixed uniform reference; here),
-//  * the composed candidate (pinned charts preflop, translated trained policy
-//    postflop; lives in bigshark_stage6_eval).
+// Seat-indexed behavior over the unified 2..10-seat game. This is the
+// measurement/serving INTERFACE: production practice opponents implement
+// it in the engine-served tier; evaluation harnesses (oracle, BR
+// estimator, simulator) drive anything that implements it.
 class BehaviorPolicy {
  public:
   virtual ~BehaviorPolicy() = default;
@@ -99,8 +97,8 @@ class BehaviorPolicy {
 // targets (min-raise, each declared pot fraction of pot-after-call snapped to
 // the inclusive [minimum, cap] interval, and the cap), deduplicated while
 // preserving order. Pure function of the legal set and pot; the fraction
-// schedule is the published identity of every menu-based stage-6 policy
-// (uniform reference and R8 deviator), declared here so they cannot drift.
+// schedule is the published identity of every menu-based evaluation
+// policy and the R8 deviator, declared here so they cannot drift.
 std::vector<poker::Action> declared_behavior_menu(const poker::GameState& state, std::size_t seat);
 
 // Content hash naming the published deviation-menu schedule: fold/check/call
@@ -108,17 +106,6 @@ std::vector<poker::Action> declared_behavior_menu(const poker::GameState& state,
 // Frozen artifacts record this so a schedule change is visible as an identity
 // change; it hashes the exact numerator/denominator pairs, not snapped totals.
 std::uint64_t declared_menu_identity_hash() noexcept;
-
-// The fixed uniform-random reference opponent (RFC 0008 stage 6 "additional
-// reference opponents"). Uniform over declared_behavior_menu: every entry
-// gets equal mass. The legal raise interval is a continuum, so "uniform" is
-// meaningful only over this declared finite menu, which the reference names.
-class UniformBehaviorPolicy final : public BehaviorPolicy {
- public:
-  std::vector<PolicyAction> distribution(const poker::GameState& state, std::size_t seat,
-                                         HoleCards hole,
-                                         const PolicyContext& context) const override;
-};
 
 // Selects one action from a distribution with one unit draw in [0, 1). The
 // draw is supplied by the caller (SplitMix64 top 53 bits convention), so this

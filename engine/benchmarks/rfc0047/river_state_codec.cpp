@@ -53,8 +53,7 @@ class Writer {
 
 class Reader {
  public:
-  explicit Reader(const std::string& data)
-      : ptr_(data.data()), end_(data.data() + data.size()) {}
+  explicit Reader(const std::string& data) : ptr_(data.data()), end_(data.data() + data.size()) {}
   Reader(const char* data, std::size_t size) : ptr_(data), end_(data + size) {}
   std::uint8_t u8() { return take<std::uint8_t>(); }
   std::uint32_t u32() { return take<std::uint32_t>(); }
@@ -274,8 +273,7 @@ RiverResumableState load_river_checkpoint(const std::filesystem::path& path,
   state.regret.resize(tree_size);
   state.average_sum.resize(tree_size);
 
-  Reader payload_reader(raw.data() + header_end,
-                        static_cast<std::size_t>(payload_bytes));
+  Reader payload_reader(raw.data() + header_end, static_cast<std::size_t>(payload_bytes));
   std::uint64_t seen_action_nodes = 0;
   for (std::size_t n = 0; n < tree_size; ++n) {
     const std::uint64_t slots = payload_reader.u64();

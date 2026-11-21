@@ -188,7 +188,11 @@ struct ResolveLimits {
   // Independent certification node cap. Zero means reuse max_nodes. A small
   // value forces a certification resource limit, which must always discard.
   std::size_t certify_max_nodes = 0;
-  std::chrono::milliseconds time{2000};
+  // RFC 0041 Amendment 1 (2026-10-29): the offline product requirement is a
+  // 10-second p95; the previous 2,000 ms default was the retired River Club
+  // runner budget (RFC 0040 removed that integration). Callers with a
+  // request-derived deadline still override this per request.
+  std::chrono::milliseconds time{10000};
   // Deterministic full-traversal iteration count for the gadget CFR. A timeout
   // or any resource limit before these complete discards the candidate.
   // Callers with a request-derived time budget must derive this from that

@@ -115,16 +115,42 @@ double sum_n(const std::array<double, 10>& u, std::size_t n) {
   return s;
 }
 
-void run_passive_session(PracticeDifficulty difficulty, std::size_t seats, std::size_t hands,
-                         std::uint64_t seed) {
+// A deterministic passive bot policy: check when free, otherwise call,
+// otherwise fold. Test-only stand-in for the engine-served policy the
+// production CLI injects; the practice core never builds a bot itself.
+class PassivePolicy : public BehaviorPolicy {
+ public:
+  std::vector<PolicyAction> distribution(const GameState& state, std::size_t, HoleCards,
+                                         const PolicyContext&) const override {
+    const LegalActions legal = state.legal();
+    Action chosen;
+    if (legal.check)
+      chosen = Action{ActionType::Check, 0};
+    else if (legal.call)
+      chosen = Action{ActionType::Call, 0};
+    else
+      chosen = Action{ActionType::Fold, 0};
+    return {{chosen, 1.0}};
+  }
+};
+
+// Injects one passive policy into every non-human seat (test substitute for
+// the single engine-served opponent tier).
+void inject_test_bots(PracticeTable& table, std::size_t seats, std::size_t human_seat) {
+  for (std::size_t s = 0; s < seats; ++s)
+    if (s != human_seat)
+      table.set_bot(s, std::make_unique<PassivePolicy>());
+}
+
+void run_passive_session(std::size_t seats, std::size_t hands, std::uint64_t seed) {
   PracticeConfig cfg;
   cfg.seats = seats;
   cfg.human_seat = 0;
   cfg.big_blind = 2;
   cfg.starting_stack = 200;
-  cfg.difficulty = difficulty;
   cfg.rng_seed = seed;
   PracticeTable table(cfg, passive_human);
+  inject_test_bots(table, seats, 0);
   Recorder rec;
 
   for (std::size_t h = 0; h < hands; ++h) {
@@ -150,8 +176,8 @@ void run_passive_session(PracticeDifficulty difficulty, std::size_t seats, std::
 
 void test_seat_matrix_completes() {
   for (std::size_t seats : {2u, 3u, 6u, 9u, 10u}) {
-    run_passive_session(PracticeDifficulty::Easy, seats, 20, 11 + seats);
-    run_passive_session(PracticeDifficulty::Medium, seats, 20, 97 + seats);
+    run_passive_session(seats, 20, 11 + seats);
+    run_passive_session(seats, 20, 97 + seats);
   }
 }
 
@@ -162,6 +188,7 @@ void test_blind_layouts() {
     cfg.seats = 2;
     cfg.rng_seed = 5;
     PracticeTable table(cfg, folder);
+    inject_test_bots(table, 2, 0);
     struct BlindCheck : PracticeObserver {
       void on_hand_start(const GameState& s, std::size_t, HoleCards) override {
         check(s.pot() == 3, "heads-up root pot is SB+BB");
@@ -177,6 +204,7 @@ void test_blind_layouts() {
     cfg.seats = 3;
     cfg.rng_seed = 5;
     PracticeTable table(cfg, folder);
+    inject_test_bots(table, 3, 0);
     struct BlindCheck : PracticeObserver {
       void on_hand_start(const GameState& s, std::size_t, HoleCards) override {
         check(s.pot() == 3, "3-seat root pot is SB+BB");
@@ -198,6 +226,7 @@ void test_fold_privacy() {
     cfg.seats = 2;
     cfg.rng_seed = seed;
     PracticeTable table(cfg, folder);
+    inject_test_bots(table, 2, 0);
     Recorder rec;
     const std::array<double, 10> u = table.play_hand(&rec);
     check(rec.folded_ends == 1, "heads-up fold ends the hand");
@@ -213,9 +242,9 @@ void test_fold_privacy() {
   for (std::uint64_t seed = 1; seed <= 200; ++seed) {
     PracticeConfig cfg;
     cfg.seats = 3;
-    cfg.difficulty = PracticeDifficulty::Easy;
     cfg.rng_seed = seed;
     PracticeTable table(cfg, folder);
+    inject_test_bots(table, 3, 0);
     Recorder rec;
     const std::array<double, 10> u = table.play_hand(&rec);
     if (rec.folded_ends)
@@ -251,10 +280,10 @@ void test_revealed_identity() {
   for (std::uint64_t seed = 1; seed <= 100; ++seed) {
     PracticeConfig cfg;
     cfg.seats = 4;
-    cfg.difficulty = PracticeDifficulty::Easy;
     cfg.rng_seed = seed;
     IdObserver obs;
     PracticeTable table(cfg, passive_human);
+    inject_test_bots(table, 4, 0);
     (void)table.play_hand(&obs);
     if (obs.human_shown) {
       saw_human_showdown = true;
@@ -272,6 +301,7 @@ void test_revealed_identity() {
     cfg.rng_seed = seed;
     IdObserver obs;
     PracticeTable table(cfg, folder);
+    inject_test_bots(table, 2, 0);
     (void)table.play_hand(&obs);
     check(!obs.human_shown, "a folded hand never shows the human's cards");
   }
@@ -325,9 +355,9 @@ void test_seeded_reproducibility() {
   auto run = [](std::uint64_t seed) {
     PracticeConfig cfg;
     cfg.seats = 3;
-    cfg.difficulty = PracticeDifficulty::Medium;
     cfg.rng_seed = seed;
     PracticeTable table(cfg, passive_human);
+    inject_test_bots(table, 3, 0);
     std::vector<double> human_results;
     for (std::size_t h = 0; h < 15; ++h)
       human_results.push_back(table.play_hand(nullptr)[0]);
@@ -340,29 +370,9 @@ void test_seeded_reproducibility() {
   check(a != c, "a different seed changes the outcomes");
 }
 
-// A deterministic passive bot policy: check when free, otherwise call,
-// otherwise fold. Mirrors passive_human but as a BehaviorPolicy so it can be
-// injected through set_bot().
-class PassivePolicy : public BehaviorPolicy {
- public:
-  std::vector<PolicyAction> distribution(const GameState& state, std::size_t, HoleCards,
-                                         const PolicyContext&) const override {
-    const LegalActions legal = state.legal();
-    Action chosen;
-    if (legal.check)
-      chosen = Action{ActionType::Check, 0};
-    else if (legal.call)
-      chosen = Action{ActionType::Call, 0};
-    else
-      chosen = Action{ActionType::Fold, 0};
-    return {{chosen, 1.0}};
-  }
-};
-
 void test_engine_tier_requires_set_bot() {
   PracticeConfig cfg;
   cfg.seats = 2;
-  cfg.difficulty = PracticeDifficulty::Engine;
   cfg.rng_seed = 1;
   PracticeTable table(cfg, passive_human);
   bool threw = false;
@@ -379,7 +389,6 @@ void test_engine_tier_requires_set_bot() {
 void test_set_bot_rejects_bad_arguments() {
   PracticeConfig cfg;
   cfg.seats = 2;
-  cfg.difficulty = PracticeDifficulty::Engine;
   cfg.rng_seed = 1;
   PracticeTable table(cfg, passive_human);
 
@@ -415,7 +424,6 @@ void test_engine_tier_with_injected_policy() {
   for (std::uint64_t seed = 1; seed <= 30; ++seed) {
     PracticeConfig cfg;
     cfg.seats = 2;
-    cfg.difficulty = PracticeDifficulty::Engine;
     cfg.rng_seed = seed;
     PracticeTable table(cfg, passive_human);
     table.set_bot(1, std::make_unique<PassivePolicy>());
@@ -469,7 +477,6 @@ void test_six_seat_engine_tier() {
   cfg.human_seat = 0;
   cfg.big_blind = 2;
   cfg.starting_stack = 200;
-  cfg.difficulty = PracticeDifficulty::Engine;
   cfg.rng_seed = 42;
   PracticeTable table(cfg, passive_human);
 
@@ -654,9 +661,9 @@ void test_revealed_board_tracks_play_hand() {
   PracticeConfig cfg;
   cfg.seats = 4;
   cfg.human_seat = 0;
-  cfg.difficulty = PracticeDifficulty::Easy;
   cfg.rng_seed = 88;
   PracticeTable table(cfg, passive_human);
+  inject_test_bots(table, 4, 0);
   BoardWatcher w;
   w.table = &table;
   for (std::size_t h = 0; h < 12; ++h)

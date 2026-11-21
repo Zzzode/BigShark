@@ -23,19 +23,6 @@ constexpr std::array<std::pair<int, int>, 5> kPotFractions = {{
     {3, 2},
 }};
 
-void require_finite_distribution(const std::vector<PolicyAction>& actions) {
-  if (actions.empty())
-    throw std::runtime_error("behavior policy returned an empty distribution");
-  double total = 0.0;
-  for (const PolicyAction& pa : actions) {
-    if (!std::isfinite(pa.probability) || pa.probability < 0.0)
-      throw std::runtime_error("behavior policy probability must be finite and >= 0");
-    total += pa.probability;
-  }
-  if (std::fabs(total - 1.0) > 1e-9)
-    throw std::runtime_error("behavior policy probabilities must sum to 1");
-}
-
 // Adds an aggressive target if it is not already present, preserving order.
 void add_unique(std::vector<poker::Action>* menu, poker::ActionType type, poker::Chips target) {
   for (const poker::Action& existing : *menu)
@@ -84,19 +71,6 @@ std::vector<poker::Action> declared_behavior_menu(const poker::GameState& state,
   if (menu.empty())
     throw std::runtime_error("legal action state produced an empty behavior menu");
   return menu;
-}
-
-std::vector<PolicyAction> UniformBehaviorPolicy::distribution(
-    const poker::GameState& state, std::size_t seat, HoleCards /*hole*/,
-    const PolicyContext& /*context*/) const {
-  std::vector<poker::Action> menu = declared_behavior_menu(state, seat);
-  const double mass = 1.0 / static_cast<double>(menu.size());
-  std::vector<PolicyAction> result;
-  result.reserve(menu.size());
-  for (const poker::Action& action : menu)
-    result.push_back(PolicyAction{action, mass});
-  require_finite_distribution(result);
-  return result;
 }
 
 std::uint64_t declared_menu_identity_hash() noexcept {

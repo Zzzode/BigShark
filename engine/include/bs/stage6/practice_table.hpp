@@ -111,24 +111,19 @@ PracticeHandResult run_practice_hand(poker::GameState state, const PracticeHand&
                                      const HumanAgent& human, bs::SplitMix64& rng,
                                      PracticeObserver* observer = nullptr);
 
-// Difficulty selects the bot roster. The labels are deliberately descriptive;
-// none of these is a solved equilibrium ("GTO") policy.
-enum class PracticeDifficulty {
-  Easy,    // declared-menu uniform random bot: loose, passive/aggressive random
-  Medium,  // pinned preflop charts + postflop Monte-Carlo heuristic (ABC poker)
-  Engine,  // engine-served tier: a local bigshark-engine process decides through
-           // the framed wire contract; a descriptive label, never "GTO". The
-           // PracticeTable leaves Engine bot seats null; the caller must inject
-           // a policy via set_bot() before the first hand.
-};
+// Practice tables have exactly one opponent tier: a caller-injected
+// engine-served equilibrium policy. The table itself creates no bots;
+// every non-human seat must receive one via set_bot() before the first
+// hand. Random/heuristic fallback opponents were deliberately removed:
+// the practice table is a GTO training tool, never a surface for a
+// non-equilibrium strategy.
 
 struct PracticeConfig {
   std::size_t seats = 2;       // 2..10, including the human
   std::size_t human_seat = 0;  // fixed logical seat; button rotates under it
   poker::Chips big_blind = 2;
   poker::Chips starting_stack = 200;  // chips behind at the start of every hand
-  PracticeDifficulty difficulty = PracticeDifficulty::Medium;
-  std::uint64_t rng_seed = 0;  // 0 -> seeded from a fixed default
+  std::uint64_t rng_seed = 0;         // 0 -> seeded from a fixed default
 };
 
 class PracticeTable {
@@ -176,10 +171,5 @@ class PracticeTable {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };
-
-// Builds one bot BehaviorPolicy for the requested difficulty. The returned
-// object is owned by the caller. Easy = uniform over the declared menu;
-// Medium = the pinned chart + heuristic baseline.
-std::unique_ptr<BehaviorPolicy> make_practice_bot(PracticeDifficulty difficulty);
 
 }  // namespace bs::stage6

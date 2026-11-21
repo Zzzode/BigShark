@@ -430,18 +430,6 @@ add_custom_target(benchmark-stage6-geometry
   USES_TERMINAL
 )
 
-# RFC 0008 stage 6 R12 step 8: the larger-table measurement driver. The ONE
-# leaf that links the eval and trainer siblings together: it trains the
-# buckets, binds the composed candidate, and estimates candidate vs pinned
-# baseline general-sum NashConv with paired Student-t CIs. Manual evidence
-# binary, NOT a CTest; its numbers are published as-is, including a negative
-# or indistinguishable result.
-add_executable(bigshark-stage6-measurement-driver
-  benchmarks/stage6_measurement_driver.cpp
-)
-target_link_libraries(bigshark-stage6-measurement-driver PRIVATE
-  bigshark_stage6_eval bigshark_stage6_train
-)
 
 # RFC 0029 stage 2: the resident-path NashConv measurement driver. Links the
 # eval surface (exact oracle, BehaviorPolicy) with the resident serving path and
@@ -634,15 +622,50 @@ add_executable(bigshark-subgame-nash-conv
 )
 target_link_libraries(bigshark-subgame-nash-conv PRIVATE
   bigshark_solver
+  bigshark_artifacts
+  bigshark_flop_library
 )
 if(OpenMP_CXX_FOUND)
   target_link_libraries(bigshark-subgame-nash-conv PRIVATE OpenMP::OpenMP_CXX)
 endif()
 
+# RFC 0046 Stage-1 measurement-only static library. Linked ONLY by the RFC
+# 0046 benchmark arm and measurement ctests; never installed. The configure-
+# time rfc0046_link_guard (included last from the root CMakeLists) walks the
+# transitive target closure of engine-host/practice/resident/pack and fails if
+# this library is reachable from any of them. Deleted after the gates under
+# no-legacy.
+add_library(bigshark_rfc0046_bench STATIC
+  benchmarks/rfc0046/concrete_keyer.cpp
+  benchmarks/rfc0046/turn_gadget.cpp
+  benchmarks/rfc0046/certifier.cpp
+  benchmarks/rfc0046/partition_walker.cpp
+  benchmarks/rfc0046/margin_extract.cpp
+  benchmarks/rfc0046/strata.cpp
+)
+
+# RFC 0046 Stage-1 single-cell measurement runner (manual, NOT a CTest).
+add_executable(bigshark-rfc0046-cell benchmarks/rfc0046/rfc0046_cell.cpp)
+target_link_libraries(bigshark-rfc0046-cell PRIVATE bigshark_rfc0046_bench)
+
+# RFC 0046 Stage-1 pre-frozen behavioral hand-pair selector (manual).
+add_executable(bigshark-rfc0046-handpair benchmarks/rfc0046/rfc0046_handpair.cpp)
+target_link_libraries(bigshark-rfc0046-handpair PRIVATE bigshark_rfc0046_bench)
+
+# RFC 0046 Stage-1 exact-key concrete-infoset footprint counter (manual, no solve).
+add_executable(bigshark-rfc0046-infoset-count benchmarks/rfc0046/rfc0046_infoset_count.cpp)
+target_link_libraries(bigshark-rfc0046-infoset-count PRIVATE bigshark_rfc0046_bench)
+target_include_directories(bigshark_rfc0046_bench PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(bigshark_rfc0046_bench PUBLIC bigshark_solver)
+
 # RFC 0047 Stage-1 successor arm (depth-limited per-river certified resolve +
-# offline per-combo turn-CV oracle). Independent measurement library; it links
-# no production resolver/composition root. Benchmark-only; deleted under
-# no-legacy unless a production addendum promotes a named subset.
+# offline per-combo turn-CV oracle). Independent measurement library: it does
+# NOT link bigshark_rfc0046_bench (cross-RFC benchmark decoupling, enforced by
+# the rfc0047 link guard) and links no production resolver/composition root.
+# Benchmark-only; deleted under no-legacy unless a production addendum
+# promotes a named subset.
 add_library(bigshark_rfc0047_bench STATIC
   benchmarks/rfc0047/strata.cpp
   benchmarks/rfc0047/board_classes.cpp
@@ -678,22 +701,21 @@ add_executable(bigshark-rfc0047-infoset-budget benchmarks/rfc0047/rfc0047_infose
 target_link_libraries(bigshark-rfc0047-infoset-budget PRIVATE bigshark_rfc0047_bench)
 add_executable(bigshark-rfc0047-census benchmarks/rfc0047/rfc0047_census.cpp)
 target_link_libraries(bigshark-rfc0047-census PRIVATE bigshark_rfc0047_bench)
-
-# RFC 0047 S2 manual binaries (NOT CTests): post-chance frontier census,
-# deterministic full-deal river NashConv probes, and the parallel G2 oracle
-# builder (candidate + higher-accuracy reference, per-combo certified error).
 add_executable(bigshark-rfc0047-frontier-check benchmarks/rfc0047/rfc0047_frontier_check.cpp)
 target_link_libraries(bigshark-rfc0047-frontier-check PRIVATE bigshark_rfc0047_bench)
+
+# RFC 0047 S2 manual binary: deterministic full-deal river NashConv probe.
 add_executable(bigshark-rfc0047-river-probe benchmarks/rfc0047/rfc0047_river_probe.cpp)
-target_link_libraries(bigshark-rfc0047-river-probe PRIVATE bigshark_rfc0047_bench)
 add_executable(bigshark-rfc0047-river-curve benchmarks/rfc0047/rfc0047_river_curve.cpp)
 target_link_libraries(bigshark-rfc0047-river-curve PRIVATE bigshark_rfc0047_bench)
+target_link_libraries(bigshark-rfc0047-river-probe PRIVATE bigshark_rfc0047_bench)
+# RFC 0047 S2 manual builder: deterministic river solve -> BSNCV01 artifact.
 add_executable(bigshark-rfc0047-oracle-build benchmarks/rfc0047/rfc0047_oracle_build.cpp)
 target_link_libraries(bigshark-rfc0047-oracle-build PRIVATE bigshark_rfc0047_bench)
-# RFC 0047 G3 manual probes: zero-perturbation turn-solve baseline and the
-# additive-CV perturbation slope campaign (NOT CTests).
+# RFC 0047 G3 manual probe: zero-perturbation turn-solve baseline (NOT a CTest).
 add_executable(bigshark-rfc0047-g3-step1 benchmarks/rfc0047/rfc0047_g3_step1.cpp)
 target_link_libraries(bigshark-rfc0047-g3-step1 PRIVATE bigshark_rfc0047_bench)
+# RFC 0047 G3 step-2 manual perturbation probe (NOT a CTest).
 add_executable(bigshark-rfc0047-g3-probe benchmarks/rfc0047/rfc0047_g3_probe.cpp)
 target_link_libraries(bigshark-rfc0047-g3-probe PRIVATE bigshark_rfc0047_bench)
 
@@ -956,11 +978,8 @@ target_link_libraries(bigshark_stage6_core
 # the edge from ever being reversed into the live service/protocols.
 add_library(bigshark_stage6_eval STATIC
   src/stage6/adapter.cpp
-  src/stage6/baseline_policy.cpp
   src/stage6/br_estimator.cpp
-  src/stage6/candidate_policy.cpp
   src/stage6/chart_digest.cpp
-  src/stage6/chart_preflop.cpp
   src/stage6/chart_reach.cpp
   src/stage6/geometry_enumerator.cpp
   src/stage6/infoset_key.cpp
@@ -1020,11 +1039,11 @@ target_link_libraries(bigshark_stage6_train
   PUBLIC bigshark_stage6_core bigshark_solver
 )
 
-# RFC 0008 stage 6: the offline single-human practice table. One local human
-# seat (driven by a callback) plays 2..10-seat hands against offline bot
-# BehaviorPolicies; it never links the service, the engine host, a protocol, or
-# anything network/credential-related. It sits on the eval surface because its
-# Medium bot IS the pinned baseline policy.
+# Offline single-human practice table. One local human seat (driven by a
+# callback) plays 2..10-seat hands against caller-injected engine-served
+# policies; it never links the service, the engine host, a protocol, or
+# anything network/credential-related, and it carries no built-in bot
+# strategy (random/heuristic tiers removed).
 add_library(bigshark_practice STATIC
   src/stage6/practice_table.cpp
 )
@@ -1032,7 +1051,7 @@ target_include_directories(bigshark_practice
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(bigshark_practice
-  PUBLIC  bigshark_stage6_eval
+  PUBLIC  bigshark_behavior
   PRIVATE bigshark_poker
 )
 target_compile_options(bigshark_practice PRIVATE -Werror=switch)
@@ -1164,15 +1183,6 @@ if(BUILD_TESTING)
   add_executable(test_stage6_frozen_artifact tests/test_stage6_frozen_artifact.cpp)
   target_link_libraries(test_stage6_frozen_artifact PRIVATE bigshark_stage6_core)
   add_test(NAME stage6_frozen_artifact COMMAND test_stage6_frozen_artifact)
-
-  # RFC 0008 stage 6 R12 step 8: the composed candidate (pinned charts preflop,
-  # frozen trained artifact postflop, R7 projection, total geometry lookup).
-  # This is the documented LEAF that joins the eval and trainer siblings: it
-  # trains a small artifact in-process and binds it into the candidate.
-  add_executable(test_stage6_candidate_policy tests/test_stage6_candidate_policy.cpp)
-  target_link_libraries(test_stage6_candidate_policy
-    PRIVATE bigshark_stage6_eval bigshark_stage6_train)
-  add_test(NAME stage6_candidate_policy COMMAND test_stage6_candidate_policy)
 
   # RFC 0008 stage 6 R11 item 2 (chunk A): chart-only reach carries the
   # reaching preflop log; per-live-seat chart-reach-restricted hole ranges and
@@ -1373,8 +1383,25 @@ if(BUILD_TESTING)
   target_link_libraries(test_nash_conv_units PRIVATE bigshark_solver)
   add_test(NAME nash_conv_units COMMAND test_nash_conv_units)
 
-  # RFC 0047 Stage-1: canonical board classes, per-river infoset budget,
-  # and BSNCV01 oracle codec native tests.
+  # RFC 0046 Stage-1: exact per-combo ConcreteCardKeyer native tests.
+  add_executable(test_rfc0046_concrete_keyer tests/test_rfc0046_concrete_keyer.cpp)
+  target_link_libraries(test_rfc0046_concrete_keyer PRIVATE bigshark_rfc0046_bench)
+  add_test(NAME rfc0046_concrete_keyer COMMAND test_rfc0046_concrete_keyer)
+
+  # RFC 0046 Stage-1: null-vs-delegating seam bitwise equivalence and cap
+  # refusal (production-path invariance regression).
+  add_executable(test_rfc0046_keyer_seam tests/test_rfc0046_keyer_seam.cpp)
+  target_link_libraries(test_rfc0046_keyer_seam PRIVATE bigshark_solver)
+  add_test(NAME rfc0046_keyer_seam COMMAND test_rfc0046_keyer_seam)
+
+  # RFC 0046 Stage-1: turn gadget + multi-street certifier + partition
+  # telescope identity end-to-end smoke tests.
+  add_executable(test_rfc0046_gadget tests/test_rfc0046_gadget.cpp)
+  target_link_libraries(test_rfc0046_gadget PRIVATE bigshark_rfc0046_bench)
+  add_test(NAME rfc0046_gadget COMMAND test_rfc0046_gadget)
+
+  # RFC 0047 Stage-1: canonical board classes (1,755/16,432/134,459 +
+  # production flop cross-check), per-river infoset budget, BSNCV01 codec.
   add_executable(test_rfc0047_board_classes tests/test_rfc0047_board_classes.cpp)
   target_link_libraries(test_rfc0047_board_classes PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_board_classes COMMAND test_rfc0047_board_classes)
@@ -1387,9 +1414,6 @@ if(BUILD_TESTING)
   target_link_libraries(test_rfc0047_oracle_codec PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_oracle_codec COMMAND test_rfc0047_oracle_codec)
 
-  # RFC 0047 S2: deterministic full-deal river kernel (determinism, finite/
-  # range, monotone reduction, BR domination), post-chance frontier census,
-  # and the depth-limited continual-resolving margin identity tiny game.
   add_executable(test_rfc0047_river_solver tests/test_rfc0047_river_solver.cpp)
   target_link_libraries(test_rfc0047_river_solver PRIVATE bigshark_rfc0047_bench)
   add_test(NAME rfc0047_river_solver COMMAND test_rfc0047_river_solver)

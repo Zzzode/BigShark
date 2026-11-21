@@ -34,7 +34,6 @@ is_forbidden() {
     engine/include/bs/decision.hpp) return 0 ;;
     engine/include/bs/policy.hpp) return 0 ;;
     engine/include/bs/stage6/adapter.hpp) return 0 ;;
-    engine/include/bs/stage6/baseline_policy.hpp) return 0 ;;
     engine/include/bs/stage6/br_estimator.hpp) return 0 ;;
     engine/include/bs/stage6/chart_digest.hpp) return 0 ;;
     engine/include/bs/stage6/crn_streams.hpp) return 0 ;;
@@ -44,7 +43,6 @@ is_forbidden() {
     engine/include/bs/stage6/simulator.hpp) return 0 ;;
     engine/include/bs/stage6/statistics.hpp) return 0 ;;
     engine/include/bs/stage6/translator.hpp) return 0 ;;
-    engine/include/bs/stage6/candidate_policy.hpp) return 0 ;;
     *) return 1 ;;
   esac
 }

@@ -2,6 +2,7 @@
 #include <bs/stage6/adapter.hpp>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 
 namespace bs::stage6 {
 
@@ -39,17 +40,6 @@ std::string position_vocabulary(std::size_t player_count, std::size_t offset) {
         return "HJ";  // n-2
       return "MP";    // 4..n-3 interior
   }
-}
-
-std::string card_name(int card_id) {
-  static const char* RANKS = "23456789TJQKA";
-  static const char* SUITS = "shdc";
-  const int rank = card_id >> 2;
-  const int suit = card_id & 3;
-  std::string name;
-  name.push_back(RANKS[rank]);
-  name.push_back(SUITS[suit]);
-  return name;
 }
 
 Ctx adapt_to_ctx(const poker::GameState& state, std::size_t seat, const std::array<int, 2>& hole,
@@ -101,10 +91,10 @@ Ctx adapt_to_ctx(const poker::GameState& state, std::size_t seat, const std::arr
   const poker::Chips stack_behind = state.players()[seat].stack;
   c.effectiveStackBb = static_cast<double>(stack_behind) / static_cast<double>(bb);
 
-  c.hole = {card_name(hole[0]), card_name(hole[1])};
+  c.hole = {bs::cardName(hole[0]), bs::cardName(hole[1])};
   c.board.clear();
   for (int card : state.board())
-    c.board.push_back(card_name(card));
+    c.board.push_back(bs::cardName(card));
 
   c.pot = static_cast<int>(state.pot());
 
@@ -184,6 +174,43 @@ Ctx adapt_to_ctx(const poker::GameState& state, std::size_t seat, const std::arr
   c.riverRaiseFrac = 1.0;
 
   return c;
+}
+
+poker::Action map_deployed_decision(const poker::GameState& state, const Decision& decision) {
+  poker::Action action;
+  if (decision.action == "fold")
+    action = poker::Action{poker::ActionType::Fold, 0};
+  else if (decision.action == "check")
+    action = poker::Action{poker::ActionType::Check, 0};
+  else if (decision.action == "call")
+    // Domain convention: a call carries target 0; after_action derives the
+    // amount from the state.
+    action = poker::Action{poker::ActionType::Call, 0};
+  else if (decision.action == "bet" || decision.action == "raise") {
+    const poker::LegalActions probe = state.legal();
+    if (!probe.aggressive)
+      throw std::runtime_error(
+          "deployed decision wagered into a state with no legal aggressive action: " +
+          decision.action + " " + std::to_string(decision.amount));
+    const poker::ActionType state_type = probe.aggressive->type;
+    const bool preflop = state.street() == poker::Street::Preflop;
+    const bool token_accepted =
+        preflop ? decision.action == "raise"
+                : ((decision.action == "bet" && state_type == poker::ActionType::Bet) ||
+                   (decision.action == "raise" && state_type == poker::ActionType::Raise));
+    if (!token_accepted)
+      throw std::runtime_error("deployed aggressive verb does not match the unified state: " +
+                               decision.action + " " + std::to_string(decision.amount));
+    action = poker::Action{state_type, static_cast<poker::Chips>(decision.amount)};
+  } else
+    throw std::runtime_error("deployed decision returned an unknown action: " + decision.action);
+
+  const poker::LegalActions legal = state.legal();
+  if (!legal.contains(action))
+    throw std::runtime_error("deployed decision is not legal in the unified state: " +
+                             decision.action + " " + std::to_string(decision.amount) +
+                             " (mapped to target " + std::to_string(action.target_total) + ")");
+  return action;
 }
 
 }  // namespace bs::stage6

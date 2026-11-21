@@ -14,7 +14,6 @@
 #include <bs/game_definition.hpp>
 #include <bs/multiway_sampler.hpp>
 #include <bs/prng.hpp>
-#include <bs/stage6/baseline_policy.hpp>
 #include <bs/stage6/exact_oracle.hpp>
 #include <bs/stage6/geometry.hpp>
 #include <bs/stage6/geometry_enumerator.hpp>
@@ -460,66 +459,6 @@ std::vector<bs::solver::MultiwayWeightedHand> all_combos() {
   return combos;
 }
 
-// R3b enumerator coverage: with the PINNED chart baseline in every seat, every
-// flop reached by real full hands under uniform joint deals must lie inside
-// enumerate_chart_flop_geometries. This is the totality gate linking the
-// card-free enumerator to the simulator's actual reach. A bounded, seeded run
-// covers many distinct flop geometries; a miss throws through the total
-// lookup and fails the test.
-void test_chart_enumerator_covers_baseline_hands() {
-  constexpr std::size_t n = 3;
-  const std::vector<bs::solver::MultiwayWeightedHand> combos = all_combos();
-  std::vector<std::vector<bs::solver::MultiwayWeightedHand>> ranges(n, combos);
-  std::vector<GeometrySignature> chart_reach = enumerate_chart_flop_geometries(n, 2, nullptr);
-  GeometryCoverage coverage(std::move(chart_reach));
-  check(coverage.size() == 12,
-        "3-seat chart reach has the pinned twelve EXACT geometries (9 are buckets)");
-
-  BaselineBehaviorPolicy baseline;
-  std::vector<const BehaviorPolicy*> policies{&baseline, &baseline, &baseline};
-  bs::SplitMix64 deal_rng(0x5374616765ULL);
-  HandSimulator sim(policies, &coverage, deal_rng);
-  const GameDef def = preflop_def(n, 2, 200);
-
-  std::size_t completed = 0;
-  std::size_t saw_showdown = 0;
-  for (std::uint64_t hand = 0; hand < 400; ++hand) {
-    bs::SplitMix64 attempt(0x9e3779b97f4a7c15ULL ^ (hand + 1));
-    const bs::solver::MultiwayDeal deal =
-        bs::solver::sample_scalable_joint_deal(ranges, {}, attempt);
-    std::vector<HoleCards> holes;
-    for (const std::array<int, 2>& h : deal.hands)
-      holes.push_back({h[0], h[1]});
-    // Sample five distinct board cards from the 46 not in any hole.
-    std::array<bool, 52> used{};
-    for (const HoleCards& h : holes)
-      used[h[0]] = used[h[1]] = true;
-    std::array<int, 5> board{};
-    bs::SplitMix64 board_rng(0x626f617264ULL ^ (hand + 1));
-    for (int& out : board) {
-      std::vector<int> pool;
-      for (int c = 0; c < 52; ++c)
-        if (!used[c])
-          pool.push_back(c);
-      const std::size_t pick = board_rng.next_u64() % pool.size();
-      out = pool[pick];
-      used[out] = true;
-    }
-    // A baseline hand either ends preflop (no candidate lookup) or reaches a
-    // covered flop; total lookup throws stage6_geometry_uncovered on any
-    // signature outside the card-free chart enumeration.
-    const SimResult rr = sim.run(def, holes, board, hand);
-    if (!rr.folded)
-      ++saw_showdown;
-    ++completed;
-  }
-  std::printf("[coverage] completed=%zu reached-showdown=%zu chart-geometries=%zu\n", completed,
-              saw_showdown, coverage.size());
-  check(completed == 400, "all 400 seeded baseline hands ran under total geometry lookup");
-  check(saw_showdown > 0, "the seeded run reached flops, so the coverage gate was exercised");
-  check(coverage.size() == 12, "no baseline hand escaped the enumerated chart reach");
-}
-
 // The exact oracle must fail closed on a NaN probability instead of returning
 // NaN expected utility (the R9 gate the step-5 estimator is validated against).
 void test_oracle_rejects_nan() {
@@ -536,68 +475,6 @@ void test_oracle_rejects_nan() {
     threw = true;
   }
   check(threw, "a NaN oracle probability throws rather than poisoning the exact value");
-}
-
-// R3b deviator-reach coverage: with ONE seat playing the aggressive deviation
-// grid (modeled by an always-jam policy) and the others on the pinned chart,
-// real full hands reach the all-in-at-flop / short / heads-up geometries that
-// a baseline-only sample never does. Running under TOTAL lookup against the
-// full enumerate_flop_geometries (chart UNION deviation) must not throw; the
-// deviator seat is rotated so every canonical position is covered.
-void test_deviator_reach_covers_jam_hands() {
-  constexpr std::size_t n = 3;
-  const std::vector<bs::solver::MultiwayWeightedHand> combos = all_combos();
-  std::vector<std::vector<bs::solver::MultiwayWeightedHand>> ranges(n, combos);
-  std::vector<GeometrySignature> dev_reach = enumerate_flop_geometries(n, 2, nullptr);
-  GeometryCoverage coverage(std::move(dev_reach));
-  check(coverage.size() >= 12, "deviation reach is a superset of the 12 chart geometries");
-
-  BaselineBehaviorPolicy baseline;
-  JamPolicy jam;
-  const GameDef def = preflop_def(n, 2, 200);
-  std::size_t allin_flop_seen = 0;
-  std::size_t completed = 0;
-  for (std::size_t deviator = 0; deviator < n; ++deviator) {
-    std::vector<const BehaviorPolicy*> policies;
-    for (std::size_t s = 0; s < n; ++s)
-      policies.push_back(s == deviator ? static_cast<const BehaviorPolicy*>(&jam) : &baseline);
-    bs::SplitMix64 rng(0x646576ULL ^ (deviator + 1));
-    HandSimulator sim(policies, &coverage, rng);
-    for (std::uint64_t k = 0; k < 120; ++k) {
-      const std::uint64_t hand = deviator * 120 + k;
-      bs::SplitMix64 attempt(0x9e3779b97f4a7c15ULL ^ (hand + 1));
-      const bs::solver::MultiwayDeal deal =
-          bs::solver::sample_scalable_joint_deal(ranges, {}, attempt);
-      std::vector<HoleCards> holes;
-      for (const std::array<int, 2>& h : deal.hands)
-        holes.push_back({h[0], h[1]});
-      std::array<bool, 52> used{};
-      for (const HoleCards& h : holes)
-        used[h[0]] = used[h[1]] = true;
-      std::array<int, 5> board{};
-      bs::SplitMix64 board_rng(0x626f617264ULL ^ (hand + 1));
-      for (int& out : board) {
-        std::vector<int> pool;
-        for (int c = 0; c < 52; ++c)
-          if (!used[c])
-            pool.push_back(c);
-        out = pool[board_rng.next_u64() % pool.size()];
-        used[out] = true;
-      }
-      // Total lookup throws stage6_geometry_uncovered if a jam reaches a flop
-      // outside the chart-UNION-deviation matrix.
-      const SimResult rr = sim.run(def, holes, board, hand);
-      // A jam that gets called reaches a showdown (all-in runout); count them
-      // to prove the all-in/short geometries were actually exercised.
-      if (!rr.folded)
-        ++allin_flop_seen;
-      ++completed;
-    }
-  }
-  std::printf("[deviation] completed=%zu called-jam-showdowns=%zu deviation-geometries=%zu\n",
-              completed, allin_flop_seen, coverage.size());
-  check(completed == 360, "all rotated-deviator hands ran under total lookup");
-  check(allin_flop_seen > 0, "a called jam exercised an all-in-at-flop runout geometry");
 }
 
 // The exact best response is the R9 reference the Monte Carlo estimator must
@@ -811,8 +688,6 @@ int main() {
   test_simulator_rejects_illegal_policy();
   test_simulator_flop_terminal_throws();
   test_coverage_hash_and_membership();
-  test_chart_enumerator_covers_baseline_hands();
-  test_deviator_reach_covers_jam_hands();
   run_oracle_fixture("{1,1,1}", {1, 1, 1});
   run_oracle_fixture("{1,2,2}", {1, 2, 2});
   test_oracle_aggressive_sidepots();
